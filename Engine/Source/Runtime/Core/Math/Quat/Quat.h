@@ -113,12 +113,41 @@ namespace Lumina
     }
 
 #ifndef REFLECTION_PARSER
-    // Reflected (stubbed in ManualReflectTypes.h) — hidden from the parser.
+    // The real FQuat is a template-alias the reflector can't walk; the
+    // ManualStub shim below at parser-time gives reflection something to bite.
     using FQuat = TQuat<float>;
 #endif
     // Not reflected — always defined.
     using FDoubleQuat = TQuat<double>;
 }
+
+// Reflection-parser-only shim for FQuat. ManualStub tag tells codegen to
+// skip T::StaticStruct() since the runtime alias has no such member.
+// Layout matches TQuat<float>: x,y,z,w as plain floats.
+//
+// See VectorTypes.h for the rationale on defining REFLECT/PROPERTY locally
+// instead of including ObjectMacros.h (an ObjectMacros include here would
+// reach Archiver -> Math -> Vector -> Quat and form a cycle).
+#ifdef REFLECTION_PARSER
+#ifndef REFLECT
+#define REFLECT(...)
+#define PROPERTY(...)
+#define FUNCTION(...)
+#define GENERATED_BODY(...)
+#endif
+namespace Lumina
+{
+    REFLECT(ManualStub, NoLua)
+    struct FQuat
+    {
+        PROPERTY(Editable) float x;
+        PROPERTY(Editable) float y;
+        PROPERTY(Editable) float z;
+        /** Real component. */
+        PROPERTY(Editable) float w;
+    };
+}
+#endif
 
 namespace Lumina::Math
 {

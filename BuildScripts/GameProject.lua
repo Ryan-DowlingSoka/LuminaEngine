@@ -83,12 +83,17 @@ local function SetupProject(Def)
         if LuminaDirForBat then
             local EnsureBat = '"' .. path.translate(path.join(LuminaDirForBat, "BuildScripts", "EnsureEngineBuilt.bat"), "\\") .. '"'
 
+            -- Pass $(Platform) through so an Editor-platform game build
+            -- triggers the Editor-platform engine build, and likewise for
+            -- Game. Without the platform arg, packaged-game builds (Game
+            -- platform) would silently fall back to building Editor libs
+            -- they can't link against.
             filter "configurations:Debug"
-                prebuildcommands { EnsureBat .. " Debug" }
+                prebuildcommands { EnsureBat .. ' Debug "$(Platform)"' }
             filter "configurations:Development"
-                prebuildcommands { EnsureBat .. " Development" }
+                prebuildcommands { EnsureBat .. ' Development "$(Platform)"' }
             filter "configurations:Shipping"
-                prebuildcommands { EnsureBat .. " Shipping" }
+                prebuildcommands { EnsureBat .. ' Shipping "$(Platform)"' }
             filter {}
         end
 

@@ -88,9 +88,10 @@
 #include <entt/entt.hpp>
 #include <xxhash.h>
 
-// Lumina vector + quaternion types, used in nearly every TU; the PCH
-// also makes the real FVector*/FQuat aliases visible to the reflection-unity TU
-// that compiles their manually-reflected registration (Core/Object/ManualReflectTypes.h).
+// Lumina vector + quaternion types, used in nearly every TU. The headers
+// also carry REFLECTION_PARSER-guarded stub structs that give the reflector
+// something to walk in place of the `using FVector3 = TVec<float, 3>;`
+// template aliases (which libclang can't reflect through).
 #include "Core/Math/Vector/Vector.h"
 #include "Core/Math/Quat/Quat.h"
 #include "Core/Math/Matrix/Matrix.h"

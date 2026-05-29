@@ -47,18 +47,38 @@ namespace Lumina
     {
         std::error_code EC;
         std::filesystem::path Root(RootView.data(), RootView.data() + RootView.size());
-        if (!std::filesystem::exists(Root, EC) || !std::filesystem::is_directory(Root, EC))
+        const bool bExists = std::filesystem::exists(Root, EC);
+        if (EC)
         {
-            return; // No plugin folder -> nothing to do.
+            LOG_WARN("[PluginManager] exists({}) failed: {}", RootView, EC.message().c_str());
+            return;
+        }
+        if (!bExists)
+        {
+            return;
+        }
+        if (!std::filesystem::is_directory(Root, EC) || EC)
+        {
+            if (EC) LOG_WARN("[PluginManager] is_directory({}) failed: {}", RootView, EC.message().c_str());
+            return;
         }
 
         // Each immediate subdir is a candidate plugin. We expect a single
         // <SubDir>/<SubDir>.lplugin file inside; falling back to ANY
         // .lplugin if the conventional name is missing.
-        for (const auto& Entry : std::filesystem::directory_iterator(Root, EC))
+        auto It = std::filesystem::directory_iterator(Root, EC);
+        if (EC)
         {
-            if (!Entry.is_directory(EC))
+            LOG_WARN("[PluginManager] directory_iterator({}) failed: {}", RootView, EC.message().c_str());
+            return;
+        }
+
+        for (const auto& Entry : It)
+        {
+            EC.clear();
+            if (!Entry.is_directory(EC) || EC)
             {
+                if (EC) LOG_WARN("[PluginManager] is_directory({}) failed: {}", Entry.path().string().c_str(), EC.message().c_str());
                 continue;
             }
 
@@ -66,20 +86,38 @@ namespace Lumina
             std::filesystem::path Conventional = PluginDir / (PluginDir.filename().string() + ".lplugin");
             std::filesystem::path Descriptor;
 
+            EC.clear();
             if (std::filesystem::exists(Conventional, EC))
             {
                 Descriptor = Conventional;
             }
             else
             {
-                for (const auto& Inner : std::filesystem::directory_iterator(PluginDir, EC))
+                EC.clear();
+                auto Inner = std::filesystem::directory_iterator(PluginDir, EC);
+                if (EC)
                 {
-                    if (Inner.is_regular_file(EC) && Inner.path().extension() == ".lplugin")
+                    LOG_WARN("[PluginManager] directory_iterator({}) failed: {}", PluginDir.string().c_str(), EC.message().c_str());
+                    continue;
+                }
+                bool bFoundFallback = false;
+                for (const auto& Candidate : Inner)
+                {
+                    EC.clear();
+                    if (Candidate.is_regular_file(EC) && Candidate.path().extension() == ".lplugin")
                     {
-                        Descriptor = Inner.path();
+                        Descriptor = Candidate.path();
+                        bFoundFallback = true;
+                        // Warn so a misnamed descriptor surfaces in the log
+                        // instead of "first .lplugin wins" silently.
+                        LOG_WARN("[PluginManager] {} contains a .lplugin not matching the folder name; using {} (rename to {})",
+                            PluginDir.string().c_str(),
+                            Descriptor.filename().string().c_str(),
+                            Conventional.filename().string().c_str());
                         break;
                     }
                 }
+                (void)bFoundFallback;
             }
 
             if (Descriptor.empty())
@@ -208,10 +246,16 @@ namespace Lumina
         // Kahn-style toposort on the enabled set. Dependency edges point
         // from dependency to dependent; missing non-optional deps disable
         // the dependent and log.
+        //
+        // Determinism: every iteration source here is OwnedPlugins (a
+        // vector, insertion-ordered) rather than PluginLookup (a hashmap)
+        // so the emitted order is stable across runs. Cook output relies
+        // on plugin load order being reproducible.
         TVector<FPlugin*> Enabled;
-        for (auto& Pair : PluginLookup)
+        Enabled.reserve(OwnedPlugins.size());
+        for (auto& Owned : OwnedPlugins)
         {
-            FPlugin* P = Pair.second;
+            FPlugin* P = Owned.get();
             if (!P->IsEnabled())                  continue;
             if (!IsPluginApplicable(P->GetDescriptor())) continue;
 
@@ -259,7 +303,11 @@ namespace Lumina
 
         TVector<FPlugin*> Result;
         Result.reserve(Enabled.size());
+
+        // Process the frontier as a FIFO and seed it in Enabled order so
+        // peers (zero-indegree siblings) come out in discovery order.
         TVector<FPlugin*> Frontier;
+        Frontier.reserve(Enabled.size());
         for (FPlugin* P : Enabled)
         {
             if (InDegree[P] == 0)
@@ -267,11 +315,13 @@ namespace Lumina
                 Frontier.push_back(P);
             }
         }
-        while (!Frontier.empty())
+        size_t Head = 0;
+        while (Head < Frontier.size())
         {
-            FPlugin* P = Frontier.back();
-            Frontier.pop_back();
+            FPlugin* P = Frontier[Head++];
             Result.push_back(P);
+            // Edges were built in Enabled order, so iterating push_back
+            // order keeps dependents stable too.
             for (FPlugin* Dependent : Edges[P])
             {
                 if (--InDegree[Dependent] == 0)
@@ -280,23 +330,28 @@ namespace Lumina
                 }
             }
         }
+
         if (Result.size() != Enabled.size())
         {
-            // Cycle: emit anything left in arbitrary order; they'll still
-            // load, just in an order that doesn't satisfy their dep edges.
-            LOG_WARN("[PluginManager] Dependency cycle detected; loading remaining plugins in arbitrary order");
+            // Cycle: emit anything left in Enabled (= OwnedPlugins) order
+            // so the recovery order is at least deterministic, and name
+            // every leftover so the cycle is actually debuggable.
+            THashSet<FPlugin*> Emitted;
+            Emitted.reserve(Result.size());
+            for (FPlugin* Q : Result) Emitted.insert(Q);
+
+            FString Names;
             for (FPlugin* P : Enabled)
             {
-                bool bAlreadyEmitted = false;
-                for (FPlugin* Q : Result)
+                if (Emitted.find(P) == Emitted.end())
                 {
-                    if (Q == P) { bAlreadyEmitted = true; break; }
-                }
-                if (!bAlreadyEmitted)
-                {
+                    if (!Names.empty()) Names += ", ";
+                    Names.append(P->GetName().data(), P->GetName().size());
                     Result.push_back(P);
                 }
             }
+            LOG_WARN("[PluginManager] Dependency cycle detected involving: {} — loading them in discovery order; resolve the cycle to silence this.",
+                Names);
         }
         return Result;
     }
@@ -315,8 +370,20 @@ namespace Lumina
         FString ContentDir = Plugin.GetContentDirectory();
         std::error_code EC;
         std::filesystem::path P(ContentDir.c_str());
-        if (!std::filesystem::exists(P, EC) || !std::filesystem::is_directory(P, EC))
+        const bool bExists = std::filesystem::exists(P, EC);
+        if (EC)
         {
+            LOG_WARN("[PluginManager] exists({}) failed: {}", ContentDir, EC.message().c_str());
+            return;
+        }
+        if (!bExists)
+        {
+            return;
+        }
+        EC.clear();
+        if (!std::filesystem::is_directory(P, EC) || EC)
+        {
+            if (EC) LOG_WARN("[PluginManager] is_directory({}) failed: {}", ContentDir, EC.message().c_str());
             return;
         }
 
@@ -396,7 +463,10 @@ namespace Lumina
         Loaded.bStartupCalled  = true; // FModuleManager called StartupModule
         Plugin.GetLoadedModules().emplace_back(Move(Loaded));
 
-        LOG_INFO("[PluginManager] Loaded plugin '{}' module '{}' (phase {})",
+        // DISPLAY parity with the static-factory branch above: plugin
+        // module load is a boot milestone we want surviving Shipping for
+        // post-mortem debugging (LOG_INFO is stripped in Shipping).
+        LOG_DISPLAY("[PluginManager] Loaded plugin '{}' module '{}' (phase {})",
             Plugin.GetName(), Module.Name, LexToString(Module.LoadingPhase));
         return true;
     }
@@ -432,19 +502,22 @@ namespace Lumina
 
     void FPluginManager::ShutdownAllPlugins()
     {
-        // Unload in reverse of CachedLoadOrder so dependents go before
-        // their dependencies. Then drop our records; the actual DLL
-        // unload happens in FModuleManager::UnloadAllModules.
+        // Reverse-order tear-down: walk CachedLoadOrder back-to-front so
+        // dependents shut down before their dependencies, and call into
+        // FModuleManager::UnloadModule for each loaded module so its
+        // ShutdownModule actually runs in the right order (rather than in
+        // whatever order ModuleHashMap happens to iterate in).
         for (auto It = CachedLoadOrder.rbegin(); It != CachedLoadOrder.rend(); ++It)
         {
             FPlugin* Plugin = *It;
             auto& Loaded = Plugin->GetLoadedModules();
             for (auto MIt = Loaded.rbegin(); MIt != Loaded.rend(); ++MIt)
             {
-                // FModuleManager owns the actual ShutdownModule call when
-                // the matching DLL gets unloaded; we just clear our cache.
+                if (MIt->bStartupCalled)
+                {
+                    FModuleManager::Get().UnloadModule(FStringView(MIt->Descriptor.Name.c_str(), MIt->Descriptor.Name.size()));
+                }
                 MIt->ModuleInterface = nullptr;
-                MIt->bStartupCalled  = false;
             }
             Loaded.clear();
         }

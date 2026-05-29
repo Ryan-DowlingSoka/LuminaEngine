@@ -2,6 +2,7 @@
 #include "ClangVisitor.h"
 #include "Reflector/Clang/ClangParserContext.h"
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include <EASTL/algorithm.h>
 #include <EASTL/string.h>
 #include <StringHash.h>
@@ -35,22 +36,6 @@ namespace Lumina::Reflection
 		auto Itr = ParserContext->AllHeaders.find(Hash);
 		if (Itr == ParserContext->AllHeaders.end())
 		{
-			// Manual-reflect cursors that fail to bind here indicate a path
-			// normalization mismatch between the JSON registration side and
-			// libclang's reported file path. When this hits, no struct is
-			// registered, and consumers still emit a forward decl + take the
-			// address of the (never-defined) Construct_CStruct_glm_* function,
-			// producing a confusing "undeclared identifier" cascade in dependent
-			// modules. Surface it loudly so the failure is diagnosable.
-			if (FilePath.find("manualreflecttypes") != eastl::string::npos)
-			{
-				static bool bWarned = false;
-				if (!bWarned)
-				{
-					bWarned = true;
-					spdlog::error("ManualReflectTypes cursor at '{}' did not match any registered header — glm reflection will be missing. Check LUMINA_DIR canonicalization.", FilePath.c_str());
-				}
-			}
 			return CXChildVisit_Continue;
 		}
 

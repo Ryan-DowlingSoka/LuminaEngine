@@ -230,7 +230,7 @@ namespace Lumina
     using FVector3 = TVec<float, 3>;
     using FVector4 = TVec<float, 4>;
 #endif
-    
+
     using FIntVector2 = TVec<int32, 2>;
     using FIntVector3 = TVec<int32, 3>;
     using FIntVector4 = TVec<int32, 4>;
@@ -254,4 +254,52 @@ namespace Lumina
 
 #if defined(_MSC_VER)
     #pragma warning(pop)
+#endif
+
+// Reflection-parser-only shims for the float vector aliases. The real types
+// (FVector2/3/4 = TVec<float,N>) are template specializations the reflector
+// can't walk through the `using` alias, so we hand-stub plain structs the
+// parser sees in their place. The ManualStub tag tells codegen to skip the
+// T::StaticStruct() emission since the runtime alias has no such member.
+// Layout matches: 2/3/4 floats packed in order, no padding.
+//
+// We define REFLECT/PROPERTY locally instead of including ObjectMacros.h --
+// that header drags in ObjectCore -> ConstructObjectParams -> Guid -> Archiver
+// -> Math, which forms an include cycle through VectorTypes.h itself. Under
+// REFLECTION_PARSER these macros are empty (the parser harvests them via
+// libclang's preprocessor record, not via expansion), so a local empty
+// definition is structurally identical to the real one.
+#ifdef REFLECTION_PARSER
+#ifndef REFLECT
+#define REFLECT(...)
+#define PROPERTY(...)
+#define FUNCTION(...)
+#define GENERATED_BODY(...)
+#endif
+namespace Lumina
+{
+    REFLECT(ManualStub, NoLua)
+    struct FVector2
+    {
+        PROPERTY(Editable) float x;
+        PROPERTY(Editable) float y;
+    };
+
+    REFLECT(ManualStub, NoLua)
+    struct FVector3
+    {
+        PROPERTY(Editable) float x;
+        PROPERTY(Editable) float y;
+        PROPERTY(Editable) float z;
+    };
+
+    REFLECT(ManualStub, NoLua)
+    struct FVector4
+    {
+        PROPERTY(Editable) float x;
+        PROPERTY(Editable) float y;
+        PROPERTY(Editable) float z;
+        PROPERTY(Editable) float w;
+    };
+}
 #endif

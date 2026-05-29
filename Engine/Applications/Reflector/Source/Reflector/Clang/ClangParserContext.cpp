@@ -53,10 +53,12 @@ namespace Lumina::Reflection
         }
 
         eastl::string FileNameChar = clang_getCString(FileName);
-        FileNameChar.make_lower();
-        eastl::replace(FileNameChar.begin(), FileNameChar.end(), '\\', '/');
-
         clang_disposeString(FileName);
+
+        // Both sides must agree on the canonical form. HeaderID is already
+        // normalized; route the cursor's raw clang file name through the same
+        // pipeline so case-sensitive filesystems stop dropping legitimate hits.
+        FileNameChar = ClangUtils::NormalizeHeaderPath(eastl::move(FileNameChar));
 
         if (FileNameChar != HeaderID)
         {
@@ -104,12 +106,9 @@ namespace Lumina::Reflection
 
     bool FClangParserContext::TryFindGeneratedBodyMacro(const eastl::string& HeaderID, const CXCursor& Cursor, FReflectionMacro& Macro)
     {
-        // Exported types, we don't care.
-        if (HeaderID.find("manualreflecttypes") != eastl::string::npos)
-        {
-            return true;
-        }
-        
+        // The "this type has no GENERATED_BODY()" case is owned by the struct
+        // visitor now -- it inspects the REFLECT macro for a ManualStub tag
+        // and skips the requirement there. This function stays a pure lookup.
         uint64_t Hash = XXH64(HeaderID.c_str(), strlen(HeaderID.c_str()), 0);
         auto headerIter = GeneratedBodyMacros.find(Hash);
         if (headerIter == GeneratedBodyMacros.end())

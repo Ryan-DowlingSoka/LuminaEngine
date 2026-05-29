@@ -16,30 +16,32 @@
 
 namespace Lumina::Platform
 {
-    static void WarnOnce(const char* What)
-    {
-        static bool bWarned = false;
-        if (!bWarned)
-        {
-            bWarned = true;
-            LOG_WARN("{0}: no implementation on this platform; ignoring.", What);
-        }
-    }
+    // Per-callsite once-flag: each stub gets its own static. A single
+    // shared `static bool` would silently swallow every call after the
+    // first across the whole trio.
+    #define LUMINA_WARN_ONCE(What) \
+        do { \
+            static bool bWarned_ = false; \
+            if (!bWarned_) { bWarned_ = true; \
+                LOG_WARN("{0}: no implementation on this platform; ignoring.", What); } \
+        } while (0)
 
     void ShowFileInExplorer(const TCHAR* /*Path*/)
     {
-        WarnOnce("Platform::ShowFileInExplorer");
+        LUMINA_WARN_ONCE("Platform::ShowFileInExplorer");
     }
 
     void ShowFolderInExplorer(const TCHAR* /*Directory*/)
     {
-        WarnOnce("Platform::ShowFolderInExplorer");
+        LUMINA_WARN_ONCE("Platform::ShowFolderInExplorer");
     }
 
     void OpenTerminalAt(const TCHAR* /*Directory*/)
     {
-        WarnOnce("Platform::OpenTerminalAt");
+        LUMINA_WARN_ONCE("Platform::OpenTerminalAt");
     }
+
+    #undef LUMINA_WARN_ONCE
 }
 
 #endif

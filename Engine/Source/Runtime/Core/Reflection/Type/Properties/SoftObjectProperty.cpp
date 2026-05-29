@@ -18,8 +18,15 @@ namespace Lumina
 
     void FSoftObjectProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        // Structured-archive path not used by the cook flow today; FStringProperty
-        // does the same. Reflection-driven JSON/YAML editor serialization will fill
-        // this in when it lands.
+        // Intentionally a no-op — matches FStringProperty / FNameProperty,
+        // which also leave SerializeItem empty until reflection-driven
+        // JSON/YAML structured archives land. The cook flow uses the
+        // binary Serialize() above, which DOES handle paths correctly.
+        //
+        // Do NOT replace this with an assert: every other primitive
+        // property does the same and crashing here would diverge from
+        // house style. When structured archives ship, this body should
+        // be filled in alongside the other property stubs.
+        (void)Slot; (void)Value; (void)Defaults;
     }
 }

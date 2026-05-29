@@ -10,11 +10,6 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        bool IsManualReflectFile(const eastl::string& Path)
-        {
-            return Path.find("manualreflecttypes") != eastl::string::npos;
-        }
-
         void EmitMetadataArray(FCodeWriter& Writer, eastl::string_view SymbolBase, const eastl::vector<FMetadataPair>& Metadata)
         {
             if (Metadata.empty())
@@ -130,8 +125,10 @@ namespace Lumina::Reflection
 
     void FReflectedStruct::DefineSecondaryHeader(FCodeWriter& Writer, const eastl::string& FileID)
     {
-        // Hand-written reflection files provide their own StaticStruct/factory shims.
-        if (IsManualReflectFile(FileID))
+        // ManualStub types are template-alias shims (e.g. FVector3 = TVec<float,3>);
+        // there is no struct body to inject GENERATED_BODY content into, so emit
+        // nothing for them.
+        if (HasMetadata("ManualStub"))
         {
             Writer.BlankLines(2);
             return;
@@ -289,9 +286,10 @@ namespace Lumina::Reflection
         Writer.EndBlock();
         Writer.Line();
 
-        // Outer singleton: Lumina::QualifiedName::StaticStruct(). Skipped for manual
-        // reflect files since those provide their own definition.
-        if (!IsManualReflectFile(Header->HeaderPath))
+        // Outer singleton: Lumina::QualifiedName::StaticStruct(). Skipped for
+        // ManualStub types since the runtime type is a template alias and has no
+        // such member.
+        if (!HasMetadata("ManualStub"))
         {
             Writer.Linef("class Lumina::CStruct* %s::StaticStruct()", QualifiedName.c_str());
             Writer.BeginBlock();

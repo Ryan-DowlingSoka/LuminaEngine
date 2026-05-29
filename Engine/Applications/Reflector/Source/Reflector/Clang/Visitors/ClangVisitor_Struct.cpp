@@ -386,8 +386,9 @@ namespace Lumina::Reflection::Visitor
 		break;
 		case EPropertyTypeFlags::SoftObject:
 		{
-			// FSoftObjectPath: no template arg; reflect against itself.
-			// TSoftObjectPtr<T>: extract T to capture the target class for the inspector.
+			// FSoftObjectPath: no template arg; the target class defaults
+			//   to CObject so the inspector picker accepts any asset.
+			// TSoftObjectPtr<T>: extract T to capture the target class.
 			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
 			eastl::optional<FFieldInfo> ParamFieldInfo;
 			if (ArgType.kind != CXType_Invalid)
@@ -396,8 +397,12 @@ namespace Lumina::Reflection::Visitor
 			}
 			if (!ParamFieldInfo.has_value())
 			{
-				// Bare FSoftObjectPath — keep the outer field as the descriptor.
+				// Bare FSoftObjectPath — reflect against CObject so the
+				// emitted Construct_CClass_<T>() symbol resolves; otherwise
+				// codegen would emit Construct_CClass_Lumina_FSoftObjectPath
+				// which doesn't exist and fails to link.
 				ParamFieldInfo = FieldInfo;
+				ParamFieldInfo->TypeName = "Lumina::CObject";
 			}
 
 			ParamFieldInfo->Name = FieldInfo.Name;
@@ -607,6 +612,17 @@ namespace Lumina::Reflection::Visitor
 
 	}
 
+	// A REFLECT(...) annotation tagged `ManualStub` opts the type out of the
+	// usual GENERATED_BODY()/companion-.generated.h requirements. It also tells
+	// the codegen to skip emitting T::StaticStruct() (the body member doesn't
+	// exist on the runtime alias). The reflected fields are still emitted and
+	// linked through the free `Construct_CStruct_<Ns>_<T>()` function the
+	// codegen normally produces.
+	static bool MacroHasManualStub(const FReflectionMacro& Macro)
+	{
+		return Macro.MacroContents.find("ManualStub") != eastl::string::npos;
+	}
+
 	CXChildVisitResult VisitStructure(CXCursor Cursor, CXCursor Parent, FClangParserContext* Context)
 	{
 		eastl::string CursorName = ClangUtils::GetCursorDisplayName(Cursor);
@@ -626,8 +642,11 @@ namespace Lumina::Reflection::Visitor
 			return CXChildVisit_Continue;
 		}
 
+		const bool bManualStub = MacroHasManualStub(Macro);
+
 		FReflectionMacro GeneratedBody;
-		if (!Context->TryFindGeneratedBodyMacro(Context->ReflectedHeader->HeaderPath, Cursor, GeneratedBody))
+		const bool bFoundBody = Context->TryFindGeneratedBodyMacro(Context->ReflectedHeader->HeaderPath, Cursor, GeneratedBody);
+		if (!bFoundBody && !bManualStub)
 		{
 			LRT_ERROR(Cursor, EDiagId::MissingGeneratedBody,
 				"REFLECT'd struct '%s' is missing a GENERATED_BODY() macro inside its body. "

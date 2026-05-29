@@ -14,9 +14,9 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        // Lowercase + forward slashes + absolute. Mirrors the normalisation the
-        // rest of the Reflector uses for header path lookup so paths from this
-        // module are directly comparable against AllHeaders entries.
+        // Forward slashes + absolute, case preserved. Mirrors NormalizeHeaderPath
+        // so the strings produced here compare equal to AllHeaders entries on
+        // every filesystem (Windows case-insensitive, Linux/macOS case-sensitive).
         eastl::string Normalise(const std::filesystem::path& InPath)
         {
             std::error_code Ec;
@@ -28,7 +28,6 @@ namespace Lumina::Reflection
 
             eastl::string Result = Abs.string().c_str();
             eastl::replace(Result.begin(), Result.end(), '\\', '/');
-            Result.make_lower();
             return Result;
         }
 

@@ -3,6 +3,7 @@
 #include <EASTL/string_view.h>
 
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/CodeGeneration/CodeWriter.h"
 
 namespace Lumina::Reflection
 {
@@ -60,6 +61,34 @@ namespace Lumina::Reflection
             Out.push_back('_');
             Out += FriendlyFromParts(Namespace, DisplayName);
             return Out;
+        }
+
+        // Emit a forward decl for a cross-module Construct_C* function, guarded
+        // against re-declaration within the same translation unit.
+        //
+        // Why guarded: every .generated.cpp that references a type owned by
+        // another header repeats that type's `<API> Lumina::<Kind>* Construct_*();`
+        // forward decl in its own Cross-Module References block. That is correct
+        // -- each .generated.cpp must be compilable standalone -- but the unity
+        // build concatenates many such files into one TU, and the same decl then
+        // appears many times. Identical redundant decls are legal C++; clang-tidy
+        // (readability-redundant-declaration) and some IDE linters flag them
+        // anyway. Each function name is guaranteed unique by the codegen, so the
+        // function name itself doubles as the include-guard token.
+        inline void EmitGuardedCrossModuleDecl(
+            FCodeWriter& Writer,
+            eastl::string_view API,
+            eastl::string_view Kind,        // "CStruct", "CClass", "CEnum"
+            eastl::string_view FnName)      // "Construct_CStruct_Lumina_FVector3"
+        {
+            const eastl::string FnNameStr(FnName.data(), FnName.size());
+            Writer.Linef("#ifndef LRT_XREF_%s", FnNameStr.c_str());
+            Writer.Linef("#define LRT_XREF_%s", FnNameStr.c_str());
+            Writer.Linef("%.*s Lumina::%.*s* %s();",
+                static_cast<int>(API.size()), API.data(),
+                static_cast<int>(Kind.size()), Kind.data(),
+                FnNameStr.c_str());
+            Writer.Line("#endif");
         }
 
         // "Runtime" -> "RUNTIME_API".

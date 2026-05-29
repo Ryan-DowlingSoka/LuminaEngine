@@ -19,10 +19,12 @@ namespace Lumina::ClangUtils
     // Both the JSON registration side (premake node.abspath) and the parse-time
     // cursor lookup side must agree byte-for-byte, otherwise cursors get silently
     // dropped and types simply don't register. std::filesystem::weakly_canonical
-    // resolves relative→absolute, collapses redundant separators, and (when the
+    // resolves relative->absolute, collapses redundant separators, and (when the
     // file exists) resolves junctions/symlinks/SUBST drives to a single canonical
-    // form. After that we still lowercase + forward-slash so case-insensitive
-    // filesystems behave consistently.
+    // form. Slashes are normalized to forward; case is intentionally preserved
+    // so the same string also resolves on case-sensitive filesystems (Linux ext4,
+    // case-sensitive APFS). On Windows both ends produce the on-disk case, so
+    // hash lookups still match.
     inline eastl::string NormalizeHeaderPath(eastl::string Input)
     {
         if (Input.empty())
@@ -40,7 +42,6 @@ namespace Lumina::ClangUtils
 
         eastl::string Result(Canonical.generic_string().c_str());
         eastl::replace(Result.begin(), Result.end(), '\\', '/');
-        Result.make_lower();
         return Result;
     }
 

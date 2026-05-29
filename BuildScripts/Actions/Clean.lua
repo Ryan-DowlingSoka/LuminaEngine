@@ -1,4 +1,7 @@
-local LuminaDir = os.getenv("LUMINA_DIR")
+-- Mirror Reflection.lua: fall back to the workspace's premake5.lua directory
+-- so `premake5 clean` doesn't crash on path.join(nil, ...) before Setup.bat
+-- has run.
+local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 

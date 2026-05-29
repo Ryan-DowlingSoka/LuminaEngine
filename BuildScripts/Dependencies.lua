@@ -23,15 +23,47 @@ ArchBits =
 
 -- External game projects set LUMINA_DIR env var; use it when present so that
 -- all EnginePath() calls resolve to the actual engine install rather than the
--- game project's workspace location.
+-- game project's workspace location. The %{wks.location}` fallback is the
+-- correct answer for an engine build (where the workspace IS the engine), but
+-- for a game-project build it silently points at the wrong root -- the rest of
+-- the build then fails with cryptic "cannot find Runtime-Development.lib"
+-- errors. Detect that mismatch explicitly so the diagnostic is actionable.
 local _LuminaEnvDir = os.getenv("LUMINA_DIR")
 LuminaConfig.EngineDirectory        = _LuminaEnvDir or "%{wks.location}"
 LuminaConfig.OutputDirectory        = "%{capitalize(cfg.system)}%{ArchBits[cfg.architecture]}"
 LuminaConfig.ProjectFilesDirectory  = "%{wks.location}/Intermediates/ProjectFiles/%{prj.name}"
 LuminaConfig.ReflectionDirectory    = "%{wks.location}/Intermediates/Reflection/%{prj.name}"
 
-if not LuminaConfig.EngineDirectory then
-    error("LUMINA_DIR environment variable not set. Run Setup.bat first.")
+-- `_MAIN_SCRIPT_DIR` is the workspace's premake5.lua directory. For an engine
+-- build it's the engine root and contains "Engine/Source/Runtime"; for a game
+-- project it's the game root and does not. Use that to tell the two apart.
+local function LooksLikeEngineRoot(Dir)
+    if not Dir or Dir == "" then return false end
+    return os.isdir(path.join(Dir, "Engine/Source/Runtime"))
+end
+
+if not _LuminaEnvDir then
+    if LooksLikeEngineRoot(_MAIN_SCRIPT_DIR) then
+        -- Engine build with no env var set -- harmless, the wks.location
+        -- fallback resolves correctly. Setup.bat persists LUMINA_DIR for
+        -- consistency but the engine build itself doesn't need it.
+    else
+        error(table.concat({
+            "",
+            "LUMINA_DIR is not set, and this workspace (" .. _MAIN_SCRIPT_DIR .. ")",
+            "does not look like an engine root. For game projects, LUMINA_DIR must",
+            "point at the Lumina engine install. Run the engine's Setup.bat first,",
+            "or set LUMINA_DIR manually (setx LUMINA_DIR \"C:\\path\\to\\lumina\").",
+        }, "\n"))
+    end
+elseif not LooksLikeEngineRoot(_LuminaEnvDir) then
+    error(table.concat({
+        "",
+        "LUMINA_DIR points at '" .. _LuminaEnvDir .. "',",
+        "which does not contain Engine/Source/Runtime. This usually means the engine",
+        "was moved or deleted after Setup.bat ran. Re-run Setup.bat from the engine",
+        "root, or fix LUMINA_DIR (setx LUMINA_DIR \"C:\\path\\to\\lumina\").",
+    }, "\n"))
 end
 
 function LuminaConfig.GetSystem()

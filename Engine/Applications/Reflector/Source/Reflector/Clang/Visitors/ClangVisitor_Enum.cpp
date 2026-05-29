@@ -1,6 +1,7 @@
 ﻿#include "ClangVisitor.h"
 #include "Reflector/Clang/ClangParserContext.h"
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/Types/ReflectedType.h"
 
 namespace Lumina::Reflection::Visitor
@@ -65,7 +66,15 @@ namespace Lumina::Reflection::Visitor
         {
             return CXChildVisit_Continue;
         }
-        
+
+        // Naming convention: reflected enums are prefixed with `E`.
+        if (CursorName.empty() || CursorName[0] != 'E')
+        {
+            LRT_WARNING(Cursor, EDiagId::BadTypePrefix,
+                "Reflected enum '%s' should be prefixed with 'E' (e.g. 'E%s').",
+                CursorName.c_str(), CursorName.c_str());
+        }
+
         const clang::EnumDecl* pEnumDecl = (const clang::EnumDecl*) Cursor.data[0];
         clang::QualType IntegerType = pEnumDecl->getIntegerType();
 

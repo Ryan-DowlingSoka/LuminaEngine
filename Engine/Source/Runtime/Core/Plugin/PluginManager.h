@@ -93,8 +93,12 @@ namespace Lumina
         bool IsPluginApplicable(const FPluginDescriptor& Desc) const;
 
         // Topological sort of the enabled-plugin set so dependents load
-        // after their dependencies. Returns a stable order; cycles log and
-        // are broken arbitrarily.
+        // after their dependencies. Order is deterministic: peer plugins
+        // (no dep edges between them) come out in OwnedPlugins insertion
+        // order, which matches descriptor discovery order. Cycles are
+        // logged with the participating plugin names and the cycle's
+        // members fall back to insertion order so the run is still
+        // reproducible.
         TVector<FPlugin*> BuildLoadOrder();
 
     private:

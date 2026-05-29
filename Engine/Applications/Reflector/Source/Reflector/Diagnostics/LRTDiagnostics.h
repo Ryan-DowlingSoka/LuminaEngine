@@ -12,6 +12,7 @@ namespace Lumina::Reflection
     //   1xxx -> property type errors (unsupported types, mis-used pointers, etc.)
     //   2xxx -> macro / declaration errors (missing GENERATED_BODY, etc.)
     //   3xxx -> function signature errors -- reserved
+    //   9xxx -> driver/tool errors (CLI, file I/O, libclang failures)
     enum class EDiagId : uint32_t
     {
         UnknownPropertyType    = 1000,  // PROPERTY field has a type the reflector cannot map.
@@ -26,6 +27,13 @@ namespace Lumina::Reflection
         GeneratedHeaderNotLast = 2001,  // <stem>.generated.h is included but other includes follow it.
         MissingGeneratedBody   = 2002,  // class/struct uses REFLECT() but lacks a GENERATED_BODY() inside its body.
         WrongGeneratedHeader   = 2003,  // header includes a different file's .generated.h (copy-paste mistake).
+        BadTypePrefix          = 2004,  // reflected class/struct/enum lacks the C-/S-/E- naming prefix.
+
+        DriverMissingInput          = 9000,  // no JSON path on the command line.
+        DriverInputUnreadable       = 9001,  // failed to open the JSON input file.
+        DriverAmalgamationCreate    = 9002,  // couldn't create the amalgamation .gen.h.
+        DriverClangParseFailure     = 9003,  // libclang returned a non-success CXErrorCode.
+        DriverTranslationUnitWalk   = 9004,  // clang_visitChildren reported a problem.
     };
 
     struct FDiagLocation

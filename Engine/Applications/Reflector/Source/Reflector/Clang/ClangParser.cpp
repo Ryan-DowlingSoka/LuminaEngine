@@ -4,6 +4,7 @@
 #include <fstream>
 #include <clang-c/Index.h>
 #include "EASTL/fixed_vector.h"
+#include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/ProjectSolution.h"
 #include "Reflector/ReflectionCore/ReflectedProject.h"
 #include "Visitors/ClangTranslationUnit.h"
@@ -24,7 +25,11 @@ namespace Lumina::Reflection
         std::ofstream AmalgamationFile(AmalgamationPath.c_str());
         if (!AmalgamationFile.is_open())
         {
-            spdlog::error("Failed to create amalgamation file");
+            FDiagLocation Loc;
+            Loc.File = AmalgamationPath;
+            FDiagnostics::Get().Errorf(Loc, EDiagId::DriverAmalgamationCreate,
+                "Failed to create amalgamation file '%s'. Check write permissions on the working directory.",
+                AmalgamationPath.c_str());
             return false;
         }
         AmalgamationFile << "#pragma once\n\n";
@@ -39,50 +44,28 @@ namespace Lumina::Reflection
             ClangArgs.emplace_back(ClangArgStorage.back().c_str());
         };
         
-        eastl::string LuminaDirectory = std::getenv("LUMINA_DIR");
-        while (!LuminaDirectory.empty() &&
-               (LuminaDirectory.back() == '/' || LuminaDirectory.back() == '\\'))
-        {
-            LuminaDirectory.pop_back();
-        }
-        
         for (const auto& Project : Workspace->ReflectedProjects)
         {
             eastl::string APIDecl = "-D" + Project->Name + "_API=";
             APIDecl.make_upper();
-            
+
             AppendArg(eastl::move(APIDecl));
-            
+
             for (const eastl::string& IncludeDir : Project->IncludeDirs)
             {
-                if (IncludeDir.find("GLM") != eastl::string::npos || IncludeDir.find("glm") != eastl::string::npos)
-                {
-                    continue;
-                }
-                
                 AppendArg("-I" + IncludeDir);
             }
-            
+
             for (auto& [Path, Header] : Project->Headers)
             {
                 AmalgamationFile << "#include \"" << Path.c_str() << "\"\n";
                 ParsingContext.AllHeaders.emplace(Path, Header.get());
-                // @TODO For some reason enabling this breaks the manualreflecttypes.
-                //ClangArgs.emplace_back("-include");
-                //ClangArgs.emplace_back(Path.c_str());
                 ParsingContext.NumHeadersReflected++;
             }
         }
 
         AmalgamationFile.close();
 
-        // Force-include ManualReflectTypes.h with an absolute path. Using a
-        // relative path (e.g. "Core/Object/ManualReflectTypes.h") makes clang
-        // report the cursor's file path as the same relative form, which never
-        // matches the absolute paths stored in AllHeaders, so the manual glm
-        // type stubs end up silently dropped from the reflection database.
-        eastl::string ManualReflectPath = LuminaDirectory + "/Engine/Source/Runtime/Core/Object/ManualReflectTypes.h";
-        AppendArg("-include" + ManualReflectPath);
         AppendArg("-x");
         AppendArg("c++");
         AppendArg("-std=c++23");
@@ -125,29 +108,29 @@ namespace Lumina::Reflection
         CXCursor Cursor = clang_getTranslationUnitCursor(TranslationUnit);
         if (clang_visitChildren(Cursor, VisitTranslationUnit, &ParsingContext) != 0)
         {
-            spdlog::error("A problem occured during translation unit parsing");
+            FDiagLocation Loc;
+            Loc.File = AmalgamationPath;
+            FDiagnostics::Get().Errorf(Loc, EDiagId::DriverTranslationUnitWalk,
+                "A problem occurred during translation unit parsing. "
+                "Check earlier libclang diagnostics for the root cause.");
         }
-        
+
         if (Result != CXError_Success)
         {
+            FDiagLocation Loc;
+            Loc.File = AmalgamationPath;
+            const char* Reason = "unknown";
             switch (Result)
             {
-            case CXError_Failure:
-                spdlog::error("Clang Unknown failure");
-                break;
-    
-            case CXError_Crashed:
-                spdlog::error("Clang crashed");
-                break;
-    
-            case CXError_InvalidArguments:
-                spdlog::error("Clang Invalid arguments");
-                break;
-    
-            case CXError_ASTReadError:
-                spdlog::error("Clang AST read error");
-                break;
+            case CXError_Failure:          Reason = "unknown failure";           break;
+            case CXError_Crashed:          Reason = "libclang crashed";          break;
+            case CXError_InvalidArguments: Reason = "invalid arguments";         break;
+            case CXError_ASTReadError:     Reason = "AST read error";            break;
+            default: break;
             }
+            FDiagnostics::Get().Errorf(Loc, EDiagId::DriverClangParseFailure,
+                "libclang parse failed: %s (CXErrorCode=%d).",
+                Reason, static_cast<int>(Result));
         }
         
         std::filesystem::remove(AmalgamationPath.c_str());

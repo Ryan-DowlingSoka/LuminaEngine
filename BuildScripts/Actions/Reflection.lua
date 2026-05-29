@@ -1,5 +1,9 @@
 
-local LuminaDir = os.getenv("LUMINA_DIR")
+-- _MAIN_SCRIPT_DIR is the directory of the workspace's premake5.lua, which is
+-- the engine root for an engine build. The env-var path is the right one for
+-- external game projects whose _MAIN_SCRIPT_DIR points at the game project.
+-- Falling back keeps fresh clones working before Setup.bat has run.
+local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 
@@ -113,7 +117,7 @@ newaction
             Extension = ".exe"
         end
 
-        local ReflectionDirectory = path.join(os.getenv("LUMINA_DIR"), "Binaries", SystemName .. "64", "Reflector" .. Extension)
+        local ReflectionDirectory = path.join(LuminaDir, "Binaries", SystemName .. "64", "Reflector" .. Extension)
         local CmdLine = ReflectionDirectory .. " " .. path.getabsolute("Reflection_Files.json")
 
 
@@ -125,7 +129,7 @@ newaction
         -- when no reflected input is newer than the stamp. Premake itself still
         -- runs because prebuildcommands always fires, but that's ~1s vs the
         -- multi-second cold libclang pass.
-        local StampFile = path.join(os.getenv("LUMINA_DIR"), "Intermediates", "Reflection", ".stamp")
+        local StampFile = path.join(LuminaDir, "Intermediates", "Reflection", ".stamp")
         local function FileTime(P)
             local Stat = os.stat(P)
             return (Stat and Stat.mtime) or 0

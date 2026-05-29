@@ -16,10 +16,20 @@ namespace Lumina
      *  is cached the first time the path is resolved through FAssetRegistry
      *  so subsequent lookups don't re-walk the registry.
      *
+     *  Identity and hashing are always path-based, NOT GUID-based, so that
+     *  a TryResolve() side-effect can never silently change a path's hash
+     *  bucket or its equality with another instance that hasn't resolved
+     *  yet. Container keys stay stable regardless of resolve state.
+     *
      *  Cook-graph wiring (Phase 2B): the package serializer emits the
      *  CachedGUID into the ImportTable tagged as EDependencyType::Soft, so
      *  FCookGraph follows it for reachability but doesn't force the target
-     *  into the referrer's chunk. */
+     *  into the referrer's chunk.
+     *
+     *  Thread safety: TryResolve / LoadSynchronous / LoadAsync may be
+     *  called from any thread; the CachedGUID write inside TryResolve is
+     *  guarded by an atomic_flag so concurrent first-resolvers don't tear
+     *  the 16-byte GUID write. */
     struct RUNTIME_API FSoftObjectPath
     {
         FSoftObjectPath() = default;
@@ -29,6 +39,22 @@ namespace Lumina
             : Path(InPath.data(), InPath.size())
             , CachedGUID(InGUID)
         {}
+
+        FSoftObjectPath(const FSoftObjectPath& Other)
+            : Path(Other.Path), CachedGUID(Other.CachedGUID) {}
+        FSoftObjectPath(FSoftObjectPath&& Other) noexcept
+            : Path(Move(Other.Path)), CachedGUID(Other.CachedGUID) {}
+
+        FSoftObjectPath& operator=(const FSoftObjectPath& Other)
+        {
+            if (this != &Other) { Path = Other.Path; CachedGUID = Other.CachedGUID; }
+            return *this;
+        }
+        FSoftObjectPath& operator=(FSoftObjectPath&& Other) noexcept
+        {
+            if (this != &Other) { Path = Move(Other.Path); CachedGUID = Other.CachedGUID; }
+            return *this;
+        }
 
         bool        IsNull() const  { return Path.empty() && !CachedGUID.IsValid(); }
         bool        IsValid() const { return !IsNull(); }
@@ -42,8 +68,14 @@ namespace Lumina
             CachedGUID = FGuid();
         }
 
+        void Reset()
+        {
+            Path.clear();
+            CachedGUID = FGuid();
+        }
+
         /** Look up Path in FAssetRegistry to populate CachedGUID. No-op if
-         *  GUID already known. Returns true on success. */
+         *  GUID already known. Returns true on success. Thread-safe. */
         bool TryResolve() const;
 
         /** Blocking load through FAssetManager; returns nullptr on miss. */
@@ -55,9 +87,7 @@ namespace Lumina
 
         bool operator==(const FSoftObjectPath& Other) const
         {
-            // Identity by GUID when both resolved; else by path text.
-            if (CachedGUID.IsValid() && Other.CachedGUID.IsValid())
-                return CachedGUID == Other.CachedGUID;
+            // Path-only — stable across resolve state. See class comment.
             return Path == Other.Path;
         }
         bool operator!=(const FSoftObjectPath& Other) const { return !(*this == Other); }
@@ -65,13 +95,14 @@ namespace Lumina
         friend RUNTIME_API FArchive& operator<<(FArchive& Ar, FSoftObjectPath& Self);
 
     private:
-        FFixedString    Path;
+        FString         Path;
         mutable FGuid   CachedGUID;
     };
 
 
     /** Typed soft pointer. Pure wrapper around FSoftObjectPath that narrows
-     *  Get/Load results back to T*. */
+     *  Get/Load results back to T*. Layout-identical to FSoftObjectPath
+     *  (single embedded member, no vtable) — the reflector relies on this. */
     template<typename T>
     struct TSoftObjectPtr
     {
@@ -88,14 +119,23 @@ namespace Lumina
         const FSoftObjectPath& GetSoftPath() const   { return Inner; }
         FSoftObjectPath&      GetSoftPath()          { return Inner; }
 
+        void SetPath(FStringView InPath) { Inner.SetPath(InPath); }
+        void Reset()                     { Inner.Reset(); }
+
         TObjectPtr<T> LoadSynchronous() const
         {
             CObject* Obj = Inner.LoadSynchronous();
+            // Compile-time check that T is a CObject-derived type so the
+            // cast below is at least within the CObject hierarchy. Runtime
+            // type validation against the property's ObjectClass happens
+            // in FSoftObjectProperty.
+            static_assert(eastl::is_base_of_v<CObject, T>, "TSoftObjectPtr<T>: T must derive from CObject");
             return TObjectPtr<T>(static_cast<T*>(Obj));
         }
 
         void LoadAsync(const TFunction<void(T*)>& Callback) const
         {
+            static_assert(eastl::is_base_of_v<CObject, T>, "TSoftObjectPtr<T>: T must derive from CObject");
             Inner.LoadAsync([Callback](CObject* Obj)
             {
                 if (Callback) Callback(static_cast<T*>(Obj));
@@ -110,6 +150,11 @@ namespace Lumina
     private:
         FSoftObjectPath Inner;
     };
+
+    // Layout invariant the reflector + FSoftObjectProperty rely on: the
+    // storage of TSoftObjectPtr<CObject> is one FSoftObjectPath.
+    static_assert(sizeof(TSoftObjectPtr<CObject>) == sizeof(FSoftObjectPath),
+        "TSoftObjectPtr<T> must be layout-identical to FSoftObjectPath");
 }
 
 namespace eastl
@@ -119,10 +164,9 @@ namespace eastl
     {
         size_t operator()(const Lumina::FSoftObjectPath& P) const noexcept
         {
-            if (P.GetCachedGUID().IsValid())
-            {
-                return eastl::hash<Lumina::FGuid>{}(P.GetCachedGUID());
-            }
+            // Path-only — see FSoftObjectPath class comment. Hashing by
+            // GUID would silently rebucket the key the moment TryResolve
+            // ran on a path-constructed instance.
             const Lumina::FStringView V = P.GetPath();
             return eastl::hash<eastl::string_view>{}(eastl::string_view(V.data(), V.size()));
         }

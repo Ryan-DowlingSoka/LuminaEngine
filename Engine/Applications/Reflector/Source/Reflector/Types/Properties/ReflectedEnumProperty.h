@@ -3,6 +3,7 @@
 #include "ReflectedProperty.h"
 #include "Reflector/Clang/Utils.h"
 #include "Reflector/CodeGeneration/CodeWriter.h"
+#include "Reflector/CodeGeneration/ReflectionNames.h"
 
 
 namespace Lumina
@@ -25,9 +26,9 @@ namespace Lumina
         bool CanDeclareCrossModuleReferences() const override { return true; }
         void DeclareCrossModuleReference(const eastl::string& API, Reflection::FCodeWriter& Writer) override
         {
-            Writer.Linef("%s Lumina::CEnum* Construct_CEnum_%s();",
-                API.c_str(),
-                ClangUtils::MakeCodeFriendlyNamespace(TypeName).c_str());
+            const eastl::string Friendly = ClangUtils::MakeCodeFriendlyNamespace(TypeName);
+            const eastl::string FnName = "Construct_CEnum_" + Friendly;
+            Reflection::Names::EmitGuardedCrossModuleDecl(Writer, API, "CEnum", FnName);
         }
     };
 }

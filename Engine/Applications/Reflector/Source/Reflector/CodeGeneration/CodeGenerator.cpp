@@ -23,6 +23,65 @@ namespace Lumina::Reflection
     {
         constexpr size_t kStreamInitialCapacity = 10 * 1024;
 
+        // Try to express the source header as a path relative to one of the
+        // project's -I include dirs (preferring the longest match for the most
+        // specific form) or, failing that, the project root. Baking an absolute
+        // path into the generated .cpp is technically valid but burns in machine-
+        // specific layout; a relative form lets the artifact survive being moved
+        // or rebuilt on a different machine with a different engine install root.
+        eastl::string ComputeSourceHeaderInclude(const FReflectedHeader& Header)
+        {
+            const eastl::string& Path = Header.HeaderPath;
+            const FReflectedProject& Proj = *Header.Project;
+
+            auto TryStrip = [&](const eastl::string& Prefix) -> eastl::string
+            {
+                if (Prefix.empty() || Prefix.size() >= Path.size())
+                {
+                    return {};
+                }
+                if (Path.compare(0, Prefix.size(), Prefix) != 0)
+                {
+                    return {};
+                }
+                size_t Pos = Prefix.size();
+                while (Pos < Path.size() && (Path[Pos] == '/' || Path[Pos] == '\\'))
+                {
+                    ++Pos;
+                }
+                if (Pos >= Path.size())
+                {
+                    return {};
+                }
+                return Path.substr(Pos);
+            };
+
+            const eastl::string* BestPrefix = nullptr;
+            eastl::string BestRel;
+            for (const eastl::string& Dir : Proj.IncludeDirs)
+            {
+                eastl::string Rel = TryStrip(Dir);
+                if (!Rel.empty() && (BestPrefix == nullptr || Dir.size() > BestPrefix->size()))
+                {
+                    BestPrefix = &Dir;
+                    BestRel = eastl::move(Rel);
+                }
+            }
+            if (BestPrefix != nullptr)
+            {
+                return BestRel;
+            }
+
+            if (eastl::string Rel = TryStrip(Proj.Path); !Rel.empty())
+            {
+                return Rel;
+            }
+
+            // No prefix matched -- keep absolute. Better to bake in the path
+            // than silently emit something the compiler can't resolve.
+            return Path;
+        }
+
         void EmitFileBanner(FCodeWriter& Writer)
         {
             Writer.Line("//*************************************************************************");
@@ -284,7 +343,7 @@ namespace Lumina::Reflection
             {
                 const eastl::string Kind = Type->GetTypeName();
                 const eastl::string ConstructFn = Names::ConstructFunction(Kind, Type->Namespace, Type->DisplayName);
-                Writer.Linef("%s Lumina::%s* %s();", OwningApi.c_str(), Kind.c_str(), ConstructFn.c_str());
+                Names::EmitGuardedCrossModuleDecl(Writer, OwningApi, Kind, ConstructFn);
 
                 if (auto* Struct = dynamic_cast<FReflectedStruct*>(Type.get()))
                 {
@@ -397,7 +456,7 @@ namespace Lumina::Reflection
         EmitFileBanner(Writer);
 
         Writer.Line("#include \"pch.h\"");
-        Writer.Linef("#include \"%s\"", Header->HeaderPath.c_str());
+        Writer.Linef("#include \"%s\"", ComputeSourceHeaderInclude(*Header).c_str());
         Writer.Line("#include \"World/Entity/Components/Component.h\"");
         Writer.Line("#include \"World/Entity/Events/ECSEvent.h\"");
         Writer.Line("#include \"lua.h\"");

@@ -30,18 +30,26 @@ int main(int argc, char* argv[])
 #else
     if (argc < 2)
     {
-        spdlog::error("Missing command line argument, please specify a json file.");
+        FDiagnostics::Get().Errorf({}, EDiagId::DriverMissingInput,
+            "Missing command line argument: a Reflection_Files.json path is required.");
+        FDiagnostics::Get().PrintSummary();
         return 1;
     }
-    
+
     eastl::string InputFile = argv[1];
 #endif
-    
+
     std::ifstream File(InputFile.c_str());
     if (!File.is_open())
     {
-        spdlog::error("Failed to open file {}", InputFile.c_str());
-        return 1; 
+        // Anchor the diagnostic at the JSON path so double-clicking the build
+        // log error opens the missing file in the IDE.
+        FDiagLocation Loc;
+        Loc.File = InputFile;
+        FDiagnostics::Get().Errorf(Loc, EDiagId::DriverInputUnreadable,
+            "Failed to open Reflector input file '%s'.", InputFile.c_str());
+        FDiagnostics::Get().PrintSummary();
+        return 1;
     }
     
     
@@ -59,11 +67,14 @@ int main(int argc, char* argv[])
         
         auto ReflectedProject = eastl::make_unique<FReflectedProject>(&Workspace);
         ReflectedProject->Name = eastl::move(ProjectName);
-        ReflectedProject->Path = eastl::move(ProjectPath);
-        
+        // Normalize so prefix-matching against Header->HeaderPath (also normalized)
+        // works without per-call slash/case fixups.
+        ReflectedProject->Path = Lumina::ClangUtils::NormalizeHeaderPath(eastl::move(ProjectPath));
+
         for (const auto& IncludeDirJson : Project["IncludeDirs"])
         {
             eastl::string IncludeDir = IncludeDirJson.get<std::string>().c_str();
+            IncludeDir = Lumina::ClangUtils::NormalizeHeaderPath(eastl::move(IncludeDir));
             ReflectedProject->IncludeDirs.push_back(eastl::move(IncludeDir));
         }
         
@@ -153,13 +164,35 @@ int main(int argc, char* argv[])
                 continue;
             }
 
-            // ManualReflectTypes.h is force-included by ClangParser as the
-            // canonical home for reflected glm types and the like. It is not
-            // itself part of the codegen output flow and has no companion
-            // generated.h.
-            if (Header->HeaderPath.find("manualreflecttypes") != eastl::string::npos)
+            // Headers whose REFLECT'd types are all tagged `ManualStub` describe
+            // hand-written runtime shims (FVector3 -> TVec<float,3>, etc.) where
+            // the real type is a template-alias the parser can't reflect, and
+            // a sibling stub struct gives the parser something to bite into.
+            // Those headers can't include their companion .generated.h because
+            // it would forward-declare `struct FVector3;` and clash with the
+            // `using FVector3 = ...;` everyone else sees -- runtime registration
+            // is pulled in through the unity .gen.cpp instead.
+            //
+            // Use find(): operator[] would create an empty vector entry for
+            // every header iterated here, which the codegen then walks and
+            // emits empty .generated.{h,cpp} for, dropping the actual struct's
+            // generated content along the way.
+            auto TypeIt = Parser.ParsingContext.ReflectionDatabase.ReflectedTypes.find(Header.get());
+            if (TypeIt != Parser.ParsingContext.ReflectionDatabase.ReflectedTypes.end() && !TypeIt->second.empty())
             {
-                continue;
+                bool bAllManualStubs = true;
+                for (const auto& T : TypeIt->second)
+                {
+                    if (!T->HasMetadata("ManualStub"))
+                    {
+                        bAllManualStubs = false;
+                        break;
+                    }
+                }
+                if (bAllManualStubs)
+                {
+                    continue;
+                }
             }
 
             eastl::string ExpectedGenerated = Header->FileName + ".generated.h";

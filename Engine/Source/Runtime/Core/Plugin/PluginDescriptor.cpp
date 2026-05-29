@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "PluginDescriptor.h"
 #include "FileSystem/FileSystem.h"
+#include "Log/Log.h"
 #include "Platform/Filesystem/FileHelper.h"
 
 #include "nlohmann/json.hpp"
@@ -20,9 +21,12 @@ namespace Lumina
 
     EPluginModuleType ParsePluginModuleType(FStringView Str, EPluginModuleType Default)
     {
+        if (Str.empty())        return Default;
         if (Str == "Runtime")   return EPluginModuleType::Runtime;
         if (Str == "Editor")    return EPluginModuleType::Editor;
         if (Str == "Developer") return EPluginModuleType::Developer;
+        LOG_WARN("[PluginManager] Unknown module Type '{}' in .lplugin; falling back to '{}'",
+            Str, LexToString(Default));
         return Default;
     }
 
@@ -165,6 +169,11 @@ namespace Lumina
                 else if (R.is_object())
                 {
                     Root.Asset = GetString(R, "Asset");
+                    if (Root.Asset.empty())
+                    {
+                        LOG_WARN("[PluginManager] Plugin '{}' CookRoots entry has no 'Asset' field; skipping",
+                            OutDescriptor.Name);
+                    }
                     Root.Chunk = FName(GetString(R, "Chunk").c_str());
                 }
                 if (!Root.Asset.empty())

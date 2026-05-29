@@ -22,7 +22,71 @@ namespace Lumina
                 && c != '"' && c != '\''
                 && c != '(' && c != ')'
                 && c != '<' && c != '>'
-                && c != ';';
+                && c != ';' && c != ',';
+        }
+
+        // Replace HTML/RML `<!-- ... -->` and CSS `/* ... */` comment
+        // ranges with spaces of equal length. Preserves byte offsets so
+        // any error messages downstream still point at the right line,
+        // and keeps the rest of the scanners free of comment-aware logic.
+        FString StripCommentRanges(FStringView Src)
+        {
+            FString Out(Src.data(), Src.size());
+            auto Blank = [&](size_t From, size_t To)
+            {
+                for (size_t i = From; i < To && i < Out.size(); ++i)
+                {
+                    if (Out[i] != '\n') Out[i] = ' ';
+                }
+            };
+
+            size_t i = 0;
+            while (i < Out.size())
+            {
+                // HTML/RML comment.
+                if (i + 3 < Out.size()
+                    && Out[i] == '<' && Out[i + 1] == '!'
+                    && Out[i + 2] == '-' && Out[i + 3] == '-')
+                {
+                    const size_t Start = i;
+                    i += 4;
+                    while (i + 2 < Out.size()
+                        && !(Out[i] == '-' && Out[i + 1] == '-' && Out[i + 2] == '>'))
+                    {
+                        ++i;
+                    }
+                    const size_t End = (i + 2 < Out.size()) ? (i + 3) : Out.size();
+                    Blank(Start, End);
+                    i = End;
+                    continue;
+                }
+                // CSS/RCSS block comment.
+                if (i + 1 < Out.size() && Out[i] == '/' && Out[i + 1] == '*')
+                {
+                    const size_t Start = i;
+                    i += 2;
+                    while (i + 1 < Out.size() && !(Out[i] == '*' && Out[i + 1] == '/'))
+                    {
+                        ++i;
+                    }
+                    const size_t End = (i + 1 < Out.size()) ? (i + 2) : Out.size();
+                    Blank(Start, End);
+                    i = End;
+                    continue;
+                }
+                ++i;
+            }
+            return Out;
+        }
+
+        // True if Src[Hit-1] would make `<Key>=` look like the tail of
+        // another identifier (e.g. `data-src=`, `nosrc=`, `border-src=`).
+        bool IsAttributeBoundary(FStringView Src, size_t Hit)
+        {
+            if (Hit == 0) return true;
+            const char Prev = Src[Hit - 1];
+            return !(std::isalnum(static_cast<unsigned char>(Prev))
+                || Prev == '_' || Prev == '-');
         }
 
         // Scan forward from Pos for a path-like substring starting with '/'
@@ -53,8 +117,10 @@ namespace Lumina
             return Candidate;
         }
 
-        // Find every "<Key>=" attribute occurrence and capture the path
-        // that follows. Quote handling lives in ScanPath.
+        // Find every `<Key>=` attribute occurrence and capture the path
+        // that follows. Left-anchored against an identifier-tail so
+        // `data-src=`, `nosrc=`, `border-src=` don't false-match.
+        // Tolerates optional whitespace around `=` (RML/HTML permit it).
         void ScanAttribute(FStringView Src, FStringView Key, TVector<FString>& Out)
         {
             size_t Pos = 0;
@@ -63,21 +129,25 @@ namespace Lumina
                 size_t Hit = Src.find(Key, Pos);
                 if (Hit == FStringView::npos) return;
                 Pos = Hit + Key.size();
-                if (Pos >= Src.size() || Src[Pos] != '=')
-                {
-                    continue;
-                }
-                ++Pos;
-                FStringView Path = ScanPath(Src, Pos);
+
+                if (!IsAttributeBoundary(Src, Hit)) continue;
+
+                size_t P = Pos;
+                while (P < Src.size() && std::isspace(static_cast<unsigned char>(Src[P]))) ++P;
+                if (P >= Src.size() || Src[P] != '=') continue;
+                ++P;
+
+                FStringView Path = ScanPath(Src, P);
                 if (!Path.empty())
                 {
                     Out.emplace_back(Path.data(), Path.size());
-                    Pos += Path.size();
+                    Pos = P + Path.size();
                 }
             }
         }
 
         // CSS url(...) extractor (handles single / double / no quotes).
+        // Left-boundary check rejects ident-tail matches like `my-url(`.
         void ScanCssUrl(FStringView Src, TVector<FString>& Out)
         {
             const FStringView Tok("url(");
@@ -87,6 +157,9 @@ namespace Lumina
                 size_t Hit = Src.find(Tok, Pos);
                 if (Hit == FStringView::npos) return;
                 Pos = Hit + Tok.size();
+
+                if (!IsAttributeBoundary(Src, Hit)) continue;
+
                 FStringView Path = ScanPath(Src, Pos);
                 if (!Path.empty())
                 {
@@ -98,6 +171,8 @@ namespace Lumina
 
         // Lumina-specific "material:/path/..." URI scheme used by the UI
         // material brush system (see project_ui_material_brushes).
+        // Boundary-checked so prose like "fancy material: matte" doesn't
+        // match.
         void ScanMaterialUri(FStringView Src, TVector<FString>& Out)
         {
             const FStringView Tok("material:");
@@ -107,6 +182,9 @@ namespace Lumina
                 size_t Hit = Src.find(Tok, Pos);
                 if (Hit == FStringView::npos) return;
                 Pos = Hit + Tok.size();
+
+                if (!IsAttributeBoundary(Src, Hit)) continue;
+
                 FStringView Path = ScanPath(Src, Pos);
                 if (!Path.empty())
                 {
@@ -126,18 +204,23 @@ namespace Lumina
 
     TVector<FString> FRmlUiAssetScan::ExtractCandidates(FStringView Contents)
     {
+        // Strip HTML/RML and CSS comment ranges first so commented-out
+        // examples don't show up as cook roots.
+        const FString Stripped = StripCommentRanges(Contents);
+        const FStringView Src(Stripped.c_str(), Stripped.size());
+
         TVector<FString> Out;
         Out.reserve(8);
 
         // RML/HTML attributes that commonly carry asset paths.
-        ScanAttribute(Contents, FStringView("src"),        Out);
-        ScanAttribute(Contents, FStringView("href"),       Out);
-        ScanAttribute(Contents, FStringView("sprite"),     Out);
-        ScanAttribute(Contents, FStringView("data-asset"), Out);
+        ScanAttribute(Src, FStringView("src"),        Out);
+        ScanAttribute(Src, FStringView("href"),       Out);
+        ScanAttribute(Src, FStringView("sprite"),     Out);
+        ScanAttribute(Src, FStringView("data-asset"), Out);
 
         // CSS / RCSS.
-        ScanCssUrl(Contents, Out);
-        ScanMaterialUri(Contents, Out);
+        ScanCssUrl(Src, Out);
+        ScanMaterialUri(Src, Out);
 
         return Out;
     }

@@ -12,32 +12,116 @@ namespace Lumina
 {
     namespace
     {
-        // Strip Luau line comments and -- comments from a buffer in place
-        // by zeroing them out, so the literal scanner doesn't pick up
-        // commented-out Asset.Hard("…") examples in docs.
+        // Strip Luau comments so the literal scanner doesn't pick up
+        // commented-out Asset.Hard("…") examples in docs. Walks string
+        // literals as opaque blocks so a `--` inside a string never opens
+        // a comment, and a `]]` inside one never closes a long comment.
+        // String contents are preserved as-is (over-discovery from a real
+        // asset path embedded in a string is benign; under-discovery from
+        // mis-stripping is not).
         FString StripComments(FStringView Src)
         {
             FString Out;
             Out.reserve(Src.size());
+
+            // Recognise `[=*[` and return the `=` count (the bracket level).
+            auto MatchLongBracketOpen = [&](size_t Pos, size_t& OutLevel) -> bool
+            {
+                if (Pos >= Src.size() || Src[Pos] != '[') return false;
+                size_t P = Pos + 1;
+                size_t Level = 0;
+                while (P < Src.size() && Src[P] == '=') { ++P; ++Level; }
+                if (P >= Src.size() || Src[P] != '[') return false;
+                OutLevel = Level;
+                return true;
+            };
+
+            // Scan forward to the matching `]=*]` of the given level.
+            // Returns one past the close, or Src.size() on missing close.
+            auto SkipLongBracketClose = [&](size_t Pos, size_t Level) -> size_t
+            {
+                size_t P = Pos;
+                while (P < Src.size())
+                {
+                    if (Src[P] == ']')
+                    {
+                        size_t Q = P + 1;
+                        size_t L = 0;
+                        while (Q < Src.size() && Src[Q] == '=') { ++Q; ++L; }
+                        if (L == Level && Q < Src.size() && Src[Q] == ']')
+                        {
+                            return Q + 1;
+                        }
+                    }
+                    ++P;
+                }
+                return Src.size();
+            };
+
             size_t i = 0;
             while (i < Src.size())
             {
-                // Block comment --[[ ... ]]
-                if (i + 3 < Src.size() && Src[i] == '-' && Src[i + 1] == '-'
-                    && Src[i + 2] == '[' && Src[i + 3] == '[')
+                const char c = Src[i];
+
+                // Short string literal (' or "): consume verbatim until
+                // the matching unescaped quote or end-of-line.
+                if (c == '"' || c == '\'')
                 {
-                    i += 4;
-                    while (i + 1 < Src.size() && !(Src[i] == ']' && Src[i + 1] == ']')) ++i;
-                    if (i + 1 < Src.size()) i += 2;
+                    Out.push_back(c);
+                    ++i;
+                    while (i < Src.size() && Src[i] != c && Src[i] != '\n')
+                    {
+                        if (Src[i] == '\\' && i + 1 < Src.size())
+                        {
+                            Out.push_back(Src[i++]);
+                        }
+                        Out.push_back(Src[i++]);
+                    }
+                    if (i < Src.size())
+                    {
+                        Out.push_back(Src[i++]);
+                    }
                     continue;
                 }
-                // Line comment --
-                if (i + 1 < Src.size() && Src[i] == '-' && Src[i + 1] == '-')
+
+                // Long-bracket string literal (no `--` prefix). Preserve
+                // verbatim so the scanner can see contents but a closing
+                // `]]` inside it never escapes the literal.
+                size_t StrLevel = 0;
+                if (c == '[' && MatchLongBracketOpen(i, StrLevel))
                 {
+                    const size_t OpenLen = 2 + StrLevel; // '[' + N*'=' + '['
+                    for (size_t k = 0; k < OpenLen && i + k < Src.size(); ++k)
+                    {
+                        Out.push_back(Src[i + k]);
+                    }
+                    i += OpenLen;
+                    const size_t CloseEnd = SkipLongBracketClose(i, StrLevel);
+                    while (i < CloseEnd)
+                    {
+                        Out.push_back(Src[i++]);
+                    }
+                    continue;
+                }
+
+                // Comment opener: line or block, with arbitrary bracket level.
+                if (c == '-' && i + 1 < Src.size() && Src[i + 1] == '-')
+                {
+                    size_t Level = 0;
+                    if (i + 2 < Src.size() && MatchLongBracketOpen(i + 2, Level))
+                    {
+                        const size_t OpenLen = 2 + Level; // skip the [=*[
+                        i += 2 + OpenLen;
+                        i = SkipLongBracketClose(i, Level);
+                        continue;
+                    }
+                    i += 2;
                     while (i < Src.size() && Src[i] != '\n') ++i;
                     continue;
                 }
-                Out.push_back(Src[i++]);
+
+                Out.push_back(c);
+                ++i;
             }
             return Out;
         }
@@ -58,7 +142,9 @@ namespace Lumina
         }
 
         // For each `Asset.<FnName>(` occurrence, capture the first
-        // string-literal argument and emit it.
+        // string-literal argument and emit it. Left-anchored so user
+        // variables like `MyAsset.Hard(...)` don't false-match the
+        // global `Asset.Hard(...)` we're actually looking for.
         void ScanCallSites(FStringView Src, FStringView FnName, TVector<FString>& Out)
         {
             FString Token = "Asset.";
@@ -71,6 +157,15 @@ namespace Lumina
                 size_t Hit = Src.find(TokenView, Pos);
                 if (Hit == FStringView::npos) return;
                 Pos = Hit + TokenView.size();
+
+                // Reject identifier-tail matches: `MyAsset.Hard(`, `xAsset.Hard(`.
+                if (Hit > 0)
+                {
+                    const char Prev = Src[Hit - 1];
+                    const bool bIsIdentChar = (Prev == '_')
+                        || std::isalnum(static_cast<unsigned char>(Prev));
+                    if (bIsIdentChar) continue;
+                }
 
                 // Allow whitespace + opening paren.
                 size_t P = Pos;
