@@ -1,17 +1,11 @@
--- Mirror Reflection.lua: fall back to the workspace's premake5.lua directory
--- so `premake5 clean` doesn't crash on path.join(nil, ...) before Setup.bat
--- has run.
+-- Fall back to _MAIN_SCRIPT_DIR so `premake5 clean` works before Setup.bat sets LUMINA_DIR.
 local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 
 local p = premake
 
--- Premake's built-in `clean` only removes the generated project/solution
--- files and the declared target/obj dirs. It leaves the rest of
--- Intermediates/ behind - stale ShaderCache (.lsc) and Reflection (.gen.h)
--- output is the usual culprit for "clean build still broken" reports.
--- Wrap onWorkspace so a full clean purges those trees too.
+-- Built-in `clean` leaves Intermediates/ (stale ShaderCache/Reflection output) behind; wrap onWorkspace to purge those trees too.
 local CleanAction = p.action.get("clean")
 if CleanAction then
     local BaseOnWorkspace = CleanAction.onWorkspace

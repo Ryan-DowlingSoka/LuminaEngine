@@ -11,10 +11,8 @@ namespace Lumina
 
 namespace Lumina
 {
-    // Wire-passthrough node. Renders as a small dot in the graph editor and contributes nothing to
-    // execution -- graph compilers / closure walks skip it and chase through to the connected source.
-    // The pin classes are virtualised so derived graphs (e.g. material) can swap in their typed pin
-    // subclass; the base implementation creates plain CEdNodeGraphPin instances.
+    // Wire-passthrough node drawn as a dot; graph walks skip it and chase through to the source.
+    // Pin classes are virtual so derived graphs (e.g. material) can swap in their typed pin subclass.
     REFLECT()
     class CEdNode_Reroute : public CEdGraphNode
     {

@@ -4,16 +4,8 @@
 
 namespace Lumina
 {
-    /**
-     * Makes a camera entity follow a target entity. Processed by SCameraRigSystem
-     * each frame (after gameplay/physics, before the view is resolved). The camera
-     * eases toward Target + Offset; with bLookAtTarget it also eases its orientation
-     * to face the target. Lag speeds are frame-rate independent (exponential
-     * smoothing); 0 means no lag (snap to target).
-     *
-     * Pair with a SCameraComponent on the same entity. For a third-person boom that
-     * also pulls in on walls, use SSpringArmComponent instead.
-     */
+    // Makes a camera entity follow a target (SCameraRigSystem, after physics): eases toward Target + Offset,
+    // optionally facing it. Lag is frame-rate independent (0 = snap). Pair with SCameraComponent; for a wall-aware boom use SSpringArmComponent.
     REFLECT(Component, Category = "Camera")
     struct RUNTIME_API SCameraFollowComponent
     {
@@ -63,9 +55,8 @@ namespace Lumina
             bInitialized = false;
         }
 
-        // Runtime smoothing state (non-reflected). bInitialized triggers a snap on
-        // the first tick (or after SetTarget) so the camera doesn't sweep in from a
-        // stale position.
+        // Runtime smoothing state (non-reflected). bInitialized snaps on the first tick (or after
+        // SetTarget) so the camera doesn't sweep in from a stale position.
         FVector3   CurrentPosition = FVector3(0.0f);
         FQuat   CurrentRotation = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
         bool        bInitialized = false;

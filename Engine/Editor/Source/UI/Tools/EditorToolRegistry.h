@@ -23,9 +23,8 @@ namespace Lumina
     // Builds an editor tool for a raw (non-CObject) file, keyed by extension.
     using FFileEditorFactory = TFunction<FEditorTool*(IEditorToolContext*, FStringView)>;
 
-    // Maps asset classes and file extensions to the editor tool that opens them.
-    // Built-ins register at editor startup; plugins register their own in
-    // StartupModule (EditorInit phase), giving user asset types first-class tooling.
+    // Maps asset classes and file extensions to the editor tool that opens them. Built-ins
+    // register at startup; plugins register in StartupModule (EditorInit phase).
     class EDITOR_API FEditorToolRegistry
     {
     public:

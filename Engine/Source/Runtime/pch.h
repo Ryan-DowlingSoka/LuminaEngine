@@ -1,14 +1,6 @@
 #pragma once
 
-// ===================
-// Standard Library
-// ===================
-// Kept: small, used everywhere, or required by EASTL/etc. transitively.
-// Removed (moved to direct includes in their few users):
-//   <iostream> <iomanip> <sstream> -- 0 uses anywhere.
-//   <variant> <span> <bitset> <random> <stdexcept> -- <=7 uses, low fan-out.
-//   <thread> <mutex> -- prefer Core/Threading primitives; drop from PCH.
-//   <filesystem> -- ~14 files use it; they include it directly now.
+// Standard library: only headers that are small, ubiquitous, or pulled transitively by EASTL.
 #include <memory>
 #include <string>
 #include <utility>
@@ -33,16 +25,6 @@
 #include <limits>
 #include <cassert>
 
-// ===================
-// EASTL
-// ===================
-// Trimmed:
-//   <eastl/any.h>, <eastl/random.h>          -- rarely used, expensive templates.
-//   <eastl/list.h> <eastl/stack.h>           -- Containers/Array.h pulls these
-//   <eastl/queue.h> <eastl/deque.h>             when callers actually need them
-//   <eastl/bitset.h>                            (75 headers include Array.h).
-//   <eastl/numeric_limits.h>                 -- covered by <limits>.
-//   duplicate <eastl/memory.h>               -- was listed twice.
 #include <eastl/type_traits.h>
 #include <eastl/utility.h>
 #include <eastl/array.h>
@@ -57,8 +39,7 @@
 #include <eastl/fixed_hash_map.h>
 #include <eastl/fixed_vector.h>
 #include <eastl/fixed_string.h>
-// variant.h is expensive template code, but Core/Variant/Variant.h pulls it
-// into 166 of 313 TUs -- amortize the parse through the PCH.
+// Expensive, but Core/Variant pulls it into ~half of all TUs; amortize the parse here.
 #include <eastl/variant.h>
 #include <eastl/atomic.h>
 #include <eastl/sort.h>
@@ -71,27 +52,11 @@
 #include <eastl/shared_ptr.h>
 #include <eastl/weak_ptr.h>
 
-
-// ===================
-// Third-Party Libraries
-// ===================
-// Kept here:
-//   entt    - 48+ files reach into entt:: directly via component / system
-//             headers; pulling it out of the PCH would just shift the parse
-//             cost from "once" to "48+ times".
-//   xxhash  - small, heavily used.
-// Removed:
-//   <spdlog/spdlog.h> -- Log/Log.h already includes spdlog and the 32 TUs that
-//                        log already go through Log.h. The fmt template
-//                        expansion was paying for every TU regardless.
-//   <Jolt/Jolt.h> -- only ~7 files use Jolt; they include it directly.
+// entt is reached directly by 48+ files; keeping it here parses it once instead of per-TU.
 #include <entt/entt.hpp>
 #include <xxhash.h>
 
-// Lumina vector + quaternion types, used in nearly every TU. The headers
-// also carry REFLECTION_PARSER-guarded stub structs that give the reflector
-// something to walk in place of the `using FVector3 = TVec<float, 3>;`
-// template aliases (which libclang can't reflect through).
+// Math types used nearly everywhere; headers also carry REFLECTION_PARSER stubs the reflector walks.
 #include "Core/Math/Vector/Vector.h"
 #include "Core/Math/Quat/Quat.h"
 #include "Core/Math/Matrix/Matrix.h"

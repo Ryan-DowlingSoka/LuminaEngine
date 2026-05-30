@@ -9,11 +9,8 @@ namespace Lumina
 {
     class CAnimationGraph;
 
-    // Drives a skeletal mesh from a compiled animation graph. SAnimationGraphSystem
-    // runs the graph's bytecode each frame through FAnimationGraphVM, writing the
-    // resolved skinning matrices into the entity's SSkeletalMeshComponent. The
-    // graph's parameters are exposed to Lua via the Set/Get functions below so
-    // gameplay code can drive blend weights and playback speeds.
+    // Drives a skeletal mesh from a compiled animation graph; SAnimationGraphSystem runs the bytecode each
+    // frame into SSkeletalMeshComponent. Graph parameters exposed to Lua via the Set/Get functions below.
     REFLECT(Component, Category = "Animation")
     struct SAnimationGraphComponent
     {
@@ -23,11 +20,7 @@ namespace Lumina
         PROPERTY(Script, Editable, Category = "Animation")
         TObjectPtr<CAnimationGraph> Graph;
 
-        /**
-         * Per-instance VM execution state: register files, persistent playback
-         * clocks, and current parameter values. Sized lazily from Graph by the
-         * system (or by a parameter access below); not serialized.
-         */
+        // Per-instance VM state (registers, playback clocks, parameter values). Sized lazily from Graph; not serialized.
         FAnimGraphVMState VMState;
 
         /** Sets a named float parameter. No-op if the graph has no such parameter. */

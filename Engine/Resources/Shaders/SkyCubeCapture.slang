@@ -1,14 +1,7 @@
 #include "Includes/Sky.slang"
 
-// Bakes the procedural sky into a 6-face cubemap that downstream IBL passes
-// (irradiance convolution, GGX prefilter) consume. One thread per output
-// texel; each thread computes its world-space ray from (face, texel) so the
-// capture does not depend on the camera projection or view matrix.
-//
-// Input cube is written through a Texture2DArray UAV view -- the underlying
-// image is created with Dimension = TextureCube + ArraySize = 6. Writing as
-// a 2D array is the standard portable way to fill cube faces from a compute
-// shader; the cube view is what later passes sample through.
+// Bakes the procedural sky into a 6-face cubemap for the IBL passes; one thread per texel computes
+// its world-space ray from (face, texel), camera-independent. Written via a Texture2DArray UAV view.
 
 [[vk::binding(0, 0)]] RWTexture2DArray<float4>                uSkyCube;
 [[vk::binding(1, 0)]] ConstantBuffer<FEnvironmentParams>      uEnvironment;

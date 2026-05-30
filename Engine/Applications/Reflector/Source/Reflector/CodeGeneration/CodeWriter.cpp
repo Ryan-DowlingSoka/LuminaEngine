@@ -61,9 +61,6 @@ namespace Lumina::Reflection
         Buffer.append(Scratch.data(), Scratch.data() + Needed);
     }
 
-    //-------------------------------------------------------------------------
-    // Append*
-
     FCodeWriter& FCodeWriter::Append(eastl::string_view Text)
     {
         Buffer.append(Text.data(), Text.data() + Text.size());
@@ -93,9 +90,6 @@ namespace Lumina::Reflection
         va_end(Args);
         return *this;
     }
-
-    //-------------------------------------------------------------------------
-    // Line*
 
     FCodeWriter& FCodeWriter::Line()
     {
@@ -141,9 +135,6 @@ namespace Lumina::Reflection
         return *this;
     }
 
-    //-------------------------------------------------------------------------
-    // Macro*
-
     FCodeWriter& FCodeWriter::Macro(eastl::string_view Text)
     {
         WriteIndent();
@@ -180,9 +171,6 @@ namespace Lumina::Reflection
             Buffer.push_back('\n');
         }
     }
-
-    //-------------------------------------------------------------------------
-    // Braces
 
     FCodeWriter& FCodeWriter::BeginBlock()
     {

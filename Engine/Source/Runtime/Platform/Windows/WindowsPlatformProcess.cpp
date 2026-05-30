@@ -193,10 +193,8 @@ namespace Lumina::Platform
             URLString += Params;
         }
 
-        // DETACHED_PROCESS and CREATE_NEW_CONSOLE are mutually exclusive per
-        // Microsoft docs; combining them returns ERROR_INVALID_PARAMETER (87).
-        // For "detached" we want the child to own its own console window and
-        // outlive whatever the parent does — that's exactly CREATE_NEW_CONSOLE.
+        // DETACHED_PROCESS + CREATE_NEW_CONSOLE are mutually exclusive (ERROR_INVALID_PARAMETER);
+        // "detached" here means the child owns its own console and outlives the parent: CREATE_NEW_CONSOLE.
         DWORD creationFlags = 0;
         if (bLaunchDetached)
         {

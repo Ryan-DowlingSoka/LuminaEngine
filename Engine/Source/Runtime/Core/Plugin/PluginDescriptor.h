@@ -65,10 +65,8 @@ namespace Lumina
         TVector<FPluginDependency>       Dependencies;
         TVector<FPluginModuleDescriptor> Modules;
 
-        // Cook roots contributed by this plugin. Each entry is one seed
-        // for the cooker's reachability traversal. Empty = the plugin
-        // ships no roots of its own (its assets only cook if reached
-        // transitively from project / engine roots).
+        // Cook-root seeds contributed by this plugin; empty = assets cook only if
+        // reached transitively from project/engine roots.
         TVector<FCookRoot>               CookRoots;
 
         // Load + parse a .lplugin file. Returns false + populates OutError on

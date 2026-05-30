@@ -94,9 +94,8 @@ namespace Lumina
         }
         EmitterStack->EnsureDefaultStack();
 
-        // Live preview: recompile when a module input edit finishes (mouse-up), so the viewport
-        // updates without a manual Compile. System-setting edits (no module selected) feed the
-        // sim uniforms directly and need no recompile.
+        // Live preview: recompile on module-input edit finish (mouse-up). System-setting edits
+        // (no module selected) feed the sim uniforms directly and need no recompile.
         GetPropertyTable()->SetFinishEditCallback([this](const FPropertyChangedEvent&)
         {
             if (SelectedModule != nullptr)

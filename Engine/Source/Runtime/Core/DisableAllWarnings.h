@@ -1,18 +1,7 @@
 ﻿#pragma once
 
-/*
-    This header disables a broad set of compiler warnings across Clang, GCC, and MSVC,
-    primarily to suppress warnings from external or third-party code that is not 
-    warning-clean or conformant to strict warning levels used in the project.
-
-    - For Clang: Disables all warnings using -Weverything.
-    - For GCC: Disables a curated set of common and noisy warnings that may not indicate
-      real issues in external libraries.
-    - For MSVC: Disables a similar set using #pragma warning(disable: ...).
-
-    Use this header before including third-party headers, and use the matching restore
-    macro afterward to re-enable warnings for your own code.
-*/
+// Disables compiler warnings for Clang/GCC/MSVC; wrap third-party includes between
+// PRAGMA_DISABLE_ALL_WARNINGS and the matching restore macro.
 
 
 #if defined(__clang__)

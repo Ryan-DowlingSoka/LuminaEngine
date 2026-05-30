@@ -1,9 +1,5 @@
-// RmlUi vertex shader (fully-bindless, single-draw path).
-//
-// The whole UI is one DrawIndexed. Each vertex carries a draw index; the
-// per-draw MVP/texture/clip live in a device-address buffer (see RmlUiCommon).
-// Translation is baked into the position on the CPU, so the shader just
-// transforms by the per-draw MVP.
+// RmlUi vertex shader (fully-bindless, single-draw path). Each vertex carries a draw index into the
+// device-address buffer (see RmlUiCommon); the shader just transforms by the per-draw MVP.
 #pragma once
 #include "Includes/RmlUiCommon.slang"
 

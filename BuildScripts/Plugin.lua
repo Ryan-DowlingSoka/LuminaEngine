@@ -1,54 +1,11 @@
---[[
-    Lumina Plugin Build System
-
-    LuminaPlugin() declares a plugin group: a folder under Engine/Plugins/
-    (or <Project>/Plugins/) containing a .lplugin descriptor and one-or-more
-    code modules. Each module is its own SharedLib so it can be loaded
-    independently (e.g. Editor module skipped in shipping builds).
-
-    The descriptor (.lplugin) is the runtime source of truth — Build.lua
-    only handles compilation. Keep the two in sync: every module listed in
-    .lplugin needs a matching LuminaPluginModule() call here.
-
-    Usage in <PluginRoot>/<PluginName>.lua:
-
-        LuminaPlugin({
-            Name = "MyPlugin",
-            -- Optional: extra third-party deps shared by all modules.
-            -- Per-module deps go in LuminaPluginModule.
-            SharedDependencies = { "ImGui" },
-        })
-
-        LuminaPluginModule({
-            Plugin = "MyPlugin",
-            Name   = "MyPluginRuntime",
-            Type   = "Runtime",
-            ModuleDependencies = { "Runtime" },
-        })
-
-        LuminaPluginModule({
-            Plugin = "MyPlugin",
-            Name   = "MyPluginEditor",
-            Type   = "Editor",
-            ModuleDependencies = { "Runtime" },
-            EditorModuleDependencies = { "Editor" },
-        })
-
-    The module's .cpp files live under <PluginRoot>/Source/<ModuleName>/
-    and its API header at <PluginRoot>/Source/<ModuleName>/<ModuleName>API.h.
-    See Engine/Plugins/GameplayExtras/ for the canonical layout.
-]]
+-- LuminaPlugin() declares a plugin group under Engine/Plugins/ or <Project>/Plugins/; each module is its own SharedLib (Editor module skipped in shipping).
+-- The .lplugin descriptor is the runtime source of truth; keep it in sync with the LuminaPluginModule() calls here. See Engine/Plugins/GameplayExtras/ for the layout.
 
 assert(LuminaConfig, "Plugin.lua: include BuildScripts/Dependencies first")
 
--- Plugin modules delegate to LuminaModule for force-includes, reflection
--- wiring, EASTL impl injection, etc. The engine workspace loads Module.lua
--- itself, but external game premake5.lua files don't — include here so
--- LuminaPluginModule works regardless of who called us.
+-- Plugin modules delegate to LuminaModule; include it here so LuminaPluginModule works in external game workspaces too.
 include(path.join(_SCRIPT_DIR, "Module.lua"))
 
--- Global plugin registry. Modules register themselves into their plugin so
--- discovery / debugging / future cooking integration has one place to look.
 LuminaPlugins = LuminaPlugins or {}
 
 
@@ -60,8 +17,7 @@ function LuminaPlugin(Def)
     Def.SharedModuleDependencies = Def.SharedModuleDependencies or {}
     Def.Modules                  = {} -- filled in by LuminaPluginModule
 
-    -- _SCRIPT_DIR is the dir of the lua file currently being executed by
-    -- premake (this plugin's <Name>.lua), which is the plugin root.
+    -- _SCRIPT_DIR is this plugin's <Name>.lua dir, i.e. the plugin root.
     Def.PluginRoot = _SCRIPT_DIR
 
     LuminaPlugins[Def.Name] = Def
@@ -85,9 +41,7 @@ function LuminaPluginModule(Def)
     Def.PublicIncludeDirs        = Def.PublicIncludeDirs        or {}
     Def.ExtraFiles               = Def.ExtraFiles               or {}
 
-    -- Reflection on by default. Most plugins ship reflected types
-    -- (components, assets, classes) and the Reflector itself is a fast
-    -- per-module no-op when there's nothing to find.
+    -- Reflection on by default; most plugins ship reflected types and the Reflector is a no-op when there's nothing to find.
     if Def.Reflection == nil then
         Def.Reflection = true
     end
@@ -117,10 +71,7 @@ function LuminaPluginModule(Def)
         end
     end
 
-    -- Delegate to the same LuminaModule used by engine modules so we get
-    -- identical force-includes, reflection wiring, EASTL impl injection,
-    -- third-party linking, etc. We just steer the output and source dirs
-    -- into the plugin's tree.
+    -- Delegate to LuminaModule for identical force-includes/reflection/EASTL/linking, then steer output and source dirs into the plugin tree.
     LuminaModule({
         Name                     = Def.Name,
         Kind                     = "SharedLib",
@@ -135,10 +86,7 @@ function LuminaPluginModule(Def)
         ExtraFiles               = Def.ExtraFiles,
     })
 
-    -- Override the source set: LuminaModule globbed Source/**, but a
-    -- multi-module plugin shares Source/ across all of its modules. Drop
-    -- the blanket glob FIRST so it can't strip our per-module adds, then
-    -- add only this module's slice.
+    -- Multi-module plugins share Source/, so drop LuminaModule's blanket Source/** glob first, then add only this module's slice.
     location(Plugin.PluginRoot)
     removefiles { "Source/**.h", "Source/**.cpp" }
     files {
@@ -147,26 +95,16 @@ function LuminaPluginModule(Def)
     }
     includedirs { path.join(Plugin.PluginRoot, "Source", Def.Name) }
 
-    -- Output the module DLL where the runtime expects it: under the
-    -- plugin's own Binaries/<Platform>/ folder, matching the path
-    -- FPlugin::ResolveModuleBinaryPath computes.
+    -- Output the module DLL under the plugin's Binaries/<Platform>/, matching FPlugin::ResolveModuleBinaryPath.
     targetdir(path.join(Plugin.PluginRoot, "Binaries", LuminaConfig.OutputDirectory))
     objdir   (path.join(Plugin.PluginRoot, "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"))
 
-    -- Monolithic Shipping: plugin modules become StaticLib (see
-    -- Module.lua) and the Lumina exe needs to WHOLEARCHIVE every one.
-    -- /WHOLEARCHIVE with a bare lib name requires the lib on the
-    -- linker's default search path; consolidating Shipping plugin libs
-    -- into the engine's Binaries dir means the existing LIBPATH (set
-    -- by Lumina's link to Runtime) finds them. Modular builds still
-    -- ship each plugin's DLL alongside its descriptor as before.
+    -- Monolithic Shipping: plugin StaticLibs go into the engine's Binaries dir so bare-name /WHOLEARCHIVE finds them on the existing LIBPATH. Modular builds still ship each DLL by its descriptor.
     filter "configurations:Shipping"
         targetdir(LuminaConfig.GetTargetDirectory())
     filter {}
 
-    -- Editor-typed modules are stripped from non-editor builds. We do
-    -- this by removing the Editor module project from the Game platform;
-    -- a Game-platform build of the plugin will simply not include it.
+    -- Strip Editor-typed modules from the Game platform.
     if Def.Type == "Editor" then
         removeplatforms { "Game" }
     end

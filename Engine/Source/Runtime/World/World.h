@@ -30,6 +30,8 @@ namespace Lumina
     struct SScriptComponent;
     struct SDefaultWorldSettings;
     struct FLineBatcherComponent;
+    struct FTriangleBatcherComponent;
+    struct FSimpleElementVertex;
     struct FWorldContext;
     class CTexture;
     class CTextureRenderTarget;
@@ -61,19 +63,13 @@ namespace Lumina
         bool IsAsset() const override { return true; }
         //~ End CObject Interface
         
-        /**
-         * Initializes systems and renderer. Must be called before anything is done with the world.
-         */
+        /** Initializes systems and renderer. Must be called before anything is done with the world. */
         void InitializeWorld(EWorldType InWorldType);
-        
-        /**
-         * Called to shut down the world, destroys system, components, and entities.
-         */
+
+        /** Shuts down the world; destroys systems, components, and entities. */
         void TeardownWorld();
-        
-        /**
-         * Called on every update stage and runs systems attached to this world.
-         */
+
+        /** Runs systems attached to this world; called on every update stage. */
         void Update(const FUpdateContext& Context);
 
         // Steps physics. Runs on the physics worker; pair with DispatchPhysicsEvents on the game thread post-join.
@@ -82,11 +78,8 @@ namespace Lumina
         // Game-thread drain of physics events (Lua + entt::dispatcher).
         void DispatchPhysicsEvents();
 
-        /**
-         * Game thread: read ECS to compute camera, resolve post-process volumes,
-         * and populate the scene's per-frame state. Must run before any render
-         * thread call to Render() consumes that state. Mutates scene members.
-         */
+        // Game thread: read ECS to compute camera/post-process and populate the scene's
+        // per-frame state. Must run before any render-thread Render() consumes it.
         void Extract();
 
         /** Render thread: emit the scene's draw commands from FrameIndex's snapshot. */
@@ -103,12 +96,8 @@ namespace Lumina
         FUNCTION(Script)
         entt::entity SpawnPrefabAt(const FName& Path, const FTransform& SpawnTransform, entt::entity Parent = entt::null);
 
-        /**
-         * Shatter a destructible entity into physics-driven fragments. Origin is the
-         * world-space blast point fragments are pushed away from; Strength is the
-         * outward launch speed (m/s, 0 = use the component's ExplosionStrength).
-         * No-op unless the entity has an SDestructibleComponent and has not already broken.
-         */
+        // Shatter a destructible entity into physics-driven fragments. Origin = blast point;
+        // Strength = outward launch m/s (0 uses ExplosionStrength). No-op without an unbroken SDestructibleComponent.
         FUNCTION(Script)
         bool FractureEntity(entt::entity Entity, const FVector3& Origin, float Strength = 0.0f);
         
@@ -198,9 +187,8 @@ namespace Lumina
         void SetActive(bool bNewActive);
         bool IsSuspended() const { return !bActive; }
 
-        // Frees the render scene of a world that has stayed suspended longer than
-        // GraceSeconds. Stamps the suspend time on first idle observation. Returns
-        // true when it actually reclaimed (so callers can budget one stall/frame).
+        // Frees the render scene once suspended longer than GraceSeconds. Returns true when it
+        // actually reclaimed, so callers can budget one stall/frame.
         bool ReclaimIdleRenderer(double NowSeconds, double GraceSeconds);
 
         bool IsSimulating() const { return WorldType == EWorldType::Simulation; }
@@ -223,14 +211,11 @@ namespace Lumina
         void OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
-        // Hot-reload entry point: drop the existing script binding on this component
-        // and run the OnScriptComponentCreated bind path again with the freshly
-        // compiled FScript. Called by the FScriptingContext::OnScriptLoaded
-        // multicast when an editor save reloads the source on disk.
+        // Hot-reload: drop this component's script binding and re-run OnScriptComponentCreated
+        // with the freshly compiled FScript. Called by FScriptingContext::OnScriptLoaded.
         void ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
 
-        // Walks every script component whose ScriptPath matches Path and re-binds
-        // it. Wired to FScriptingContext::OnScriptLoaded in InitializeWorld.
+        // Re-binds every script component whose ScriptPath matches Path. Wired to OnScriptLoaded.
         void OnScriptSourceReloaded(FStringView Path);
 
         void RegisterSystems();
@@ -238,15 +223,14 @@ namespace Lumina
         //~ Begin Debug Drawing
         void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) override;
         void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;
+
+        /** Submit a solid translucent triangle batch (3 pre-colored verts per tri). Duration <= 0 draws one frame. */
+        void DrawSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest = true, float Duration = -1.0f);
         //~ End Debug Drawing
 
         //~ Begin Render Target Painting
-        /**
-         * Stamp a soft radial brush of Color into Target at UV (0..1 in texture space). RadiusUV is
-         * relative to the target's longer side; Strength is the center opacity (0..1); Hardness > 1
-         * sharpens the falloff. Optional BrushMask is a grayscale coverage texture (white = full).
-         * Queued now, executed on the render thread next frame (TexturePaintPass).
-         */
+        // Stamp a soft radial brush of Color into Target at UV (0..1). RadiusUV is relative to the
+        // longer side; Strength = center opacity; Hardness > 1 sharpens. Queued, run next frame (TexturePaintPass).
         void PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength = 1.0f, float Hardness = 1.0f, CTexture* BrushMask = nullptr);
 
         /** Clear an entire render target to Color (queued; executed on the render thread). */
@@ -278,9 +262,8 @@ namespace Lumina
         bool RegisterSystem(const FSystemVariant& NewSystem);
         void TickSystems(FSystemContext& Context);
 
-        // Whether a script's lifecycle (OnAttach/OnReady/OnDetach) should run in this
-        // world. Editor worlds run only scripts that define OnEditorUpdate; every other
-        // world type runs all scripts.
+        // Whether a script's lifecycle runs in this world. Editor worlds run only scripts defining
+        // OnEditorUpdate; every other world type runs all scripts.
         bool IsScriptActiveInWorld(entt::entity Entity) const;
     
     private:
@@ -302,29 +285,25 @@ namespace Lumina
         FLuaEventBus                                        LuaEventBus;
         FTimerManager                                       TimerManager;
 
-        // Subscription to FScriptingContext::OnScriptLoaded — populated in
-        // InitializeWorld, removed in TeardownWorld. The handler walks every
-        // SScriptComponent matching the reloaded path and re-binds it.
+        // Subscription to FScriptingContext::OnScriptLoaded; re-binds matching SScriptComponents
+        // on reload. Populated in InitializeWorld, removed in TeardownWorld.
         FDelegateHandle                                     ScriptReloadedHandle;
 
         FLineBatcherComponent*                              LineBatcherComponent;
+        FTriangleBatcherComponent*                          TriangleBatcherComponent;
 
         // Render-target paint/clear requests; drained each Extract into the frame snapshot.
         TConcurrentQueue<FTexturePaintOp>                   RenderTargetPaintQueue;
 
-        // World-scoped Lua bindings hoisted off the per-script setup path.
-        // The DrawInterface table holds debug-draw functions captured against
-        // this CWorld; the ref is built once in InitializeWorld and assigned
-        // by reference to each new SScriptComponent's environment so per-entity
-        // setup avoids allocating a fresh table + C closure.
+        // Debug-draw table captured against this CWorld, built once in InitializeWorld and shared by
+        // reference into each SScriptComponent's environment to avoid a per-entity table + C closure.
         Lua::FRef                                           DrawInterfaceRef;
 
         FWorldContext*                                      OwningContext = nullptr;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
 
-        // Time (engine clock) this world last went suspended; -1 while active or
-        // not yet stamped. Drives the idle render-scene reclaim grace window.
+        // Engine-clock time this world last went suspended; -1 while active. Drives idle-reclaim grace.
         double                                              SuspendedTime = -1.0;
 
         uint32                                              bPaused:1 = true;
@@ -334,9 +313,8 @@ namespace Lumina
         EWorldType                                          WorldType = EWorldType::None;
         bool                                                bInitializing = true;
 
-        // FIFO of live destruction fragments (FractureEntity). Oldest are reaped to keep the live
-        // fragment count under the Physics.Destruction.MaxLiveFragments budget so the physics
-        // body/contact buffers never overflow. May hold already-dead entities; validated on reap.
+        // FIFO of live fracture fragments; oldest reaped to stay under Physics.Destruction.MaxLiveFragments
+        // so body/contact buffers don't overflow. May hold dead entities; validated on reap.
         TDeque<entt::entity>                                ActiveFragments;
     };
     

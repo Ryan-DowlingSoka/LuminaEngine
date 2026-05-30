@@ -6,13 +6,8 @@
 
 namespace Lumina
 {
-    // Unified CPU + GPU memory tool.
-    //
-    // CPU side is the always-on category tracker: set a baseline, watch which category's Delta
-    // climbs, then enable call-stack capture for the exact leaking line.
-    //
-    // GPU side is fully backend-agnostic -- it reads abstracted heap stats and a per-purpose
-    // breakdown through IRenderContext, so nothing here references the rendering API.
+    // Unified CPU + GPU memory tool. CPU = always-on category tracker (baseline, watch Delta,
+    // then capture call-stacks). GPU = backend-agnostic heap/purpose stats via IRenderContext.
     class FMemoryProfilerEditorTool : public FEditorTool
     {
     public:

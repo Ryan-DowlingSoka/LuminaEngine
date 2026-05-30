@@ -25,10 +25,7 @@ namespace Lumina
                 && c != ';' && c != ',';
         }
 
-        // Replace HTML/RML `<!-- ... -->` and CSS `/* ... */` comment
-        // ranges with spaces of equal length. Preserves byte offsets so
-        // any error messages downstream still point at the right line,
-        // and keeps the rest of the scanners free of comment-aware logic.
+        // Blank out `<!-- -->` and `/* */` comment ranges with equal-length spaces, preserving byte offsets and keeping downstream scanners comment-agnostic.
         FString StripCommentRanges(FStringView Src)
         {
             FString Out(Src.data(), Src.size());
@@ -117,10 +114,7 @@ namespace Lumina
             return Candidate;
         }
 
-        // Find every `<Key>=` attribute occurrence and capture the path
-        // that follows. Left-anchored against an identifier-tail so
-        // `data-src=`, `nosrc=`, `border-src=` don't false-match.
-        // Tolerates optional whitespace around `=` (RML/HTML permit it).
+        // Capture the path after each `<Key>=`; left-anchored against an identifier-tail so `data-src=`/`nosrc=` don't false-match. Tolerates whitespace around `=`.
         void ScanAttribute(FStringView Src, FStringView Key, TVector<FString>& Out)
         {
             size_t Pos = 0;
@@ -169,10 +163,7 @@ namespace Lumina
             }
         }
 
-        // Lumina-specific "material:/path/..." URI scheme used by the UI
-        // material brush system (see project_ui_material_brushes).
-        // Boundary-checked so prose like "fancy material: matte" doesn't
-        // match.
+        // Lumina "material:/path/..." URI scheme (UI material brush system); boundary-checked so prose like "fancy material: matte" doesn't match.
         void ScanMaterialUri(FStringView Src, TVector<FString>& Out)
         {
             const FStringView Tok("material:");
@@ -236,10 +227,7 @@ namespace Lumina
         THashSet<FString> VisitedDocs;
         TVector<FString>  Worklist;
 
-        // Seed with every .rml/.rcss under the configured content roots,
-        // then follow @import / sub-template chains. Engine UI files in
-        // /Engine/Resources are reached this way once a /Game-rooted doc
-        // links to them, so they don't need to be in the seed.
+        // Seed: every .rml/.rcss under the content roots; @import / sub-template chains followed so engine UI files reach analysis once a /Game doc links them.
         for (const FString& Root : VirtualRoots)
         {
             VFS::RecursiveDirectoryIterator(Root, [&](const VFS::FFileInfo& Info)
@@ -274,9 +262,7 @@ namespace Lumina
             {
                 FStringView CandView(Candidate.c_str(), Candidate.size());
 
-                // Transitive chain: another .rml/.rcss that exists on disk
-                // gets queued for its own scan. Registry membership is not
-                // required — these are loose files today.
+                // Transitive chain: another .rml/.rcss on disk is queued for its own scan, registry membership not required (loose files today).
                 if (IsRmlOrRcss(CandView) && VFS::Exists(Candidate)
                     && VisitedDocs.find(Candidate) == VisitedDocs.end())
                 {
@@ -287,9 +273,7 @@ namespace Lumina
                 {
                     continue;
                 }
-                // Only paths that resolve to an actual registered asset
-                // count as cook roots. .ttf/.png loose files are still
-                // shipped via BundleLooseContent.
+                // Only registered-asset paths count as cook roots; .ttf/.png loose files still ship via BundleLooseContent.
                 if (Registry.GetAssetByPath(CandView) == nullptr)
                 {
                     continue;

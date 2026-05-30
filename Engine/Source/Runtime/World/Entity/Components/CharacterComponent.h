@@ -9,9 +9,8 @@
 
 namespace Lumina
 {
-    // Pimpl-forward decl so this header does NOT pull <Jolt/...> into every
-    // ECS-touching translation unit. Defined in
-    // Physics/API/Jolt/JoltCharacterHandle.h.
+    // Pimpl-forward decl so this header doesn't pull <Jolt/...> into every ECS TU.
+    // Defined in Physics/API/Jolt/JoltCharacterHandle.h.
     struct FJoltCharacterHandle;
 
     // NoLua: physics characters aren't script-creatable; the engine
@@ -39,19 +38,19 @@ namespace Lumina
         FCollisionProfile CollisionProfile;
 
         /** Half-height of the character capsule in meters. */
-        PROPERTY(Script, Editable, Category = "Collision")
+        PROPERTY(Script, Editable, Category = "Collision", Units = "m")
         float HalfHeight = 1.8f;
 
         /** Radius of the character capsule in meters. */
-        PROPERTY(Script, Editable, Category = "Collision")
+        PROPERTY(Script, Editable, Category = "Collision", Units = "m")
         float Radius = 1.0f;
 
         /** Mass of the character body in kg, affects how much it is pushed by dynamic bodies. */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "kg")
         float Mass = 70.0f;
 
         /** Small gap between the character shape and other surfaces to prevent tunneling. */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "m")
         float Padding = 0.02f;
 
         /** Cosine of the maximum angle between hit normals to be merged for reduction. */
@@ -63,7 +62,7 @@ namespace Lumina
         float PenetrationRecoverySpeed = 1.0f;
 
         /** Distance ahead of the character to search for contacts and prevent clipping. */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "m")
         float PredictiveContactDistance = 0.1f;
 
         /** Maximum push force the character can exert against dynamic bodies. */
@@ -71,11 +70,11 @@ namespace Lumina
         float MaxStrength = 100.0f;
 
         /** Steepest surface angle (degrees) the character can walk up without sliding. */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "deg")
         float MaxSlopeAngle = 45.0f;
 
         /** Maximum step height the character can automatically climb (meters). */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "m")
         float StepHeight = 0.4f;
 
         /** Maximum collision resolution iterations per step. Higher = more accurate but slower. */
@@ -91,17 +90,15 @@ namespace Lumina
         float MinTimeRemaining = 1.0e-4f;
 
         /** Tolerance for merging overlapping contact points (meters). */
-        PROPERTY(Script, Editable, Category = "Physics")
+        PROPERTY(Script, Editable, Category = "Physics", Units = "m")
         float CollisionTolerance = 1.0e-3f;
 
         /** Maximum number of contact hits processed per step before culling. */
         PROPERTY(Script, Editable, Category = "Physics")
         uint32 MaxNumHits = 256;
 
-        /** When true, this character's capsule contributes its shape to NavMesh bakes so other agents path around it.
-         *  Default false because a path-following character that obstructs the navmesh ends up carving out the floor
-         *  poly directly under itself (Recast height-filter), and then can't find a starting poly for its own queries.
-         *  Flip on only for characters that should act as obstacles (vehicles, stationary NPCs blocking a corridor). */
+        // When true, the capsule contributes to NavMesh bakes so agents path around it. Default false: a path-follower
+        // that obstructs the navmesh carves out its own floor poly and can't query. On only for obstacle characters.
         PROPERTY(Script, Editable, Category = "Navigation")
         bool bAffectsNavigation = false;
 
@@ -116,15 +113,15 @@ namespace Lumina
         GENERATED_BODY()
     
         /** Target horizontal movement speed (m/s). */
-        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement")
+        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement", Units = "m/s")
         float MoveSpeed = 5.0f;
 
         /** Rate at which the character accelerates to MoveSpeed (m/s²). */
-        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement")
+        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement", Units = "m/s^2")
         float Acceleration = 10.0f;
 
         /** Rate at which the character decelerates when no input is applied (m/s²). */
-        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement")
+        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement", Units = "m/s^2")
         float Deceleration = 8.0f;
 
         /** Fraction of ground acceleration available while airborne (0 = no air steering). */
@@ -136,11 +133,11 @@ namespace Lumina
         float GroundFriction = 8.0f;
 
         /** Vertical impulse speed applied when the character jumps (m/s). */
-        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement")
+        PROPERTY(Script, Editable, ClampMin = 0.0f, Category = "Movement", Units = "m/s")
         float JumpSpeed = 8.0f;
 
         /** Degrees per second the character rotates to face its movement direction. */
-        PROPERTY(Script, Editable, ClampMin = 0.0f, ClampMax = 1000.0f, Category = "Movement")
+        PROPERTY(Script, Editable, ClampMin = 0.0f, ClampMax = 1000.0f, Category = "Movement", Units = "deg/s")
         float RotationRate = 10.0f;
 
         /** Total number of jumps allowed before landing (1 = single jump, 2 = double jump, etc.). */
@@ -148,11 +145,11 @@ namespace Lumina
         int MaxJumpCount = 1;
 
         /** Downward gravity acceleration (m/s²). */
-        PROPERTY(Script, Editable, Category = "Gravity")
+        PROPERTY(Script, Editable, Category = "Gravity", Units = "m/s^2")
         float Gravity = Physics::GEarthGravity;
 
         /** Current velocity of the character in world space. */
-        PROPERTY(Script, Visible, Category = "Movement")
+        PROPERTY(Script, Visible, Category = "Movement", Units = "m/s")
         FVector3 Velocity;
 
         /** When true, the character's yaw matches the controller's look direction. */
@@ -183,7 +180,7 @@ namespace Lumina
         float     PendingMoveThrottle  = 0.0f;
 
         // Staged Launch (jump pad / knockback / dash) consumed in the physics step.
-        FVector3 PendingLaunchVelocity     = FVector3(0.0f);
+        FVector3  PendingLaunchVelocity     = FVector3(0.0f);
         bool      bPendingLaunch            = false;
         bool      bLaunchOverrideHorizontal = false;
         bool      bLaunchOverrideVertical   = false;

@@ -79,10 +79,8 @@ namespace Lumina::RHI
         const int64 Index = DescriptorTableManager.CreateDescriptor(SRVItem);
         InTexture->SetResourceID(static_cast<int32>(Index));
 
-        // Per-mip storage views for SPD-style passes that write each mip via the
-        // bindless RW table without allocating a per-pass binding set. Single-mip
-        // storage images (render targets painted by compute) get a mip-0 UAV too;
-        // GetMipUAVIndex(0) is the bindless RWTexture2D slot the paint shader writes.
+        // Per-mip storage views so SPD-style passes write each mip via the bindless RW table.
+        // Single-mip storage images get a mip-0 UAV too (GetMipUAVIndex(0) = the paint shader's RWTexture2D slot).
         const FRHIImageDesc& Desc = InTexture->GetDescription();
         if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage))
         {

@@ -67,9 +67,8 @@ namespace Lumina
 
         DrawItem(Item, Context, ImVec2(TileSize, TileSize));
 
-        // Measure the label in its font, then draw it straight into the draw list. Drawing the text
-        // as a raw primitive (not an ImGui item) keeps the cell's logical height fixed regardless of
-        // name length, which is what lets the row clipper stay aligned.
+        // Draw the label as a raw draw-list primitive (not an ImGui item) so the cell's logical
+        // height stays fixed regardless of name length, keeping the row clipper aligned.
         const FStringView Name = Item->GetCachedDisplayName();
         const char* NameBegin  = Name.data();
         const char* NameEnd    = Name.data() + Name.size();

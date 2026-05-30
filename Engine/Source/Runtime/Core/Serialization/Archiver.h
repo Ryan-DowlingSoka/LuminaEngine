@@ -72,11 +72,8 @@ namespace Lumina
             return GPackageFileLuminaVersion;
         }
 
-        /**
-         * Version of the file this archive is reading/writing. Defaults to the current engine
-         * version; LoadPackage overrides it after reading the header so per-type Serialize
-         * implementations can branch on the source version to migrate older payloads.
-         */
+        /** File version being read/written; LoadPackage sets it from the header so per-type
+         *  Serialize can branch on source version to migrate older payloads. */
         FORCEINLINE int32 GetFileVersion() const { return FileVersion; }
         FORCEINLINE void SetFileVersion(int32 InVersion) { FileVersion = InVersion; }
 
@@ -101,10 +98,8 @@ namespace Lumina
             return *this;
         }
 
-        /** Soft-reference hook. FSoftObjectPath::operator<< calls this on
-         *  write so the saver can register the GUID as a Soft entry in the
-         *  package's ImportTable for the cooker. No-op on archives that
-         *  don't build an import table (memory readers/writers, etc.). */
+        /** Soft-ref hook: FSoftObjectPath::operator<< calls this on write so the saver records
+         *  a Soft ImportTable entry. No-op on archives without an import table. */
         virtual void RegisterSoftAssetReference(const FGuid& AssetGUID) {}
     
         virtual FArchive& operator<<(uint8& Value)

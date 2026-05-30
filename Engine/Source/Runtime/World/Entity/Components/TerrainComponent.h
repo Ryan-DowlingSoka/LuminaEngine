@@ -91,9 +91,8 @@ namespace Lumina
                 MaxHeight       = Other.MaxHeight;
                 bCastShadow     = Other.bCastShadow;
                 bReceiveShadow  = Other.bReceiveShadow;
-                // Transient CPU mirror state never carries across a copy; the assigned-to
-                // terrain rebuilds from its fresh CPU data (and the render scene allocates
-                // its own GPU state keyed by the new entity).
+                // Transient CPU mirror never carries across a copy; the assigned-to terrain rebuilds from
+                // its fresh CPU data (render scene allocates GPU state keyed by the new entity).
                 CPUState        = FTerrainCPUState{};
             }
             return *this;

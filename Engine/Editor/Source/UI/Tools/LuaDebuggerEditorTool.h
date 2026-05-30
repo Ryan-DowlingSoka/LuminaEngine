@@ -4,14 +4,8 @@
 
 namespace Lumina
 {
-    /**
-     * Editor-side panel for the Luau debugger. Singleton tool — toggled from
-     * Tools menu, autopopped when a breakpoint hits.
-     *
-     * Reads pause state from FLuaDebugger (engine side). Writes to it via
-     * RequestContinue / RequestStep* — those are processed on the next engine
-     * Tick. The panel itself never touches lua_State directly.
-     */
+    // Editor panel for the Luau debugger; reads pause state from FLuaDebugger,
+    // writes via RequestContinue/RequestStep* (processed next engine Tick).
     class FLuaDebuggerEditorTool : public FEditorTool
     {
     public:

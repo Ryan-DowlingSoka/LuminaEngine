@@ -59,9 +59,8 @@ namespace Lumina
             DrawParametersWindow();
         });
 
-        // The editor node graph lives as a sibling sub-object inside the asset's
-        // package, mirroring the material editor. It is created on first open
-        // and reloaded thereafter.
+        // Editor node graph is a sibling sub-object in the asset's package (like the
+        // material editor); created on first open, reloaded thereafter.
         FString GraphName = "AssetAnimationGraph";
         NodeGraph = Cast<CAnimationGraphNodeGraph>(Asset->GetPackage()->LoadObjectByName(GraphName));
 
@@ -216,9 +215,8 @@ namespace Lumina
         EnsureGraphReady(Graph);
         GraphStack.push_back({ Graph, Label });
 
-        // Reset the inspector on descent so the panel isn't showing a node from
-        // the graph we just left. The cached transition tables are tied to the
-        // outer canvas's transitions and would dangle on return.
+        // Reset the inspector on descent so it doesn't show a node from the graph we left;
+        // cached transition tables are tied to the outer canvas and would dangle.
         SelectedNode = nullptr;
         SelectedTransition = nullptr;
         TransitionTables.clear();
@@ -362,9 +360,8 @@ namespace Lumina
             return;
         }
 
-        // Push the panel's live values into the preview entity's blackboard; the
-        // animation system then resolves them into the VM each frame, exactly as
-        // it would for a gameplay entity. Unknown keys are simply created.
+        // Push live panel values into the preview entity's blackboard; the anim system
+        // resolves them into the VM each frame as for gameplay. Unknown keys are created.
         for (const auto& [Name, Value] : ParameterOverrides)
         {
             BlackboardComp->SetFloat(Name, Value);
@@ -766,17 +763,15 @@ namespace Lumina
 
         FAnimationGraphCompiler Compiler;
 
-        // Resolve bone-mask names to per-bone weight arrays once, up front, so
-        // Layered Blend Per Bone nodes can just look up by name during their
-        // GenerateBytecode pass.
+        // Resolve bone-mask names to per-bone weight arrays up front so Layered Blend
+        // Per Bone nodes can look up by name during GenerateBytecode.
         if (Graph->Skeleton.IsValid())
         {
             Compiler.ResolveBoneMasks(Graph->BoneMaskDefs, Graph->Skeleton->GetSkeletonResource());
         }
 
-        // Seed the compiler with any parameters already declared on the asset
-        // (e.g. user-added through the Parameters panel) so they persist across
-        // compiles even if no node/transition references them yet.
+        // Seed the compiler with parameters already declared on the asset so they persist
+        // across compiles even if no node/transition references them yet.
         for (const FAnimGraphParameter& Param : Graph->Parameters)
         {
             Compiler.AddParameter(Param.Name, Param.Type, Param.DefaultValue);
@@ -807,9 +802,8 @@ namespace Lumina
 
         Compiler.BuildGraph(Graph);
 
-        // Snapshot the pin->register and state-node mappings so the debug overlay
-        // can read live VM values back onto the graph. Pin pointers stay valid
-        // because this runs every frame against the same editor pins.
+        // Snapshot pin->register and state-node mappings so the debug overlay can read live
+        // VM values back onto the graph; pin pointers stay valid (re-run every frame).
         DebugPinRegisters = Compiler.GetPinRegisters();
         DebugStateNodes   = Compiler.GetDebugStateNodes();
 
@@ -838,9 +832,8 @@ namespace Lumina
             return;
         }
 
-        // Resolve the debug target. Null target world = the editor preview; any
-        // other world = a live entity picked from the target dropdown. A stale
-        // target (world/entity gone, e.g. PIE ended) silently reverts to preview.
+        // Resolve the debug target: null world = editor preview, else a live entity from the
+        // dropdown. A stale target (world/entity gone, e.g. PIE ended) reverts to preview.
         CWorld* TargetWorld = DebugTargetWorld.Get();
         entt::entity TargetEntity = DebugTargetEntity;
         if (TargetWorld == nullptr)
@@ -931,9 +924,8 @@ namespace Lumina
             }
         }
 
-        // Flatten the candidates -- "Preview" plus every live entity (across worlds, except
-        // this tool's own preview) running this graph asset -- into one indexable list so the
-        // searchable picker can drive selection by index.
+        // Flatten candidates ("Preview" + every live entity across worlds running this graph)
+        // into one indexable list so the searchable picker can select by index.
         TVector<FString> Labels;
         TVector<TPair<CWorld*, entt::entity>> Targets;
         Labels.push_back("Preview");

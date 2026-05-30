@@ -54,9 +54,8 @@ namespace Lumina
             return Out;
         }
 
-        // Reads the render target's live GPU image back to the host and writes a 256x256
-        // RGBA8 thumbnail into the package. The contents aren't serialized, so the captured
-        // image is whatever the target holds at this point (the clear color for a fresh asset).
+        // Reads the live GPU image back and writes a 256x256 RGBA8 thumbnail. Contents
+        // aren't serialized, so the capture is whatever the target holds (clear color if fresh).
         void GenerateRenderTargetThumbnail(CTextureRenderTarget* RenderTarget)
         {
             FRHIImage* Image = RenderTarget ? RenderTarget->GetRHIRef() : nullptr;

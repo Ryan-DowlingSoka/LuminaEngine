@@ -1,15 +1,9 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Per-material depth-prepass VS template. The vertex-graph token below is
-// substituted at material-compile time with the WPO emission so the
-// displaced depth matches the base pass. Without per-material specialization,
-// [earlydepthstencil] in BasePixelPass would kill displaced fragments because
-// their depth wouldn't match the un-displaced prepass write.
-//
-// NOTE: the substitution token must appear exactly once in this file. Don't
-// reference it elsewhere (comments included) -- the substitution uses a
-// plain string find().
+// Per-material depth-prepass VS template; the vertex-graph token below is substituted with WPO so
+// displaced depth matches the base pass (else [earlydepthstencil] would kill displaced fragments).
+// NOTE: the substitution token (plain string find) must appear exactly once -- don't reference it anywhere else.
 
 struct VertexOutput
 {

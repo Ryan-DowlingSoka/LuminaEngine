@@ -1,13 +1,7 @@
 #include "Includes/UIMaterialGlobals.slang"
 
-// UI material template. Runs as a fullscreen pass into an offscreen brush
-// texture that RmlUi then samples (Unreal "User Interface" material domain).
-// Color comes from Material.Emissive, alpha from Material.Opacity.
-//
-// Output is premultiplied (Emissive * Opacity) because RmlUi composites with a
-// premultiplied-alpha blend (srcRGB = One, dstRGB = OneMinusSrcAlpha). Emitting
-// straight alpha would add the full color regardless of Opacity, so the alpha
-// would have no visible effect over a dark background.
+// UI material template; fullscreen pass into an offscreen brush texture RmlUi samples. Output is
+// premultiplied (Emissive * Opacity) to match RmlUi's premultiplied-alpha blend (One, OneMinusSrcAlpha).
 
 struct PSInput
 {

@@ -9,9 +9,8 @@ namespace Lumina
 {
     void CTextureRenderTarget::Serialize(FArchive& Ar)
     {
-        // Skip CTexture's pixel-mip blob -- a render target has no cooked source data. Only
-        // the reflected properties (Width/Height/Format/ClearColor) persist; CObject::Serialize
-        // walks the full property chain. The GPU image is rebuilt in PostLoad.
+        // Skip CTexture's pixel-mip blob; only the reflected properties persist (CObject::Serialize
+        // walks them). The GPU image is rebuilt in PostLoad.
         CObject::Serialize(Ar);
     }
 

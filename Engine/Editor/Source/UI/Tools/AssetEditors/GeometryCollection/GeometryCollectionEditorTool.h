@@ -11,9 +11,8 @@ namespace Lumina
 {
     class CStaticMesh;
 
-    // Editor for CGeometryCollection assets: pick a source mesh + fracture settings, hit
-    // Generate to bake convex Voronoi chunks, and preview the break in 3D with an explode
-    // slider. Runs in its own preview world like the mesh editor.
+    // Editor for CGeometryCollection: pick mesh + fracture settings, Generate bakes convex
+    // Voronoi chunks, preview the break with an explode slider. Runs in its own preview world.
     class FGeometryCollectionEditorTool : public FAssetEditorTool
     {
     public:

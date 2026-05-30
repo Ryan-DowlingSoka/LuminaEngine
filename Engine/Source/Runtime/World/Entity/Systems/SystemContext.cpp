@@ -123,6 +123,11 @@ namespace Lumina
     {
         World->DrawArrow(Start, Direction, Length, Color, Thickness, true, Duration, HeadSize);
     }
+
+    void FSystemContext::DrawDebugSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest, float Duration) const
+    {
+        World->DrawSolidTriangles(std::move(Vertices), bDepthTest, Duration);
+    }
     
     entt::entity FSystemContext::Create(FVector3 Location) const
     {

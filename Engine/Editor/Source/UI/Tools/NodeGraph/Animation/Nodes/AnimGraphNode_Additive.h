@@ -5,9 +5,8 @@
 
 namespace Lumina
 {
-    // Converts a regular pose into an additive delta relative to the skeleton's
-    // bind pose. Pair with Apply Additive to layer expressions, lean, look-at,
-    // etc. on top of a base locomotion pose.
+    // Converts a regular pose into an additive delta relative to the skeleton's bind pose.
+    // Pair with Apply Additive to layer expressions/lean/look-at on top of a base pose.
     REFLECT()
     class CAnimGraphNode_MakeAdditive : public CAnimGraphNode
     {

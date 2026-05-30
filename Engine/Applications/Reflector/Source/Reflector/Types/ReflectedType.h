@@ -14,23 +14,11 @@ namespace Lumina::Reflection
     class FReflectedProject;
     class FCodeWriter;
 
-    //-------------------------------------------------------------------------
-    // Maps a source-level C++ type name (e.g. "uint32", "Lumina::FString") onto the
-    // reflection runtime's EPropertyTypeFlags. Used by the clang visitors when they
-    // classify a field.
+    // Maps a source-level C++ type name onto EPropertyTypeFlags; used by the clang visitors classifying a field.
     EPropertyTypeFlags GetCoreTypeFromName(const char* Name);
 
-    //-------------------------------------------------------------------------
-    /**
-     * Abstract base class for everything the reflector can emit: a reflected enum,
-     * struct, or class.
-     *
-     * Each concrete type fills one of the four emission slots:
-     *   - DefineInitialHeader     -> forward declarations + the DECLARE_CLASS macro
-     *   - DefineSecondaryHeader   -> the GENERATED_BODY #define expanded by user code
-     *   - DeclareImplementation   -> the full Construct_* statics / singleton in the .cpp
-     *   - DeclareStaticRegistration -> one row in the file-level RegisterCompiledInInfo
-     */
+    // Abstract base for everything the reflector emits (enum/struct/class).
+    // Concrete types fill the four emission slots: DefineInitialHeader/DefineSecondaryHeader/DeclareImplementation/DeclareStaticRegistration.
     class FReflectedType
     {
     public:
@@ -71,7 +59,6 @@ namespace Lumina::Reflection
         EType                                                   Type = EType::Structure;
     };
 
-    //-------------------------------------------------------------------------
     class FReflectedEnum : public FReflectedType
     {
     public:
@@ -98,7 +85,6 @@ namespace Lumina::Reflection
         eastl::vector<FConstant> Constants;
     };
 
-    //-------------------------------------------------------------------------
     class FReflectedStruct : public FReflectedType
     {
     public:
@@ -125,7 +111,6 @@ namespace Lumina::Reflection
         eastl::string Parent;
     };
 
-    //-------------------------------------------------------------------------
     class FReflectedClass : public FReflectedStruct
     {
     public:

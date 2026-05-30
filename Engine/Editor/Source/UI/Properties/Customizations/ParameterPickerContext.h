@@ -4,10 +4,8 @@ namespace Lumina
 {
     class CAnimationGraph;
 
-    // Editor-only context for FName properties tagged ParameterPicker. The
-    // animation-graph tool pushes its asset before drawing properties; the
-    // FName customization reads it back and renders a parameter dropdown
-    // instead of a plain text field.
+    // Context for FName properties tagged ParameterPicker: the anim-graph tool pushes
+    // its asset so the FName customization renders a parameter dropdown.
     namespace ParameterPickerContext
     {
         void PushGraph(CAnimationGraph* Graph);

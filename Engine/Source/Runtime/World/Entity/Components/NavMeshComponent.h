@@ -59,6 +59,19 @@ namespace Lumina
 
         int32                                   TilesX = 0;
         int32                                   TilesY = 0;
+
+        /** Entity world scale, mirrored each tick; multiplies Extents into the effective bake volume. */
+        FVector3                                WorldScale = FVector3(1.0f);
+
+        /** Auto-bake debounce: bake once bounds/settings settle and differ from what's baked. */
+        FVector3                                AutoPrevCenter   = FVector3(FLT_MAX);
+        FVector3                                AutoPrevExtents  = FVector3(FLT_MAX);
+        FNavBuildSettings                       AutoPrevSettings;
+        FVector3                                AutoBuiltCenter  = FVector3(FLT_MAX);
+        FVector3                                AutoBuiltExtents = FVector3(FLT_MAX);
+        FNavBuildSettings                       AutoBuiltSettings;
+        float                                   AutoSettleTimer  = 0.0f;
+        bool                                    bAutoBuiltValid  = false;
     };
 
     /** Bake volume (world AABB at Center +/- Extents); multiple components union at bake time. */
@@ -71,6 +84,7 @@ namespace Lumina
 
         SNavMeshComponent(const SNavMeshComponent& Other)
             : Settings(Other.Settings)
+            , bAutoBake(Other.bAutoBake)
             , Center(Other.Center)
             , Extents(Other.Extents)
             , Tiles(Other.Tiles)
@@ -85,6 +99,7 @@ namespace Lumina
             if (this != &Other)
             {
                 Settings        = Other.Settings;
+                bAutoBake       = Other.bAutoBake;
                 Center          = Other.Center;
                 Extents         = Other.Extents;
                 Tiles           = Other.Tiles;
@@ -102,6 +117,10 @@ namespace Lumina
         /** Voxelization, agent, and tiling parameters fed to Recast. */
         PROPERTY(Editable, Category = "NavMesh|Build")
         FNavBuildSettings Settings;
+
+        /** Re-bake automatically when the bounds/settings change (e.g. placed or moved in the editor). */
+        PROPERTY(Editable, Category = "NavMesh|Build")
+        bool bAutoBake = true;
 
         /** World-space center of the bake volume. */
         PROPERTY(Editable, Category = "NavMesh|Bounds")
@@ -134,5 +153,8 @@ namespace Lumina
         FNavMeshRuntime Runtime;
 
         bool HasBakedData() const { return !Tiles.empty() && TileWorldSize > 0.0f; }
+
+        /** Effective world half-extents: authored Extents scaled by the entity transform. */
+        FVector3 GetWorldExtents() const { return Extents * Runtime.WorldScale; }
     };
 }

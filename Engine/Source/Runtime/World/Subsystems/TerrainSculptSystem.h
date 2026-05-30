@@ -9,11 +9,8 @@ namespace Lumina
 {
     struct STerrainComponent;
 
-    /**
-     * Describes a single brush dab captured from the editor during a stroke.
-     * A drag produces many of these per second; the sculpt system replays them
-     * against the CPU heightmap and marks the touched region dirty.
-     */
+    // A single brush dab captured from the editor during a stroke; the sculpt system replays many of
+    // these against the CPU heightmap and marks the touched region dirty.
     struct FTerrainSculptDab
     {
         ETerrainBrushMode   Mode          = ETerrainBrushMode::Sculpt;
@@ -43,16 +40,8 @@ namespace Lumina
         float               RampHalfWidth   = 0.0f;
     };
 
-    /**
-     * Stateless utility that applies brush dabs to a terrain component. The work
-     * is parallelized across the brush footprint rows via GTaskSystem so large
-     * radii don't block the main thread. Each apply() marks exactly the touched
-     * rectangle dirty so the render scene can upload only that region to the GPU.
-     *
-     * Thread-safety: one stroke is assumed to be in flight at a time (the editor
-     * holds the mouse). Callers must not apply dabs concurrently on the same
-     * component.
-     */
+    // Stateless utility applying brush dabs to a terrain; parallelized across footprint rows via GTaskSystem.
+    // Each apply marks only the touched rect dirty. One stroke at a time -- don't apply concurrently on one component.
     class RUNTIME_API FTerrainSculptSystem
     {
     public:
@@ -62,9 +51,8 @@ namespace Lumina
         /** Convert a world-space XYZ point to heightmap sample coordinates. */
         static FIntVector2 WorldToSample(const STerrainComponent& Terrain, const FVector3& WorldPos);
 
-        /** Raycast a ray against the current heightmap and return the hit point if any.
-         *  TerrainOrigin is the owning entity's world-space transform position; the terrain
-         *  is centered on it, matching the renderer's OriginXZ = TerrainOrigin.xz - HalfSize. */
+        // Raycast against the current heightmap, returning the hit point if any. TerrainOrigin is the
+        // entity's world position; the terrain centers on it (renderer's OriginXZ = TerrainOrigin.xz - HalfSize).
         static bool Raycast(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, const FVector3& RayOrigin, const FVector3& RayDir, FVector3& OutHit);
 
     private:

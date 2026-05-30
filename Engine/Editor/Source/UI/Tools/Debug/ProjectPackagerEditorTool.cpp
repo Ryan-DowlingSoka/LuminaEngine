@@ -186,9 +186,8 @@ namespace Lumina
 
         if (Result.bSuccess)
         {
-            // Loose-script extraction has to happen here on the UI thread —
-            // it walks the VFS, which the editor's other systems may mutate
-            // from the main thread.
+            // Loose-script extraction runs here on the UI thread: it walks the VFS,
+            // which other main-thread systems may mutate.
             if (bExtractScriptsLoose)
             {
                 AppendLog("Extracting loose scripts...");
@@ -302,9 +301,8 @@ namespace Lumina
 
         Worker = std::thread([WorkerSession, Opts, ProjectName, PakPath]()
         {
-            // The log callback runs on this thread; push lines into the
-            // mutex-protected pending buffer. The UI thread drains it each
-            // frame in DrainSession().
+            // Log callback runs on this thread; push lines into the mutex-protected
+            // pending buffer, drained each frame by the UI thread in DrainSession().
             auto LogFunc = [WorkerSession](FStringView Line)
             {
                 std::lock_guard<std::mutex> Lock(WorkerSession->PendingMutex);

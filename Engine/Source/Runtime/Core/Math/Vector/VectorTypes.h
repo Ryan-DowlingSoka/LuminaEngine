@@ -3,14 +3,8 @@
 #include "Platform/GenericPlatform.h"
 #include <type_traits>
 
-// Lumina vector types. Left-handed, column-vector math, components stored
-// contiguously so the memory layout uploads to the GPU without repacking.
-//
-// Storage is specialized per dimension (below) to expose named x/y/z/w members
-// plus the r/g/b/a and s/t/p/q aliases that share the same bytes. Behavior
-// (operators, Math:: functions) is written once as generic templates over
-// TVec<T, N> and reaches every specialization through operator[], so there is
-// no per-dimension duplication.
+// Lumina vector types. Left-handed, contiguous storage for direct GPU upload; per-dimension
+// specializations expose x/y/z/w + r/g/b/a/s/t/p/q aliases, behavior generic over TVec<T,N>.
 
 #if defined(_MSC_VER)
     #pragma warning(push)
@@ -168,10 +162,7 @@ namespace Lumina
         { V::Dimensions } -> std::convertible_to<int>;
     };
 
-    // ---- Component-wise arithmetic ------------------------------------------
-    // Written once over TVec<T, N>; deduces against every specialization.
-    // The scalar operand is non-deduced (type_identity_t) so `v * 2` works when
-    // T is float without forcing the literal to match exactly.
+    // Scalar operand is non-deduced (type_identity_t) so `v * 2` works when T is float.
 
     #define LUMINA_VEC_BINARY_OP(Op)                                                                   \
         template<typename T, int N>                                                                    \
@@ -256,19 +247,8 @@ namespace Lumina
     #pragma warning(pop)
 #endif
 
-// Reflection-parser-only shims for the float vector aliases. The real types
-// (FVector2/3/4 = TVec<float,N>) are template specializations the reflector
-// can't walk through the `using` alias, so we hand-stub plain structs the
-// parser sees in their place. The ManualStub tag tells codegen to skip the
-// T::StaticStruct() emission since the runtime alias has no such member.
-// Layout matches: 2/3/4 floats packed in order, no padding.
-//
-// We define REFLECT/PROPERTY locally instead of including ObjectMacros.h --
-// that header drags in ObjectCore -> ConstructObjectParams -> Guid -> Archiver
-// -> Math, which forms an include cycle through VectorTypes.h itself. Under
-// REFLECTION_PARSER these macros are empty (the parser harvests them via
-// libclang's preprocessor record, not via expansion), so a local empty
-// definition is structurally identical to the real one.
+// Reflection-parser-only shims for FVector2/3/4; ManualStub tells codegen to skip StaticStruct().
+// REFLECT/PROPERTY defined locally (not via ObjectMacros.h) to avoid an include cycle through Math.
 #ifdef REFLECTION_PARSER
 #ifndef REFLECT
 #define REFLECT(...)

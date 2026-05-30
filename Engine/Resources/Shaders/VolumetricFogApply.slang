@@ -2,10 +2,8 @@
 #include "Includes/Fog.slang"
 #include "Includes/Froxel.slang"
 
-// Froxel volumetric fog -- apply pass. Per pixel, find the froxel slice from depth,
-// trilinearly sample the integrated volume, and composite: out = inScatter + scene*T.
-// Implemented with (One, InvSrcAlpha) blend by writing alpha = 1 - transmittance, so
-// the scene HDR is never read back. Sky (far plane) takes full aerial perspective.
+// Froxel volumetric fog apply pass: sample the integrated volume by depth and composite via
+// (One, InvSrcAlpha) blend (alpha = 1 - transmittance), so the scene HDR is never read back.
 
 struct FPushConstants
 {
@@ -26,9 +24,8 @@ struct PSInput
     float2 UV       : TEXCOORD0;
 };
 
-// Interleaved gradient noise -- a stable, per-pixel screen-space hash. Used to dither
-// the froxel depth sample by < one slice so the exponential Z banding breaks into fine
-// full-resolution grain (far less objectionable than coarse per-froxel noise).
+// Interleaved gradient noise: stable per-pixel hash used to dither the depth sample by < one slice,
+// breaking exponential-Z banding into fine full-resolution grain.
 float IGN(float2 PixelPos)
 {
     return frac(52.9829189 * frac(dot(PixelPos, float2(0.06711056, 0.00583715))));

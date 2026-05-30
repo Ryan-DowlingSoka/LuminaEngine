@@ -6,15 +6,8 @@
 
 namespace Lumina
 {
-    /**
-     * Coarse per-frame rejection test built before the parallel mesh-processing
-     * tasks. Holds every bounding volume an instance could possibly contribute
-     * to this frame: the main camera frustum, the sun-swept shadow frustum
-     * (camera frustum extruded along the sun direction so casters outside the
-     * camera but inside the CSM sweep still render to shadows), and one sphere
-     * per shadow-casting point / spotlight.
-     *
-     */
+    // Coarse per-frame rejection test built before the parallel mesh gather. Holds every volume an instance
+    // could contribute to: camera frustum, sun-swept shadow frustum, and one sphere per shadow-casting light.
     struct FSceneCullContext
     {
         /** World-space sphere for a shadow-casting light's influence region. */
@@ -27,30 +20,17 @@ namespace Lumina
         /** Main camera frustum. Anything inside this passes unconditionally. */
         FFrustum Frustum;
 
-        /**
-         * Camera frustum extruded by ShadowSweepDistance along SunDirection.
-         * Encloses every point that could cast a sun shadow into the visible
-         * region. Identical construction to CullData::ShadowFrustum; prebuilt
-         * here so it's available during parallel mesh gathering instead of
-         * only after AllocateShadowTiles. Valid when bHasSun is true.
-         */
+        // Camera frustum extruded by ShadowSweepDistance along SunDirection; encloses every sun-shadow caster.
+        // Prebuilt here (vs after AllocateShadowTiles) so it's available during the parallel gather. Valid when bHasSun.
         FFrustum SunShadowFrustum;
 
         FVector3 SunDirection = FVector3(0.0f);
 
-        /**
-         * One entry per shadow-casting point / spot light. Sized by the
-         * parent renderer before dispatch; kept inline to avoid another
-         * allocation on the hot path. Cap matches the typical shadow budget
-         * (atlas can fit ~20 local lights at once) with slack.
-         */
+        // One entry per shadow-casting point/spot light, sized by the renderer before dispatch.
         TVector<FLightSphere> ShadowLights;
 
-        /**
-         * One frustum per active scene-capture (preview camera) view. An instance
-         * outside the main camera but inside any capture frustum must still be
-         * uploaded, or the GPU per-view cull has nothing to draw for that view.
-         */
+        // One frustum per active scene-capture view; an instance inside any capture frustum must still be
+        // uploaded or the GPU per-view cull has nothing to draw for that view.
         TVector<FFrustum> CaptureFrusta;
 
         bool bEnabled  = true;
@@ -64,20 +44,8 @@ namespace Lumina
             bHasSun  = false;
         }
 
-        /**
-         * Returns true if an instance with the given world-space sphere bounds
-         * and per-component flags must be included in this frame's instance
-         * upload. The test is conservative: it only rejects when the sphere is
-         * definitively outside every view that could sample the instance.
-         *
-         * bCastsShadow should come from SMeshComponent::bCastShadow. If false,
-         * we only need the mesh for its own visible coverage, so the shadow
-         * tests are skipped and many off-screen instances can be dropped.
-         *
-         * MaxDrawDistance (0 = disabled) applies a distance cut regardless of
-         * frustum; the existing SMeshComponent property was declared but never
-         * enforced, so we honor it here as a nearly-free bonus.
-         */
+        // True if the sphere must be in this frame's instance upload; conservative (rejects only when outside
+        // every sampling view). bCastsShadow=false skips shadow tests; MaxDrawDistance (0=off) adds a distance cut.
         FORCEINLINE bool ShouldKeep(
             const FVector3& Center,
             float            Radius,
@@ -139,12 +107,8 @@ namespace Lumina
             return false;
         }
 
-        /**
-         * True only when the sphere is in the main camera view (frustum + draw
-         * distance). Unlike ShouldKeep, this ignores shadow sweeps: a skeleton
-         * kept solely to cast a shadow is NOT "rendered" for animation purposes,
-         * so the anim systems can stop ticking its pose while it's off-screen.
-         */
+        // True only when the sphere is in the main camera view (frustum + draw distance), ignoring shadow
+        // sweeps -- a shadow-only caster isn't "rendered", so anim systems can stop ticking its pose.
         FORCEINLINE bool IsCameraVisible(
             const FVector3& Center,
             float            Radius,

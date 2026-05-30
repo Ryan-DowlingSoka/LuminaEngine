@@ -1,8 +1,5 @@
-// ImGui vertex shader (bindless backend).
-//
-// Consumes ImGui's native ImDrawVert (pos/uv/col, stride 20) directly -- no
-// CPU-side conversion. Position is in framebuffer pixels; Scale/Translate from
-// the push constant map it to NDC (no Y-flip; Vulkan viewport is +Y-down).
+// ImGui vertex shader (bindless backend). Consumes native ImDrawVert directly; Scale/Translate map
+// framebuffer pixels to NDC (no Y-flip; Vulkan viewport is +Y-down).
 #pragma once
 #include "Includes/ImGuiCommon.slang"
 

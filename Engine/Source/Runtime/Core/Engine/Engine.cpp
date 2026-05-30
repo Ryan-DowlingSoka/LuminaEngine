@@ -58,12 +58,8 @@ namespace Lumina
 
     static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
 
-    // Lightweight pre-parse of just the "Plugins" array from a .lproject so
-    // engine-plugin module loading at Earliest/Core/PreEngineInit phases
-    // can already see project overrides. The full LoadProject() runs much
-    // later (post Lua + post WorldManager); without this pass, disabling a
-    // plugin in the .lproject would have no effect on its PreEngineInit
-    // modules because the override would land after the DLL was loaded.
+    // Pre-parse just the .lproject "Plugins" array so early-phase module loading sees
+    // project overrides; the full LoadProject() runs too late (post Lua/WorldManager).
     static void PreloadProjectPluginOverrides(FStringView LprojPath)
     {
         if (LprojPath.empty()) return;
@@ -125,17 +121,11 @@ namespace Lumina
 
         Platform::EnableHighResolutionTiming();
 
-        // Plugin discovery has to happen before the renderer / Lua so
-        // Earliest- and Core-phase plugins can wedge themselves in ahead.
-        // Discovery is read-only (parses .lplugin files) and idempotent.
+        // Must run before renderer/Lua so Earliest/Core-phase plugins can wedge in ahead.
         FPluginManager::Get().DiscoverEnginePlugins();
 
-        // Apply project overrides BEFORE any module loads. The resolved
-        // .lproject path comes from --Project, falling back to the editor's
-        // last-loaded stash (Editor.StartupProject) so a bare-launch reopen
-        // still respects per-project plugin enable/disable. The full
-        // LoadProject() runs later and re-applies these as a no-op, plus
-        // picks up any newly-discovered project plugins.
+        // Apply project overrides before any module loads; path from --Project, falling
+        // back to Editor.StartupProject so a bare-launch reopen respects plugin enable/disable.
         {
             FString PreloadLproj;
             if (TOptional<FFixedString> ProjectArg = GCommandLine->Get("Project"))
@@ -191,10 +181,8 @@ namespace Lumina
 
         ProcessNewlyLoadedCObjects();
 
-        // Engine-plugin runtime modules go here: post Lua + reflection, so
-        // their IMPLEMENT_MODULE/ConstructCEnum static initializers don't
-        // null-deref the VM; pre world manager, so anything they spawn at
-        // WorldManager construction can see them.
+        // Post Lua+reflection so module static initializers don't null-deref the VM;
+        // pre WorldManager so anything they spawn at its construction sees them.
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PreEngineInit);
         ProcessNewlyLoadedCObjects();
 
@@ -206,12 +194,8 @@ namespace Lumina
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::EngineInit);
         ProcessNewlyLoadedCObjects();
 
-        // --Project= load runs HERE (post-Lua, post-WorldManager, pre-EditorUI):
-        //   - post Lua::Initialize, so reflection ConstructCEnum/Class/Struct
-        //     that touch the VM during DLL load don't null-deref.
-        //   - post WorldManager, so LoadStartupMap can spawn a world.
-        //   - pre editor UI, so EditorUI::OnInitialize sees a non-empty
-        //     ProjectName and skips the Open Project dialog.
+        // --Project= load runs here: post-Lua (reflection touches the VM), post-WorldManager
+        // (LoadStartupMap spawns a world), pre-EditorUI (skips the Open Project dialog).
         if (TOptional<FFixedString> ProjectArg = GCommandLine->Get("Project"))
         {
             LoadProject(ProjectArg.value());
@@ -243,9 +227,8 @@ namespace Lumina
 
         FCoreDelegates::OnPreEngineShutdown.BroadcastAndClear();
 
-        // Drain the render thread + GPU before tearing down UI: RmlUi::Shutdown frees widget
-        // render targets, and an in-flight frame may still sample them (bindless) -- freeing
-        // them under the GPU is a use-after-free / device loss.
+        // Drain render thread + GPU before UI teardown: RmlUi::Shutdown frees widget RTs an
+        // in-flight frame may still sample (bindless) -- freeing under the GPU is a UAF.
         FlushRenderingCommands();
         GRenderContext->WaitIdle();
 
@@ -283,9 +266,7 @@ namespace Lumina
         Task::Shutdown();
         Audio::Shutdown();
 
-        // Drop our plugin records before the module manager rips DLLs out
-        // from under us; FPluginManager just clears its bookkeeping, the
-        // actual DLL teardown happens in UnloadAllModules.
+        // Drop plugin records before UnloadAllModules rips the DLLs out from under us.
         FPluginManager::Get().ShutdownAllPlugins();
         FModuleManager::Get().UnloadAllModules();
 
@@ -489,10 +470,8 @@ namespace Lumina
     {
         TVector<FCookRoot> Result;
 
-        // Project roots from the Project.CookRoots StringArray (edited via
-        // the Project Settings UI; persisted in GameSettings.json). Each
-        // entry is an asset path with implicit chunk "Main"; advanced
-        // chunking is plugin-only.
+        // Project.CookRoots: each entry is an asset path with implicit chunk "Main"
+        // (advanced chunking is plugin-only).
         if (GConfig != nullptr)
         {
             const TVector<FString> Paths = GConfig->GetStringArray("Project.CookRoots");
@@ -562,15 +541,12 @@ namespace Lumina
 
         GConfig->LoadPath("/Config");
 
-        // Project plugins are discovered AFTER /Game mounts (so they can
-        // refer to project paths if they want) but BEFORE the project DLL
-        // loads, so any types they introduce are already in reflection
-        // when the project DLL's modules construct.
+        // After /Game mounts (so plugins can refer to project paths) but before the project
+        // DLL loads, so types they introduce are in reflection when its modules construct.
         FPluginManager::Get().DiscoverProjectPlugins(ProjectPath);
 
-        // Per-project plugin overrides from the .lproject "Plugins" array.
-        // Each entry: { "Name": "...", "Enabled": true|false }. Missing
-        // array means "no overrides"; descriptor defaults stand.
+        // Per-project plugin overrides from the .lproject "Plugins" array;
+        // each entry { "Name": "...", "Enabled": bool }. Missing = descriptor defaults.
         if (auto It = Data.find("Plugins"); It != Data.end() && It->is_array())
         {
             TVector<FProjectPluginOverride> Overrides;
@@ -621,24 +597,16 @@ namespace Lumina
             .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
             .WithOwnerFile(ProjectFile));
 
-        // Cook roots — the asset paths the cooker uses to seed the
-        // dependency graph. Typically a list of map .lasset paths; everything
-        // they transitively reference gets cooked into the shipped PAK.
-        // Plugin-supplied roots come from .lplugin descriptors separately.
-        // The .lasset FileFilter activates the per-row Browse picker in the
-        // StringArray renderer (ProjectSettingsEditorTool).
+        // Cook roots seed the dependency graph; their transitive refs get cooked into the PAK.
+        // The .lasset FileFilter activates the per-row Browse picker in the StringArray renderer.
         GConfig->RegisterSetting(FConfigSetting::Make("Project.CookRoots", EConfigValueType::StringArray)
             .WithCategory("Project/Maps")
             .WithDescription("Asset paths the cooker walks from to build the shipped PAK. Usually maps.")
             .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
             .WithOwnerFile(ProjectFile));
 
-        // One-shot migration: if an older project still has its CookRoots[]
-        // in the .lproject JSON and Project.CookRoots in GameSettings.json
-        // is empty, copy them over so the editor's Project Settings UI
-        // picks them up. Chunk hints from the JSON form are dropped (the
-        // settings UI only exposes asset paths — plugins still own chunked
-        // routing via .lplugin).
+        // One-shot migration: copy a legacy .lproject CookRoots[] into Project.CookRoots
+        // when the latter is empty. Chunk hints are dropped (plugins own chunked routing).
         if (auto It = Data.find("CookRoots"); It != Data.end() && It->is_array() && GConfig != nullptr)
         {
             const TVector<FString> Existing = GConfig->GetStringArray("Project.CookRoots");
@@ -694,9 +662,7 @@ namespace Lumina
             }
         }
 
-        // Project DLL is now in; project-plugin modules that need to wire
-        // up to project types (Lua bindings for project gameplay classes,
-        // editor extensions tied to project assets, etc.) load here.
+        // Project DLL is now in; plugin modules that wire up to project types load here.
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PostProjectLoad);
         ProcessNewlyLoadedCObjects();
 
@@ -739,10 +705,8 @@ namespace Lumina
 
     void FEngine::LoadStartupMap()
     {
-        // Priority: explicit Project.GameStartupMap > first CookRoots entry.
-        // The cook-roots fallback means a simple project that only declares
-        // CookRoots[] (the now-preferred path) Just Works without also
-        // setting the legacy single-map field.
+        // Priority: explicit Project.GameStartupMap > first CookRoots entry, so a project
+        // that only declares CookRoots[] works without the legacy single-map field.
         FString RawMapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
         if (RawMapName.empty())
         {
@@ -919,9 +883,7 @@ namespace Lumina
             ? ExeFullPath
             : ExeFullPath.substr(0, LastSlash);
 
-        // Collect every .pak next to the exe — chunked cooking produces
-        // one file per chunk (Main + Primary + UI + Script + ...). Sorted
-        // so mount order is deterministic across launches.
+        // Collect every .pak next to the exe (one per chunk); sorted for deterministic mount order.
         TVector<FFixedString> PakPaths;
         for (const auto& Entry : std::filesystem::directory_iterator(ExeDir.c_str()))
         {
@@ -939,9 +901,8 @@ namespace Lumina
             return false;
         }
 
-        // Keep one FPakArchive alive per file (shared via TSharedPtr across
-        // every alias mount). The first archive that exposes /Config drives
-        // the GameSettings probe below.
+        // One FPakArchive per file, shared across alias mounts; the first exposing
+        // /Config drives the GameSettings probe below.
         TSharedPtr<FPakArchive> ConfigArchive;
         for (const FFixedString& PakPath : PakPaths)
         {
@@ -996,10 +957,8 @@ namespace Lumina
             ? ExeFullPath
             : ExeFullPath.substr(0, LastSlash);
 
-        // Prefer the pre-baked registry the cooker bundled at /Engine/AssetRegistry.bin
-        // — avoids walking every .lasset on disk and re-extracting headers
-        // at game startup. Fall back to the full discovery only if the
-        // cooked blob is missing (dev iteration / corrupt PAK).
+        // Prefer the cooked /Engine/AssetRegistry.bin (avoids walking every .lasset at
+        // startup); fall back to full discovery only if the blob is missing.
         bool bLoadedFromBlob = false;
         {
             TVector<uint8> Blob;

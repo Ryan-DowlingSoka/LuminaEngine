@@ -54,23 +54,18 @@ namespace Lumina
         PROPERTY(Script, Category = "Animation")
         bool bFinished = false;
 
-        // Internal: tells the system the pose needs a fresh sample even when
-        // bPlaying is false (e.g. the user just called PlayAnimation but
-        // hasn't ticked yet, or rewound CurrentTime). The system clears it
-        // after sampling.
+        // Forces a fresh pose sample even when not playing (e.g. just-called PlayAnimation or rewound
+        // CurrentTime). Cleared by the system after sampling.
         bool bDirty = true;
 
-        // ---- AnimNotify runtime state (transient, never serialized) --------------
-        // These mirror the cached-FRef pattern on SScriptComponent: gameplay binds
-        // Lua callbacks keyed by notify name, and SSimpleAnimationSystem fires them
-        // as the playhead crosses notifies/notify-states on the active clip.
+        // AnimNotify runtime state (transient): mirrors the cached-FRef pattern on SScriptComponent --
+        // gameplay binds Lua callbacks by notify name; SSimpleAnimationSystem fires them on playhead crossings.
 
         // CurrentTime before this frame's advance, used to detect playhead crossings.
         float PreviousTime = 0.0f;
 
-        // Set by the system when CurrentTime advanced via playback this frame (not a
-        // scrub/stop jump). Point notifies and NotifyState Tick fire only when true,
-        // so Stop()/seek don't spuriously re-fire events. End still fires on stop.
+        // Set when CurrentTime advanced via playback (not a scrub/stop jump). Point notifies + NotifyState
+        // Tick fire only when true, so Stop()/seek don't re-fire events. End still fires on stop.
         bool bAdvancedThisFrame = false;
 
         // Point-notify handlers, keyed by notify name. A name may carry many handlers.

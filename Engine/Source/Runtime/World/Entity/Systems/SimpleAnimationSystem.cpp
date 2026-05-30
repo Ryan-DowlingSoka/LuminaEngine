@@ -35,7 +35,7 @@ namespace Lumina
             const bool  bAdvanced = Anim.bAdvancedThisFrame;
             const bool  bWrapped  = Cur < Prev; // looped past the end this frame
 
-            // ---- Point notifies: fire once as the playhead crosses, playback only. ----
+            // Point notifies: fire once as the playhead crosses, playback only.
             if (bAdvanced && !Anim.NotifyHandlers.empty())
             {
                 for (const FAnimationNotify& Notify : Res->Notifies)
@@ -63,7 +63,7 @@ namespace Lumina
                 }
             }
 
-            // ---- Notify states: diff the active set to drive Begin / Tick / End. ----
+            // Notify states: diff the active set to drive Begin / Tick / End.
             if (!Anim.NotifyStateHandlers.empty())
             {
                 TVector<int32> NowActive;

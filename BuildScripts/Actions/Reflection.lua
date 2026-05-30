@@ -1,8 +1,5 @@
 
--- _MAIN_SCRIPT_DIR is the directory of the workspace's premake5.lua, which is
--- the engine root for an engine build. The env-var path is the right one for
--- external game projects whose _MAIN_SCRIPT_DIR points at the game project.
--- Falling back keeps fresh clones working before Setup.bat has run.
+-- Prefer LUMINA_DIR (right for game projects); fall back to _MAIN_SCRIPT_DIR so fresh clones work before Setup.bat has run.
 local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 
 include (path.join(LuminaDir, "BuildScripts/Logger"))
@@ -125,10 +122,7 @@ newaction
             CmdLine = CmdLine:gsub("/", "\\")
         end
 
-        -- Dirty-check: skip the Reflector exec (the expensive libclang parse)
-        -- when no reflected input is newer than the stamp. Premake itself still
-        -- runs because prebuildcommands always fires, but that's ~1s vs the
-        -- multi-second cold libclang pass.
+        -- Dirty-check: skip the expensive libclang parse when no reflected input is newer than the stamp.
         local StampFile = path.join(LuminaDir, "Intermediates", "Reflection", ".stamp")
         local function FileTime(P)
             local Stat = os.stat(P)
@@ -161,8 +155,7 @@ newaction
         Logger.Info("Executing Command Line " .. CmdLine)
         local Result = os.execute(CmdLine)
 
-        -- Lua's os.execute returns either an integer exit code or a boolean
-        -- (older Lua) -- normalise both into a "did this succeed?" check.
+        -- os.execute returns an int exit code or a boolean (older Lua); normalize both.
         local bOk = (Result == 0) or (Result == true)
 
         if bOk then
@@ -177,9 +170,7 @@ newaction
                 Touch:close()
             end
         else
-            -- The Reflector already emitted MSBuild-formatted error lines to
-            -- stderr; we just need to fail the action so ReflectionRunner.bat
-            -- forwards a non-zero exit to MSBuild and the build halts.
+            -- Reflector already emitted MSBuild error lines; fail the action so ReflectionRunner.bat forwards a non-zero exit and the build halts.
             Logger.Error("Reflection failed - keeping Reflection_Files.json for debugging")
             os.exit(1)
         end

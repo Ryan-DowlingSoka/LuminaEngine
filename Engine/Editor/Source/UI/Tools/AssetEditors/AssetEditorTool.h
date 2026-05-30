@@ -32,9 +32,8 @@ namespace Lumina
             }
         }
 
-        // Used by editor tools that operate on raw, non-CObject content (e.g.
-        // .rml documents). Subclasses are responsible for overriding OnSave
-        // and managing their own backing storage; PropertyTable stays empty.
+        // For tools on raw non-CObject content (e.g. .rml). Subclasses override OnSave
+        // and own their backing storage; PropertyTable stays empty.
         FAssetEditorTool(IEditorToolContext* Context, const FString& DisplayName)
             : FAssetEditorTool(Context, DisplayName, nullptr, nullptr)
         {

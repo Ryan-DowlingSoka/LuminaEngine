@@ -28,6 +28,7 @@
 #include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
 #include "Core/Math/Math.h"
+#include "Scripting/Lua/Scripting.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
@@ -316,7 +317,7 @@ namespace Lumina
 
 
     FWorldEditorTool::FWorldEditorTool(IEditorToolContext* Context, CWorld* InWorld)
-        : FEditorTool(Context, "World Editor", InWorld)
+        : FSceneEditorTool(Context, "World Editor", InWorld)
     {
         GuizmoOp = ImGuizmo::TRANSLATE;
         GuizmoMode = ImGuizmo::WORLD;
@@ -336,7 +337,7 @@ namespace Lumina
         
         CreateToolWindow("Details", [&] (bool bFocused)
         {
-            DrawEntityEditor(bFocused, LastSelectedEntity);
+            DrawDetailsPanel(bFocused);
         });
         
         bGuizmoSnapEnabled  = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapEnabled", true);
@@ -361,78 +362,50 @@ namespace Lumina
             FEntityRegistry& Registry = World->GetEntityRegistry();
             const bool bLocked = IsLockedPrefabChild(Registry, Data.Entity);
 
-            if (bLocked)
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(8, 4));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(8, 4));
+
+            // Header: entity name + id (matches the viewport menu).
             {
-                ImGui::TextDisabled(LE_ICON_LOCK " Locked (Prefab Instance)");
-                ImGuiX::TextTooltip("{}", "This entity belongs to a prefab instance. Edit the source prefab to change its hierarchy.");
-                ImGui::Separator();
+                const SNameComponent* Name = Registry.try_get<SNameComponent>(Data.Entity);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                ImGui::TextUnformatted(Name ? Name->Name.c_str() : "<unnamed>");
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+                ImGui::Text("#%u", (uint32)entt::to_integral(Data.Entity));
+                ImGui::PopStyleColor();
+
+                if (bLocked)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.40f, 1.0f));
+                    ImGui::TextUnformatted(LE_ICON_LOCK " Locked (Prefab Instance)");
+                    ImGui::PopStyleColor();
+                    ImGuiX::TextTooltip("{}", "This entity belongs to a prefab instance. Edit the source prefab to change its hierarchy.");
+                }
             }
 
-            if (ImGui::MenuItem("Add Component"))
+            ImGui::Separator();
+
+            // --- Components & scripts ---
+            if (ImGui::MenuItem(LE_ICON_PUZZLE " Add Component..."))
             {
                 PushAddComponentModal(Data.Entity);
             }
             ImGuiX::TextTooltip("{}", "Add a new component to the entity");
 
+            DrawScriptAttachMenuItems(Data.Entity);
 
-            if (ImGui::MenuItem("Copy Entity ID"))
-            {
-                ImGui::SetClipboardText(eastl::to_string(entt::to_integral(Data.Entity)).c_str());
-            }
+            ImGui::Separator();
 
-            ImGuiX::TextTooltip("{}", "Copy entity identifier to platform clipboard");
-
-            if (!bLocked && ECS::Utils::IsChild(Registry, Data.Entity))
-            {
-                if (ImGui::MenuItem("Unparent"))
-                {
-                    BeginTransaction();
-                    ECS::Utils::RemoveFromParent(Registry, Data.Entity);
-                    EndTransaction("Unparent");
-                    ReparentEntityInOutliner(Data.Entity);
-                }
-            }
-
-            if (!bLocked && ECS::Utils::IsParent(Registry, Data.Entity))
-            {
-                if (ImGui::MenuItem("Detach Children"))
-                {
-                    // Snapshot child IDs before mutating relationships, then move each in the tree.
-                    TFixedVector<entt::entity, 20> Children;
-                    ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child) { Children.push_back(Child); });
-                    BeginTransaction();
-                    ECS::Utils::DetachImmediateChildren(Registry, Data.Entity);
-                    EndTransaction("Detach Children");
-                    for (entt::entity Child : Children)
-                    {
-                        ReparentEntityInOutliner(Child);
-                    }
-                }
-            }
-
-            if (ImGui::MenuItem("Rename"))
+            // --- Edit ---
+            if (ImGui::MenuItem(LE_ICON_PENCIL " Rename"))
             {
                 PushRenameEntityModal(Data.Entity);
             }
 
-            if (!bLocked)
-            {
-                const bool bIsSelectionRoot = Registry.all_of<FSelectionRoot>(Data.Entity);
-                if (ImGui::MenuItem(bIsSelectionRoot ? "Unmark Selection Root" : "Mark as Selection Root"))
-                {
-                    if (bIsSelectionRoot)
-                    {
-                        Registry.remove<FSelectionRoot>(Data.Entity);
-                    }
-                    else
-                    {
-                        Registry.emplace<FSelectionRoot>(Data.Entity);
-                    }
-                }
-                ImGuiX::TextTooltip("{}", "Viewport clicks on any descendant will resolve up to this entity. Outliner clicks still select directly.");
-            }
-
-            if (!bLocked && ImGui::MenuItem("Duplicate"))
+            if (!bLocked && ImGui::MenuItem(LE_ICON_CONTENT_DUPLICATE " Duplicate"))
             {
                 BeginTransaction();
                 entt::entity New = entt::null;
@@ -447,6 +420,66 @@ namespace Lumina
                 }
             }
 
+            if (ImGui::MenuItem(LE_ICON_IDENTIFIER " Copy Entity ID"))
+            {
+                ImGui::SetClipboardText(eastl::to_string(entt::to_integral(Data.Entity)).c_str());
+            }
+            ImGuiX::TextTooltip("{}", "Copy entity identifier to platform clipboard");
+
+            ImGui::Separator();
+
+            // --- Hierarchy ---
+            if (!bLocked && ECS::Utils::IsChild(Registry, Data.Entity))
+            {
+                if (ImGui::MenuItem(LE_ICON_ARROW_UP_BOLD " Unparent"))
+                {
+                    BeginTransaction();
+                    ECS::Utils::RemoveFromParent(Registry, Data.Entity);
+                    EndTransaction("Unparent");
+                    ReparentEntityInOutliner(Data.Entity);
+                }
+            }
+
+            if (!bLocked && ECS::Utils::IsParent(Registry, Data.Entity))
+            {
+                if (ImGui::MenuItem(LE_ICON_CALL_SPLIT " Detach Children"))
+                {
+                    // Snapshot child IDs before mutating relationships, then move each in the tree.
+                    TFixedVector<entt::entity, 20> Children;
+                    ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child) { Children.push_back(Child); });
+                    BeginTransaction();
+                    ECS::Utils::DetachImmediateChildren(Registry, Data.Entity);
+                    EndTransaction("Detach Children");
+                    for (entt::entity Child : Children)
+                    {
+                        ReparentEntityInOutliner(Child);
+                    }
+                }
+            }
+
+            if (!bLocked)
+            {
+                const bool bIsSelectionRoot = Registry.all_of<FSelectionRoot>(Data.Entity);
+                const char* RootLabel = bIsSelectionRoot
+                    ? LE_ICON_TARGET " Unmark Selection Root"
+                    : LE_ICON_TARGET " Mark as Selection Root";
+                if (ImGui::MenuItem(RootLabel))
+                {
+                    if (bIsSelectionRoot)
+                    {
+                        Registry.remove<FSelectionRoot>(Data.Entity);
+                    }
+                    else
+                    {
+                        Registry.emplace<FSelectionRoot>(Data.Entity);
+                    }
+                }
+                ImGuiX::TextTooltip("{}", "Viewport clicks on any descendant will resolve up to this entity. Outliner clicks still select directly.");
+            }
+
+            ImGui::Separator();
+
+            // --- Prefab ---
             if (!bLocked && ImGui::MenuItem(LE_ICON_PACKAGE_VARIANT " Create Prefab from Entity..."))
             {
                 PushCreatePrefabModalForEntity(Data.Entity);
@@ -474,10 +507,19 @@ namespace Lumina
                 ImGuiX::TextTooltip("{}", "Unlink this instance from its source prefab; the entities become plain and stop syncing.");
             }
 
-            if (!bLocked && ImGui::MenuItem("Delete"))
+            // --- Destructive ---
+            if (!bLocked)
             {
-                EntityDestroyRequests.push(Data.Entity);
+                ImGui::Separator();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Delete"))
+                {
+                    EntityDestroyRequests.push(Data.Entity);
+                }
+                ImGui::PopStyleColor();
             }
+
+            ImGui::PopStyleVar(3);
         };
         
         OutlinerContext.VisibilityToggleFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
@@ -494,7 +536,29 @@ namespace Lumina
                 World->GetEntityRegistry().remove<SDisabledTag>(Data.Entity);
             }
         };
-        
+
+        OutlinerContext.SecondaryToggleFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
+        {
+            FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
+            const FTreeNodeState& State = Tree.Get<FTreeNodeState>(Item);
+
+            // bSecondaryToggled == script suppressed. Tag presence stops the script ticking
+            // (ScriptSystem excludes it) while leaving the entity itself active.
+            if (State.bSecondaryToggled)
+            {
+                World->GetEntityRegistry().emplace_or_replace<SScriptDisabledTag>(Data.Entity);
+            }
+            else
+            {
+                World->GetEntityRegistry().remove<SScriptDisabledTag>(Data.Entity);
+            }
+
+            if (World->GetPackage() != nullptr)
+            {
+                World->GetPackage()->MarkDirty();
+            }
+        };
+
         OutlinerContext.HoveredFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
@@ -674,9 +738,8 @@ namespace Lumina
         const FVector3 Forward  = Rotation * FVector3(0.0f, 0.0f, 1.0f);
         const FVector3 Up       = Rotation * FVector3(0.0f, 1.0f, 0.0f);
 
-        // Use the authored FOV property, not GetFOV(): the latter reads the camera's internal
-        // ViewVolume, which only tracks the property for the *active* camera (via SCameraSystem).
-        // A non-active selected camera's ViewVolume is stale, so editing FOV wouldn't show.
+        // Use the authored FOV property, not GetFOV(): ViewVolume only tracks the property for
+        // the active camera, so a non-active selected camera's value would be stale.
         FViewVolume View(Camera.FOV, (float)CameraPreviewWidth / (float)CameraPreviewHeight);
         View.SetView(Position, Forward, Up);
 
@@ -710,18 +773,7 @@ namespace Lumina
 
         DrawWorldGrid();
 
-        if (!ComponentDestroyRequests.empty())
-        {
-            BeginTransaction();
-            while (!ComponentDestroyRequests.empty())
-            {
-                FComponentDestroyRequest Request = ComponentDestroyRequests.front();
-                ComponentDestroyRequests.pop();
-
-                RemoveComponent(Request.EntityID, Request.Type);
-            }
-            EndTransaction("Remove Component");
-        }
+        ProcessComponentEditRequests();
 
         if (!EntityDestroyRequests.empty())
         {
@@ -849,16 +901,60 @@ namespace Lumina
             }
         }
 
-        for (entt::entity Entity : SelectedEntities)
+        // Each per-entity box is 24 batched lines; drawing one per selected entity floods the line
+        // batcher for large marquee selections. Past a cap, draw a single enclosing bounds instead.
+        constexpr size_t kMaxIndividualSelectionBoxes = 256;
+
+        if (!bGameViewMode && SelectedEntities.size() <= kMaxIndividualSelectionBoxes)
         {
-            if (!World->GetEntityRegistry().valid(Entity) || bGameViewMode)
+            for (entt::entity Entity : SelectedEntities)
             {
-                continue;
+                if (!World->GetEntityRegistry().valid(Entity))
+                {
+                    continue;
+                }
+
+                // Every selectable entity type gets the same selection box (static mesh, skeletal mesh,
+                // or a unit-box fallback for lights/empties/etc.), resolved by the shared helper.
+                EditorEntityUtils::DrawEntitySelectionBox(World, Entity, FColor::Green, 0.2f, 5.0f);
+            }
+        }
+        else if (!bGameViewMode)
+        {
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            FVector3 BoundsMin( FLT_MAX);
+            FVector3 BoundsMax(-FLT_MAX);
+            bool bHasBounds = false;
+
+            for (entt::entity Entity : SelectedEntities)
+            {
+                FVector3 Center, HalfExtents;
+                FQuat Rotation;
+                if (!EditorEntityUtils::GetEntityDrawBox(Registry, Entity, Center, HalfExtents, Rotation))
+                {
+                    continue;
+                }
+
+                // Union the oriented box's 8 world corners into an axis-aligned bound.
+                for (int Corner = 0; Corner < 8; ++Corner)
+                {
+                    const FVector3 Signed(
+                        (Corner & 1) ? HalfExtents.x : -HalfExtents.x,
+                        (Corner & 2) ? HalfExtents.y : -HalfExtents.y,
+                        (Corner & 4) ? HalfExtents.z : -HalfExtents.z);
+                    const FVector3 WorldCorner = Center + Math::Rotate(Rotation, Signed);
+                    BoundsMin = Math::Min(BoundsMin, WorldCorner);
+                    BoundsMax = Math::Max(BoundsMax, WorldCorner);
+                }
+                bHasBounds = true;
             }
 
-            // Every selectable entity type gets the same selection box (static mesh, skeletal mesh,
-            // or a unit-box fallback for lights/empties/etc.), resolved by the shared helper.
-            EditorEntityUtils::DrawEntitySelectionBox(World, Entity, FColor::Green, 0.2f, 5.0f);
+            if (bHasBounds)
+            {
+                const FVector3 Center      = (BoundsMin + BoundsMax) * 0.5f;
+                const FVector3 HalfExtents = (BoundsMax - BoundsMin) * 0.5f;
+                World->DrawBoxCorners(Center, HalfExtents, FQuat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Green, 0.05f, 5.0f);
+            }
         }
 
         const bool bPastePressed = bSelectionEditActive
@@ -1046,6 +1142,7 @@ namespace Lumina
         EditorModes.clear();
         EditorModes.push_back(MakeUnique<FSelectionEditorMode>());
         EditorModes.push_back(MakeUnique<FTerrainEditMode>());
+        EditorModes.push_back(MakeUnique<FNavigationEditMode>());
 
         // Modes call back into the host for editor services (e.g. undo transactions).
         for (TUniquePtr<IWorldEditorMode>& Mode : EditorModes)
@@ -1091,50 +1188,6 @@ namespace Lumina
         if (IWorldEditorMode* New = EditorModes[ActiveModeIndex].get())
         {
             New->OnEnter(World);
-        }
-    }
-
-    void FWorldEditorTool::EndFrame()
-    {
-        using namespace entt::literals;
-        
-        if (bShowComponentVisualizers)
-        {
-            CComponentVisualizerRegistry& ComponentVisualizerRegistry = CComponentVisualizerRegistry::Get();
-
-            // Iterate the view (not SelectedEntities) so entt::exclude<SDisabledTag> applies.
-            auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>(entt::exclude<SDisabledTag>);
-            View.each([&] (entt::entity SelectedEntity)
-            {
-                ECS::Utils::ForEachComponent(World->GetEntityRegistry(), SelectedEntity, [&](void*, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
-                {
-                    if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
-                    {
-                        CStruct* StructType = ReturnValue.cast<CStruct*>();
-
-                        if (CComponentVisualizer* Visualizer = ComponentVisualizerRegistry.GetComponentVisualizer(StructType))
-                        {
-                            Visualizer->Draw(World, World->GetEntityRegistry(), SelectedEntity);
-                        }
-                    }
-                });
-                
-                ECS::Utils::ForEachChild(World->GetEntityRegistry(), SelectedEntity, [&](entt::entity Child)
-                {
-                    ECS::Utils::ForEachComponent(World->GetEntityRegistry(), Child, [&](void*, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
-                    {
-                        if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
-                        {
-                            CStruct* StructType = ReturnValue.cast<CStruct*>();
-                    
-                            if (CComponentVisualizer* Visualizer = ComponentVisualizerRegistry.GetComponentVisualizer(StructType))
-                            {
-                                Visualizer->Draw(World, World->GetEntityRegistry(), Child);
-                            }
-                        }
-                    });
-                });
-            });
         }
     }
 
@@ -1277,7 +1330,6 @@ namespace Lumina
             ActiveMode->Tick(World, CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
             ActiveMode->DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
         }
-        NavMeshEditMode.DrawOverlay(World);
 
         // Modes that own the viewport suppress selection, marquee, and gizmo input.
         const bool bModeOwnsInput = GetActiveMode() && GetActiveMode()->ConsumesViewportInput();
@@ -1965,6 +2017,8 @@ namespace Lumina
                     ImGui::CloseCurrentPopup();
                 }
 
+                DrawScriptAttachMenuItems(LastSelectedEntity);
+
                 if (ImGui::BeginMenu("Remove Component"))
                 {
                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
@@ -2118,9 +2172,8 @@ namespace Lumina
         DrawEntityDebugOverlay(ViewportOrigin, ViewportSize, CameraComponent);
         DrawOffscreenSelectionIndicators(ViewportOrigin, ViewportSize, CameraComponent);
 
-        // Selected-camera preview: a small picture-in-picture of what that camera sees,
-        // pinned to the viewport's bottom-right. The render scene shades it into a capture RT
-        // (driven in UpdateCameraPreview); here we just composite it.
+        // Selected-camera PiP, pinned bottom-right. The render scene shades it into a capture
+        // RT (in UpdateCameraPreview); here we just composite it.
         if (bCameraPreviewActive && CameraPreviewHandle >= 0)
         {
             if (FRHIImage* PreviewRT = World->GetRenderer()->GetCaptureRenderTarget(CameraPreviewHandle))
@@ -2142,77 +2195,61 @@ namespace Lumina
         }
     }
 
-    void FWorldEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
+    // The viewport overlay toolbar lives in FSceneEditorTool; the world editor supplies these hooks.
+    bool FWorldEditorTool::IsViewportPlaying() const
     {
-        const float Scale = ImGuiX::GetUIScale();
-        const float Padding = 8.0f * Scale;
-        const float ItemSpacing = 6.0f * Scale;
-        // While playing, the only control is Stop: shrink it and make the bar solid
-        // so it reads as a small, deliberate widget instead of a distracting overlay.
-        // Scaled with UI/DPI so the icon glyphs stay centered and uncropped.
-        const float ButtonSize = (bGamePreviewRunning ? 24.0f : 32.0f) * Scale;
-        constexpr float CornerRounding = 8.0f;
+        return bGamePreviewRunning;
+    }
 
-        ImVec2 Pos = ImGui::GetWindowPos();
-        ImGui::SetNextWindowPos(Pos + ImVec2(Padding, Padding));
-        ImGui::SetNextWindowBgAlpha(bGamePreviewRunning ? 1.0f : 0.85f);
-    
-        ImGuiWindowFlags WindowFlags = 
-            ImGuiWindowFlags_NoDecoration |
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoNav |
-            ImGuiWindowFlags_AlwaysAutoResize;
-    
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Padding, Padding));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, CornerRounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ItemSpacing, ItemSpacing));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-    
-        if (ImGui::Begin("##ViewportToolbar", nullptr, WindowFlags))
+    const char* FWorldEditorTool::GetGizmoConfigSection() const
+    {
+        return "Editor.WorldEditorTool";
+    }
+
+    void FWorldEditorTool::DrawViewportToolbarPlayControls(float ButtonSize)
+    {
+        DrawSimulationControls(ButtonSize);
+        if (!bGamePreviewRunning)
         {
-            ImGui::BeginGroup();
-            
-            DrawSimulationControls(ButtonSize);
-            
-            if (!bGamePreviewRunning)
+            ImGui::SameLine();
+            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+            ImGui::SameLine();
+        }
+    }
+
+    void FWorldEditorTool::DrawViewportToolbarModeSelector(float ButtonSize)
+    {
+        // Mode-selector dropdown: mutually exclusive; switching drives OnEnter/OnExit. The active
+        // mode then appends its own toolbar, so the bar stays clean regardless of mode count.
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+        ImGui::SameLine();
+
+        if (IWorldEditorMode* Active = GetActiveMode())
+        {
+            char Preview[64];
+            ImFormatString(Preview, sizeof(Preview), "%s  %s", Active->GetIcon(), Active->GetDisplayName());
+
+            const float PadY = std::max(ImGui::GetStyle().FramePadding.y, (ButtonSize - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, PadY));
+
+            const float ComboWidth = ImGui::CalcTextSize(Preview).x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+            ImGui::SetNextItemWidth(ComboWidth);
+            const bool bComboOpen = ImGui::BeginCombo("##EditorMode", Preview);
+            ImGui::PopStyleVar();
+            if (bComboOpen)
             {
-                ImGui::SameLine();
-                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                ImGui::SameLine();  
-                
-                DrawCameraControls(ButtonSize);
-        
-                ImGui::SameLine();
-                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                ImGui::SameLine();
-        
-                DrawViewportOptions(ButtonSize);
-
-                // Mode-selector bar: mutually exclusive; switching drives OnEnter/OnExit.
-                ImGui::SameLine();
-                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                ImGui::SameLine();
-
                 for (int32 Idx = 0; Idx < (int32)EditorModes.size(); ++Idx)
                 {
                     IWorldEditorMode* Mode = EditorModes[Idx].get();
                     if (!Mode) continue;
                     const bool bSelected = (Idx == ActiveModeIndex);
 
-                    ImGui::PushID(Idx);
-                    if (bSelected)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.55f, 0.25f, 1.0f));
-                    }
-                    if (ImGui::Button(Mode->GetDisplayName(), ImVec2(0, ButtonSize)))
+                    char Label[64];
+                    ImFormatString(Label, sizeof(Label), "%s  %s", Mode->GetIcon(), Mode->GetDisplayName());
+                    if (ImGui::Selectable(Label, bSelected))
                     {
                         SetActiveMode(Idx);
-                    }
-                    if (bSelected)
-                    {
-                        ImGui::PopStyleColor();
                     }
                     if (const char* Tip = Mode->GetTooltip())
                     {
@@ -2221,25 +2258,29 @@ namespace Lumina
                             ImGui::SetTooltip("%s", Tip);
                         }
                     }
-                    ImGui::PopID();
-                    if (Idx + 1 < (int32)EditorModes.size())
+                    if (bSelected)
                     {
-                        ImGui::SameLine();
+                        ImGui::SetItemDefaultFocus();
                     }
                 }
-
-                if (IWorldEditorMode* ActiveMode = GetActiveMode())
-                {
-                    ActiveMode->DrawToolbar(World, ButtonSize);
-                }
-                NavMeshEditMode.DrawToolbar(World, ButtonSize);
+                ImGui::EndCombo();
             }
-
-            ImGui::EndGroup();
         }
-        ImGui::End();
 
-        ImGui::PopStyleVar(4);
+        if (IWorldEditorMode* ActiveMode = GetActiveMode())
+        {
+            ActiveMode->DrawToolbar(World, ButtonSize);
+        }
+    }
+
+    void FWorldEditorTool::DrawViewModeExtraItems()
+    {
+        ImGui::MenuItem("Draw Entity Debug Info", nullptr, &bDrawEntityDebugInfo);
+
+        if (ImGui::MenuItem("Game View", "G", &bGameViewMode))
+        {
+            bGameViewMode = !bGameViewMode;
+        }
     }
 
     void FWorldEditorTool::PushAddTagModal(entt::entity Entity)
@@ -2365,7 +2406,14 @@ namespace Lumina
             bool bComponentAdded = false;
 
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-            ImGui::TextUnformatted("Select a component to add to the entity");
+            if (SelectedEntities.size() > 1 && IsEntitySelected(Entity))
+            {
+                ImGui::Text("Select a component to add to %llu selected entities", (unsigned long long)SelectedEntities.size());
+            }
+            else
+            {
+                ImGui::TextUnformatted("Select a component to add to the entity");
+            }
             ImGui::PopStyleColor();
 
             ImGui::Spacing();
@@ -2398,24 +2446,8 @@ namespace Lumina
                 CEntityComponentType* PickedRuntime = nullptr;
                 if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct, PickedRuntime))
                 {
-                    using namespace entt::literals;
-                    if (PickedRuntime != nullptr)
-                    {
-                        BeginTransaction();
-                        ECS::Utils::AddRuntimeComponent(World->GetEntityRegistry(), Entity, PickedRuntime);
-                        EndTransaction("Add Runtime Component");
-                        if (World->GetPackage() != nullptr)
-                        {
-                            World->GetPackage()->MarkDirty();
-                        }
-                        bDetailsDirty = true;
-                    }
-                    else
-                    {
-                        BeginTransaction();
-                        ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
-                        EndTransaction("Emplace Component");
-                    }
+                    TVector<entt::entity> Targets = GetComponentEditTargets(Entity);
+                    ApplyAddComponentToTargets(Targets, PickedMetaType, PickedRuntime);
 
                     bComponentAdded = true;
                 }
@@ -2507,20 +2539,188 @@ namespace Lumina
             {
                 return true;
             }
-    
+
             return false;
         });
     }
 
+    void FWorldEditorTool::DrawScriptAttachMenuItems(entt::entity Entity)
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        // Both options only make sense before a script is present; once one is attached the
+        // details panel owns swapping it.
+        if (!Registry.valid(Entity) || Registry.all_of<SScriptComponent>(Entity))
+        {
+            return;
+        }
+
+        // "Attach Script": inline searchable dropdown of every script across all mounts
+        // (project, plugins, engine) — see Lua::GatherScriptPaths.
+        const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(LE_ICON_LANGUAGE_LUA " Attach Script");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(260.0f);
+        const int32 Picked = ImGuiX::SearchableCombo("##AttachScript", "Select a script...",
+            (int32)ScriptPaths.size(), INDEX_NONE,
+            [&ScriptPaths](int32 Index) { return ScriptPaths[Index]; }, LE_ICON_LANGUAGE_LUA);
+
+        if (Picked != INDEX_NONE)
+        {
+            AttachScriptToEntity(Entity, FString(ScriptPaths[Picked].c_str()));
+            ImGui::CloseCurrentPopup();
+        }
+
+        if (ImGui::MenuItem(LE_ICON_FILE_PLUS " Attach New Script..."))
+        {
+            PushAttachNewScriptModal(Entity);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGuiX::TextTooltip("{}", "Create a new script file from the template and attach it to this entity.");
+    }
+
+    void FWorldEditorTool::AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath)
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Entity) || Registry.all_of<SScriptComponent>(Entity) || VirtualPath.empty())
+        {
+            return;
+        }
+
+        BeginTransaction();
+        // emplace fires on_construct with an empty path (a no-op); we then set the path and run
+        // the real load through OnScriptComponentCreated, mirroring ScriptComponentCustomization.
+        SScriptComponent& ScriptComponent = Registry.emplace<SScriptComponent>(Entity);
+        ScriptComponent.ScriptPath.Path = VirtualPath;
+        World->OnScriptComponentCreated(Entity, ScriptComponent, true);
+        EndTransaction("Attach Script");
+
+        if (World->GetPackage() != nullptr)
+        {
+            World->GetPackage()->MarkDirty();
+        }
+        bDetailsDirty = true;
+        // Rebuild the row so its new script toggle icon appears immediately.
+        OutlinerListView.MarkTreeDirty();
+    }
+
+    void FWorldEditorTool::PushAttachNewScriptModal(entt::entity Entity)
+    {
+        ToolContext->PushModal("Attach New Script", ImVec2(560.0f, 240.0f), [this, Entity]() -> bool
+        {
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            if (!Registry.valid(Entity))
+            {
+                return true;
+            }
+
+            static FFixedString PathBuffer;
+            if (ImGui::IsWindowAppearing())
+            {
+                FFixedString FileName = "NewScript";
+                if (const SNameComponent* Name = Registry.try_get<SNameComponent>(Entity))
+                {
+                    if (Name->Name.c_str()[0] != '\0')
+                    {
+                        FileName = Name->Name.c_str();
+                    }
+                }
+                for (char& C : FileName)
+                {
+                    if (C == ' ') C = '_';
+                }
+                PathBuffer = "/Game/Scripts/";
+                PathBuffer.append(FileName.c_str());
+                PathBuffer.append(".luau");
+            }
+
+            ImGui::TextUnformatted("Create a new script and attach it to this entity.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::TextUnformatted("Path:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            const bool bEnter = ImGui::InputText("##NewScriptPath", PathBuffer.data(), PathBuffer.max_size(),
+                ImGuiInputTextFlags_EnterReturnsTrue);
+
+            const FStringView PathView(PathBuffer.c_str());
+            const bool bUnderGame = VFS::IsUnderDirectory("/Game", PathView);
+            const bool bHasExt    = VFS::HasExtension(PathView, ".luau");
+            const bool bExists    = VFS::Exists(PathView);
+            const bool bValid     = bUnderGame && bHasExt;
+
+            ImGui::Spacing();
+
+            auto StatusLine = [](bool bOk, const char* Text)
+            {
+                const ImVec4 Color = bOk ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.45f, 0.40f, 1.0f);
+                ImGui::PushStyleColor(ImGuiCol_Text, Color);
+                ImGui::Bullet();
+                ImGui::SameLine();
+                ImGui::TextUnformatted(Text);
+                ImGui::PopStyleColor();
+            };
+
+            StatusLine(bValid, bValid ? "Script path/name is valid." : "Path must be under /Game/ and end with .luau.");
+            if (bValid)
+            {
+                StatusLine(!bExists, bExists ? "A script already exists here; it will be attached as-is."
+                                             : "Will create a new script file.");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            constexpr float ButtonWidth = 110.0f;
+            const float AvailWidth = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX((AvailWidth - ButtonWidth * 2 - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+
+            const bool bCreatePressed = ImGui::Button("Create", ImVec2(ButtonWidth, 0.0f)) || bEnter;
+            ImGui::SameLine();
+            const bool bCancelPressed = ImGui::Button("Cancel", ImVec2(ButtonWidth, 0.0f));
+
+            if (bCancelPressed)
+            {
+                return true;
+            }
+
+            if (bCreatePressed && bValid)
+            {
+                const FString Path(PathBuffer.c_str());
+                // Only write the template for a brand-new file; never clobber an existing script.
+                if (bExists || VFS::WriteFile(Path, LoadNewEntityScriptTemplate()))
+                {
+                    AttachScriptToEntity(Entity, Path);
+                }
+                return true;
+            }
+
+            return false;
+        });
+    }
+
+    CPackage* FWorldEditorTool::GetScenePackage() const
+    {
+        return World ? World->GetPackage() : nullptr;
+    }
+
     void FWorldEditorTool::OnSave()
     {
-		if (!World->GetPackage())
+        // A transient world has no package yet; prompt for a destination instead of saving.
+        if (!World->GetPackage())
         {
             PushSaveAsAssetModal();
             return;
         }
 
-        if (ShouldGenerateThumbnailOnSave() && World->GetPackage())
+        // The world editor saves its live CWorld in place (it is not held as the FAssetEditorTool
+        // Asset). Thumbnail comes from the viewport, not the asset thumbnail manager.
+        if (ShouldGenerateThumbnailOnSave())
         {
             GenerateThumbnail(World->GetPackage());
         }
@@ -2975,8 +3175,8 @@ namespace Lumina
             FEntityRegistry& OldRegistry = World->GetEntityRegistry();
             OldRegistry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
             OldRegistry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
-            OldRegistry.on_construct<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
-            OldRegistry.on_destroy<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
+            OldRegistry.on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
+            OldRegistry.on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
             OldRegistry.clear<FSelectedInEditorComponent>();
             OldRegistry.clear<FLastSelectedTag>();
         }
@@ -3115,558 +3315,6 @@ namespace Lumina
         }
     }
 
-    void FWorldEditorTool::DrawCameraControls(float ButtonSize)
-    {
-        if (bGamePreviewRunning)
-        {
-            return;
-        }
-        
-        const ImVec2 BtnSize = ImVec2(ButtonSize, ButtonSize);
-        float Speed = CameraState.Speed;
-
-        if (ImGuiX::IconButton(LE_ICON_CAMERA, "##Camera", 0xFFFFFFFF, BtnSize))
-        {
-            ImGui::OpenPopup("CameraSettings");
-        }
-
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Camera Speed: %.1fx", Speed);
-        }
-
-
-        if (ImGui::BeginPopup("CameraSettings", ImGuiWindowFlags_NoMove))
-        {
-            STransformComponent& CameraTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-
-            ImGui::SeparatorText(LE_ICON_VIDEO " Camera Settings");
-
-            ImGui::Text("Movement Speed");
-            if (ImGui::SliderFloat("##Speed", &Speed, 0.1f, 100.0f, "%.1fx"))
-            {
-                CameraState.Speed = Speed;
-            }
-
-            ImGui::SameLine();
-            
-            if (ImGui::SmallButton("Reset##Speed"))
-            {
-                Speed = 1.0f;
-                CameraState.Speed = 1.0f;
-            }
-            
-            ImGui::Separator();
-            
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
-            ImGui::TextUnformatted(LE_ICON_AXIS_ARROW);
-            ImGui::PopStyleColor();
-        
-            ImGui::SameLine();
-        
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Translation (Location)");
-            }
-                
-            ImGui::DragFloat3("T", Math::ValuePtr(CameraTransform.WorldTransform.Location), 0.01f);
-        
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.7f, 1.0f));
-            ImGui::TextUnformatted(LE_ICON_ROTATE_360);
-            ImGui::PopStyleColor();
-            
-            ImGuiX::TextTooltip("Rotation (Euler Angles)");
-        
-            ImGui::SameLine();
-        
-            FVector3 EulerRotation = CameraTransform.GetRotationAsEuler();
-            if (ImGui::DragFloat3("R", Math::ValuePtr(EulerRotation), 0.01f))
-            {
-                CameraTransform.SetRotationFromEuler(EulerRotation);
-            }
-            
-            ImGui::Separator();
-            
-            if (ImGui::Button("Reset Position", ImVec2(-1, 0)))
-            {
-                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(FVector3(0.0f));
-            }
-            
-            if (ImGui::Button("Reset Rotation", ImVec2(-1, 0)))
-            {
-                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetRotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f));
-            }
-            
-            ImGui::Spacing();
-            
-            if (ImGui::Button("Close", ImVec2(-1, 0)))
-            {
-                ImGui::CloseCurrentPopup();
-            }
-        
-            ImGui::EndPopup();
-        }
-    
-        ImGui::SameLine();
-    
-        if (ImGuiX::IconButton(LE_ICON_CROSSHAIRS, "##FocusSelection", 0xFFFFFFFF, BtnSize))
-        {
-            FocusViewportToEntity(GetLastSelectedEntity());
-        }
-    
-        ImGuiX::TextTooltip("Focus on Selection (F)");
-        
-    }
-
-    void FWorldEditorTool::DrawViewportOptions(float ButtonSize)
-    {
-        const ImVec2 BtnSize = ImVec2(ButtonSize, ButtonSize);
-    
-		ImColor IconColor = bWorldGridEnabled ? ImVec4(0.2f, 0.6f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-        if (ImGuiX::IconButton(LE_ICON_GRID, "##GridToggle", IconColor, BtnSize))
-        {
-            bWorldGridEnabled = !bWorldGridEnabled;
-        }
-        
-        ImGuiX::TextTooltip("Toggle Grid");
-        
-        ImGui::SameLine();
-        
-        const char* Icon = nullptr;
-        switch (GuizmoOp)
-        {
-        case ImGuizmo::OPERATION::TRANSLATE:
-            {
-                Icon = LE_ICON_AXIS_ARROW;
-            }
-            break;
-        case ImGuizmo::OPERATION::ROTATE:
-            {
-                Icon = LE_ICON_ROTATE_360;
-            }
-            break;
-        case ImGuizmo::OPERATION::SCALE:
-            {
-                Icon = LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT;
-            }
-            break;
-        }
-        
-        if (ImGuiX::IconButton(Icon, "##GizmoMode", 0xFFFFFFFF, BtnSize))
-        {
-            CycleGuizmoOp();
-        }
-        
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Gizmo: %s (R)", ImGuiX::ImGuizmoOpToString(GuizmoOp).data());
-        }
-
-        ImGui::SameLine();
-
-        const bool bIsLocalMode = (GuizmoMode == ImGuizmo::LOCAL);
-        const char* ModeIcon = bIsLocalMode ? LE_ICON_AXIS_ARROW : LE_ICON_EARTH;
-        const ImColor ModeIconColor = bIsLocalMode ? ImVec4(0.2f, 0.6f, 1.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-        if (ImGuiX::IconButton(ModeIcon, "##GizmoSpace", ModeIconColor, BtnSize))
-        {
-            ToggleGuizmoMode();
-        }
-
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Gizmo Space: %s (X)", bIsLocalMode ? "Local" : "World");
-        }
-
-        if (bGuizmoSnapEnabled)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 1.0f, 0.6f));
-        }
-        
-        ImGui::SameLine();
-    
-        bool bSnapWasEnabled = bGuizmoSnapEnabled;
-        if (ImGuiX::IconButton(LE_ICON_MAGNET, "##SnapToggle", 0xFFFFFFFF, BtnSize))
-        {
-            bGuizmoSnapEnabled = !bGuizmoSnapEnabled;
-            GConfig->Set("Editor.WorldEditorTool.GuizmoSnapEnabled", bGuizmoSnapEnabled);
-        }
-    
-        if (bSnapWasEnabled)
-        {
-            ImGui::PopStyleColor();
-        }
-    
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Snap Settings (Click to toggle) (Right click for config)");
-        }
-    
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right) || (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)))
-        {
-            ImGui::OpenPopup("SnapSettingsPopup");
-        }
-    
-        if (ImGui::BeginPopup("SnapSettingsPopup", ImGuiWindowFlags_NoMove))
-        {
-            DrawSnapSettingsPopup();
-            ImGui::EndPopup();
-        }
-    
-        ImGui::SameLine();
-        
-        if (ImGuiX::IconButton(LE_ICON_EYE, "##ViewMode", 0xFFFFFFFF, BtnSize))
-        {
-            ImGui::OpenPopup("ViewModePopup");
-        }
-        
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("View Mode Options");
-        }
-        
-        ImGui::SameLine();
-        
-        if (ImGuiX::IconButton(LE_ICON_PLUS, "##AddToWorld", 0xFFFFFFFF, BtnSize))
-        {
-            ImGui::OpenPopup("AddToEntityMenu");
-        }
-        
-        DrawAddToEntityOrWorldPopup();
-        
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Add something to the world.");
-        }
-        
-        IRenderScene* RenderScene = World->GetRenderer();
-        if (ImGui::BeginPopup("ViewModePopup", ImGuiWindowFlags_NoMove))
-        {
-            ImGui::Text("Visualizations");
-            ImGui::Separator();
-            
-            if (ImGui::BeginMenu("Components"))
-            {
-                ImGui::Checkbox("Show All", &bShowComponentVisualizers);
-                
-                ImGui::BeginDisabled(!bShowComponentVisualizers);
-                for (auto&& [Struct, Visualizer] : CComponentVisualizerRegistry::Get().GetVisualizers())
-                {
-                    bool bFoobar = false;
-                    ImGui::Checkbox(Struct->MakeDisplayName().c_str(), &bFoobar);
-                }
-                ImGui::EndDisabled();
-                
-                ImGui::EndMenu();
-            }
-            
-            if (ImGui::BeginMenu("Physics"))
-            {
-                if (const bool* bValue = FConsoleRegistry::Get().TryGetAs<bool>("Jolt.Debug.Draw"))
-                {
-                    bool bProxy = *bValue;
-                    if (ImGui::MenuItem("Toggle Collision", nullptr, &bProxy))
-                    {
-                        FConsoleRegistry::Get().SetAs("Jolt.Debug.Draw", bProxy);
-                    }
-                }
-
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("Navigation"))
-            {
-                if (const bool* bValue = FConsoleRegistry::Get().TryGetAs<bool>("Nav.DrawDebug"))
-                {
-                    bool bProxy = *bValue;
-                    if (ImGui::MenuItem("Draw NavMesh", nullptr, &bProxy))
-                    {
-                        FConsoleRegistry::Get().SetAs("Nav.DrawDebug", bProxy);
-                    }
-                }
-
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu(LE_ICON_BONE " Skeleton"))
-            {
-                DrawSkeletonDebugMenuItems();
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("Rendering"))
-            {
-                FSceneRenderSettings& Settings = RenderScene->GetSceneRenderSettings();
-
-                if (ImGui::BeginMenu("View Mode"))
-                {
-                    // Keep grouping aligned with ERenderSceneDebugFlags so adding a viz is a one-liner here plus the enum/shader entry.
-                    struct FViewModeEntry
-                    {
-                        ERenderSceneDebugFlags Mode;
-                        const char* Label;
-                    };
-
-                    static const FViewModeEntry Shading[] =
-                    {
-                        { ERenderSceneDebugFlags::None,  "Lit"   },
-                        { ERenderSceneDebugFlags::Unlit, "Unlit" },
-                    };
-
-                    static const FViewModeEntry Buffers[] =
-                    {
-                        { ERenderSceneDebugFlags::BaseColor,         "Base Color"        },
-                        { ERenderSceneDebugFlags::WorldNormal,       "World Normal"      },
-                        { ERenderSceneDebugFlags::ShadingNormal,     "Shading Normal"    },
-                        { ERenderSceneDebugFlags::Roughness,         "Roughness"         },
-                        { ERenderSceneDebugFlags::Metallic,          "Metallic"          },
-                        { ERenderSceneDebugFlags::AmbientOcclusion,  "Ambient Occlusion" },
-                        { ERenderSceneDebugFlags::Emissive,          "Emissive"          },
-                        { ERenderSceneDebugFlags::UV,                "UV"                },
-                    };
-
-                    static const FViewModeEntry Geometry[] =
-                    {
-                        { ERenderSceneDebugFlags::Meshlets,        "Meshlets"         },
-                    };
-
-                    static const FViewModeEntry Lighting[] =
-                    {
-                        { ERenderSceneDebugFlags::LightComplexity, "Light Complexity" },
-                        { ERenderSceneDebugFlags::ClusterGrid,     "Light Clusters"   },
-                        { ERenderSceneDebugFlags::ShadowCascades,  "Shadow Cascades"  },
-                    };
-
-                    auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)
-                    {
-                        ImGui::TextDisabled("%s", Header);
-                        ImGui::Separator();
-                        for (size_t i = 0; i < Count; ++i)
-                        {
-                            bool bSelected = Settings.Flags == Entries[i].Mode;
-                            if (ImGui::MenuItem(Entries[i].Label, nullptr, bSelected))
-                            {
-                                Settings.Flags = Entries[i].Mode;
-                            }
-                        }
-                    };
-
-                    DrawGroup("Shading", Shading, sizeof(Shading) / sizeof(Shading[0]));
-                    ImGui::Spacing();
-                    DrawGroup("Buffers", Buffers, sizeof(Buffers) / sizeof(Buffers[0]));
-                    ImGui::Spacing();
-                    DrawGroup("Geometry", Geometry, sizeof(Geometry) / sizeof(Geometry[0]));
-                    ImGui::Spacing();
-                    DrawGroup("Lighting", Lighting, sizeof(Lighting) / sizeof(Lighting[0]));
-
-                    ImGui::EndMenu();
-                }
-
-                ImGui::Separator();
-
-                bool bWireframe = Settings.bWireframe;
-                if (ImGui::MenuItem("Wireframe", nullptr, &bWireframe))
-                {
-                    Settings.bWireframe = bWireframe;
-                }
-
-                bool bDrawBillboards = Settings.bDrawBillboards;
-                if (ImGui::MenuItem("Draw Billboards", nullptr, &bDrawBillboards))
-                {
-                    Settings.bDrawBillboards = bDrawBillboards;
-                }
-
-                ImGui::MenuItem("Draw Entity Debug Info", nullptr, &bDrawEntityDebugInfo);
-
-                bool bDrawAABB = Settings.bDrawAABB;
-                if (ImGui::MenuItem("Draw Bounds", nullptr, &bDrawAABB))
-                {
-                    Settings.bDrawAABB = bDrawAABB;
-                }
-                
-                if (ImGui::MenuItem("Game View", "G", &bGameViewMode))
-                {
-                    bGameViewMode = !bGameViewMode;
-                }
-
-                ImGui::EndMenu();
-            }
-            
-            ImGui::EndPopup();
-        }
-    }
-    
-    void FWorldEditorTool::DrawSnapSettingsPopup()
-    {
-        ImGui::Text("Snap Settings");
-        ImGuiX::HelpMarker(
-            "Constrains gizmo drags to fixed steps. Translate = world units. Rotate = degrees. "
-            "Scale = multiplicative factor. Toggle quickly with the Snap button on the toolbar.");
-        ImGui::Separator();
-
-        if (ImGui::Checkbox("Enable Snap", &bGuizmoSnapEnabled))
-        {
-            GConfig->Set("Editor.WorldEditorTool.GuizmoSnapEnabled", bGuizmoSnapEnabled);
-        }
-        
-        ImGui::Spacing();
-        
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.4f, 0.6f, 0.3f));
-        bool bAnySettingDirty = false;
-        
-        if (ImGui::CollapsingHeader("Translation", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::PushID("Translate");
-            ImGui::Indent();
-            
-            ImGui::BeginDisabled(!bGuizmoSnapEnabled);
-            
-            ImGui::Text("Presets:");
-            ImGui::SameLine();
-            
-            if (ImGui::Button("0.1"))
-            {
-                GuizmoSnapTranslate = 0.1f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("1.0"))
-            {
-                GuizmoSnapTranslate = 1.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("5.0"))
-            {
-                GuizmoSnapTranslate = 5.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("10"))
-            {
-                GuizmoSnapTranslate = 10.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("50"))
-            {
-                GuizmoSnapTranslate = 50.0f;
-                bAnySettingDirty = true;
-            }
-            
-            if (ImGui::DragFloat("Value##Translation", &GuizmoSnapTranslate, 0.1f, 0.01f, 1000.0f, "%.2f units"))
-            {
-                bAnySettingDirty = true;
-            }
-            
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-            ImGui::PopID();
-        }
-        
-        if (ImGui::CollapsingHeader("Rotation", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::PushID("Rotate");
-            ImGui::Indent();
-            
-            ImGui::BeginDisabled(!bGuizmoSnapEnabled);
-            
-            ImGui::Text("Presets:");
-            ImGui::SameLine();
-            
-            if (ImGui::Button("1 " LE_ICON_ANGLE_ACUTE))
-            {
-                GuizmoSnapRotate = 1.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("5 " LE_ICON_ANGLE_ACUTE))
-            {
-                GuizmoSnapRotate = 5.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("15 " LE_ICON_ANGLE_ACUTE))
-            {
-                GuizmoSnapRotate = 15.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("45 " LE_ICON_ANGLE_ACUTE))
-            {
-                GuizmoSnapRotate = 45.0f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("90 " LE_ICON_ANGLE_ACUTE))
-            {
-                GuizmoSnapRotate = 90.0f;
-                bAnySettingDirty = true;
-            }
-            
-            if (ImGui::DragFloat("Value##Rotation", &GuizmoSnapRotate, 0.5f, 0.1f, 180.0f, "%.1f " LE_ICON_ANGLE_ACUTE))
-            {
-                bAnySettingDirty = true;
-            }
-            
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-            ImGui::PopID();
-        }
-        
-        if (ImGui::CollapsingHeader("Scale", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::PushID("Scale");
-            ImGui::Indent();
-            
-            ImGui::BeginDisabled(!bGuizmoSnapEnabled);
-            
-            ImGui::Text("Presets:");
-            ImGui::SameLine();
-            
-            if (ImGui::Button("0.1"))
-            {
-                GuizmoSnapScale = 0.1f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("0.25"))
-            {
-                GuizmoSnapScale = 0.25f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("0.5"))
-            {
-                GuizmoSnapScale = 0.5f;
-                bAnySettingDirty = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("1.0"))
-            {
-                GuizmoSnapScale = 1.0f;
-                bAnySettingDirty = true;
-            }
-            
-            if (ImGui::DragFloat("Value##Scale", &GuizmoSnapScale, 0.01f, 0.01f, 10.0f, "%.2f"))
-            {
-                bAnySettingDirty = true;
-            }
-            
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-            ImGui::PopID();
-        }
-        
-        if (bAnySettingDirty)
-        {
-            GConfig->Set("Editor.WorldEditorTool.GuizmoSnapTranslate", GuizmoSnapTranslate);
-            GConfig->Set("Editor.WorldEditorTool.GuizmoSnapRotate", GuizmoSnapRotate);
-            GConfig->Set("Editor.WorldEditorTool.GuizmoSnapScale", GuizmoSnapScale);
-        }
-
-        ImGui::PopStyleColor();
-    }
-
     void FWorldEditorTool::StopAllSimulations()
     {
         SetWorldNewSimulate(false);
@@ -3707,269 +3355,19 @@ namespace Lumina
         }
     }
 
-    void FWorldEditorTool::SetSingleSelectedEntity(entt::entity Entity)
-    {
-        if (Entity != entt::null && !World->GetEntityRegistry().valid(Entity))
-        {
-            Entity = entt::null;
-        }
-
-        // Fast-path: clicking the already-singularly-selected entity is a no-op.
-        if (Entity == LastSelectedEntity && SelectedEntities.size() == (Entity == entt::null ? 0 : 1)
-            && (Entity == entt::null || SelectedEntities.find(Entity) != SelectedEntities.end()))
-        {
-            return;
-        }
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-
-        // Drop tags from entities no longer selected so render highlighting matches the canonical set.
-        for (entt::entity Old : SelectedEntities)
-        {
-            if (Old != Entity && Registry.valid(Old))
-            {
-                Registry.remove<FSelectedInEditorComponent>(Old);
-                auto It = EntityToTreeNode.find(Old);
-                if (It != EntityToTreeNode.end())
-                {
-                    SetTreeNodeSelected(OutlinerListView, It->second, false);
-                }
-            }
-        }
-        SelectedEntities.clear();
-
-        // Clear last-selected tag unconditionally; re-emplace below if new selection isn't empty.
-        Registry.clear<FLastSelectedTag>();
-
-        if (Entity != entt::null)
-        {
-            SelectedEntities.insert(Entity);
-            Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
-            Registry.emplace_or_replace<FLastSelectedTag>(Entity);
-
-            auto It = EntityToTreeNode.find(Entity);
-            if (It != EntityToTreeNode.end())
-            {
-                SetTreeNodeSelected(OutlinerListView, It->second, true);
-            }
-        }
-
-        if (LastSelectedEntity != Entity)
-        {
-            LastSelectedEntity = Entity;
-            bDetailsDirty = true;
-        }
-    }
-
-    void FWorldEditorTool::AddSelectedEntity(entt::entity Entity, bool /*bRebuild*/)
-    {
-        if (Entity == entt::null || !World->GetEntityRegistry().valid(Entity))
-        {
-            return;
-        }
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-
-        const bool bWasAlreadySelected = SelectedEntities.find(Entity) != SelectedEntities.end();
-        if (!bWasAlreadySelected)
-        {
-            SelectedEntities.insert(Entity);
-            Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
-
-            auto It = EntityToTreeNode.find(Entity);
-            if (It != EntityToTreeNode.end())
-            {
-                SetTreeNodeSelected(OutlinerListView, It->second, true);
-            }
-        }
-
-        // Always promote to last-selected so clicking a row in a multi-select focuses details.
-        if (LastSelectedEntity != Entity)
-        {
-            Registry.clear<FLastSelectedTag>();
-            Registry.emplace_or_replace<FLastSelectedTag>(Entity);
-            LastSelectedEntity = Entity;
-            bDetailsDirty = true;
-        }
-    }
-
-    void FWorldEditorTool::RemoveSelectedEntity(entt::entity Entity, bool /*bRebuild*/)
-    {
-        if (World == nullptr || Entity == entt::null)
-        {
-            return;
-        }
-
-        auto SetIt = SelectedEntities.find(Entity);
-        if (SetIt == SelectedEntities.end())
-        {
-            return;
-        }
-
-        SelectedEntities.erase(SetIt);
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (Registry.valid(Entity))
-        {
-            Registry.remove<FSelectedInEditorComponent>(Entity);
-        }
-
-        auto TreeIt = EntityToTreeNode.find(Entity);
-        if (TreeIt != EntityToTreeNode.end())
-        {
-            SetTreeNodeSelected(OutlinerListView, TreeIt->second, false);
-        }
-
-        // If the deselected entity was the focus, pick a new one so "last" isn't stale.
-        if (LastSelectedEntity == Entity)
-        {
-            Registry.clear<FLastSelectedTag>();
-            entt::entity NewLast = entt::null;
-            for (entt::entity Candidate : SelectedEntities)
-            {
-                if (Registry.valid(Candidate))
-                {
-                    NewLast = Candidate;
-                    break;
-                }
-            }
-            if (NewLast != entt::null)
-            {
-                Registry.emplace_or_replace<FLastSelectedTag>(NewLast);
-            }
-            LastSelectedEntity = NewLast;
-            bDetailsDirty = true;
-        }
-    }
-
-    void FWorldEditorTool::ToggleSelectedEntity(entt::entity Entity)
-    {
-        if (Entity == entt::null || !World->GetEntityRegistry().valid(Entity))
-        {
-            return;
-        }
-
-        if (SelectedEntities.find(Entity) != SelectedEntities.end())
-        {
-            RemoveSelectedEntity(Entity, false);
-        }
-        else
-        {
-            AddSelectedEntity(Entity, false);
-        }
-    }
-
-    void FWorldEditorTool::ResyncSelectionFromRegistry()
-    {
-        // Clear old outliner row state; re-mark below from the post-resync set.
-        for (entt::entity Old : SelectedEntities)
-        {
-            auto It = EntityToTreeNode.find(Old);
-            if (It != EntityToTreeNode.end())
-            {
-                SetTreeNodeSelected(OutlinerListView, It->second, false);
-            }
-        }
-        SelectedEntities.clear();
-        LastSelectedEntity = entt::null;
-
-        if (World == nullptr)
-        {
-            bDetailsDirty = true;
-            return;
-        }
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-
-        Registry.view<FSelectedInEditorComponent>().each([&](entt::entity Entity)
-        {
-            SelectedEntities.insert(Entity);
-
-            auto It = EntityToTreeNode.find(Entity);
-            if (It != EntityToTreeNode.end())
-            {
-                SetTreeNodeSelected(OutlinerListView, It->second, true);
-            }
-        });
-
-        // FLastSelectedTag should be serialized; fall back to first selected if it's missing.
-        Registry.view<FLastSelectedTag>().each([&](entt::entity Entity)
-        {
-            LastSelectedEntity = Entity;
-        });
-
-        if (LastSelectedEntity == entt::null && !SelectedEntities.empty())
-        {
-            entt::entity First = *SelectedEntities.begin();
-            LastSelectedEntity = First;
-            Registry.emplace_or_replace<FLastSelectedTag>(First);
-        }
-
-        bDetailsDirty = true;
-    }
-
-    void FWorldEditorTool::ClearSelectedEntities()
-    {
-        if (World == nullptr)
-        {
-            SelectedEntities.clear();
-            LastSelectedEntity = entt::null;
-            bDetailsDirty = true;
-            return;
-        }
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-
-        for (entt::entity Entity : SelectedEntities)
-        {
-            auto It = EntityToTreeNode.find(Entity);
-            if (It != EntityToTreeNode.end())
-            {
-                SetTreeNodeSelected(OutlinerListView, It->second, false);
-            }
-        }
-
-        SelectedEntities.clear();
-
-        // Bulk-erase via registry clear<>(); cheaper than walking SelectedEntities.
-        Registry.clear<FSelectedInEditorComponent>();
-        Registry.clear<FLastSelectedTag>();
-
-        if (LastSelectedEntity != entt::null)
-        {
-            LastSelectedEntity = entt::null;
-            bDetailsDirty = true;
-        }
-    }
-
-    void FWorldEditorTool::AddEntityToCopies(entt::entity Entity)
-    {
-        World->GetEntityRegistry().emplace_or_replace<FCopiedTag>(Entity);
-    }
-
-    void FWorldEditorTool::RemoveEntityFromCopies(entt::entity Entity)
-    {
-        World->GetEntityRegistry().remove<FCopiedTag>(Entity);
-    }
-
-    void FWorldEditorTool::ClearCopies() const
-    {
-        World->GetEntityRegistry().clear<FCopiedTag>();
-    }
-
     void FWorldEditorTool::RebindRegistryObservers()
     {
         FEntityRegistry& Registry = World->GetEntityRegistry();
         Registry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
-        Registry.on_construct<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
-        Registry.on_destroy<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
+        Registry.on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
+        Registry.on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
 
         Registry.on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
         // Hook on SNameComponent (not entt::entity) so we don't add an outliner row before the entity has a name.
-        Registry.on_construct<SNameComponent>().connect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
-        Registry.on_destroy<SNameComponent>().connect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
+        Registry.on_construct<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
+        Registry.on_destroy<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
     }
 
     void FWorldEditorTool::OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld)
@@ -4037,9 +3435,8 @@ namespace Lumina
             ProxyWorld = World;
             ProxyEditorEntity = EditorEntity;
 
-            // PIE world is owned by FWorldManager; RebindToWorld is a pointer-only swap.
-            // StartPIE returns null when the world can't be duplicated (e.g. an unsaved
-            // transient world has no package). Bail before rebinding to null and dereferencing it.
+            // PIE world owned by FWorldManager; RebindToWorld is a pointer-only swap. StartPIE
+            // returns null when the world can't be duplicated, so bail before rebinding to null.
             CWorld* PIEWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
             if (PIEWorld == nullptr)
             {
@@ -4273,9 +3670,8 @@ namespace Lumina
 
     bool FWorldEditorTool::OnEvent(FEvent& Event)
     {
-        // Shift+F1 toggles editor/game input focus while playing. Read off the raw
-        // event, not the ImGui action registry: Game focus sets NoKeyboard, which
-        // would hide the key from ImGui::IsKeyPressed.
+        // Shift+F1 toggles editor/game input focus while playing. Read off the raw event,
+        // not ImGui: Game focus sets NoKeyboard, hiding the key from ImGui::IsKeyPressed.
         if (bGamePreviewRunning && Event.IsA<FKeyPressedEvent>())
         {
             FKeyPressedEvent& Key = Event.As<FKeyPressedEvent>();
@@ -4285,9 +3681,8 @@ namespace Lumina
                 return true;
             }
 
-            // Esc ends the play session (UE-style). Handled here, not via ImGui, because
-            // Game focus sets NoKeyboard and hides the key from ImGui::IsKeyPressed.
-            // Deferred to Update — stopping tears down the PIE world.
+            // Esc ends the play session; handled here (not ImGui) since Game focus's NoKeyboard
+            // hides the key. Deferred to Update — stopping tears down the PIE world.
             if (Key.GetKeyCode() == EKey::Escape && !Key.IsRepeat())
             {
                 bStopPlayRequested = true;
@@ -4295,843 +3690,6 @@ namespace Lumina
             }
         }
         return FEditorTool::OnEvent(Event);
-    }
-
-    bool FWorldEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct, CEntityComponentType*& OutRuntimeType)
-    {
-        OutRuntimeType = nullptr;
-
-        struct FComponentEntry
-        {
-            entt::meta_type MetaType;
-            CStruct*        Struct = nullptr;   // reflected component
-            // Data-authored type: listed straight from the asset registry (so it shows whether or
-            // not it is loaded) and loaded on pick, exactly like every other asset reference.
-            bool            bRuntime = false;
-            FGuid           RuntimeGuid;
-            FString         RuntimeName;
-        };
-
-        struct FComponentCategory
-        {
-            FString                  Name;
-            TVector<FComponentEntry> Entries;
-        };
-
-        TVector<FComponentCategory> Categories;
-        auto FindOrAddCategory = [&Categories](const FString& Name) -> FComponentCategory&
-        {
-            for (FComponentCategory& Cat : Categories)
-            {
-                if (Cat.Name == Name)
-                {
-                    return Cat;
-                }
-            }
-            FComponentCategory& Added = Categories.emplace_back();
-            Added.Name = Name;
-            return Added;
-        };
-
-        static const FString DefaultCategoryName = "General";
-
-        for(auto &&[ID, MetaType]: entt::resolve())
-        {
-            ECS::ETraits Traits = MetaType.traits<ECS::ETraits>();
-            if (!EnumHasAllFlags(Traits, ECS::ETraits::Component))
-            {
-                continue;
-            }
-
-            using namespace entt::literals;
-            entt::meta_any Any = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
-            CStruct* Struct = Any.cast<CStruct*>();
-            ASSERT(Struct);
-
-            if (Struct->HasMeta("HideInComponentList"))
-            {
-                continue;
-            }
-
-            FFixedString DisplayName = Struct->MakeDisplayName();
-            if (!Filter.PassFilter(DisplayName.c_str()))
-            {
-                continue;
-            }
-
-            FString CategoryName = Struct->HasMeta("Category")
-                ? Struct->GetMeta("Category")
-                : DefaultCategoryName;
-
-            FComponentEntry NewEntry;
-            NewEntry.MetaType = MetaType;
-            NewEntry.Struct   = Struct;
-            FindOrAddCategory(CategoryName).Entries.push_back(NewEntry);
-        }
-
-        // Runtime (data-authored) component types appear in the same list, under "Data". They are
-        // enumerated from the asset registry -- not GObjectArray -- so every one on disk shows up
-        // regardless of whether it has been loaded yet; the pick loads it on demand.
-        TVector<FAssetData*> RuntimeTypes = FAssetRegistry::Get().FindByPredicate([](const FAssetData& Data)
-        {
-            CClass* DataClass = FindObject<CClass>(Data.AssetClass);
-            return DataClass != nullptr && DataClass->IsChildOf(CEntityComponentType::StaticClass());
-        });
-
-        for (const FAssetData* Data : RuntimeTypes)
-        {
-            if (!Filter.PassFilter(Data->AssetName.c_str()))
-            {
-                continue;
-            }
-
-            FComponentEntry NewEntry;
-            NewEntry.bRuntime    = true;
-            NewEntry.RuntimeGuid = Data->AssetGUID;
-            NewEntry.RuntimeName = Data->AssetName.ToString();
-            FindOrAddCategory("Data").Entries.push_back(NewEntry);
-        }
-
-        eastl::sort(Categories.begin(), Categories.end(), [](const FComponentCategory& LHS, const FComponentCategory& RHS)
-        {
-            // Push "General" to the bottom so categorized buckets surface first.
-            const bool bLhsGeneral = (LHS.Name == DefaultCategoryName);
-            const bool bRhsGeneral = (RHS.Name == DefaultCategoryName);
-            if (bLhsGeneral != bRhsGeneral)
-            {
-                return !bLhsGeneral;
-            }
-            return LHS.Name < RHS.Name;
-        });
-
-        bool bPicked = false;
-        for (FComponentCategory& Category : Categories)
-        {
-            auto EntryName = [](const FComponentEntry& E) -> FString
-            {
-                return E.bRuntime ? E.RuntimeName : E.Struct->GetName().ToString();
-            };
-            eastl::sort(Category.Entries.begin(), Category.Entries.end(), [&](const FComponentEntry& LHS, const FComponentEntry& RHS)
-            {
-                return EntryName(LHS) < EntryName(RHS);
-            });
-
-            ImGui::PushID(Category.Name.c_str());
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
-            FFixedString Header;
-            Header.append(LE_ICON_FOLDER " ");
-            Header.append(Category.Name.c_str());
-            ImGui::TextUnformatted(Header.c_str());
-            ImGui::PopStyleColor();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            for (const FComponentEntry& Entry : Category.Entries)
-            {
-                // Stable per-item ID across frames (the entry list is rebuilt every frame, so its
-                // address is not stable -- an unstable ID breaks click press/release matching).
-                if (Entry.bRuntime)
-                {
-                    ImGui::PushID(static_cast<int>(Entry.RuntimeGuid.Hash()));
-                }
-                else
-                {
-                    ImGui::PushID((void*)Entry.Struct);
-                }
-
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.45f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.3f, 0.4f, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
-
-                const float ButtonWidth = ImGui::GetContentRegionAvail().x;
-
-                FFixedString DisplayName = Entry.bRuntime ? FFixedString(Entry.RuntimeName.c_str()) : Entry.Struct->MakeDisplayName();
-                if (ImGui::Button(DisplayName.c_str(), ImVec2(ButtonWidth, 0.0f)))
-                {
-                    if (Entry.bRuntime)
-                    {
-                        // Load on pick (returns the cached instance if already loaded).
-                        OutRuntimeType = LoadObject<CEntityComponentType>(Entry.RuntimeGuid);
-                    }
-                    else
-                    {
-                        OutMetaType = Entry.MetaType;
-                        OutStruct   = Entry.Struct;
-                    }
-                    bPicked = true;
-                }
-
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor(3);
-
-                ImGui::PopID();
-                ImGui::Spacing();
-            }
-
-            ImGui::PopID();
-            ImGui::Spacing();
-        }
-
-        return bPicked;
-    }
-
-    void FWorldEditorTool::DrawAddToEntityOrWorldPopup(entt::entity Entity)
-    {
-        ImGui::SetNextWindowSize(ImVec2(450.0f, 550.0f), ImGuiCond_Always);
-    
-        if (ImGui::BeginPopup("AddToEntityMenu", ImGuiWindowFlags_NoMove))
-        {
-            if (Entity == entt::null)
-            {
-                ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), LE_ICON_PLUS " Create New Entity");
-        
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-            }
-        
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            ImGui::SetNextItemWidth(-1);
-            
-            AddEntityComponentFilter.Draw("##Search");
-            
-            if (ImGui::IsWindowAppearing())
-            {
-                AddEntityComponentFilter.Clear();
-                ImGui::SetKeyboardFocusHere(-1);
-            }
-            
-            if (!AddEntityComponentFilter.IsActive())
-            {
-                ImGuiStyle& Style = ImGui::GetStyle();
-                ImDrawList* DrawList = ImGui::GetWindowDrawList();
-                ImVec2 TextPos = ImGui::GetItemRectMin();
-                TextPos.x += Style.FramePadding.x + 2.0f;
-                TextPos.y += Style.FramePadding.y;
-                DrawList->AddText(TextPos, IM_COL32(110, 110, 110, 255), LE_ICON_FOLDER_SEARCH " Search components...");
-            }
-            
-            ImGui::PopStyleVar();
-            
-            ImGui::Spacing();
-            
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 16.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
-            
-            if (ImGui::BeginChild("TemplateList", ImVec2(0, -35.0f), true))
-            {
-                using namespace entt::literals;
-
-                bool bDrewComponentsHeader = false;
-                auto DrawComponentsHeader = [&]()
-                {
-                    if (bDrewComponentsHeader)
-                    {
-                        return;
-                    }
-                    bDrewComponentsHeader = true;
-
-                    ImGui::Spacing();
-                    ImGui::Separator();
-                    ImGui::Spacing();
-
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
-                    ImGui::TextUnformatted(LE_ICON_CUBE " Components");
-                    ImGui::PopStyleColor();
-                    ImGui::Separator();
-                    ImGui::Spacing();
-                };
-
-                if (Entity == entt::null)
-                {
-                    static const FName PrefabClassName = FName("CPrefab");
-                    TVector<FAssetData*> PrefabAssets = FAssetRegistry::Get().FindByPredicate([](const FAssetData& Data)
-                    {
-                        return Data.AssetClass == PrefabClassName;
-                    });
-
-                    if (!PrefabAssets.empty())
-                    {
-                        TVector<FAssetData*> FilteredPrefabs;
-                        FilteredPrefabs.reserve(PrefabAssets.size());
-                        for (FAssetData* Data : PrefabAssets)
-                        {
-                            if (AddEntityComponentFilter.PassFilter(Data->AssetName.c_str()))
-                            {
-                                FilteredPrefabs.push_back(Data);
-                            }
-                        }
-
-                        eastl::sort(FilteredPrefabs.begin(), FilteredPrefabs.end(), [](FAssetData* LHS, FAssetData* RHS)
-                        {
-                            return LHS->AssetName.ToString() < RHS->AssetName.ToString();
-                        });
-
-                        if (!FilteredPrefabs.empty())
-                        {
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
-                            ImGui::TextUnformatted(LE_ICON_PACKAGE_VARIANT_CLOSED " Prefabs");
-                            ImGui::PopStyleColor();
-                            ImGui::Separator();
-                            ImGui::Spacing();
-
-                            for (FAssetData* Data : FilteredPrefabs)
-                            {
-                                ImGui::PushID(Data);
-
-                                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.22f, 0.28f, 1.0f));
-                                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.35f, 0.5f, 1.0f));
-                                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.3f, 0.45f, 1.0f));
-                                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-                                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
-
-                                const float ButtonWidth = ImGui::GetContentRegionAvail().x;
-
-                                FFixedString Label;
-                                Label.append(LE_ICON_PACKAGE_VARIANT_CLOSED " ");
-                                Label.append(Data->AssetName.c_str());
-                                if (ImGui::Button(Label.c_str(), ImVec2(ButtonWidth, 0.0f)))
-                                {
-                                    HandlePrefabContentDrop(FStringView(Data->Path.c_str()), entt::null);
-                                    ImGui::CloseCurrentPopup();
-                                    AddEntityComponentFilter.Clear();
-                                }
-
-                                ImGui::PopStyleVar(2);
-                                ImGui::PopStyleColor(3);
-
-                                ImGui::PopID();
-                                ImGui::Spacing();
-                            }
-
-                            DrawComponentsHeader();
-                        }
-                    }
-                }
-
-                {
-                    struct FPrimitiveEntry
-                    {
-                        const char* Label;
-                        const char* EntityName;
-                        CStaticMesh* (*GetMesh)();
-                    };
-
-                    static const FPrimitiveEntry PrimitiveEntries[] =
-                    {
-                        { LE_ICON_CUBE     " Cube",     "Cube",     []() -> CStaticMesh* { return CPrimitiveManager::Get().CubeMesh; } },
-                        { LE_ICON_CIRCLE   " Sphere",   "Sphere",   []() -> CStaticMesh* { return CPrimitiveManager::Get().SphereMesh; } },
-                        { LE_ICON_SQUARE   " Plane",    "Plane",    []() -> CStaticMesh* { return CPrimitiveManager::Get().PlaneMesh; } },
-                        { LE_ICON_CYLINDER " Cylinder", "Cylinder", []() -> CStaticMesh* { return CPrimitiveManager::Get().CylinderMesh; } },
-                        { LE_ICON_CONE     " Cone",     "Cone",     []() -> CStaticMesh* { return CPrimitiveManager::Get().ConeMesh; } },
-                        { LE_ICON_GAS_CYLINDER " Capsule",     "Capsule",     []() -> CStaticMesh* { return CPrimitiveManager::Get().CapsuleMesh; } },
-                    };
-
-                    TVector<const FPrimitiveEntry*> FilteredPrimitives;
-                    FilteredPrimitives.reserve(IM_ARRAYSIZE(PrimitiveEntries));
-                    for (const FPrimitiveEntry& Entry : PrimitiveEntries)
-                    {
-                        if (AddEntityComponentFilter.PassFilter(Entry.EntityName))
-                        {
-                            FilteredPrimitives.push_back(&Entry);
-                        }
-                    }
-
-                    if (!FilteredPrimitives.empty())
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
-                        ImGui::TextUnformatted(LE_ICON_SHAPE " Primitives");
-                        ImGui::PopStyleColor();
-                        ImGui::Separator();
-                        ImGui::Spacing();
-
-                        for (const FPrimitiveEntry* Entry : FilteredPrimitives)
-                        {
-                            ImGui::PushID(Entry);
-
-                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.28f, 0.22f, 1.0f));
-                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.45f, 0.35f, 1.0f));
-                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.4f, 0.3f, 1.0f));
-                            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-                            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
-
-                            const float ButtonWidth = ImGui::GetContentRegionAvail().x;
-
-                            if (ImGui::Button(Entry->Label, ImVec2(ButtonWidth, 0.0f)))
-                            {
-                                CStaticMesh* PrimitiveMesh = Entry->GetMesh();
-                                if (World->GetEntityRegistry().valid(Entity))
-                                {
-                                    if (PrimitiveMesh != nullptr)
-                                    {
-                                        BeginTransaction();
-                                        SStaticMeshComponent& MeshComp = World->GetEntityRegistry().emplace_or_replace<SStaticMeshComponent>(Entity);
-                                        MeshComp.StaticMesh = PrimitiveMesh;
-                                        EndTransaction("Set Primitive Mesh");
-
-                                        OutlinerListView.MarkTreeDirty();
-                                        if (Entity == DetailsEntity)
-                                        {
-                                            bDetailsDirty = true;
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    BeginTransaction();
-                                    CreatePrimitiveEntity(PrimitiveMesh, Entry->EntityName);
-                                    EndTransaction("New Primitive");
-                                }
-
-                                ImGui::CloseCurrentPopup();
-                                AddEntityComponentFilter.Clear();
-                            }
-
-                            ImGui::PopStyleVar(2);
-                            ImGui::PopStyleColor(3);
-
-                            ImGui::PopID();
-                            ImGui::Spacing();
-                        }
-
-                        DrawComponentsHeader();
-                    }
-                }
-
-                entt::meta_type       PickedMetaType;
-                CStruct*              PickedStruct = nullptr;
-                CEntityComponentType* PickedRuntime = nullptr;
-                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct, PickedRuntime))
-                {
-                    using namespace entt::literals;
-
-                    if (PickedRuntime != nullptr)
-                    {
-                        BeginTransaction();
-                        entt::entity Target = World->GetEntityRegistry().valid(Entity)
-                            ? Entity
-                            : World->ConstructEntity("Entity", GetCameraSpawnTransform());
-
-                        ECS::Utils::AddRuntimeComponent(World->GetEntityRegistry(), Target, PickedRuntime);
-                        EndTransaction("Add Runtime Component");
-
-                        if (World->GetPackage() != nullptr)
-                        {
-                            World->GetPackage()->MarkDirty();
-                        }
-                        OutlinerListView.MarkTreeDirty();
-                        if (Target != Entity)
-                        {
-                            SetSingleSelectedEntity(Target);
-                        }
-                        else if (Target == DetailsEntity)
-                        {
-                            bDetailsDirty = true;
-                        }
-                    }
-                    else if (World->GetEntityRegistry().valid(Entity))
-                    {
-                        ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
-                        OutlinerListView.MarkTreeDirty();
-                        if (Entity == DetailsEntity)
-                        {
-                            bDetailsDirty = true;
-                        }
-                    }
-                    else
-                    {
-                        BeginTransaction();
-                        CreateEntityWithComponent(PickedStruct);
-                        EndTransaction("New Component");
-                    }
-
-                    ImGui::CloseCurrentPopup();
-                }
-                
-            }
-            ImGui::EndChild();
-            
-            ImGui::PopStyleVar(2);
-            
-            ImGui::Separator();
-            
-            ImGui::BeginGroup();
-            {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.25f, 0.25f, 1.0f));
-                if (ImGui::Button("Cancel", ImVec2(80.0f, 0.0f)))
-                {
-                    ImGui::CloseCurrentPopup();
-                    AddEntityComponentFilter.Clear();
-                }
-                ImGui::PopStyleColor();
-
-                if (Entity == entt::null)
-                {
-                    ImGui::SameLine();
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.28f, 1.0f));
-                    if (ImGui::Button(LE_ICON_CUBE " Empty Entity", ImVec2(-1, 0.0f)))
-                    {
-                        BeginTransaction();
-                        CreateEntity();
-                        EndTransaction("New Entity");
-
-                        ImGui::CloseCurrentPopup();
-                        AddEntityComponentFilter.Clear();
-                    }
-                    ImGui::PopStyleColor();
-                
-                    if (ImGui::IsItemHovered())
-                    {
-                        ImGui::SetTooltip("Create entity without any components");
-                    }
-                }
-                
-            }
-            ImGui::EndGroup();
-            
-            ImGui::EndPopup();
-        }
-    }
-
-    void FWorldEditorTool::DrawFilterOptions()
-    {
-        using namespace entt::literals;
-        
-        if (ImGui::Button("Reset Filters", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
-        {
-            EntityFilterState.ComponentFilters.clear();    
-        }
-        
-        if (ImGui::BeginTable("ComponentFilters", 1, 
-            ImGuiTableFlags_Borders | 
-            ImGuiTableFlags_RowBg | 
-            ImGuiTableFlags_SizingStretchSame |
-            ImGuiTableFlags_ScrollY, ImVec2(0.0f, 400.0f)))
-        {
-            ImGui::TableSetupColumn("Component Type");
-            ImGui::TableHeadersRow();
-        
-            int ColumnIndex = 0;
-        
-            for (auto&& [ID, Storage] : World->GetEntityRegistry().storage())
-            {
-                if (entt::meta_type MetaType = entt::resolve(Storage.info()))
-                {
-                    if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs))
-                    {
-                        CStruct* StructType = ReturnValue.cast<CStruct*>();
-                        
-                        if (StructType->HasMeta("HideInComponentList"))
-                        {
-                            continue;
-                        }
-                        
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                    
-                        auto It = eastl::find(EntityFilterState.ComponentFilters.begin(), 
-                            EntityFilterState.ComponentFilters.end(), StructType->GetName());
-                        
-                        bool bIsFiltered = (It != EntityFilterState.ComponentFilters.end());
-                        if (ImGui::Checkbox(StructType->MakeDisplayName().c_str(), &bIsFiltered))
-                        {
-                            if (bIsFiltered)
-                            {
-                                EntityFilterState.ComponentFilters.emplace_back(StructType->GetName()); 
-                            }
-                            else
-                            {
-                                EntityFilterState.ComponentFilters.erase(It);
-                            }
-                        }
-                    
-                        ColumnIndex++;
-                    }
-                }
-            }
-        
-            ImGui::EndTable();
-        }
-    }
-
-    void FWorldEditorTool::RebuildSceneOutliner(FTreeListView& Tree)
-    {
-        LUMINA_PROFILE_SCOPE();
-
-        // Outliner is incremental: rebuild just resets the map and re-adds roots. Children fill lazily on expand.
-        EntityToTreeNode.clear();
-        PendingOutlinerAdds.clear();
-
-        TFixedVector<entt::entity, 1000> Roots;
-        auto View = World->GetEntityRegistry().view<SNameComponent>(entt::exclude<FHideInSceneOutliner>);
-        for (entt::entity Entity : View)
-        {
-            if (FRelationshipComponent* Rel = World->GetEntityRegistry().try_get<FRelationshipComponent>(Entity))
-            {
-                if (Rel->Parent != entt::null)
-                {
-                    continue;
-                }
-            }
-
-            Roots.push_back(Entity);
-        }
-
-        eastl::sort(Roots.begin(), Roots.end(), [&](entt::entity LHS, entt::entity RHS)
-        {
-            const FFixedString A = View.get<SNameComponent>(LHS).Name.c_str();
-            const FFixedString B = View.get<SNameComponent>(RHS).Name.c_str();
-
-            return std::tie(A, LHS) < std::tie(B, RHS);
-        });
-
-        for (entt::entity Root : Roots)
-        {
-            AddEntityToOutliner(Root);
-        }
-    }
-
-    FTreeNodeID FWorldEditorTool::AddEntityToOutliner(entt::entity Entity)
-    {
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity) || Registry.any_of<FHideInSceneOutliner>(Entity))
-        {
-            return InvalidTreeNode;
-        }
-        if (!Registry.all_of<SNameComponent>(Entity))
-        {
-            return InvalidTreeNode;
-        }
-
-        auto Existing = EntityToTreeNode.find(Entity);
-        if (Existing != EntityToTreeNode.end())
-        {
-            return Existing->second;
-        }
-
-        // Attach under parent if it's already in the tree.
-        FTreeNodeID ParentNode = InvalidTreeNode;
-        if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity))
-        {
-            if (Rel->Parent != entt::null)
-            {
-                auto ParentIt = EntityToTreeNode.find(Rel->Parent);
-                if (ParentIt != EntityToTreeNode.end())
-                {
-                    ParentNode = ParentIt->second;
-                }
-                else
-                {
-                    // Parent not in tree yet; defer to avoid attaching as root then relocating.
-                    return InvalidTreeNode;
-                }
-            }
-        }
-
-        SNameComponent& NameComponent = Registry.get<SNameComponent>(Entity);
-        const SPrefabInstanceComponent* PrefabInstance = Registry.try_get<SPrefabInstanceComponent>(Entity);
-        const bool bIsPrefabInstanceRoot = PrefabInstance != nullptr && PrefabInstance->bIsRoot;
-        const bool bIsLockedPrefabChild = PrefabInstance != nullptr && !PrefabInstance->bIsRoot;
-
-        FFixedString Name;
-        if (bIsPrefabInstanceRoot)
-        {
-            Name.append(LE_ICON_PACKAGE_VARIANT_CLOSED).append(" ");
-        }
-        else if (bIsLockedPrefabChild)
-        {
-            Name.append(LE_ICON_LOCK).append(" ");
-        }
-        else
-        {
-            Name.append(LE_ICON_CUBE).append(" ");
-        }
-        Name.append(NameComponent.Name.c_str()).append_convert(FString(" - (" + eastl::to_string(entt::to_integral(Entity)) + ")"));
-
-        FTreeNodeID ItemEntity = OutlinerListView.CreateNode(ParentNode, FStringView(Name.data(), Name.length()));
-        EntityToTreeNode[Entity] = ItemEntity;
-
-        FTreeNodeDisplay& Display = OutlinerListView.Get<FTreeNodeDisplay>(ItemEntity);
-
-        // Tooltip header. Component list appended below.
-        FString Tooltip;
-        if (bIsLockedPrefabChild)
-        {
-            Tooltip = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.\n";
-        }
-        else
-        {
-            Tooltip = FString("Entity: " + eastl::to_string(entt::to_integral(Entity)));
-        }
-
-        // Components shown on hover only — they no longer clutter the outliner tree.
-        Tooltip += "\n\nComponents:";
-        bool bAnyComponent = false;
-        ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, const entt::basic_sparse_set<>& /*Set*/, entt::meta_type Meta)
-        {
-            using namespace entt::literals;
-            Tooltip += "\n  ";
-            Tooltip += LE_ICON_PUZZLE " ";
-            if (entt::meta_any Resolved = ECS::Utils::InvokeMetaFunc(Meta, "static_struct"_hs))
-            {
-                if (CStruct* StructType = Resolved.cast<CStruct*>())
-                {
-                    Tooltip += StructType->MakeDisplayName().c_str();
-                    bAnyComponent = true;
-                    return;
-                }
-            }
-            Tooltip += Meta.name();
-            bAnyComponent = true;
-        });
-        if (!bAnyComponent)
-        {
-            Tooltip += "\n  (none)";
-        }
-        Display.TooltipText = Tooltip;
-
-        Display.bShowDisabledIcon = true;
-        Display.bAllowRenaming = !bIsLockedPrefabChild;
-
-        OutlinerListView.EmplaceUserData<FEntityListViewItemData>(ItemEntity).Entity = Entity;
-
-        if (Registry.any_of<FSelectedInEditorComponent>(Entity))
-        {
-            OutlinerListView.Get<FTreeNodeState>(ItemEntity).bSelected = true;
-        }
-
-        if (Registry.any_of<SDisabledTag>(Entity))
-        {
-            OutlinerListView.Get<FTreeNodeState>(ItemEntity).bDisabled = true;
-        }
-
-        // Only show an expander if the entity actually has child entities; lazy expansion will populate them.
-        const FRelationshipComponent* RelForChildren = Registry.try_get<FRelationshipComponent>(Entity);
-        const bool bHasChildren = RelForChildren != nullptr && RelForChildren->Children > 0;
-        OutlinerListView.MarkHasLazyChildren(ItemEntity, bHasChildren);
-
-        return ItemEntity;
-    }
-
-    void FWorldEditorTool::RemoveEntityFromOutliner(entt::entity Entity)
-    {
-        auto It = EntityToTreeNode.find(Entity);
-        if (It == EntityToTreeNode.end())
-        {
-            return;
-        }
-
-        // RemoveNode tears down the subtree; walk hierarchy first to clear EntityToTreeNode for descendants.
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (Registry.valid(Entity))
-        {
-            ECS::Utils::ForEachChild(Registry, Entity, [&](entt::entity Child)
-            {
-                RemoveEntityFromOutliner(Child);
-            });
-        }
-
-        OutlinerListView.RemoveNode(It->second);
-        EntityToTreeNode.erase(It);
-    }
-
-    void FWorldEditorTool::ReparentEntityInOutliner(entt::entity Entity)
-    {
-        // Remember the old tree parent before the move; it may lose its last child here.
-        entt::entity OldParent = entt::null;
-        if (auto It = EntityToTreeNode.find(Entity); It != EntityToTreeNode.end())
-        {
-            FTreeNodeID ParentNode = OutlinerListView.GetParentNode(It->second);
-            if (ParentNode.IsValid())
-            {
-                OldParent = OutlinerListView.Get<FEntityListViewItemData>(ParentNode).Entity;
-            }
-        }
-
-        // Drop and re-add the row; new parent's lazy children rebuild on next expand.
-        RemoveEntityFromOutliner(Entity);
-        AddEntityToOutliner(Entity);
-
-        // The old parent's expander is stale if that was its only child.
-        RefreshOutlinerExpander(OldParent);
-    }
-
-    void FWorldEditorTool::RefreshOutlinerExpander(entt::entity Entity)
-    {
-        if (Entity == entt::null)
-        {
-            return;
-        }
-        auto It = EntityToTreeNode.find(Entity);
-        if (It == EntityToTreeNode.end())
-        {
-            return;
-        }
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
-        const bool bHasChildren = Rel != nullptr && Rel->Children > 0;
-        OutlinerListView.MarkHasLazyChildren(It->second, bHasChildren);
-    }
-
-    void FWorldEditorTool::BuildEntityChildren(FTreeListView& Tree, FTreeNodeID Item)
-    {
-        FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Data.Entity))
-        {
-            return;
-        }
-
-        // Child entity rows: skip ones already present (on_construct race).
-        ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child)
-        {
-            if (Registry.any_of<FHideInSceneOutliner>(Child))
-            {
-                return;
-            }
-            if (EntityToTreeNode.find(Child) != EntityToTreeNode.end())
-            {
-                return;
-            }
-
-            AddEntityToOutliner(Child);
-        });
-    }
-
-    void FWorldEditorTool::OnOutlinerEntityConstructed(entt::registry& Registry, entt::entity Entity)
-    {
-        if (Registry.any_of<FHideInSceneOutliner>(Entity))
-        {
-            return;
-        }
-        // Defer to next flush; FRelationshipComponent may not be set yet.
-        PendingOutlinerAdds.push_back(Entity);
-    }
-
-    void FWorldEditorTool::OnOutlinerEntityDestroyed(entt::registry& Registry, entt::entity Entity)
-    {
-        (void)Registry;
-        RemoveEntityFromOutliner(Entity);
-        PendingOutlinerAdds.erase(eastl::remove(PendingOutlinerAdds.begin(), PendingOutlinerAdds.end(), Entity), PendingOutlinerAdds.end());
-    }
-
-    void FWorldEditorTool::FlushOutlinerPending()
-    {
-        if (PendingOutlinerAdds.empty())
-        {
-            return;
-        }
-
-        // Iterate by index; AddEntityToOutliner could grow the queue.
-        for (int32 i = 0; i < static_cast<int32>(PendingOutlinerAdds.size()); ++i)
-        {
-            AddEntityToOutliner(PendingOutlinerAdds[i]);
-        }
-        PendingOutlinerAdds.clear();
     }
 
     void FWorldEditorTool::HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem)
@@ -5206,216 +3764,27 @@ namespace Lumina
         WorldSettingsPropertyTable->DrawTree();
     }
 
-    void FWorldEditorTool::DrawOutliner(bool bFocused)
+    void FWorldEditorTool::HandleOutlinerEmptyAreaDrop()
     {
-        // Track focus/hover so Delete (and other selection shortcuts) work from here.
-        // Read next frame in Update(), which runs before the tool windows draw.
-        bOutlinerActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-                       || ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
-
-        const ImGuiStyle& Style = ImGui::GetStyle();
-
-        {
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            
-            constexpr float ButtonWidth = 30.0f;
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.3f, 0.8f));
-            if (ImGui::Button(LE_ICON_PLUS, ImVec2(ButtonWidth, 0.0f)))
-            {
-                ImGui::OpenPopup("AddToEntityMenu");
-            }
-            ImGui::PopStyleColor();
-            
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Add something new to the world.");
-            }
-
-            DrawAddToEntityOrWorldPopup();
-            
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - (ButtonWidth) - ImGui::GetStyle().FramePadding.x);
-            EntityFilterState.FilterName.Draw("##Search");
-            
-            ImGui::PopStyleVar();
-            
-            if (!EntityFilterState.FilterName.IsActive())
-            {
-                ImDrawList* DrawList = ImGui::GetWindowDrawList();
-                ImVec2 TextPos = ImGui::GetItemRectMin();
-                TextPos.x += Style.FramePadding.x + 2.0f;
-                TextPos.y += Style.FramePadding.y;
-                DrawList->AddText(TextPos, IM_COL32(100, 100, 110, 255), LE_ICON_FILE_SEARCH " Search entities...");
-            }
-            
-            ImGui::SameLine();
-            
-            const bool bFilterActive = EntityFilterState.FilterName.IsActive() || !EntityFilterState.ComponentFilters.empty();
-            ImGui::PushStyleColor(ImGuiCol_Button, 
-                bFilterActive ? ImVec4(0.4f, 0.45f, 0.65f, 1.0f) : ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                bFilterActive ? ImVec4(0.5f, 0.55f, 0.75f, 1.0f) : ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            
-            if (ImGui::Button(LE_ICON_FILTER_SETTINGS "##ComponentFilter", ImVec2(ButtonWidth, 0.0f)))
-            {
-                ImGui::OpenPopup("FilterPopup");
-            }
-            
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor(2);
-            
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip(bFilterActive ? "Filters active - Click to configure" : "Configure filters");
-            }
-            
-            if (ImGui::BeginPopup("FilterPopup", ImGuiWindowFlags_NoMove))
-            {
-                ImGui::SeparatorText("Component Filters");
-                DrawFilterOptions();
-                ImGui::EndPopup();
-            }
-        }
-        
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        {
-            size_t EntityCount = World->GetEntityRegistry().view<entt::entity>().size<>();
-            ImGui::Text(LE_ICON_FORMAT_LIST_NUMBERED " Total Entities: %s", eastl::to_string(EntityCount).c_str());
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 24 - ImGui::GetStyle().FramePadding.x);
-            if (ImGui::Button(LE_ICON_REFRESH))
-            {
-                OutlinerListView.MarkTreeDirty();
-            }
-            
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.1f, 1.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-            if (ImGui::BeginChild("EntityList", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar))
-            {
-                FlushOutlinerPending();
-                OutlinerListView.Draw(OutlinerContext);
-
-                if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(), ImGui::GetCurrentWindow()->ID))
-                {
-                    AcceptContentBrowserPrefabPayload(entt::null);
-                    ImGui::EndDragDropTarget();
-                }
-            }
-            ImGui::EndChild();
-            
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor();
-        }
-        
+        AcceptContentBrowserPrefabPayload(entt::null);
     }
 
-    void FWorldEditorTool::DrawEntityProperties(entt::entity Entity)
+    void FWorldEditorTool::DrawDetailsHeaderExtraButtons(entt::entity Entity)
     {
-        LUMINA_PROFILE_SCOPE();
-
-        SNameComponent* NameComponent = World->GetEntityRegistry().try_get<SNameComponent>(Entity);
-        FName EntityName = NameComponent ? NameComponent->Name : eastl::to_string((uint32)Entity);
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        
-        constexpr ImGuiTableFlags Flags = 
-        ImGuiTableFlags_BordersOuter | 
-        ImGuiTableFlags_NoBordersInBodyUntilResize | 
-        ImGuiTableFlags_SizingFixedFit;
-        
-        if (ImGui::BeginTable("##EntityName", 1, Flags))
+        // Add-Tag button, sits alongside the shared Add-Component button (inside the green style scope).
+        const float ActionDim = ImGui::GetFrameHeight();
+        if (ImGui::Button(LE_ICON_TAG, ImVec2(ActionDim, ActionDim)))
         {
-            ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch);
-
-            ImGui::TableNextColumn();
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(35, 35, 35, 255));
-
-            // align 0.5 vertically centers each item; let the layout handle it rather than
-            // AlignTextToFramePadding, which would push the text below center.
-            ImGui::BeginHorizontal(EntityName.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0.0f), 0.5f);
-
-            ImGuiX::TextColoredUnformatted(ImVec4(0.40f, 0.70f, 1.0f, 1.0f), LE_ICON_CUBE);
-
-            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::LargeBold);
-            ImGuiX::Text("{}", EntityName);
-            ImGui::PopFont();
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.55f, 1.0f));
-            ImGuiX::Text("ID {}", entt::to_integral(Entity));
-            ImGui::PopStyleColor();
-
-            // Push the action buttons to the right edge so they read as a toolbar, not an afterthought.
-            ImGui::Spring(1.0f);
-
-            // Square buttons; zero horizontal frame padding so the icon glyph centers in the full width
-            // (the inherited 8px padding would otherwise crowd the glyph against the left edge).
-            const float ActionDim = ImGui::GetFrameHeight();
-            const ImVec2 ActionSize(ActionDim, ActionDim);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, ImGui::GetStyle().FramePadding.y));
-
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.3f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.65f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.5f, 0.25f, 1.0f));
-
-            if (ImGui::Button(LE_ICON_PLUS, ActionSize))
-            {
-                ImGui::OpenPopup("AddToEntityMenu");
-            }
-
-            DrawAddToEntityOrWorldPopup(Entity);
-
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Add Component");
-            }
-
-            if (ImGui::Button(LE_ICON_TAG, ActionSize))
-            {
-                PushAddTagModal(Entity);
-            }
-
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Add Tag");
-            }
-
-            ImGui::PopStyleColor(3);
-
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
-
-            if (ImGui::Button(LE_ICON_TRASH_CAN, ActionSize))
-            {
-                if (Dialogs::Confirmation("Confirm Deletion",
-                    "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.",
-                    (uint32)Entity))
-                {
-                    EntityDestroyRequests.push(Entity);
-                }
-            }
-
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Delete Entity");
-            }
-
-            ImGui::PopStyleColor(3);
-            ImGui::PopStyleVar();
-
-            ImGui::EndHorizontal();
-            ImGui::PopStyleVar(3);
-
-            ImGui::EndTable();
+            PushAddTagModal(Entity);
         }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGui::SetTooltip("Add Tag");
+        }
+    }
 
-        ImGui::SeparatorText("Details");
-
+    void FWorldEditorTool::DrawDetailsExtraSections(entt::entity Entity)
+    {
         bool bHasTags = false;
         for (auto [Name, Storage] : World->GetEntityRegistry().storage())
         {
@@ -5439,17 +3808,6 @@ namespace Lumina
 
             DrawTagList(Entity);
         }
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(LE_ICON_CUBE " Components");
-        ImGui::PopStyleColor();
-        
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        DrawComponentList(Entity);
     }
 
     void FWorldEditorTool::DrawEntityActionButtons(entt::entity Entity)
@@ -5504,30 +3862,6 @@ namespace Lumina
 
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
-    }
-
-    void FWorldEditorTool::DrawComponentList(entt::entity Entity)
-    {
-        LUMINA_PROFILE_SCOPE();
-
-        for (FComponentTableEntry& Entry : PropertyTables)
-        {
-            DrawComponentHeader(Entry, Entity);
-
-            ImGui::Spacing();
-        }
-
-        // Deferred so we never remove a storage element while iterating / drawing its table.
-        if (PendingRuntimeRemove != nullptr)
-        {
-            ECS::Utils::RemoveRuntimeComponent(World->GetEntityRegistry(), Entity, PendingRuntimeRemove);
-            PendingRuntimeRemove = nullptr;
-            bDetailsDirty = true;
-            if (World != nullptr && World->GetPackage() != nullptr)
-            {
-                World->GetPackage()->MarkDirty();
-            }
-        }
     }
 
     void FWorldEditorTool::DrawTagList(entt::entity Entity)
@@ -5659,469 +3993,9 @@ namespace Lumina
         ImGui::PopID();
     }
 
-    void FWorldEditorTool::DrawComponentHeader(FComponentTableEntry& Entry, entt::entity Entity)
-    {
-        using namespace entt::literals;
-
-        const bool bRuntime = Entry.bRuntime;
-
-        // The live runtime type is fetched from the storage (which strong-refs it) -- never from a
-        // cached pointer, which could dangle if the type asset was deleted.
-        CEntityComponentType* RuntimeType = nullptr;
-
-        // Visibility / existence check + (runtime) re-point. Reflected components verify via meta;
-        // runtime ones verify the storage still holds the entity and re-bind the table if the
-        // contiguous storage moved this element (realloc) or migrated its layout.
-        if (!bRuntime)
-        {
-            if (Entry.ReflectedType == STagComponent::StaticStruct())
-            {
-                return;
-            }
-
-            entt::meta_type MetaType = entt::resolve(entt::hashed_string(Entry.ReflectedType->GetName().c_str()));
-            if (!ECS::Utils::HasComponent(World->GetEntityRegistry(), Entity, MetaType))
-            {
-                return;
-            }
-        }
-        else
-        {
-            FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(World->GetEntityRegistry(), Entry.RuntimeStorageId);
-            // Missing / invalidated (type deleted) / no longer on the entity -> drop this row.
-            if (Storage == nullptr || !Storage->IsBound() || !Storage->contains(Entity))
-            {
-                bDetailsDirty = true;
-                return;
-            }
-            RuntimeType = Storage->GetSchemaType();
-            if (Entry.Table != nullptr)
-            {
-                void* CurrentData = Storage->value(Entity);
-                CStruct* CurrentLayout = Storage->GetLayout();
-                if (CurrentData != Entry.BoundData || CurrentLayout != Entry.BoundLayout)
-                {
-                    Entry.Table->SetObject(CurrentData, CurrentLayout);
-                    Entry.BoundData = CurrentData;
-                    Entry.BoundLayout = CurrentLayout;
-                }
-            }
-        }
-
-        const bool bIsRequired = !bRuntime
-            && (Entry.ReflectedType == STransformComponent::StaticStruct() || Entry.ReflectedType == SNameComponent::StaticStruct());
-
-        ImGui::PushID(&Entry);
-
-        constexpr ImGuiTableFlags Flags =
-        ImGuiTableFlags_BordersOuter |
-        ImGuiTableFlags_NoBordersInBodyUntilResize |
-        ImGuiTableFlags_SizingFixedFit;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 10.0f)); // increase Y for taller header
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
-        bool bIsOpen = false;
-        if (ImGui::BeginTable("GridTable", 1, Flags))
-        {
-            ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-
-            ImGui::PushStyleColor(ImGuiCol_Header, 0xFF3A3A3A);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0xFF484848);
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0xFF404040);
-            ImGui::SetNextItemAllowOverlap();
-            // Runtime rows show the live type name so renaming the type asset updates the row
-            // immediately (the cached title is only refreshed on a details rebuild).
-            const char* HeaderTitle = (bRuntime && RuntimeType != nullptr) ? RuntimeType->GetName().c_str() : Entry.Title.c_str();
-            bIsOpen = ImGui::CollapsingHeader(HeaderTitle, ImGuiTreeNodeFlags_DefaultOpen);
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
-
-            ImGui::PopStyleColor(3);
-
-            if (!bIsRequired)
-            {
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 28.0f);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.0f, 0.0f, 0.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.25f, 0.25f, 0.8f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.2f, 0.2f, 0.9f));
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.4f, 0.4f, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-
-                if (ImGui::SmallButton(LE_ICON_TRASH_CAN "##RemoveComponent"))
-                {
-                    if (bRuntime)
-                    {
-                        PendingRuntimeRemove = RuntimeType;
-                    }
-                    else
-                    {
-                        ComponentDestroyRequests.push(FComponentDestroyRequest{ Entry.ReflectedType, Entity });
-                    }
-                }
-
-                ImGuiX::TextTooltip("{}", "Remove Component");
-
-                ImGui::PopStyleVar();
-                ImGui::PopStyleColor(4);
-            }
-
-            ImGui::EndTable();
-        }
-
-        ImGui::PopStyleVar(2);
-
-
-        if (bIsOpen && Entry.Table != nullptr)
-        {
-            ImGui::Spacing();
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 6.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 1.0f);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.015f, 0.015f, 0.015f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
-
-            ImGui::Indent(8.0f);
-
-            // Make this component's world resolvable to any PROPERTY(Entity) picker in the table.
-            {
-                FScopedEntityPropertyContext EntityContext(World);
-                Entry.Table->DrawTree();
-            }
-
-            ImGui::Unindent(8.0f);
-
-            ImGui::PopStyleColor(2);
-            ImGui::PopStyleVar(3);
-
-            ImGui::Spacing();
-        }
-
-        ImGui::PopID();
-    }
-
-    void FWorldEditorTool::RemoveComponent(entt::entity Entity, const CStruct* ComponentType)
-    {
-        bool bWasRemoved = false;
-
-        if (ComponentType == nullptr)
-        {
-            return;
-        }
-        
-        ECS::Utils::ForEachComponent(World->GetEntityRegistry(), Entity, [&](void* Component, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
-        {
-            using namespace entt::literals;
-            
-            if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
-            {
-                CStruct* StructType = ReturnValue.cast<CStruct*>();
-                
-                if (StructType == ComponentType)
-                {
-                    Set.remove(Entity);
-                    bWasRemoved = true;
-                }
-            }
-        });
-        
-        
-        if (bWasRemoved)
-        {
-            // Mark dirty; next DrawEntityEditor pass rebuilds PropertyTables. Avoids tearing down handles mid-draw.
-            if (Entity == DetailsEntity)
-            {
-                bDetailsDirty = true;
-            }
-        }
-        else
-        {
-            ImGuiX::Notifications::NotifyError("Failed to remove component: {0}", ComponentType->GetName().c_str());
-        }
-    }
-
-    void FWorldEditorTool::DrawEmptyState()
-    {
-        ImVec2 WindowSize = ImGui::GetWindowSize();
-        ImVec2 CenterPos = ImVec2(WindowSize.x * 0.5f, WindowSize.y * 0.5f);
-    
-        ImGui::SetCursorPos(ImVec2(CenterPos.x - 100.0f, CenterPos.y - 40.0f));
-    
-        ImGui::BeginGroup();
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.45f, 1.0f));
-        
-            const char* EmptyIcon = LE_ICON_INBOX;
-            ImVec2 IconSize = ImGui::CalcTextSize(EmptyIcon);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (200.0f - IconSize.x) * 0.5f);
-        
-            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-            ImGui::TextUnformatted(EmptyIcon);
-            ImGui::PopFont();
-        
-            ImGui::Spacing();
-        
-            const char* EmptyText = "Nothing selected";
-            ImVec2 TextSize = ImGui::CalcTextSize(EmptyText);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (200.0f - TextSize.x) * 0.5f);
-            ImGui::TextUnformatted(EmptyText);
-        
-            ImGui::Spacing();
-        
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 0.3f, 0.35f, 1.0f));
-            const char* HintText = "Select an entity to view properties";
-            ImVec2 HintSize = ImGui::CalcTextSize(HintText);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (200.0f - HintSize.x) * 0.5f);
-            ImGui::TextUnformatted(HintText);
-            ImGui::PopStyleColor();
-        
-            ImGui::PopStyleColor();
-        }
-        ImGui::EndGroup();
-    }
-
-    void FWorldEditorTool::OnPrePropertyChangeEvent(const FPropertyChangedEvent& Event)
-    {
-
-    }
-
-    void FWorldEditorTool::OnPostPropertyChangeEvent(const FPropertyChangedEvent& Event)
-    {
-        using namespace entt::literals;
-        
-        entt::id_type TypeID = ECS::Utils::GetTypeID(Event.OuterType->GetName().c_str());
-
-        auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
-        View.each([&](entt::entity Entity)
-        {
-            entt::meta_any Has = ECS::Utils::InvokeMetaFunc(TypeID, "has"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity);
-            if (Has.cast<bool>())
-            {
-                entt::meta_any Component = ECS::Utils::InvokeMetaFunc(TypeID, "get"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity);
-                ECS::Utils::InvokeMetaFunc(TypeID, "patch"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(Component));
-            }
-        });
-    }
-
     bool FWorldEditorTool::IsUnsavedDocument()
     {
         return World && World->GetPackage() && World->GetPackage()->IsDirty();
-    }
-
-    void FWorldEditorTool::DrawEntityEditor(bool bFocused, entt::entity Entity)
-    {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.1f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-
-        ImGui::BeginChild("Property Editor", ImVec2(0, 0), true);
-
-        // PropertyTables hold raw component pointers; rebuild before drawing on focus change, invalidation, or dirty mark.
-        const bool bEntityValid = (Entity != entt::null) && World->GetEntityRegistry().valid(Entity);
-
-        if (!bEntityValid)
-        {
-            if (DetailsEntity != entt::null || !PropertyTables.empty())
-            {
-                PropertyTables.clear();
-                DetailsEntity = entt::null;
-            }
-            bDetailsDirty = false;
-        }
-        else if (DetailsEntity != Entity || bDetailsDirty)
-        {
-            RebuildPropertyTables(Entity);
-            DetailsEntity = Entity;
-            bDetailsDirty = false;
-        }
-
-        if (bEntityValid)
-        {
-            DrawEntityProperties(Entity);
-        }
-        else
-        {
-            DrawEmptyState();
-        }
-
-        ImGui::EndChild();
-
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-    }
-
-    void FWorldEditorTool::DrawPropertyEditor(bool bFocused)
-    {
-        
-    }
-
-    void FWorldEditorTool::RebuildPropertyTables(entt::entity Entity)
-    {
-        using namespace entt::literals;
-
-        PropertyTables.clear();
-
-        // Track owning entity so DrawEntityEditor can detect staleness; null on invalid input forces a rebuild next time.
-        DetailsEntity = (Entity != entt::null && World->GetEntityRegistry().valid(Entity)) ? Entity : entt::null;
-        bDetailsDirty = false;
-
-        if (World->GetEntityRegistry().valid(Entity))
-        {
-            // One intermediate row for both reflected and runtime components so they sort together.
-            struct FPendingRow
-            {
-                void*                 Data = nullptr;
-                CStruct*              Layout = nullptr;        // reflected CStruct, or runtime layout
-                const CStruct*        ReflectedType = nullptr; // null for runtime
-                CEntityComponentType* RuntimeType = nullptr;   // null for reflected
-                FString               Title;
-            };
-
-            TVector<FPendingRow> Pending;
-
-            ECS::Utils::ForEachComponent(World->GetEntityRegistry(), Entity, [&](void* Component, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
-            {
-                entt::meta_any Any = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs);
-                if (!Any)
-                {
-                    return;
-                }
-
-                CStruct* Struct = Any.cast<CStruct*>();
-                Pending.push_back({ Component, Struct, Struct, nullptr, Struct->MakeDisplayName().c_str() });
-            });
-
-            ECS::Utils::ForEachRuntimeComponent(World->GetEntityRegistry(), Entity,
-                [&](CEntityComponentType* Type, CStruct* Layout, void* Data)
-            {
-                if (Type == nullptr)
-                {
-                    return;
-                }
-                Pending.push_back({ Data, Layout, nullptr, Type, Type->GetName().ToString() });
-            });
-
-            eastl::sort(Pending.begin(), Pending.end(), [&](const FPendingRow& LHS, const FPendingRow& RHS)
-            {
-                // Name first, Transform second, everything else (incl. runtime) alphabetical.
-                auto Priority = [](const FPendingRow& Row) -> uint32
-                {
-                    if (Row.ReflectedType == SNameComponent::StaticStruct())      { return 0; }
-                    if (Row.ReflectedType == STransformComponent::StaticStruct()) { return 1; }
-                    return 2;
-                };
-
-                const uint32 APriority = Priority(LHS);
-                const uint32 BPriority = Priority(RHS);
-                if (APriority != BPriority)
-                {
-                    return APriority < BPriority;
-                }
-                return LHS.Title < RHS.Title;
-            });
-
-            for (const FPendingRow& Row : Pending)
-            {
-                FComponentTableEntry Entry;
-                Entry.ReflectedType = Row.ReflectedType;
-                Entry.bRuntime      = (Row.RuntimeType != nullptr);
-                Entry.RuntimeStorageId = (Row.RuntimeType != nullptr) ? Row.RuntimeType->GetStorageId() : 0;
-                Entry.Title         = Row.Title;
-
-                if (Row.RuntimeType != nullptr)
-                {
-                    // Runtime row: a field-less type has no value buffer, so leave Table null (the
-                    // header still draws, just with no body).
-                    if (Row.Data != nullptr && Row.Layout != nullptr)
-                    {
-                        Entry.Table = MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
-                        Entry.Table->SetPostEditCallback([this](const FPropertyChangedEvent&)
-                        {
-                            // Values live in the storage and serialize with the world; just mark dirty.
-                            if (World != nullptr && World->GetPackage() != nullptr)
-                            {
-                                World->GetPackage()->MarkDirty();
-                            }
-                        });
-                        Entry.Table->MarkDirty();
-                        Entry.BoundLayout = Row.Layout;
-                        Entry.BoundData   = Row.Data;
-                    }
-                }
-                else
-                {
-                    Entry.Table = MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
-                    Entry.Table->SetPreEditCallback([&](const FPropertyChangedEvent& Event)    { OnPrePropertyChangeEvent(Event); });
-                    Entry.Table->SetPostEditCallback([&](const FPropertyChangedEvent& Event)   { OnPostPropertyChangeEvent(Event); });
-                    Entry.Table->SetStartEditCallback([&](const FPropertyChangedEvent& Event)  { BeginTransaction(); });
-                    Entry.Table->SetFinishEditCallback([&](const FPropertyChangedEvent& Event) { EndTransaction(Event.PropertyName); });
-                    Entry.Table->MarkDirty();
-                }
-
-                PropertyTables.emplace_back(Move(Entry));
-            }
-        }
-    }
-
-    void FWorldEditorTool::CreateEntityWithComponent(const CStruct* Component)
-    {
-        using namespace entt::literals;
-
-        entt::hashed_string Hash = entt::hashed_string(Component->GetName().c_str());
-        entt::meta_type MetaType = entt::resolve(Hash);
-
-        entt::entity CreatedEntity = World->ConstructEntity(Component->MakeDisplayName(), GetCameraSpawnTransform());
-        ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), CreatedEntity, entt::forward_as_meta(entt::meta_any{}));
-
-        // Always select the new entity so details + outliner highlight show it immediately.
-        if (CreatedEntity != entt::null)
-        {
-            SetSingleSelectedEntity(CreatedEntity);
-        }
-    }
-
-    void FWorldEditorTool::CreateEntity()
-    {
-        entt::entity NewEntity = World->ConstructEntity("Entity", GetCameraSpawnTransform());
-        if (NewEntity != entt::null)
-        {
-            SetSingleSelectedEntity(NewEntity);
-        }
-    }
-
-    void FWorldEditorTool::CreatePrimitiveEntity(CStaticMesh* PrimitiveMesh, const char* DisplayName)
-    {
-        if (PrimitiveMesh == nullptr)
-        {
-            return;
-        }
-
-        entt::entity CreatedEntity = World->ConstructEntity(DisplayName, GetCameraSpawnTransform());
-        if (CreatedEntity == entt::null)
-        {
-            return;
-        }
-
-        SStaticMeshComponent& MeshComp = World->GetEntityRegistry().emplace<SStaticMeshComponent>(CreatedEntity);
-        MeshComp.StaticMesh = PrimitiveMesh;
-
-        SetSingleSelectedEntity(CreatedEntity);
-    }
-
-    void FWorldEditorTool::CopyEntity(entt::entity& To, entt::entity From)
-    {
-        World->DuplicateEntity(To, From, &EditorEntityUtils::DefaultDuplicateFilter);
-    }
-
-    void FWorldEditorTool::CycleGuizmoOp()
-    {
-        EditorEntityUtils::CycleGizmoOp(GuizmoOp);
-    }
-
-    void FWorldEditorTool::ToggleGuizmoMode()
-    {
-        EditorEntityUtils::ToggleGizmoMode(GuizmoMode);
     }
 
     void FWorldEditorTool::GroupSelectedEntities()

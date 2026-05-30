@@ -112,11 +112,8 @@ namespace Lumina
         return Result;
     }
 
-    // SIMD fast paths for 4x4 float (the hot case: transform concatenation in the
-    // dirty-transform resolve, renderer per-instance matrices, animation bone
-    // matrices). Exact-type non-template overloads win over the generic templates
-    // above; each result column is a 4-wide linear combination of A's columns, so
-    // the result matches the scalar path.
+    // SIMD fast paths for 4x4 float (hot case); exact-type overloads win over the generic
+    // templates above and match the scalar result.
     [[nodiscard]] inline TVec<float, 4> operator*(const TMat<float, 4, 4>& M, const TVec<float, 4>& V)
     {
         using namespace SIMD;

@@ -125,11 +125,27 @@ namespace Lumina
 
         Context.RebuildTreeFunction(*this);
 
-        for (FNode& Node : Nodes)
+        // Restore expansion top-down. Lazy nodes that were expanded must have their children
+        // rebuilt here, otherwise the arrow shows open over an empty (un-built) subtree.
+        TVector<int32> Stack(Roots.begin(), Roots.end());
+        while (!Stack.empty())
         {
-            if (Node.bAlive && CachedExpandedItems.find(Node.Hash) != CachedExpandedItems.end())
+            const int32 Idx = Stack.back();
+            Stack.pop_back();
+
+            FNode& Node = Nodes[Idx];
+            if (CachedExpandedItems.find(Node.Hash) != CachedExpandedItems.end())
             {
                 Node.State.bExpanded = true;
+                if (Node.bHasLazyChildren && !Node.bChildrenBuilt)
+                {
+                    EnsureChildrenBuilt(Idx, Context); // may reallocate Nodes; do not touch Node after this
+                }
+            }
+
+            for (int32 Child : Nodes[Idx].Children)
+            {
+                Stack.push_back(Child);
             }
         }
 
@@ -209,7 +225,36 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Text, TextColor);
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.22f, 0.52f, 0.22f, 0.40f));
 
+        const ImVec2 RowCursorScreenPos = ImGui::GetCursorScreenPos();
         const bool bNowExpanded = ImGui::TreeNodeEx("##TreeNode", Flags, "%s", Display.DisplayName.c_str());
+
+        if (!Display.IconText.empty() && !State.bEditingText)
+        {
+            const ImGuiStyle& Style = ImGui::GetStyle();
+            const float IconX = RowCursorScreenPos.x + ImGui::GetFontSize() + Style.FramePadding.x * 2.0f;
+            const float IconY = RowCursorScreenPos.y + Style.FramePadding.y;
+            ImGui::GetWindowDrawList()->AddText(ImVec2(IconX, IconY), ImGui::GetColorU32(Display.IconColor), Display.IconText.c_str());
+        }
+
+        // Right-click selects the row first (unless it's already part of the selection), so the
+        // context menu and details panel act on what was clicked instead of the prior selection.
+        // Done while the tree node is still the "last item" so IsItemHovered() targets it.
+        if (Context.ItemContextMenuFunction
+            && ImGui::IsItemHovered()
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
+            && !State.bSelected)
+        {
+            SetSelection(FTreeNodeID{NodeIdx}, Context, true);
+        }
+
+        // Open the row's context menu HERE, while the tree node is still the "last item".
+        // The tooltip / drag-drop calls further down submit their own items, so deferring
+        // this to a trailing BeginPopupContextItem makes its implicit IsItemHovered() test
+        // target the wrong item and the menu silently fails to open (the flaky right-click).
+        if (Context.ItemContextMenuFunction)
+        {
+            ImGui::OpenPopupOnItemClick("ItemContextMenu", ImGuiPopupFlags_MouseButtonRight);
+        }
 
         const bool bTreeNodeDoubleClicked = ImGui::IsItemHovered()
             && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
@@ -313,52 +358,108 @@ namespace Lumina
 
         if (Context.ItemContextMenuFunction)
         {
-            if (ImGui::BeginPopupContextItem("ItemContextMenu"))
+            // Opened above via OpenPopupOnItemClick; here we only draw it.
+            if (ImGui::BeginPopup("ItemContextMenu"))
             {
                 Context.ItemContextMenuFunction(*this, FTreeNodeID{NodeIdx});
                 ImGui::EndPopup();
             }
         }
 
-        bool bMouseOverVisibilityButton = false;
-        if (Display.bShowDisabledIcon)
+        // Trailing right-aligned toggle buttons: the optional secondary toggle (e.g. script
+        // enable) sits left of the visibility eye. Fixed-width, gap-free, transparent-background
+        // buttons give a reliable full-slot click target over the span-full-width tree node
+        // (icon-only SmallButtons leave dead space where clicks fall through to the row).
+        bool bMouseOverTrailingButton = false;
         {
-            ImGui::SameLine();
-            float AvailableWidth = ImGui::GetContentRegionAvail().x;
-            float ButtonWidth = 40.0f;
+            const int32 TrailingCount = (Display.bShowSecondaryIcon ? 1 : 0) + (Display.bShowDisabledIcon ? 1 : 0);
 
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + AvailableWidth - ButtonWidth + ImGui::GetStyle().FramePadding.x);
-
-            const char* Icon = State.bDisabled ? LE_ICON_EYE_OFF : LE_ICON_EYE;
-            bool bSmallButtonClicked = ImGui::SmallButton(Icon);
-			bMouseOverVisibilityButton = ImGui::IsItemHovered();
-
-            if(bSmallButtonClicked)
+            if (TrailingCount > 0)
             {
-                State.bDisabled = ~State.bDisabled;
+                const float ButtonWidth = ImGui::GetFrameHeight();
+                const float RowHeight   = ImGui::GetFrameHeight();
 
-                // Cascade disabled state down the subtree iteratively.
-                TVector<int32> Stack(Nodes[NodeIdx].Children.begin(), Nodes[NodeIdx].Children.end());
-                while (!Stack.empty())
+                ImGui::SameLine();
+                const float RightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+                ImGui::SetCursorPosX(RightEdgeX - TrailingCount * ButtonWidth);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+
+                if (Display.bShowSecondaryIcon)
                 {
-                    int32 Current = Stack.back();
-                    Stack.pop_back();
-
-                    Nodes[Current].State.bDisabled = State.bDisabled;
-                    for (int32 Grandchild : Nodes[Current].Children)
+                    ImGui::PushID("##SecondaryToggle");
+                    const char* Icon = State.bSecondaryToggled ? Display.SecondaryIconOff.c_str() : Display.SecondaryIconOn.c_str();
+                    // Dim while toggled off so the on/off state reads at a glance.
+                    if (State.bSecondaryToggled)
                     {
-                        Stack.push_back(Grandchild);
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                    }
+                    ImGui::Button(Icon, ImVec2(ButtonWidth, RowHeight));
+                    if (State.bSecondaryToggled)
+                    {
+                        ImGui::PopStyleColor();
+                    }
+                    // Fire on press (ActiveId transition), not release: a button overlapping the
+                    // span-full-width tree node can lose hover between press and release under
+                    // AllowOverlap, dropping the release-based click.
+                    const bool bSecondaryClicked = ImGui::IsItemActivated();
+                    bMouseOverTrailingButton |= ImGui::IsItemHovered();
+                    ImGuiX::TextTooltip("{}", Display.SecondaryTooltip);
+                    ImGui::PopID();
+
+                    if (bSecondaryClicked)
+                    {
+                        State.bSecondaryToggled = !State.bSecondaryToggled;
+                        if (Context.SecondaryToggleFunction)
+                        {
+                            Context.SecondaryToggleFunction(*this, FTreeNodeID{NodeIdx});
+                        }
+                    }
+
+                    ImGui::SameLine(0.0f, 0.0f);
+                }
+
+                if (Display.bShowDisabledIcon)
+                {
+                    ImGui::PushID("##VisibilityToggle");
+                    const char* Icon = State.bDisabled ? LE_ICON_EYE_OFF : LE_ICON_EYE;
+                    ImGui::Button(Icon, ImVec2(ButtonWidth, RowHeight));
+                    const bool bSmallButtonClicked = ImGui::IsItemActivated();
+                    bMouseOverTrailingButton |= ImGui::IsItemHovered();
+                    ImGui::PopID();
+
+                    if (bSmallButtonClicked)
+                    {
+                        State.bDisabled = ~State.bDisabled;
+
+                        // Cascade disabled state down the subtree iteratively.
+                        TVector<int32> Stack(Nodes[NodeIdx].Children.begin(), Nodes[NodeIdx].Children.end());
+                        while (!Stack.empty())
+                        {
+                            int32 Current = Stack.back();
+                            Stack.pop_back();
+
+                            Nodes[Current].State.bDisabled = State.bDisabled;
+                            for (int32 Grandchild : Nodes[Current].Children)
+                            {
+                                Stack.push_back(Grandchild);
+                            }
+                        }
+
+                        if (Context.VisibilityToggleFunction)
+                        {
+                            Context.VisibilityToggleFunction(*this, FTreeNodeID{NodeIdx});
+                        }
                     }
                 }
 
-                if (Context.VisibilityToggleFunction)
-                {
-                    Context.VisibilityToggleFunction(*this, FTreeNodeID{NodeIdx});
-                }
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor();
             }
         }
 
-        if (bTreeNodeClicked && !bMouseOverVisibilityButton)
+        if (bTreeNodeClicked && !bMouseOverTrailingButton)
         {
             const bool bShift = ImGui::GetIO().KeyShift;
             const bool bCtrl  = ImGui::GetIO().KeyCtrl;
@@ -366,7 +467,7 @@ namespace Lumina
             SetSelection(FTreeNodeID{NodeIdx}, Context, !bCtrl);
 		}
 
-        if (bTreeNodeDoubleClicked && !bMouseOverVisibilityButton && Context.ItemDoubleClickedFunction)
+        if (bTreeNodeDoubleClicked && !bMouseOverTrailingButton && Context.ItemDoubleClickedFunction)
         {
             Context.ItemDoubleClickedFunction(*this, FTreeNodeID{NodeIdx});
         }

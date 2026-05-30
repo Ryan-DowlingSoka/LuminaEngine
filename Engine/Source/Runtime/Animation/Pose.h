@@ -8,9 +8,8 @@ namespace Lumina
 {
     struct FSkeletonResource;
 
-    // Local-space skeletal pose: per-bone TRS relative to the parent bone.
-    // The animation graph VM blends in this space; FK and InvBind folding into
-    // GPU skinning matrices happens once when the final pose is resolved.
+    // Local-space skeletal pose (per-bone TRS relative to parent); the VM blends in this space,
+    // FK + InvBind fold into skinning matrices once when the final pose is resolved.
     struct RUNTIME_API FPose
     {
         TVector<FVector3> Translations;
@@ -40,14 +39,10 @@ namespace Lumina
         // BoneWeights shorter than the bone count treats missing entries as 1.0.
         RUNTIME_API void BlendMasked(const FPose& A, const FPose& B, float Alpha, const TVector<float>& BoneWeights, FPose& Out);
 
-        // OutDelta := Src relative to the skeleton's bind pose (TRS-wise).
-        // Translation/scale are differences/ratios; rotation is the residual
-        // quaternion Src * inverse(Bind). Pair with ApplyAdditive.
+        // OutDelta := Src relative to bind pose (T/S differences/ratios, R = Src * inverse(Bind)). Pair with ApplyAdditive.
         RUNTIME_API void MakeAdditive(const FPose& Src, const FSkeletonResource* Skeleton, FPose& OutDelta);
 
-        // Out := Base + Alpha * Delta (TRS-wise). Translations add, scales lerp
-        // (1 -> Delta), rotations slerp (identity -> Delta) then post-multiply
-        // the base rotation. Layer additive overlays on a base pose.
+        // Out := Base + Alpha * Delta (TRS-wise): T adds, S lerps from 1, R slerps from identity then post-multiplies base.
         RUNTIME_API void ApplyAdditive(const FPose& Base, const FPose& Delta, float Alpha, FPose& Out);
 
         // Resolves a local-space pose into GPU skinning matrices (Global * InvBind).
@@ -65,9 +60,7 @@ namespace Lumina
             Replace,
         };
 
-        // In-place: applies (T, R, S) to a single bone of Pose. Space selects the
-        // frame the offset is interpreted in; Mode selects layered-on-top vs
-        // replace. Alpha scales how strongly the modification is applied.
+        // In-place (T, R, S) on a single bone; Space picks the offset frame, Mode picks layer-vs-replace, Alpha scales it.
         RUNTIME_API void ApplyBoneTransform(FPose& Pose,
                                             const FSkeletonResource* Skeleton,
                                             int32 BoneIndex,
@@ -78,10 +71,8 @@ namespace Lumina
                                             const FVector3& Scale,
                                             float Alpha);
 
-        // In-place analytical two-bone IK: rotates RootIdx + MidIdx so that the
-        // tip bone (EndIdx) reaches Target (component space). Pole picks the
-        // bend side. Alpha slerps the result against the input pose.
-        // MidIdx's parent must be RootIdx, EndIdx's parent must be MidIdx.
+        // In-place analytical two-bone IK so EndIdx reaches Target (component space); Pole picks bend side, Alpha slerps.
+        // Requires MidIdx's parent == RootIdx and EndIdx's parent == MidIdx.
         RUNTIME_API void TwoBoneIK(FPose& Pose,
                                    const FSkeletonResource* Skeleton,
                                    int32 RootIdx, int32 MidIdx, int32 EndIdx,

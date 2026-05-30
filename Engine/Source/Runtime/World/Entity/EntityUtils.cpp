@@ -441,9 +441,8 @@ namespace Lumina::ECS::Utils
                 entt::entity NewEntity = entt::null;
                 bool bSuccess = ECS::Utils::SerializeEntity(Ar, Registry, NewEntity);
 
-                // Clear the per-entity error so one corrupt entity does not poison
-                // every subsequent SerializeEntity call. The size-header seek below
-                // re-aligns the stream regardless.
+                // Clear the per-entity error so one corrupt entity doesn't poison subsequent
+                // SerializeEntity calls; the size-header seek below re-aligns the stream regardless.
                 Ar.SetHasError(false);
 
                 if (!bSuccess || NewEntity == entt::null)
@@ -951,9 +950,8 @@ namespace Lumina::ECS::Utils
             Registry.remove<FNeedsTransformUpdate>(Ancestor);
         }
 
-        // Propagate down the full subtree: sibling branches also referenced the ancestor's matrix.
-        // Every entity owns a transform, so resolve the storage once and index it directly rather
-        // than paying a pool-map lookup per node via Registry.get.
+        // Propagate down the full subtree (siblings also referenced the ancestor's matrix). Resolve the
+        // transform storage once and index it directly instead of a pool-map lookup per node.
         auto& TransformStorage = Registry.storage<STransformComponent>();
         TFunction<void(entt::entity)> UpdateChildrenRecursive;
         UpdateChildrenRecursive = [&](entt::entity ParentEntity)
@@ -1384,9 +1382,8 @@ namespace Lumina::ECS::Utils
 
     entt::id_type GetTypeID(const Lua::FRef& Obj)
     {
-        // Component handles are tables carrying __type_id. Guard against a nil/non-table ref (e.g. an
-        // unregistered global) -- indexing a nil value would raise a Lua error and longjmp through the
-        // C++ binding frame (the luaL_tolstring crash). A non-handle ref simply has no type id.
+        // Component handles are tables carrying __type_id. Guard a nil/non-table ref -- indexing nil would
+        // raise a Lua error and longjmp through the C++ binding frame (the luaL_tolstring crash).
         if (!Obj.IsTable())
         {
             return entt::id_type{};

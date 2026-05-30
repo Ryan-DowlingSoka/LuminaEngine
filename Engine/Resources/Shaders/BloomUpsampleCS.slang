@@ -2,17 +2,8 @@
 #include "Includes/Common.slang"
 #include "Includes/SceneGlobals.slang"
 
-// =============================================================================
-//  Bloom Upsample (Compute)
-// =============================================================================
-//
-//  3x3 tent filter (Jimenez 2014) read from the smaller mip, additively
-//  accumulated into the larger mip in-shader. One dispatch per upsample step;
-//  4 dispatches total for a 5-mip chain. Resources are bindless: source via
-//  uBindlessTex2D[SrcIndex] sampled at SrcMip, destination via
-//  uBindlessRWTex2D[DstUAV] which is read+modify+write (relies on
-//  shaderStorageImageReadWithoutFormat).
-// =============================================================================
+// Bloom upsample: 3x3 tent filter (Jimenez 2014) from the smaller mip, additively accumulated into
+// the larger one. One dispatch per step. Bindless source (SrcIndex@SrcMip) + read-modify-write DstUAV.
 
 #define TILE_WIDTH  8
 #define TILE_HEIGHT 8

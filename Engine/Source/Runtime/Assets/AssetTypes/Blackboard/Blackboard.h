@@ -9,9 +9,7 @@
 
 namespace Lumina
 {
-    // Type of value a blackboard key holds. The animation system consumes the
-    // numeric types (Float / Int / Bool / Enum, all carried as a scalar);
-    // Vector / Object are stored for the AI system.
+    // Blackboard key value type; anim system uses the scalar-carried numerics, Vector/Object are for AI.
     REFLECT()
     enum class EBlackboardKeyType : uint8
     {
@@ -29,20 +27,16 @@ namespace Lumina
     {
         None     = 0,
 
-        // Value is set from its default and treated as read-only at runtime
-        // (constants / inputs gameplay should not overwrite). The editor's
-        // preview panel disables editing it.
+        // Read-only at runtime (constants/inputs); the editor preview disables editing it.
         ReadOnly = 1 << 0,
 
-        // Hidden from key pickers (Get Parameter node, transition conditions) --
-        // for internal / scratch keys that shouldn't be wired by hand.
+        // Hidden from key pickers; for internal/scratch keys not meant to be wired by hand.
         Hidden   = 1 << 1,
     };
     ENUM_CLASS_FLAGS(EBlackboardKeyFlags)
 
-    // Declaration of a single blackboard entry: a name, a type, and a default
-    // value. This is schema only -- no live value lives here. Per-instance values
-    // are held by SBlackboardComponent, seeded from these defaults.
+    // Schema-only declaration of one blackboard entry (name, type, default); live per-instance
+    // values live in SBlackboardComponent, seeded from these defaults.
     REFLECT()
     struct FBlackboardKey
     {
@@ -72,8 +66,7 @@ namespace Lumina
         PROPERTY(Editable, Category = "Blackboard")
         bool DefaultBool = false;
 
-        /** For Enum keys: the registered name of the reflected CEnum this key
-         *  holds (e.g. "EClipLoopMode"). DefaultInt stores the chosen value. */
+        /** For Enum keys: registered name of the reflected CEnum (e.g. "EClipLoopMode"); DefaultInt holds the value. */
         PROPERTY(Editable, Category = "Blackboard")
         FName EnumType;
 
@@ -86,12 +79,8 @@ namespace Lumina
         TObjectPtr<CObject> DefaultObject;
     };
 
-    // A reusable blackboard *schema* asset: a named list of typed keys with
-    // defaults. Holds no runtime state -- it is shared read-only by reference.
-    // Systems read/write live values through a per-entity SBlackboardComponent
-    // that is seeded from this schema (mirrors Unreal's UBlackboardData vs
-    // UBlackboardComponent split, so two entities sharing a schema keep their
-    // own independent values).
+    // Reusable blackboard schema asset (typed keys + defaults), shared read-only. Live values are per-entity
+    // in SBlackboardComponent, so entities sharing a schema keep independent values.
     REFLECT()
     class RUNTIME_API CBlackboard : public CObject
     {

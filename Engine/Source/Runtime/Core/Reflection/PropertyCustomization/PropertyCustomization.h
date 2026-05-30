@@ -14,11 +14,8 @@ namespace Lumina
         FPropertyHandle(void* InContainerPtr, FProperty* InProperty, int64 InIndex = 0);
         FPropertyHandle(void* InContainerPtr, void* InDefaultContainerPtr, FProperty* InProperty, int64 InIndex = 0);
 
-        /**
-         * Array-element handle. ContainerPtr is the array *instance* (the TVector), not a cached
-         * element pointer — the element address is resolved via GetAt on every access, so it stays
-         * valid across vector reallocation (push_back/resize). InProperty is the element property.
-         */
+        /** Array-element handle; ContainerPtr is the array instance (resolved via GetAt per access,
+         *  so it survives reallocation), InProperty is the element property. */
         FPropertyHandle(FArrayProperty* InOwnerArray, void* InArrayPtr, void* InDefaultArrayPtr, FProperty* InElementProperty, int64 InIndex);
 
         /** Resolves to the property's value (the member itself, or the live array element). Null container yields null. */

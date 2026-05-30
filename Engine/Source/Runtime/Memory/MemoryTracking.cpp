@@ -69,7 +69,6 @@ namespace Lumina::Memory
         // only runs from Memory::Malloc, after rpmalloc is already live on that thread.
         TAtomic<bool>   gEnabled{ true };
 
-        // ~~ Call-site capture ~~
         struct FCallSite
         {
             uint64 Hash;                    // 0 == empty slot

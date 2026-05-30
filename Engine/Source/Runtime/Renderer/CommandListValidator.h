@@ -94,10 +94,8 @@ namespace Lumina
 
         FRHICommandListRef Inner;
 
-        // Net open debug-label/profiler-zone depth for the current recording. An
-        // unclosed label at Close() propagates onto the queue's debug-label stack at
-        // submit and is never popped -- a linear FQueue::Submit creep that no resource
-        // counter reveals. Reset on Open, asserted zero on Close.
+        // Net open debug-label depth; an unclosed label at Close() leaks onto the queue's label
+        // stack at submit (a silent FQueue creep). Reset on Open, asserted zero on Close.
         int32 MarkerDepth = 0;
     };
 }

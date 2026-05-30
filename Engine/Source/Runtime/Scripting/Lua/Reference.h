@@ -132,9 +132,8 @@ namespace Lumina::Lua
         template<typename... TArgs>
         NODISCARD FRef Invoke(TArgs&& ... Args);
 
-        // Fire-and-forget pcall: 0 returns, no result FRef allocation. Use for hot-path
-        // lifecycle hooks (OnUpdate, OnReady, contact callbacks) that discard the result —
-        // skips the lua_ref the Invoke return path would pin per call.
+        // Fire-and-forget pcall (0 returns, no result FRef) for hot-path hooks that discard the
+        // result; skips the per-call lua_ref the Invoke return path would pin.
         template<typename... TArgs>
         bool Call(TArgs&& ... Args) const;
 
@@ -219,9 +218,8 @@ namespace Lumina::Lua
 
         lua_State*      State       = nullptr;
         int             Ref         = LUA_NOREF;
-        // lua_ref pins a specific value, and a registry slot's contents can't change,
-        // so the type is fixed for this ref's lifetime. Lets IsInvokable/IsTable/GetType
-        // skip the lua_getref + lua_pop round-trip.
+        // The ref's value is fixed for its lifetime, so IsInvokable/IsTable/GetType can use this
+        // cache instead of a lua_getref + lua_pop round-trip.
         EType           CachedType  = EType::Nil;
     };
 

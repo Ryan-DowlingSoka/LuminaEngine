@@ -207,9 +207,8 @@ namespace Lumina
             BlendPostProcessSettings(FinalPostProcess, ResolvedPostProcess, Alpha);
         }
 
-        // Bake the resolved view into the camera component so consumers reading its
-        // matrices directly (editor gizmo, CPU picking) match the rendered view.
-        // SetResolvedView leaves the authored FOV property intact for the blend target.
+        // Bake the resolved view into the camera so direct matrix consumers (editor gizmo, CPU picking)
+        // match the rendered view; SetResolvedView leaves the authored FOV intact as the blend target.
         Camera.SetResolvedView(
             FinalPosition,
             FinalRotation * FVector3(0.0f, 0.0f, 1.0f),

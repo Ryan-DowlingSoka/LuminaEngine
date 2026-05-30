@@ -8,9 +8,8 @@ namespace Lumina
 {
     class CObject;
 
-    // Dockable replacement for the old Asset Registry modal. Lists every known asset grouped by
-    // class, shows loaded/unloaded state, live strong ref-count, estimated CPU footprint, on-disk
-    // size, and (for the selected asset) which loaded objects reference it.
+    // Dockable Asset Registry view: every known asset grouped by class with loaded state, ref-count,
+    // CPU/disk size, and (for the selected asset) which loaded objects reference it.
     class FAssetRegistryEditorTool : public FEditorTool
     {
     public:

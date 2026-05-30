@@ -33,19 +33,16 @@ namespace Lumina
 
         void StartFrame(const FUpdateContext& UpdateContext);
 
-        // Game thread: ImGui::Render() then swap DrawData into the snapshot
-        // slot for FrameIndex. Returns a pointer into the persistent ring -
-        // the renderer owns the storage, the caller just forwards it to the
-        // render thread. Returns nullptr if there's no valid draw data.
+        // Game thread: ImGui::Render() then swap DrawData into FrameIndex's slot. Returns a pointer
+        // into the renderer-owned ring (forward to render thread), or nullptr if no valid draw data.
         FImDrawDataSnapshot* BuildFrame_GameThread(uint8 FrameIndex);
 
         // Render thread: record the snapshot's draw lists onto CmdList, then
         // render+present any secondary viewports captured for this frame's slot.
         void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot, uint8 FrameIndex);
 
-        // Render thread: call after RecordFrame_RenderThread to release the
-        // snapshot slot. The game thread may be blocked in BuildFrame_GameThread
-        // waiting for this slot to wrap back around.
+        // Render thread: call after RecordFrame_RenderThread to release the slot; the game thread
+        // may be blocked in BuildFrame_GameThread waiting for it to wrap back around.
         void SignalSnapshotSlotConsumed(uint8 FrameIndex);
 
         // Releases persistent snapshot storage. Must be called BEFORE
@@ -55,12 +52,8 @@ namespace Lumina
         virtual void OnStartFrame(const FUpdateContext& UpdateContext) = 0;
         virtual void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) = 0;
 
-        // Multi-viewport on the render thread. The game thread deep-copies each
-        // secondary viewport's draw data into the slot (CaptureViewports), and the
-        // render thread acquires/renders/presents those swapchains (RenderViewports)
-        // -- so every vkQueuePresentKHR runs on one thread (SyncVal can't track
-        // cross-thread present ordering). Slot == FrameIndex % FRAMES_IN_FLIGHT,
-        // gated by the same snapshot producer/consumer counters as the main viewport.
+        // Game thread captures secondary viewports' draw data into the slot; render thread presents
+        // them, so every vkQueuePresentKHR runs on one thread (SyncVal can't track cross-thread present).
         virtual void CaptureViewports_GameThread(uint8 Slot) {}
         virtual void RenderViewports_RenderThread(uint8 Slot) {}
 
@@ -68,13 +61,8 @@ namespace Lumina
         // render thread keeps them alive while recording.
         virtual void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) = 0;
 
-        // Game thread: create/upload/destroy all pending ImGui textures now,
-        // before the snapshot is handed to the render thread. ImGui 1.92's
-        // dynamic-texture backend otherwise does this lazily inside
-        // RenderDrawData against shared backend state (g.PlatformIO.Textures +
-        // a single backend command buffer/queue submit), which races the game
-        // thread that rebuilds that list every frame. Must run under the
-        // graphics-queue external-access lock.
+        // Game thread: process pending ImGui textures before handing off the snapshot, else 1.92's
+        // backend does it lazily in RenderDrawData against shared state and races. Hold the gfx-queue lock.
         virtual void ProcessTextureUpdates_GameThread() {}
 
         virtual ImTextureID GetOrCreateImTexture(FStringView Path) = 0;
@@ -89,17 +77,12 @@ namespace Lumina
         ImGuiContext* Context = nullptr;
         ImPlotContext* ImPlotContext = nullptr;
 
-        // Persistent ring keyed by render-thread frame index. Each slot owns
-        // a pool of ImDrawList copies that get reused across frames - after
-        // warm-up SnapUsingSwap is allocation-free unless buffers grow.
+        // Persistent ring keyed by render-thread frame index; each slot pools reused ImDrawList
+        // copies, so after warm-up SnapUsingSwap is allocation-free unless buffers grow.
         FImDrawDataSnapshot Snapshots[FRAMES_IN_FLIGHT];
 
-        // Per-slot producer/consumer counters so the game thread can't overwrite
-        // a snapshot while the render thread is still recording from it. This
-        // ring is independent of the world FrameRing -- if the render thread
-        // ever falls more than FRAMES_IN_FLIGHT-1 frames behind for any reason
-        // (GPU stall, no-world frame, suspended world, etc.), the game thread
-        // blocks here instead of stomping a live snapshot.
+        // Per-slot producer/consumer counters (independent of the world FrameRing) so the game thread
+        // blocks rather than stomp a snapshot the render thread is still recording from.
         TAtomic<uint64> SnapshotProduced[FRAMES_IN_FLIGHT] = {};
         TAtomic<uint64> SnapshotConsumed[FRAMES_IN_FLIGHT] = {};
         std::mutex SnapshotSlotMutex;

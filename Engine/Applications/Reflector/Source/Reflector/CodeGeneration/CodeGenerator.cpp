@@ -23,12 +23,8 @@ namespace Lumina::Reflection
     {
         constexpr size_t kStreamInitialCapacity = 10 * 1024;
 
-        // Try to express the source header as a path relative to one of the
-        // project's -I include dirs (preferring the longest match for the most
-        // specific form) or, failing that, the project root. Baking an absolute
-        // path into the generated .cpp is technically valid but burns in machine-
-        // specific layout; a relative form lets the artifact survive being moved
-        // or rebuilt on a different machine with a different engine install root.
+        // Express the header relative to a project -I dir (longest match) or the project root.
+        // A relative form lets the generated artifact survive being moved or rebuilt elsewhere.
         eastl::string ComputeSourceHeaderInclude(const FReflectedHeader& Header)
         {
             const eastl::string& Path = Header.HeaderPath;
@@ -134,8 +130,6 @@ namespace Lumina::Reflection
         }
     }
 
-    //-------------------------------------------------------------------------
-
     FCodeGenerator::FCodeGenerator(FReflectedWorkspace* InWorkspace, const FReflectionDatabase& Database)
         : Workspace(InWorkspace)
         , ReflectionDatabase(&Database)
@@ -171,13 +165,8 @@ namespace Lumina::Reflection
             }
         }
 
-        // Orphan sweep: a header that was deleted between runs leaves its
-        // .generated.{h,cpp} on disk and the prior unity still includes the
-        // .cpp. The header never enters the loop above, so DirtyProjects
-        // never picks it up. Walk every reflection-enabled project's
-        // intermediate dir and remove any generated artifact whose backing
-        // header is gone, marking the project dirty so the unity gets
-        // rewritten without that include.
+        // Orphan sweep: a deleted header leaves stale .generated.{h,cpp} the loop above never sees.
+        // Remove any generated artifact whose backing header is gone and mark the project dirty.
         for (auto& Project : Workspace->ReflectedProjects)
         {
             const std::filesystem::path Dir(
@@ -225,29 +214,15 @@ namespace Lumina::Reflection
 
         for (auto* DirtyProject : DirtyProjects)
         {
-            // A project that lost its last reflected type has no entry in
-            // UnityPerProject; fall back to the stub so the vcxproj still
-            // compiles cleanly.
+            // A project that lost its last reflected type has no UnityPerProject entry;
+            // fall back to the stub so the vcxproj still compiles cleanly.
             auto It = UnityPerProject.find(DirtyProject);
             const bool bHasContent = It != UnityPerProject.end() && !It->second.empty();
             WriteUnityBuildFile(DirtyProject, bHasContent ? It->second : eastl::string(kUnityStubContents));
         }
 
-        // Stub guard: every reflection-enabled project lists ReflectionUnity.gen.cpp
-        // in its vcxproj sources, so the file MUST exist on disk even if the
-        // project has zero reflected types (e.g. a freshly-templated game project).
-        // We only write a file if none exists yet — this keeps incremental builds
-        // fast (no mtime touch) and lets the dirty path above overwrite it the
-        // moment the project actually gets reflected types.
-        //
-        // If the project has reflected types this run (UnityPerProject has an
-        // entry), write the real accumulated includes — otherwise a manually
-        // deleted unity file would be replaced by the stub even though Runtime
-        // wasn't in DirtyProjects, breaking link.
-        //
-        // The __has_include guard makes the stub work whether the host project
-        // has a PCH (Runtime/Editor/Lumina include "pch.h") or not (game-template
-        // projects don't set one up).
+        // Stub guard: ReflectionUnity.gen.cpp must exist even for projects with zero reflected types.
+        // Only write when missing (keeps incremental builds fast); the __has_include stub works PCH or not.
         for (auto& Project : Workspace->ReflectedProjects)
         {
             const eastl::string Path = MakeUnityPath(Workspace->GetPath(), *Project);
@@ -262,10 +237,6 @@ namespace Lumina::Reflection
         }
     }
 
-    //-------------------------------------------------------------------------
-    // Per-header emission
-    //-------------------------------------------------------------------------
-
     void FCodeGenerator::GenerateHeaderFile(FReflectedHeader* Header)
     {
         FCodeWriter Writer(kStreamInitialCapacity);
@@ -279,10 +250,6 @@ namespace Lumina::Reflection
         WriteSourceContent(Writer, Header);
         WriteTextFile(MakeGeneratedSourcePath(Workspace->GetPath(), *Header), Writer.String());
     }
-
-    //-------------------------------------------------------------------------
-    // .generated.h
-    //-------------------------------------------------------------------------
 
     void FCodeGenerator::WriteHeaderContent(FCodeWriter& Writer, FReflectedHeader* Header)
     {
@@ -323,10 +290,6 @@ namespace Lumina::Reflection
         Writer.Line("#undef CURRENT_FILE_ID ");
         Writer.Linef("\t #define CURRENT_FILE_ID %s", FileID.c_str());
     }
-
-    //-------------------------------------------------------------------------
-    // .generated.cpp
-    //-------------------------------------------------------------------------
 
     namespace
     {

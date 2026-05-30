@@ -1,31 +1,4 @@
---[[
-    Lumina Third-Party Registry
-
-    Single source of truth for every third-party library: the public include
-    dirs and defines a consumer needs when it depends on that library by name,
-    plus what (if anything) it links. Pure data + resolution -- this file
-    creates no projects, so it is loaded by BuildScripts/Dependencies and is
-    available to BOTH the engine workspace and external game workspaces.
-
-    A module gets a third-party library's headers/defines/links only when the
-    library appears in the module's (transitive) dependency closure. This is
-    the "clean split": there is no global include dump; each module declares
-    what it uses, and engine public headers propagate their exposed libraries
-    to dependents (proper PUBLIC dependency semantics).
-
-    Register a library:
-        LuminaThirdParty.Register({
-            Name         = "ImGui",        -- name used in module Dependencies
-            IncludeDirs  = { "imgui" },    -- relative to Engine/Source/ThirdParty
-                                           -- unless absolute / a %{} token
-            Defines      = { },            -- public defines a consumer needs
-            Dependencies = { "GLFW" },     -- other third-party this lib's
-                                           -- public headers require
-            Link         = true,           -- true: link a lib named <Name>
-                                           -- false: header-only / None / Utility
-                                           -- string/table: explicit lib name(s)
-        })
-]]
+-- Single source of truth for third-party libs (includes/defines/links per name); pure data, creates no projects. A module only sees a lib in its transitive dependency closure.
 
 assert(LuminaConfig, "ThirdParty.lua must be included after BuildScripts/Dependencies")
 
@@ -69,9 +42,7 @@ local function AppendUnique(Out, Seen, Value)
 end
 
 
--- Resolve a list of dependency names into transitive, deduplicated
--- (includes, defines, links). Unknown names are passed through as raw links
--- so existing ExtraLinks-style names keep working.
+-- Resolve dependency names into transitive deduplicated (includes, defines, links); unknown names pass through as raw links.
 function LuminaThirdParty.Resolve(Names)
     local Includes, Defines, Links = {}, {}, {}
     local SeenInc, SeenDef, SeenLink, Visited = {}, {}, {}, {}
@@ -112,33 +83,21 @@ function LuminaThirdParty.IncludesOf(Names)
 end
 
 
--- ============================================================================
--- Registry
--- ============================================================================
-
--- Foundation: headers the engine's public API exposes pervasively. Most are
--- header-only or compiled inline; the linkable ones (EA, ImGui, ...) are
--- linked by whichever module references their symbols.
+-- Foundation: headers the engine's public API exposes pervasively; linkable ones are linked by whichever module references their symbols.
 LuminaThirdParty.Register({ Name = "EA",            IncludeDirs = { "EA/EASTL/include", "EA/EABase/include/Common" } })
 LuminaThirdParty.Register({ Name = "Entt",          IncludeDirs = { "entt" },               Link = false })
 LuminaThirdParty.Register({ Name = "SPDLog",        IncludeDirs = { "spdlog/include" },     Link = false })
 LuminaThirdParty.Register({ Name = "NlohmannJson",  IncludeDirs = { "json" },               Link = false })
 LuminaThirdParty.Register({ Name = "StbImage",      IncludeDirs = { "stb_image" },          Link = false })
 LuminaThirdParty.Register({ Name = "RenderDoc",     IncludeDirs = { "RenderDoc" },          Link = false })
--- Included as <concurrentqueue/concurrentqueue.h>, so the public include dir is
--- the ThirdParty root (see note on root-relative libs below).
+-- Included as <concurrentqueue/concurrentqueue.h>, so the public include dir is the ThirdParty root.
 LuminaThirdParty.Register({ Name = "ConcurrentQueue",IncludeDirs = { ".", "concurrentqueue" }, Link = false })
 LuminaThirdParty.Register({ Name = "RPMalloc",      IncludeDirs = { "rpmalloc" } })
 LuminaThirdParty.Register({ Name = "XXHash",        IncludeDirs = { "xxhash" } })
 LuminaThirdParty.Register({ Name = "Miniz",         IncludeDirs = { "miniz" } })
 LuminaThirdParty.Register({ Name = "Tracy",         IncludeDirs = { "tracy/public" } })
 
--- Windowing / UI.
--- A handful of libraries are included with their own directory as a prefix
--- (<imgui/misc/...>, <volk/volk.h>, <MiniAudio/miniaudio.h>), so their public
--- include dir is the ThirdParty ROOT ("."), not their own folder. Depending on
--- one of these puts the ThirdParty root on the include path; structured
--- libraries (glm, fastgltf, RmlUi, ...) stay scoped to their own subdir.
+-- Windowing / UI. Libs included with a directory prefix (<imgui/misc/...>, <volk/volk.h>) use the ThirdParty root (".") so the root lands on the include path.
 LuminaThirdParty.Register({ Name = "GLFW",          IncludeDirs = { "glfw/include" } })
 LuminaThirdParty.Register({ Name = "ImGui",         IncludeDirs = { "imgui", "." },         Dependencies = { "GLFW" } })
 LuminaThirdParty.Register({ Name = "FreeType",      IncludeDirs = { "FreeType/include" } })
@@ -149,8 +108,7 @@ LuminaThirdParty.Register({ Name = "Vulkan",        IncludeDirs = { "vulkan" }, 
 LuminaThirdParty.Register({ Name = "Volk",          IncludeDirs = { "." } })  -- <volk/volk.h>
 LuminaThirdParty.Register({ Name = "VMA",           IncludeDirs = { "VulkanMemoryAllocator" }, Link = false })
 LuminaThirdParty.Register({ Name = "VKBootstrap",   IncludeDirs = { "vk-bootstrap" } })
--- SLang headers only; its DLL import libs come from External/SLang/lib and are
--- wired up via the Runtime module's ExtraLinks/LibDirs.
+-- SLang headers only; its DLL import libs are wired via the Runtime module's ExtraLinks/LibDirs.
 LuminaThirdParty.Register({ Name = "SLang",         IncludeDirs = { "SLang" },              Link = false })
 
 -- Audio / physics / navigation
@@ -170,22 +128,13 @@ LuminaThirdParty.Register({ Name = "MeshOptimizer", IncludeDirs = { "meshoptimiz
 LuminaThirdParty.Register({ Name = "MikkTSpace",    IncludeDirs = { "MikkTSpace/src" } })
 LuminaThirdParty.Register({ Name = "BasicUniversal",IncludeDirs = { "basis_universal" } })
 
--- Model-format importers (editor-only). The "." include is the ThirdParty root
--- because these are included with their directory prefix
--- (<tinyobjloader/...>, "OpenFBX/ofbx.h").
+-- Model-format importers (editor-only); "." = ThirdParty root since these are included with a directory prefix (<tinyobjloader/...>, "OpenFBX/ofbx.h").
 LuminaThirdParty.Register({ Name = "TinyOBJLoader", IncludeDirs = { "." } })
 LuminaThirdParty.Register({ Name = "OpenFBX",       IncludeDirs = { "." } })
 LuminaThirdParty.Register({ Name = "FastGLTF",      IncludeDirs = { "fastgltf/include" } })
 
 
--- ============================================================================
--- Named dependency groups
---
--- These describe what the engine's PUBLIC headers expose to any consumer, so a
--- module (or external game project) that depends on Runtime/Editor sees the
--- same third-party headers the engine compiled against. Single source of truth
--- shared by Runtime/Editor module declarations and by GameProject.
--- ============================================================================
+-- Named dependency groups describing what the engine's public headers expose, so dependents see the same third-party headers the engine compiled against.
 
 -- Everything the Runtime module links or exposes through its public headers.
 LuminaThirdParty.RuntimePublicDeps =

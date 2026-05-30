@@ -9,9 +9,8 @@ namespace Lumina
     static constexpr const char* SpawnToken  = "$PARTICLE_SPAWN_FUNC";
     static constexpr const char* UpdateToken = "$PARTICLE_UPDATE_FUNC";
 
-    // Replaces every occurrence of Token in Source with Replacement (single pass, no rescanning of
-    // inserted text). Used to splice the module-stack chunks into the function-body tokens in
-    // ParticleSimulateTemplate.slang.
+    // Replaces every Token in Source (single pass, inserted text not rescanned); splices the
+    // module-stack chunks into the function-body tokens in ParticleSimulateTemplate.slang.
     static void ReplaceAll(FString& Source, const char* Token, const FString& Replacement)
     {
         const size_t TokenLen = strlen(Token);

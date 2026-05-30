@@ -117,9 +117,8 @@ namespace Lumina::GraphAlgorithms
         }
     }
 
-    // Topologically sorts the subset of Nodes reachable (via input edges) from the first node matching
-    // RootPredicate. SortedNodes is written with nodes in dependency order (roots-last).
-    // Returns the first node participating in a cycle, or nullptr on success / when no root is found.
+    // Topo-sorts the subset of Nodes reachable (via input edges) from the first RootPredicate match
+    // into SortedNodes (dependency order, roots-last). Returns the first node in a cycle, else nullptr.
     template <typename TRootPredicate>
     CEdGraphNode* TopologicalSortFromRoot(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, TVector<CEdGraphNode*>& SortedNodes, TRootPredicate&& IsRoot)
     {

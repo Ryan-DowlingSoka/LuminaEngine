@@ -19,9 +19,7 @@ namespace Lumina
         std::atomic<size_t> GMisses{0};
         std::atomic<size_t> GWrittenBytes{0};
 
-        // On-disk header. Bump kFileVersion if FCookDDC's wire format
-        // changes shape (this is independent of kCookStamp which keys the
-        // cached payload's contents).
+        // On-disk header; bump kFileVersion if the wire format changes shape (independent of kCookStamp, which keys the payload contents).
         struct FDDCFileHeader
         {
             char   Magic[4];        // 'LDDC'
@@ -66,9 +64,7 @@ namespace Lumina
         {
             return {};
         }
-        // Mix the cook stamp in with a large odd multiplier so stamp bumps
-        // shuffle every key off its prior bucket. No claim of cryptographic
-        // strength — collision risk is dominated by the source hash itself.
+        // Mix the cook stamp via a large odd multiplier so a stamp bump shuffles every key off its prior bucket (not cryptographic; source hash dominates collision risk).
         static constexpr uint64 kMixer = 0x9E3779B97F4A7C15ull;
         const uint64 H = SourceContentHash ^ (static_cast<uint64>(kCookStamp) * kMixer);
         return { H == 0 ? 1ull : H };
@@ -102,10 +98,8 @@ namespace Lumina
             return false;
         }
 
-        // Reject torn writes and stale-format entries early. A short
-        // file, wrong magic, version mismatch, or payload hash miss all
-        // indicate corruption — delete the entry so the next cook
-        // replaces it cleanly.
+        // Reject torn writes / stale-format entries early; short file, wrong magic, version mismatch, or payload hash miss = corruption.
+        // Delete the entry so the next cook replaces it cleanly.
         auto DropCorrupt = [&](const char* Why)
         {
             LOG_WARN("[CookDDC] Discarding corrupt entry {}: {}", Path, Why);
@@ -184,11 +178,8 @@ namespace Lumina
         std::memcpy(Framed.data(), &Header, sizeof(Header));
         Framed.insert(Framed.end(), Bytes.begin(), Bytes.end());
 
-        // Atomic publish via temp + rename: torn writes from a kill mid-
-        // SaveArrayToFile would otherwise leave a header-less or short
-        // file that TryGet would accept and hand to the cooker as truth.
-        // Concurrent producers racing on the same key end up with one of
-        // the two complete files visible — never a half-written one.
+        // Atomic publish via temp + rename: a kill mid-write would otherwise leave a short file TryGet accepts as truth.
+        // Concurrent producers on the same key see one complete file, never a half-written one.
         FString TempPath = Path;
         TempPath += ".tmp";
 
@@ -202,9 +193,7 @@ namespace Lumina
         std::filesystem::rename(TempPath.c_str(), Path.c_str(), RenameEc);
         if (RenameEc)
         {
-            // Windows can fail rename-over-existing in rare races; retry
-            // by removing the target first. Errors here are logged and
-            // the temp file is cleaned up so we don't pile up .tmp files.
+            // Windows can fail rename-over-existing in rare races; remove the target first, then retry (temp cleaned up to avoid .tmp pileup).
             std::error_code RmEc;
             std::filesystem::remove(Path.c_str(), RmEc);
             std::filesystem::rename(TempPath.c_str(), Path.c_str(), RenameEc);

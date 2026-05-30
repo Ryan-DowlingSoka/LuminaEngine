@@ -10,12 +10,7 @@
 
 namespace Lumina
 {
-    /**
-     * Type tag attached to a registered setting. Drives editor widget choice
-     * and round-trip behavior. The on-disk JSON storage is the same regardless
-     * of tag — strings are strings, numbers are numbers — but Path/Color/etc.
-     * tell the project-settings editor how to render the row.
-     */
+    // Type tag on a registered setting; drives editor widget choice (JSON storage is identical regardless).
     enum class EConfigValueType : uint8
     {
         Bool,
@@ -32,12 +27,8 @@ namespace Lumina
         Enum,           // String constrained to EnumOptions
     };
 
-    /**
-     * Declarative setting record. Modules call FConfig::RegisterSetting(...)
-     * at init time to teach the project-settings editor about a key. Game
-     * code can still Get/Set unregistered keys, but they won't show up in
-     * the typed editor.
-     */
+    // Declarative setting record registered via FConfig::RegisterSetting; unregistered keys still
+    // work via Get/Set but don't appear in the typed editor.
     struct FConfigSetting
     {
         FString             Key;            // Dotted "Editor.WorldEditorTool.GuizmoSnapEnabled"
@@ -76,9 +67,7 @@ namespace Lumina
     {
     public:
 
-        // Loads every .json file under the given VFS directory. Each file's
-        // top-level keys are merged into the root config, and the file path
-        // is recorded so subsequent Set() writes go back to the right file.
+        // Loads every .json under the VFS dir; top-level keys merge into root, source path recorded so Set() writes back.
         void LoadPath(FStringView ConfigPath);
 
         // Schema declaration. Modules declare their settings here at startup.
@@ -91,9 +80,7 @@ namespace Lumina
         // Iterate every registered setting (in registration order).
         void ForEachSetting(const TFunction<void(const FConfigSetting&)>& Func) const;
 
-        // Generic typed access. Falls back to Default if the key is missing.
-        // For registered keys, the registered DefaultValue takes precedence
-        // over the Default arg if the key is missing on disk.
+        // Typed read; missing key falls back to a registered DefaultValue, else the Default arg.
         template<typename T>
         T Get(FStringView Key, const T& Default = T{}) const;
 
@@ -140,7 +127,7 @@ namespace Lumina
         THashMap<FString, FConfigSetting>           Registry;
     };
 
-    // Template definitions ------------------------------------------------
+    // Template definitions.
 
     template<typename T>
     T FConfig::Get(FStringView Key, const T& Default) const

@@ -16,9 +16,8 @@ namespace Lumina
         DedicatedServer,
     };
 
-    // Per-world runtime state owned by FWorldManager. One world = one context.
-    // Holds the role the world is playing (type, net mode, PIE status) so systems
-    // can branch on it without CWorld itself carrying editor/network concerns.
+    // Per-world runtime state owned by FWorldManager (one world = one context). Holds the world's role
+    // (type, net mode, PIE) so systems branch on it without CWorld carrying editor/network concerns.
     struct FWorldContext
     {
         TObjectPtr<CWorld>      World;

@@ -3,9 +3,8 @@
 #include <volk/volk.h>
 #include "VkBootstrap.h"
 #if WITH_AFTERMATH
-// Aftermath's decoding header exposes its SPIR-V helpers only when VULKAN_H_ is defined.
-// volk includes vulkan_core.h directly (not vulkan.h), so VULKAN_H_ is not set - declare it
-// manually so GFSDK_Aftermath_GetShaderHashSpirv and friends are visible.
+// Aftermath exposes its SPIR-V helpers only when VULKAN_H_ is defined; volk includes vulkan_core.h
+// (not vulkan.h), so define it manually to make GFSDK_Aftermath_GetShaderHashSpirv visible.
 #ifndef VULKAN_H_
 #define VULKAN_H_ 1
 #endif

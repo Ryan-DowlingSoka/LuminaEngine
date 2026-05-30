@@ -3,15 +3,8 @@
 
 namespace Lumina::VFS
 {
-    /**
-     * In-memory implementation of IFileSystem. Backing store for packaged
-     * assets (e.g. .PAK overlays) and any case where the engine wants to
-     * surface synthetic files through the VFS without touching disk.
-     *
-     * Keys are full virtual paths including the alias prefix.
-     * Not internally synchronized — populate before exposing the mount,
-     * or wrap external mutations under the caller's lock.
-     */
+    // In-memory IFileSystem; keys are full virtual paths (with alias prefix).
+    // Not synchronized: populate before exposing the mount, or guard mutations with the caller's lock.
     class RUNTIME_API FMemoryFileSystem : public IFileSystem
     {
     public:

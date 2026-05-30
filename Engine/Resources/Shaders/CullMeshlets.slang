@@ -10,10 +10,8 @@ struct FPushConstants
     uint Phase;              // CULL_PHASE_EARLY or CULL_PHASE_LATE
     uint CameraLateViewIndex; // Only consumed in LATE; index into uCullViews.
     uint _Pad;
-    // Cull-private scratch, addressed by device pointer instead of a descriptor
-    // binding so draw/post passes never bind (and never transition) them. State
-    // is tracked CPU-side via State.Writes on the cull passes. 8-byte aligned
-    // after the four uints above.
+    // Cull-private scratch, addressed by device pointer (not a descriptor) so draw/post passes
+    // never bind or transition them. State tracked CPU-side via State.Writes; 8-byte aligned here.
     FDrawIndirectArguments* IndirectArgs;
     FMeshletDeferred*       DeferList;
     uint*                   DeferCount;
@@ -21,11 +19,7 @@ struct FPushConstants
 
 [[vk::push_constant]] FPushConstants PC;
 
-// -----------------------------------------------------------------------------
-// Emit helper. Appends a surviving meshlet into the given view's slice.
-// Centralized so phase 0 (camera + shadow views) and phase 1 (camera-late)
-// share the atomic protocol exactly.
-// -----------------------------------------------------------------------------
+// Appends a surviving meshlet into the view's slice; centralized so both phases share the atomic protocol.
 void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocalIdx)
 {
     uint IndirectIndex = View.IndirectArgsOffset + DrawID;
@@ -40,13 +34,8 @@ void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocal
     uMeshletDrawList[Slot] = Draw;
 }
 
-// -----------------------------------------------------------------------------
-// Prefix-sum work expansion.
-// Given a flat thread index and an inclusive per-instance meshlet prefix sum,
-// recover (InstanceID, MeshletLocalIdx) such that prefix[InstanceID] <=
-// flat_idx < prefix[InstanceID + 1]. Binary search is O(log NumInstances) and
-// keeps every active wave doing real work.
-// -----------------------------------------------------------------------------
+// Recover (InstanceID, MeshletLocalIdx) from a flat thread index via binary search on the inclusive
+// per-instance prefix sum: prefix[InstanceID] <= flat_idx < prefix[InstanceID + 1]. O(log NumInstances).
 bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint MeshletLocalIdx)
 {
     InstanceID      = 0u;
@@ -58,10 +47,8 @@ bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint M
         return false;
     }
 
-    // Binary search: find the largest i with uInstanceMeshletPrefix[i] <= flat_idx.
-    // Invariant: prefix[lo] <= flat_idx, prefix[hi] > flat_idx (or hi is the
-    // sentinel index NumInstances). prefix[0] is always 0, so the lo=0 base
-    // case never violates the invariant.
+    // Find the largest i with uInstanceMeshletPrefix[i] <= flat_idx. Invariant: prefix[lo] <= flat_idx
+    // < prefix[hi] (hi may be the sentinel NumInstances); prefix[0] == 0 keeps the lo=0 base case valid.
     uint Lo = 0u;
     uint Hi = uSceneData.CullData.InstanceNum;
     while (Hi - Lo > 1u)
@@ -82,16 +69,9 @@ bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint M
     return true;
 }
 
-// -----------------------------------------------------------------------------
-// Phase 0. Walks every (instance, meshlet) pair and routes each survivor
-// either into a view's draw list (shadow views, camera-visible) or the
-// defer list (camera + HZB-occluded).
-//
-// Thread layout: flat 1D dispatch sized to TotalMeshletBound. Each thread
-// owns exactly one meshlet -- no over-dispatch, no per-instance wave slop.
-// Vulkan's per-axis 65535 workgroup limit is folded into Y on the C++ side;
-// the shader reconstructs the flat index here.
-// -----------------------------------------------------------------------------
+// Phase 0: walks every (instance, meshlet) pair, routing survivors into a view's draw list or the
+// defer list (camera + HZB-occluded). Flat 1D dispatch, one thread per meshlet; the 65535 Y fold
+// from the C++ side is reconstructed into a flat index here.
 void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 {
     const uint flat_idx = GlobalID.x + GroupID.y * 65535u * 64u;
@@ -117,10 +97,8 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 
     float4x4 Model = Inst.ModelMatrix;
 
-    // Camera-LOD bounds. Used by the camera view and any non-shadow view.
-    // Shadow-only views fetch their own bounds from the shadow LOD inside
-    // the per-view loop below, since the shadow LOD's meshlet at the same
-    // local index is a different geometric primitive with different bounds.
+    // Camera-LOD bounds for the camera and non-shadow views. Shadow-only views fetch their own
+    // bounds from the shadow LOD in the per-view loop (different primitive at the same local index).
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
     FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
 
@@ -162,10 +140,8 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 continue;
         }
 
-        // Pick the bounds this view should test against. Shadow-only views
-        // test the shadow LOD's meshlet, which has its own (Center, Radius,
-        // Cone). Threads beyond the shadow LOD's per-instance count have
-        // no shadow meshlet at this local index -- skip the view entirely.
+        // Shadow-only views test the shadow LOD's meshlet (its own Center/Radius/Cone); threads
+        // past the shadow LOD's per-instance count have no meshlet here and skip the view.
         bool bShadowView = View.HasFlag(CULL_VIEW_FLAG_CAST_SHADOW_ONLY);
 
         FMeshletBounds VBounds      = Bounds;
@@ -216,9 +192,8 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 continue;
         }
 
-        // Hi-Z occlusion only runs on the camera view (uDepthPyramid tracks the
-        // camera). Shadow views skip this block entirely. On an early-phase
-        // occluded meshlet we defer it to phase 1 instead of dropping.
+        // Hi-Z occlusion runs only on the camera view (the pyramid tracks the camera); an occluded
+        // meshlet is deferred to phase 1 rather than dropped.
         if (!bSkinned && !bNoCull && View.HasFlag(CULL_VIEW_FLAG_OCCLUSION))
         {
             // Micro-poly reject: if the meshlet projects sub-pixel we can drop
@@ -263,15 +238,10 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
     }
 }
 
-// -----------------------------------------------------------------------------
-// Phase 1. One thread per deferred entry. No scene walk, no per-view loop --
-// every survivor goes to the single camera-late view.
-// -----------------------------------------------------------------------------
+// Phase 1: one thread per deferred entry, no scene walk; every survivor goes to the camera-late view.
 void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 {
-    // Same flat-index reconstruction as RunEarlyPhase: GlobalID.x already
-    // covers ((GroupID.x * 64) + ThreadID.x), and the C++ side folds large
-    // dispatches into Y, so the late phase reads the same fold here.
+    // Same flat-index reconstruction as RunEarlyPhase (large dispatches folded into Y on the C++ side).
     uint ThreadIdx = GlobalID.x + GroupID.y * 65535u * 64u;
     uint Count     = PC.DeferCount[0];
 
@@ -280,9 +250,8 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 
     FMeshletDeferred Entry = PC.DeferList[ThreadIdx];
 
-    // Reconstruct world-space bounds the same way phase 0 did. Transforms
-    // can't change between phases (they're baked into the Instance buffer
-    // that was uploaded before phase 0) so re-deriving is stable.
+    // Reconstruct world-space bounds as phase 0 did; transforms are baked into the Instance buffer
+    // before phase 0, so re-deriving is stable.
     FGPUInstance Inst = GetInstance(Entry.InstanceID);
     if (Entry.MeshletLocalIndex >= Inst.SurfaceMeshletCount)
     {
@@ -301,11 +270,8 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    // Re-test against the rebuilt HZB. A deferred meshlet that is still
-    // occluded against the fresh pyramid is genuinely behind an occluder in
-    // this frame and can be dropped; a meshlet that now passes was hidden
-    // by a stale pyramid and has to reach the base pass. The micro-poly
-    // reject already fired in phase 0; no need to rerun it.
+    // Re-test against the rebuilt HZB: still-occluded meshlets are genuinely hidden and dropped;
+    // ones that now pass were hidden by a stale pyramid. Micro-poly reject already fired in phase 0.
     if (IsHiZOccluded(WorldCenter, WorldRadius))
         return;
 

@@ -8,9 +8,8 @@ namespace Lumina
 {
     class FAnimationGraphCompiler;
 
-    // A per-pin default value, persisted on the node. Pins themselves are rebuilt
-    // by BuildNode() and not serialized, so an editable+saved inline default for a
-    // value pin lives here, keyed by pin name.
+    // Persisted per-pin default. Pins are rebuilt by BuildNode() and not serialized, so a value pin's
+    // editable inline default lives here, keyed by pin name.
     REFLECT()
     struct FAnimGraphPinDefault
     {
@@ -23,9 +22,8 @@ namespace Lumina
         float Value = 0.0f;
     };
 
-    // Base class for every animation node-graph node. Subclasses build their
-    // pins in BuildNode() and emit bytecode in GenerateBytecode(); the node
-    // graph walks them in topological order during compile.
+    // Base class for animation node-graph nodes: subclasses build pins in BuildNode() and emit bytecode
+    // in GenerateBytecode(); the graph walks them in topological order during compile.
     REFLECT()
     class CAnimGraphNode : public CEdGraphNode
     {
@@ -56,10 +54,8 @@ namespace Lumina
         // node's saved default for that pin (see PinDefaults).
         void BindFloatPinEditor(CAnimGraphPin* Pin, float Speed = 0.01f, const char* Format = "%.2f");
 
-        // Binds a combo inline editor to an enum-backed value input pin. Items are
-        // the enum's display names in value order; Get/Set read and write the
-        // backing enum property (the property stays the source of truth, the pin
-        // is an optional connection override).
+        // Binds a combo inline editor to an enum-backed value input pin (Items are the enum's display names
+        // in value order). The backing enum property stays the source of truth; the pin is an optional override.
         void BindEnumPinEditor(CAnimGraphPin* Pin, const TVector<const char*>& Items,
                                const TFunction<int()>& Get, const TFunction<void(int)>& Set);
 

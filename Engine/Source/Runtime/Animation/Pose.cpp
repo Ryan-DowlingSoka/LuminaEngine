@@ -75,9 +75,7 @@ namespace Lumina
             return;
         }
 
-        // Translation + scale are componentwise lerps -- blend both arrays as flat
-        // float streams (8-wide). Rotation needs the neighbourhood fix + slerp, so
-        // it stays a per-bone scalar pass.
+        // Translation + scale lerp as flat float streams (8-wide); rotation needs slerp, stays scalar.
         const int32 NumComponents = NumBones * 3;
         SIMD::LerpArray(reinterpret_cast<float*>(Out.Translations.data()),
                         reinterpret_cast<const float*>(A.Translations.data()),

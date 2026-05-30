@@ -9,9 +9,8 @@
 
 namespace Lumina
 {
-    // Forward decl breaks the EdGraphNode.h <-> EdNodeGraphPin.h include cycle.
-    // Only pointers / templates need the type here; full def is required at the
-    // call site of the templated GetOwningNode<T>() and is pulled in by the .cpp.
+    // Forward decl breaks the EdGraphNode.h <-> EdNodeGraphPin.h include cycle; the full def is
+    // needed at the templated GetOwningNode<T>() call site and pulled in by the .cpp.
     class CEdGraphNode;
 
     REFLECT()
@@ -34,9 +33,8 @@ namespace Lumina
         
         virtual float DrawPin() { return 1.5f; }
 
-        // True when this pin draws a compact inline editor (value field, enum
-        // selector) for an unconnected input. The graph draw loop uses this to
-        // right-align those editors into a tidy column.
+        // True when this pin draws a compact inline editor (value/enum) for an unconnected input;
+        // the draw loop right-aligns those editors into a tidy column.
         virtual bool HasInlineEditor() const { return false; }
         
         void SetPinName(const FString& Name) { PinName = Name; }
@@ -64,11 +62,8 @@ namespace Lumina
         bool ShouldDrawEditor() const { return bDrawPinEditor; }
         void SetShouldDrawEditor(bool bNew) { bDrawPinEditor = bNew; }
 
-        // Disabled pins are drawn faded and reject new connections. Used by
-        // the material output node to grey out attributes that don't apply
-        // to the current material domain (e.g. Diffuse / Roughness on a
-        // PostProcess material). Existing connections are preserved -- the
-        // user can still disconnect a stale link.
+        // Disabled pins draw faded and reject new connections (e.g. the material output node greys out
+        // attributes that don't apply to the current domain). Existing connections are preserved.
         bool IsDisabled() const { return bDisabled; }
         void SetDisabled(bool bNew) { bDisabled = bNew; }
         

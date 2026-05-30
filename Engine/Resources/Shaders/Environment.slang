@@ -2,38 +2,20 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/Sky.slang"
 
-// Fullscreen sky pass. The C++ EnvironmentPass writes one FEnvironmentParams
-// per frame; the shader switches on Misc.x to pick a path
-// (SolidColor / Gradient / Dynamic / HDRI).
-//
-// All non-solid modes sample uSkyCube, which SkyCubeCapturePass has
-// already filled this frame using the same EvaluateSky() that used to
-// run per-fragment here. Doing the heavy sky math once at cube
-// resolution and reading it through a single cube fetch per pixel is
-// what makes the pass cheap on low-end hardware.
+// Fullscreen sky pass; switches on Misc.x (SolidColor / Gradient / Dynamic / HDRI). Non-solid modes
+// read uSkyCube, which SkyCubeCapturePass fills once per frame -- one cube fetch/pixel instead of the full sky math.
 
 [[vk::binding(0, 2)]] ConstantBuffer<FEnvironmentParams> uEnvironment;
-// Same SkyCube the IBL pipeline reads. SkyCubeCapturePass populates it
-// each frame -- either from the procedural sky shader or from the
-// imported HDRI via EquirectToCubemap.
+// Same SkyCube the IBL pipeline reads (procedural sky or HDRI via EquirectToCubemap).
 [[vk::binding(1, 2)]] SamplerCube                        uSkyCube;
-// Imported HDRI equirect, sampled directly for the visible background so the
-// sky shows full source resolution instead of the 256-face IBL cube. Bound to
-// a placeholder in non-HDRI modes, where it is never read.
+// Imported HDRI equirect, sampled directly so the visible sky shows full resolution (not the 256 cube).
 [[vk::binding(2, 2)]] Sampler2D                          uEquirect;
 
 struct FragmentInput  { float2 UV : TEXCOORD0; };
 struct FragmentOutput { float4 Color : SV_Target0; };
 
-// Reconstruct a world-space ray from a fullscreen-quad UV. The Y-flip baked
-// into the camera projection (Vulkan +Y-down NDC) is undone by
-// GetInverseCameraProjection() since the inverse of a Y-flipped matrix is
-// also Y-flipped, so feeding the +Y-down NDC back through it lands in the
-// correct view space.
-//
-// RayClip.z = 1 picks the near plane (which in reverse-Z is the geometric
-// near). Either Z value would give the same direction once we normalize, so
-// any sky-distant Z works; we keep 1.0 here for parity with the original.
+// Reconstruct a world-space ray from fullscreen-quad UV. The camera projection's Y-flip is undone by
+// GetInverseCameraProjection (the inverse is also Y-flipped). RayClip.z is arbitrary post-normalize.
 float3 GetViewRay(float2 UV)
 {
     float2 NDC      = UV * 2.0 - 1.0;
@@ -56,10 +38,8 @@ FragmentOutput FragmentMain(FragmentInput Input)
     }
     else
     {
-        // Gradient / Dynamic read uSkyCube (produced by SkyCubeCapturePass).
-        // HDRI samples its source equirect directly: the 256-face cube is fine
-        // for IBL but too coarse to show full-screen, so reading the panorama
-        // per-pixel restores its detail.
+        // Gradient / Dynamic read uSkyCube; HDRI reads its source equirect directly (the cube is
+        // fine for IBL but too coarse full-screen).
         float3 RayDir = GetViewRay(Input.UV);
         if (SkyMode == SKY_MODE_HDRI)
         {
@@ -74,11 +54,8 @@ FragmentOutput FragmentMain(FragmentInput Input)
             Color = uSkyCube.SampleLevel(RayDir, 0.0).rgb;
         }
 
-        // Per-pixel overlays (Dynamic mode only). Sun, moon, and stars are
-        // pixel-scale features that look blocky baked into a 256 cube, so
-        // they live here in the fullscreen pass instead. Each one early-
-        // outs cheaply when its feature is not in view, so the typical
-        // fragment pays only a couple of dot products plus the cube fetch.
+        // Per-pixel overlays (Dynamic only): sun/moon/stars are pixel-scale and blocky in a 256 cube,
+        // so they run here. Each early-outs cheaply when off-screen.
         if (SkyMode == SKY_MODE_DYNAMIC)
         {
             float3 SunDir      = GetSunDirection();
@@ -100,9 +77,7 @@ FragmentOutput FragmentMain(FragmentInput Input)
                 Overlay += Sky_RenderSun(RayDir, SunDir, SunColor, DiscScale);
             }
 
-            // Moon + stars only matter at night. Moon has its own dot-gate
-            // inside Sky_RenderMoon; stars need an UpMask to avoid showing
-            // through the lit ground band.
+            // Moon + stars only matter at night; stars need UpMask to stay out of the lit ground band.
             if (NightFactor > 0.0)
             {
                 Overlay += Sky_RenderMoon(RayDir, SunDir, uEnvironment, NightFactor);

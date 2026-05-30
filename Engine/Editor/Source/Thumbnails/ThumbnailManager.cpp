@@ -65,8 +65,7 @@ namespace Lumina
                 entt::entity MeshEntity = World->ConstructEntity("Mesh");
                 Registry.emplace<SStaticMeshComponent>(MeshEntity).StaticMesh = Mesh;
 
-                // Use the bounding-sphere radius (extent length) so wide-flat
-                // and tall-narrow meshes frame the same as cubes.
+                // Bounding-sphere radius so wide-flat and tall-narrow meshes frame the same as cubes.
                 const FAABB Bounds   = Mesh->GetAABB();
                 const FVector3 Cen  = Bounds.GetCenter();
                 const float Radius   = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);

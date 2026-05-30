@@ -21,6 +21,7 @@ namespace Lumina
 {
     class CMesh;
     struct FLineBatcherComponent;
+    struct FTriangleBatcherComponent;
     struct SDirectionalLightComponent;
     struct SSpotLightComponent;
     struct SPointLightComponent;
@@ -51,9 +52,8 @@ namespace Lumina
             uint32                  CustomData;
             uint32                  EntityID;
             uint32                  LocalBoneOffset;            // ~0u for static meshes.
-            // GPU pre-skinning: only the rendered-LOD meshlet span is skinned/stored (0 for
-            // static). SkinSpanStart = first rendered vertex offset, SkinSliceSize = its
-            // extent. GlobalSkinnedBase (combined base - span start) is resolved in merge.
+            // GPU pre-skinning: only the rendered-LOD meshlet span is skinned (0 for static).
+            // SpanStart = first rendered vertex, SliceSize = extent; GlobalSkinnedBase resolved in merge.
             uint32                  SkinMeshletStart;
             uint32                  SkinMeshletCount;
             uint32                  SkinSpanStart;
@@ -131,8 +131,7 @@ namespace Lumina
             TFrameVector<FProcessedDrawItem>    Items;
             TFrameVector<FEntityRecord>         EntityRecords;
             TFrameVector<FLocalBatchEntry>      LocalBatches;
-            // 48B/bone (last row dropped). Arena-backed; scales with skeletons x bones, so the
-            // arena block (kArenaBlockSize) must exceed one thread's worst-case bone vector.
+            // 48B/bone (last row dropped). Arena-backed; arena block must exceed one thread's worst-case bone vector.
             TFrameVector<FBoneTransform>        BonesData;
             TFrameHashMap<CMesh*, uint8>  PinnedMeshDedupe;
             // Heap-backed so refs survive the per-thread arena reset.
@@ -242,15 +241,14 @@ namespace Lumina
 
             TVector<FSimpleElementVertex>    SimpleVertices;
             TVector<FLineBatch>              LineBatches;
+            TVector<FSimpleElementVertex>    SolidVertices;
+            TVector<FSolidBatch>             SolidBatches;
             TVector<FBillboardInstance>      BillboardInstances;
             TVector<FWidgetInstance>         WidgetInstances;
             TVector<FRHIImageRef>            PinnedWidgetRTs;
             
-            // Per-frame snapshot of one terrain. Extract (game thread) fills this from
-            // the live component; the render-thread terrain passes read ONLY this. GPU
-            // resources live in the render-owned FForwardRenderScene::TerrainGPUStates map
-            // keyed by Entity, so the render thread never dereferences the component (which
-            // the game thread may have destroyed within the in-flight window).
+            // Per-frame snapshot of one terrain; render passes read ONLY this. GPU resources live in
+            // TerrainGPUStates keyed by Entity, so the render thread never dereferences the component.
             struct FTerrainExtract
             {
                 entt::entity        Entity;
@@ -281,24 +279,19 @@ namespace Lumina
                 uint32              WeightSliceMask = 0u;         // bit L set => slice L present
                 TVector<uint8>      WeightBytes;     // dirty slices packed back-to-back
 
-                // Chunk/meshlet metadata rebuilt this frame (copied so the next frame's
-                // game-thread rebuild can't race the render-thread upload).
+                // Chunk/meshlet metadata rebuilt this frame; copied so next frame's rebuild can't race the upload.
                 bool                         bGeometryRebuilt = false;
                 TVector<FTerrainChunkInfo>   Chunks;
                 TVector<FTerrainMeshletInfo> Meshlets;
             };
             TVector<FTerrainExtract>         TerrainExtracts;
 
-            // Every entity carrying STerrainComponent this frame, INCLUDING disabled ones
-            // (which are excluded from TerrainExtracts). The render thread prunes
-            // TerrainGPUStates entries whose key is absent here, reclaiming destroyed
-            // terrains while preserving a temporarily-disabled terrain's GPU resources.
+            // Every entity with STerrainComponent this frame, including disabled ones (excluded from
+            // TerrainExtracts). Render thread prunes TerrainGPUStates absent here, preserving disabled terrains.
             TVector<entt::entity>            LiveTerrainEntities;
 
-            // Per-frame snapshot of one particle emitter. Extract (game thread) fills this;
-            // the render-thread simulate/render passes read ONLY this. GPU + sim state lives
-            // in the render-owned FForwardRenderScene::ParticleGPUStates map keyed by Entity,
-            // so the render thread never dereferences a (possibly destroyed) component.
+            // Per-frame snapshot of one emitter; render passes read ONLY this. GPU + sim state lives in
+            // ParticleGPUStates keyed by Entity, so the render thread never dereferences the component.
             struct FParticleExtract
             {
                 entt::entity            Entity;
@@ -324,16 +317,14 @@ namespace Lumina
             };
             TVector<FParticleExtract>        ParticleExtracts;
 
-            // Every entity carrying SParticleSystemComponent this frame, INCLUDING disabled
-            // ones (excluded from ParticleExtracts). The render thread prunes ParticleGPUStates
-            // entries absent here, preserving a disabled emitter's GPU/sim state.
+            // Every entity with SParticleSystemComponent this frame, including disabled ones (excluded from
+            // ParticleExtracts). Render thread prunes ParticleGPUStates absent here, preserving disabled emitters.
             TVector<entt::entity>            LiveParticleEntities;
 
             FSceneRenderStats                FrameStats = {};
 
-            // Per-frame snapshot of the enabled capture views, in registration order.
-            // The shared gather/cull fills each view's cull-view slice; RenderView shades
-            // each into SceneViews[SceneViewIndex] after the primary view.
+            // Per-frame snapshot of enabled capture views, in registration order. The shared cull fills
+            // each view's slice; RenderView shades each into SceneViews[SceneViewIndex] after the primary.
             struct FCaptureViewData
             {
                 FSceneGlobalData    SceneGlobalData = {};
@@ -389,6 +380,8 @@ namespace Lumina
             // writes and draw VS read, plus the per-skinned-entity descriptor list (21).
             PreSkinnedVertices,
             SkinDescriptors,
+            // Solid translucent debug triangles (navmesh surface, etc.); same vertex format as SimpleVertex.
+            SolidVertex,
 
             Num,
         };
@@ -411,29 +404,24 @@ namespace Lumina
             Accum,
             Revealage,
 
-            // Persistent 1x1 R32F holding the eye-adapted scene luminance.
-            // Written by AutoExposure.slang, read by ColorGrading.slang. Not
-            // ring-buffered: the adaptation feedback reads its own previous value.
+            // Persistent 1x1 R32F eye-adapted luminance (AutoExposure writes, ColorGrading reads).
+            // Not ring-buffered: adaptation feedback reads its own previous value.
             AdaptedLuminance,
 
-            // Froxel volumetric fog: camera-frustum-aligned 3D volumes (RGBA16F).
-            // FroxelScatter holds per-froxel (in-scatter rgb, extinction); FroxelIntegrated
-            // holds the front-to-back accumulated (in-scatter rgb, transmittance).
+            // Froxel volumetric fog 3D volumes (RGBA16F). Scatter = per-froxel (in-scatter, extinction);
+            // Integrated = front-to-back accumulated (in-scatter, transmittance).
             FroxelScatter,
             FroxelIntegrated,
 
-            // MSAA scratch RTs, allocated only when MSAASampleCount > 1. Geometry passes
-            // write here and resolve into the matching 1x image at end-of-pass.
+            // MSAA scratch RTs (allocated only when MSAASampleCount > 1); resolved into the 1x image at end-of-pass.
             HDR_MS,
             Depth_MS,
             Picker_MS,
 
-            // Pre-integrated BRDF LUT for split-sum IBL (Karis 2013). Baked once at
-            // scene init; swapchain-independent, so outside the InitImages rebuild path.
+            // Pre-integrated BRDF LUT for split-sum IBL (Karis 2013). Baked once; swapchain-independent.
             BRDFLut,
 
-            // Sky cubemap from SkyCubeCapture.slang, feeding IBL convolution. Persistent
-            // image (decoupled from swapchain) but contents refresh each frame sky is on.
+            // Sky cubemap (SkyCubeCapture.slang) feeding IBL convolution. Persistent; refreshes each frame sky is on.
             SkyCube,
 
             // Diffuse-BRDF-convolved sky; sampled by normal N for IBL diffuse.
@@ -455,10 +443,8 @@ namespace Lumina
             Num,
         };
 
-        // All per-output-view rendering state. The scene gathers geometry/lights once
-        // (the shared members further down) then runs the shading passes once per
-        // FSceneView into that view's own image chain. Index 0 is the primary view
-        // (editor/game camera); additional views are registered captures.
+        // Per-output-view rendering state. Geometry/lights gather once (shared members below), then
+        // shading runs per FSceneView into its own image chain. Index 0 is primary; rest are captures.
         struct FSceneView
         {
             FRHIViewportRef                                 Viewport;
@@ -466,15 +452,13 @@ namespace Lumina
             FUIntVector2                                      Size = FUIntVector2(0);
             bool                                            bIsPrimary = false;
 
-            // Capture views only: the camera this view renders from (set each frame by the
-            // owner before Extract) and whether it renders this frame. The primary view's
-            // camera comes from Extract's argument instead.
+            // Capture views only: camera to render from (set each frame before Extract) and whether
+            // it renders this frame. The primary view's camera comes from Extract's argument.
             FViewVolume                                     PendingViewVolume;
             bool                                            bEnabled = false;
 
-            // Indexed by ENamedImage. Per-view slots own their image; view-independent
-            // slots (BRDF LUT, sky cubes, SMAA LUTs, editor icons) alias the scene's
-            // shared image so GetNamedImage() reads uniformly through CurrentView.
+            // Indexed by ENamedImage. Per-view slots own their image; view-independent slots (BRDF LUT,
+            // sky cubes, SMAA LUTs, editor icons) alias the shared image so reads go through CurrentView.
             TArray<FRHIImageRef, (int)ENamedImage::Num>     Images = {};
             FRHIImageRef                                    BloomChainImage;
 
@@ -524,10 +508,8 @@ namespace Lumina
         static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
         
         FRHIBuffer* GetNamedBuffer(ENamedBuffer Buffer) const { return NamedBuffers[(int)Buffer]; }
-        // Per-view images route through the view being rendered (CurrentView). Shared
-        // slots are aliased into every view's array, so view-independent passes read the
-        // same image regardless of CurrentView. Falls back to the shared store during Init
-        // (before any view exists); nothing reads a per-view slot then.
+        // Per-view images route through CurrentView; shared slots are aliased into every view.
+        // Falls back to the shared store during Init before any view exists.
         FRHIImage* GetNamedImage(ENamedImage Image) const { return CurrentView ? CurrentView->Images[(int)Image] : NamedImages[(int)Image]; }
 
         // Ringed accessors for the cull-pass scratch (see IndirectArgsRing).
@@ -581,18 +563,16 @@ namespace Lumina
         // sets) around an existing viewport/RT, appends it to SceneViews, and returns it.
         FSceneView& AddSceneView(const FRHIViewportRef& Viewport, bool bPrimary);
 
-        // Render thread: shade the current capture view (CurrentView) into its RT. A reduced,
-        // single-pass (no two-pass occlusion) sequence reusing the per-view passes; geometry/
-        // shadows/sky were already produced by the shared passes before the capture loop.
+        // Render thread: shade the current capture view (CurrentView) into its RT. Reduced single-pass
+        // (no two-pass occlusion); geometry/shadows/sky were already produced by the shared passes.
         void RenderCaptureView(ICommandList& CmdList);
 
         // The view being shaded's final output RT (the live SceneViewport's RT). Primary and
         // capture passes write here; GetRenderTarget() (public) always returns the primary's.
         FRHIImage* GetViewOutputTarget() const { return SceneViewport ? SceneViewport->GetRenderTarget() : nullptr; }
 
-        // Re-point CurrentView + every live per-view member (binding sets, viewport, bloom)
-        // at View, so the shading passes -- which read the live members -- operate on it.
-        // Called once per view in RenderView_RenderThread.
+        // Re-point CurrentView + every live per-view member (binding sets, viewport, bloom) at View
+        // so the shading passes operate on it. Called once per view in RenderView_RenderThread.
         void PointAtView(FSceneView& View)
         {
             CurrentView                = &View;
@@ -633,9 +613,8 @@ namespace Lumina
         // before any draw pass that reads skinned geometry.
         void SkinningPass(ICommandList& CmdList);
 
-        // Replays this frame's render-target paint/clear ops (Frame.PaintOps) as compute
-        // brush dispatches into each target's bindless UAV, then restores them to
-        // ShaderResource so the geometry passes can sample them.
+        // Replays Frame.PaintOps as compute brush dispatches into each target's bindless UAV, then
+        // restores them to ShaderResource so the geometry passes can sample them.
         void TexturePaintPass(ICommandList& CmdList);
 
         
@@ -662,9 +641,8 @@ namespace Lumina
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
-        // Froxel volumetric fog: inject per-froxel scattering/extinction, integrate
-        // front-to-back, then composite into HDR. Replaces the old analytic height-fog
-        // + half-res ray-march passes.
+        // Froxel volumetric fog: inject per-froxel scattering/extinction, integrate front-to-back,
+        // composite into HDR. Replaces the old analytic height-fog + half-res ray-march passes.
         void FroxelInjectPass(ICommandList& CmdList);
         void FroxelIntegratePass(ICommandList& CmdList);
         void FroxelApplyPass(ICommandList& CmdList);
@@ -673,6 +651,7 @@ namespace Lumina
         void IrradianceConvolutionPass(ICommandList& CmdList);
         void PrefilterEnvMapPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
+        void BatchedTriangleDraw(ICommandList& CmdList);
         void BloomPass(ICommandList& CmdList);
         void AutoExposurePass(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
@@ -709,6 +688,7 @@ namespace Lumina
         void BuildCullViews(const FViewVolume& ViewVolume);
         
         void ProcessBatchedLines(FLineBatcherComponent& Batcher);
+        void ProcessBatchedTriangles(FTriangleBatcherComponent& Batcher);
         
         void NotifyMaxLightsHit();
 
@@ -741,21 +721,14 @@ namespace Lumina
         // mips 0..N-1 from HDR; upsample walks back additively. Tone-mapping samples mip 0.
         static constexpr uint32                         BLOOM_MIP_COUNT = 5;
 
-        // The scene gathers once, then shades each FSceneView into its own image chain.
-        // SceneViews[0] is the primary (editor/game) view; the rest are registered captures.
-        // CurrentView is repointed at the top of each view's pass sequence; the live
-        // members below (SceneViewport, SceneViewportState, the scene/compose/SMAA/OIT
-        // binding sets, BloomChain) are re-aimed at it then so the passes need no changes.
-        // SceneViews is reserved to MaxSceneViews and never grows past it: CurrentView is a
-        // raw pointer the render thread holds across a frame, so a reallocation (from a
-        // game-thread RegisterCaptureView) would dangle it. Registration refuses past the cap.
+        // SceneViews[0] is primary, rest are captures; reserved to MaxSceneViews and never grown past it,
+        // since CurrentView is a raw pointer the render thread holds across a frame (a realloc would dangle it).
         static constexpr uint32                 MaxSceneViews = 16;
         TVector<FSceneView>                     SceneViews;
         FSceneView*                             CurrentView = nullptr;
 
-        // Cull-view indices of the view being shaded, so the camera draw passes index the
-        // right IndirectArgs slice. Primary: 0 / Frame.CameraLateViewIndex. Capture: its
-        // appended frustum-only view / ~0u (no two-pass occlusion).
+        // Cull-view indices of the view being shaded; camera draw passes index the right IndirectArgs
+        // slice. Primary: 0 / Frame.CameraLateViewIndex. Capture: frustum-only view / ~0u.
         uint32                                  CurrentCameraEarlyView = 0;
         uint32                                  CurrentCameraLateView  = ~0u;
 
@@ -858,9 +831,8 @@ namespace Lumina
 
         FShadowAtlas                            ShadowAtlas;
 
-        // Render-thread-owned terrain GPU resources, keyed by entity. Decoupled from the
-        // STerrainComponent lifetime so a mid-flight entity destruction can't dangle a
-        // pointer here; entries are reclaimed in TerrainUpdatePass via FFrameData::LiveTerrainEntities.
+        // Render-thread-owned terrain GPU resources keyed by entity, decoupled from STerrainComponent
+        // lifetime; reclaimed in TerrainUpdatePass via FFrameData::LiveTerrainEntities.
         THashMap<entt::entity, FTerrainGPUState> TerrainGPUStates;
 
         // Render-thread-owned particle GPU + sim state, keyed by entity. Same decoupling as

@@ -9,31 +9,22 @@ namespace Lumina
 {
     class CParticleGraphNode;
 
-    /**
-     * Which function body a node is currently being emitted into. Drives the demand-driven
-     * emission in FParticleCompiler so upstream nodes expand into the right scope.
-     */
+    /** Which function body a node is being emitted into; drives demand-driven emission into the right scope. */
     enum class EParticleContext : uint8
     {
         Spawn,
         Update,
     };
 
-    /**
-     * Typed value returned when resolving an input pin. The Value string is an HLSL expression
-     * (either a literal default or the name of the variable an upstream node emitted).
-     */
+    /** Resolved input pin value; Value is an HLSL expression (literal default or upstream variable name). */
     struct FParticleInputValue
     {
         FString             Value;
         EParticlePinType    Type = EParticlePinType::Float;
     };
 
-    /**
-     * Graph-to-HLSL compiler for the particle node system. Walks the graph from the output
-     * node demand-first, emitting each upstream node exactly once per context. The resulting
-     * SpawnChunks/UpdateChunks are spliced into ParticleSimulateTemplate.slang.
-     */
+    /** Graph-to-HLSL compiler: demand-first walk from the output, each node emitted once per context.
+     *  SpawnChunks/UpdateChunks are spliced into ParticleSimulateTemplate.slang. */
     class FParticleCompiler
     {
     public:
@@ -61,11 +52,8 @@ namespace Lumina
         /** Emits into the currently active context. */
         void EmitCurrent(const FString& Line) { Emit(CurrentContext, Line); }
 
-        /**
-         * Resolves an input pin into an HLSL expression. If the pin is connected, the upstream
-         * node is emitted into the current context (exactly once) and the node's full name is
-         * returned as the expression. Otherwise the pin's default is returned as a literal.
-         */
+        /** Resolves an input pin to an HLSL expression: connected emits the upstream node once and returns
+         *  its full name; unconnected returns the pin default literal. */
         FParticleInputValue GetInputValue(CParticleInput* Pin);
 
         FParticleInputValue GetInputFloat(CParticleInput* Pin,  float Default = 0.0f);
@@ -76,10 +64,7 @@ namespace Lumina
         static FString Coerce(const FParticleInputValue& Value, EParticlePinType Target);
         static FString TypeName(EParticlePinType Type);
 
-        /**
-         * Ensures a node has been emitted in the given context, running its GenerateDefinition
-         * if this is the first time for that context. Safe to call repeatedly.
-         */
+        /** Ensures a node is emitted in the given context, running GenerateDefinition on first call. Idempotent. */
         void EnsureEmitted(CParticleGraphNode* Node, EParticleContext Context);
 
         void SetContext(EParticleContext Context) { CurrentContext = Context; }

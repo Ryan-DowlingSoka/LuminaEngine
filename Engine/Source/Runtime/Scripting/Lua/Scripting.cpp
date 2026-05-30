@@ -464,9 +464,8 @@ namespace Lumina::Lua
     {
         FRef EngineTable = GlobalsRef.NewTable("Engine");
 
-        // Returns the loaded object pushed as its actual derived type so subclass methods are
-        // visible. TStack pushes a pointer under its static type's metatable, so we do the
-        // polymorphic push by hand and hand back the result as an FRef.
+        // Push the loaded object as its actual derived type (subclass methods visible); TStack would
+        // use the static type's metatable, so we do the polymorphic push by hand and return an FRef.
         EngineTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
         {
             CObject* Object = StaticLoadObject(Path);
@@ -495,11 +494,8 @@ namespace Lumina::Lua
 
     static void RegisterAssetLibrary(lua_State* L, FRef& GlobalsRef)
     {
-        // Cook-graph note: the Luau analyzer (FLuauAssetScan) literally scans
-        // for `Asset.Hard("...")` / `Asset.Soft("...")` / `Asset.LoadAsync("...")`
-        // call sites and lifts the path arg as a Script cook root. Keep the
-        // function names and the leading-string-arg shape stable, or update
-        // the analyzer in lockstep.
+        // FLuauAssetScan literally scans for Asset.Hard/Soft/LoadAsync("...") and lifts the path arg
+        // as a cook root. Keep these names + leading-string-arg shape stable, or update it in lockstep.
         FRef AssetTable = GlobalsRef.NewTable("Asset");
 
         // Asset.Hard(path) — blocking load; pushed as actual derived type.
@@ -516,9 +512,8 @@ namespace Lumina::Lua
             return FSoftObjectPath(Path);
         }>("Soft");
 
-        // Asset.LoadAsync(path, callback) — fire-and-forget; callback fires
-        // on the main thread when load completes (or immediately with nil
-        // if the path doesn't resolve).
+        // Asset.LoadAsync(path, callback) — fire-and-forget; callback fires on the main thread when
+        // load completes (or immediately with nil if the path doesn't resolve).
         AssetTable.SetFunction<[](lua_State* State, FStringView Path, FRef Callback)
         {
             FSoftObjectPath Soft(Path);
@@ -736,11 +731,8 @@ namespace Lumina::Lua
 
     static void RegisterInputLibrary(lua_State* L, FRef& GlobalsRef)
     {
-        // Only viewport/window-scoped knobs live on the global Input table.
-        // Every per-frame gameplay query (keys, mouse delta, actions, bind
-        // callbacks) is gated through SInputComponent so an entity with no
-        // input component has no way to read player input. See
-        // SInputComponent in InputComponent.h for the per-entity API.
+        // Only viewport/window-scoped knobs live on the global Input table; per-frame gameplay queries
+        // are gated through SInputComponent (InputComponent.h) so an input-less entity can't read input.
         FRef InputTable = GlobalsRef.NewTable("Input");
 
         // Accept strings: "Hidden", "Normal", "Captured".
@@ -795,12 +787,8 @@ namespace Lumina::Lua
             return FString(InputModeToString(FInputProcessor::Get().GetInputMode()));
         }>("GetMode");
 
-        // ---- SInputComponent: Lua::FRef-taking methods --------------------
-        // FUNCTION(Script) covers the polling queries (see InputComponent.h);
-        // BindAction lives here because reflected FUNCTION params don't
-        // marshal Lua::FRef. We push the callback ID onto the component so
-        // CWorld::OnInputComponentDestroyed can release the FRef even if
-        // the script forgets to Unbind.
+        // SInputComponent FRef-taking methods. BindAction lives here (reflected FUNCTION params don't
+        // marshal FRef); callback ID is pushed onto the component so destruction frees it if not Unbound.
         GlobalsRef.NewClass<SInputComponent>("SInputComponent")
             .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
             {
@@ -988,9 +976,8 @@ namespace Lumina::Lua
 
         });
 
-        // Coalesce duplicate reload requests within one tick. The editor's OnSave fires a
-        // direct reload, the directory watcher fires its own once disk catches up, and Windows'
-        // ReadDirectoryChangesW often emits multiple FILE_ACTION_MODIFIED events per save.
+        // Coalesce duplicate reload requests within one tick: editor OnSave, the directory watcher,
+        // and Windows' multiple FILE_ACTION_MODIFIED events all fire for a single save.
         THashSet<FName> SeenPaths;
         DeferredActions.ProcessAllOf<FScriptLoad>([&](const FScriptLoad& Load)
         {
@@ -1292,20 +1279,29 @@ namespace Lumina::Lua
             if (C == '.') C = '/';
         }
 
-        // Search roots, in order. Engine stdlib first so user code can override only by
-        // explicit absolute path, never by accident. Plugins follow the same rule:
-        // their /<Mount>/Scripts/ root sits between Engine and Game, so /Game can't
-        // accidentally shadow a plugin module either.
+        // Search roots in order: Engine stdlib, then plugin /<Mount>/Scripts/, then /Game — so user
+        // code can only override a stdlib/plugin module by explicit absolute path, never by accident.
         auto TryRoot = [&](FStringView Root) -> bool
         {
-            FString Candidate(Root.data(), Root.size());
-            Candidate += Normalized;
-            Candidate += ".luau";
+            FString Base(Root.data(), Root.size());
+            Base += Normalized;
+
+            // Prefer a plain module; fall back to a `.d.luau` library declaration (stdlib and
+            // other require-only helpers carry that extension so editor pickers can skip them).
+            FString Candidate = Base + ".luau";
             if (VFS::Exists(Candidate))
             {
                 OutPath = eastl::move(Candidate);
                 return true;
             }
+
+            Candidate = Base + ".d.luau";
+            if (VFS::Exists(Candidate))
+            {
+                OutPath = eastl::move(Candidate);
+                return true;
+            }
+
             return false;
         };
 
@@ -1323,6 +1319,51 @@ namespace Lumina::Lua
         if (TryRoot("/Game/Scripts/")) return true;
 
         return false;
+    }
+
+    TVector<FFixedString> GatherScriptPaths()
+    {
+        TVector<FFixedString> Paths;
+
+        // `.d.luau` marks a library/declaration module (stdlib, helpers) that is require()-d by
+        // other scripts but never attached to an entity — skip those so pickers only list
+        // attachable scripts.
+        auto IsLibraryScript = [](const FFixedString& Path) -> bool
+        {
+            constexpr FStringView Suffix(".d.luau");
+            return Path.size() >= Suffix.size()
+                && FStringView(Path.c_str() + (Path.size() - Suffix.size()), Suffix.size()) == Suffix;
+        };
+
+        auto Collect = [&Paths, &IsLibraryScript](FStringView Root)
+        {
+            VFS::RecursiveDirectoryIterator(Root, [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.IsLua() && !IsLibraryScript(Info.VirtualPath))
+                {
+                    Paths.push_back(Info.VirtualPath);
+                }
+            });
+        };
+
+        // Project scripts (anywhere under /Game), each enabled plugin's content mount, then the
+        // engine script library. Mirrors the mount coverage of require()'s search roots.
+        Collect("/Game");
+
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled() || !Plugin->IsContentMounted())
+            {
+                continue;
+            }
+            const FString Alias = Plugin->GetMountAlias();
+            Collect(FStringView(Alias.c_str(), Alias.size()));
+        }
+
+        Collect("/Engine/Resources/Content/Scripts");
+
+        eastl::sort(Paths.begin(), Paths.end());
+        return Paths;
     }
 
     bool FScriptingContext::LoadModuleOntoThread(lua_State* RequestingThread, const FString& ResolvedPath, int ExistingTableRegistryRef)
@@ -1513,9 +1554,8 @@ namespace Lumina::Lua
             return;
         }
 
-        // Userdata finalizers release the C++ strong refs they hold; those releases can unpin
-        // further Lua objects (registry FRefs in CObject dtors), so collect until the heap is
-        // stable to drain cascading ownership chains instead of leaking them past teardown.
+        // Userdata finalizers release C++ strong refs that can unpin further Lua objects (registry
+        // FRefs in CObject dtors), so collect until the heap is stable to drain cascading chains.
         auto TotalBytes = [&] { return (lua_gc(L, LUA_GCCOUNT, 0) * 1024) + lua_gc(L, LUA_GCCOUNTB, 0); };
 
         int Prev = TotalBytes();
@@ -1759,7 +1799,7 @@ namespace Lumina::Lua
 
         const FCuratedDoc CuratedDocs[] =
         {
-            // --- base library ---
+            // base library
             { "print",          "...",                  "Writes each argument to stdout, separated by tabs, followed by a newline." },
             { "tostring",       "v",                    "Converts v to a human-readable string. Honors the __tostring metamethod." },
             { "tonumber",       "v|base",               "Parses v into a number using the given base (default 10). Returns nil on failure." },
@@ -1821,7 +1861,7 @@ namespace Lumina::Lua
             { "math.lerp",      "a|b|t",                "Linear interpolation: returns a + (b - a) * t. (Luau extension.)" },
             { "math.map",       "x|inMin|inMax|outMin|outMax", "Remaps x from [inMin, inMax] to [outMin, outMax]. (Luau extension.)" },
 
-            // --- string library ---
+            // string library
             { "string.byte",    "s|i|j",                "Returns the byte values of s[i], s[i+1], ..., s[j]. Defaults: i = 1, j = i." },
             { "string.char",    "...",                  "Returns a string built from the given byte values." },
             { "string.find",    "s|pattern|init|plain", "Searches s for the first match of pattern. Returns (start, end[, captures...]) or nil." },
@@ -1840,7 +1880,7 @@ namespace Lumina::Lua
             { "string.unpack",  "fmt|s|pos",            "Unpacks values from binary string s per fmt. Returns values plus first-unread index." },
             { "string.packsize","fmt",                  "Returns the size in bytes of strings produced by string.pack with this format." },
 
-            // --- table library ---
+            // table library
             { "table.insert",   "t|pos|value",          "Inserts value at position pos in array t (default = end). Shifts later elements up by one." },
             { "table.remove",   "t|pos",                "Removes element at position pos from array t (default = end). Returns the removed element." },
             { "table.concat",   "t|sep|i|j",            "Concatenates t[i..j], joining adjacent elements with sep (default \"\")." },
@@ -1858,7 +1898,7 @@ namespace Lumina::Lua
             { "table.foreachi", "t|f",                  "Iterates the array part of t calling f(i, v). Deprecated; prefer ipairs." },
             { "table.getn",     "t",                    "Returns the array length of t. Deprecated; prefer #t." },
 
-            // --- vector library (Luau native) ---
+            // vector library (Luau native)
             { "vector.create",  "x|y|z",                "Returns a vector with components (x, y, z). Equivalent to vector(x, y, z)." },
             { "vector.zero",    "",                     "The zero vector (0, 0, 0)." },
             { "vector.one",     "",                     "The vector (1, 1, 1)." },
@@ -1876,7 +1916,7 @@ namespace Lumina::Lua
             { "vector.clamp",   "v|min|max",            "Returns v with each component clamped to the matching component of min and max." },
             { "vector.lerp",    "a|b|t",                "Component-wise linear interpolation between a and b." },
 
-            // --- coroutine library ---
+            // coroutine library
             { "coroutine.create",  "f",                 "Creates a new coroutine wrapping function f. Returns the coroutine handle (a thread)." },
             { "coroutine.resume",  "co|...",            "Starts or continues co. Returns (true, yielded values) or (false, error) on failure." },
             { "coroutine.yield",   "...",               "Suspends the current coroutine. The values become the return of the matching resume." },
@@ -1886,7 +1926,7 @@ namespace Lumina::Lua
             { "coroutine.isyieldable","",               "Returns true if the running coroutine can yield (false in the main thread / C call boundary)." },
             { "coroutine.close",   "co",                "Closes coroutine co, releasing its resources. Returns (true) or (false, err)." },
 
-            // --- bit32 library ---
+            // bit32 library
             { "bit32.band",     "...",                  "Returns the bitwise AND of all arguments (32-bit unsigned)." },
             { "bit32.bor",      "...",                  "Returns the bitwise OR of all arguments." },
             { "bit32.bxor",     "...",                  "Returns the bitwise XOR of all arguments." },
@@ -1902,7 +1942,7 @@ namespace Lumina::Lua
             { "bit32.countlz",  "x",                    "Returns the number of leading zero bits in x. (Luau extension.)" },
             { "bit32.countrz",  "x",                    "Returns the number of trailing zero bits in x. (Luau extension.)" },
 
-            // --- buffer library (Luau) ---
+            // buffer library (Luau)
             { "buffer.create",     "size",              "Allocates a new buffer of the given size in bytes." },
             { "buffer.fromstring", "s",                 "Creates a buffer initialized from the bytes of s." },
             { "buffer.tostring",   "b",                 "Returns the bytes of b as a string." },
@@ -1928,20 +1968,20 @@ namespace Lumina::Lua
             { "buffer.readstring", "b|offset|count",    "Reads count bytes from b starting at offset and returns them as a string." },
             { "buffer.writestring","b|offset|s|count",  "Writes the bytes of s into b at offset. Defaults: count = #s." },
 
-            // --- os library ---
+            // os library
             { "os.time",      "table",                  "Returns the current time as a Unix timestamp, or converts a date table to a timestamp." },
             { "os.date",      "format|time",            "Formats a timestamp using strftime-style format. Default format = \"%c\"." },
             { "os.clock",     "",                       "Returns CPU time used by the program in seconds." },
             { "os.difftime",  "t2|t1",                  "Returns t2 - t1 in seconds (Lua handles calendar quirks for non-Unix platforms)." },
 
-            // --- utf8 library ---
+            // utf8 library
             { "utf8.char",        "...",                "Returns a string made of the given codepoints." },
             { "utf8.codepoint",   "s|i|j",              "Returns codepoints of s[i..j]. Defaults: i = 1, j = i." },
             { "utf8.codes",       "s",                  "Iterator yielding (byte_offset, codepoint) for each character in s." },
             { "utf8.len",         "s|i|j",              "Returns the number of UTF-8 characters in s[i..j], or (false, byte_pos) on bad encoding." },
             { "utf8.offset",      "s|n|i",              "Returns the byte offset of the n-th character of s (counting from i)." },
 
-            // --- debug library ---
+            // debug library
             { "debug.traceback",  "thread|message|level","Returns a string with the current call stack. message and level are optional." },
             { "debug.info",       "thread|level|what",  "Like Lua's debug.getinfo but flat — returns the requested fields directly. (Luau)" },
             { "debug.getinfo",    "level|what",         "Returns a table describing the function at the given stack level." },

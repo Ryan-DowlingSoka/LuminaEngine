@@ -24,9 +24,8 @@ namespace Lumina
         void SetPinType(EAnimPinType InType);
         EAnimPinType GetPinType() const { return PinType; }
 
-        // Draws the inline editor (when set) for an unconnected input pin, so a
-        // pin's value/enum is editable directly on the node face. Invoked by the
-        // graph draw loop; see CAnimGraphNode::BindFloatPinEditor / BindEnumPinEditor.
+        // Draws the inline editor (when set) for an unconnected input pin, so its value/enum
+        // is editable on the node face. Bound via CAnimGraphNode::BindFloatPinEditor / BindEnumPinEditor.
         float DrawPin() override;
         bool HasInlineEditor() const override { return (bool)InlineEditor; }
 

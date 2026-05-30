@@ -17,11 +17,8 @@ namespace Lumina
 
 namespace Lumina
 {
-    // Immutable GPU resources shared by every render scene: the BRDF LUT, the SMAA
-    // lookup tables, and (editor) the billboard icon textures. These are identical
-    // across scenes and were previously re-baked / re-loaded from disk on every
-    // FForwardRenderScene::Init(). Built once on the first scene and aliased by ref
-    // thereafter. Released in ~FRenderManager before the device is torn down.
+    // Immutable GPU resources shared by every render scene (BRDF LUT, SMAA LUTs, editor icons).
+    // Built once on the first scene, aliased by ref after; released in ~FRenderManager pre-teardown.
     struct FSharedRenderResources
     {
         FRHIImageRef    BRDFLut;
@@ -52,10 +49,8 @@ namespace Lumina
         // Game thread: ImGui::NewFrame (and any other backend per-frame init).
         void FrameStart(const FUpdateContext& UpdateContext);
 
-        // Game thread: snapshot ImGui DrawData and enqueue the render-thread
-        // pipeline (one cmdlist with world + RmlUi + ImGui composite). Per-world UI
-        // must already have ticked (CWorld::Extract); the bridge's FState mutex guards
-        // each context's DOM against next-frame mutation.
+        // Game thread: snapshot ImGui DrawData and enqueue the render-thread pipeline (world + RmlUi
+        // + ImGui composite). Per-world UI must already have ticked (CWorld::Extract).
         void FrameEnd();
 
         void SwapchainResized(FVector2 NewSize);

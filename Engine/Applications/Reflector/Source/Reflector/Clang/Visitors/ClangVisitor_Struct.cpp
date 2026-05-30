@@ -386,9 +386,8 @@ namespace Lumina::Reflection::Visitor
 		break;
 		case EPropertyTypeFlags::SoftObject:
 		{
-			// FSoftObjectPath: no template arg; the target class defaults
-			//   to CObject so the inspector picker accepts any asset.
-			// TSoftObjectPtr<T>: extract T to capture the target class.
+			// FSoftObjectPath has no template arg (target defaults to CObject, accepts any asset);
+			// TSoftObjectPtr<T> exposes T as the target class.
 			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
 			eastl::optional<FFieldInfo> ParamFieldInfo;
 			if (ArgType.kind != CXType_Invalid)
@@ -397,10 +396,8 @@ namespace Lumina::Reflection::Visitor
 			}
 			if (!ParamFieldInfo.has_value())
 			{
-				// Bare FSoftObjectPath — reflect against CObject so the
-				// emitted Construct_CClass_<T>() symbol resolves; otherwise
-				// codegen would emit Construct_CClass_Lumina_FSoftObjectPath
-				// which doesn't exist and fails to link.
+				// Bare FSoftObjectPath: reflect against CObject so the emitted
+				// Construct_CClass_<T>() symbol resolves instead of a nonexistent one.
 				ParamFieldInfo = FieldInfo;
 				ParamFieldInfo->TypeName = "Lumina::CObject";
 			}
@@ -474,10 +471,8 @@ namespace Lumina::Reflection::Visitor
 		break;
 		default:
 		{
-			// Catch-all for any field whose type slipped past every classifier
-			// above. Without this error the property would be silently dropped
-			// from the reflection database, leaving the runtime under the
-			// impression the field doesn't exist.
+			// Catch-all for fields that slipped past every classifier; erroring here
+			// prevents silently dropping the property from the reflection database.
 			LRT_ERROR(FieldInfo.OwningCursor, Reflection::EDiagId::UnknownPropertyType,
 				"Property '%s' has type '%s' which is not supported by the reflector. "
 				"Supported kinds: numeric, bool, FString/FName, enum, struct (REFLECT'd), "
@@ -521,9 +516,8 @@ namespace Lumina::Reflection::Visitor
 			}
 			else
 			{
-				// Soft-fail: a missing arg doesn't corrupt memory layout, only
-				// the Lua binding shape (the function will still link from
-				// C++). Warn loudly so this still shows up in the build log.
+				// Soft-fail: a missing arg only affects the Lua binding shape, not
+				// memory layout (C++ still links). Warn so it shows in the build log.
 				LRT_WARNING(ArgCursor, Reflection::EDiagId::FunctionFieldFailed,
 					"Argument '%s' of function '%s' has an unsupported type and will be omitted from the script binding. Reflected function args accept core types, structs, enums, and TObjectPtr<T>.",
 					ArgName.c_str(), NewFunction->Name.c_str());
@@ -612,12 +606,8 @@ namespace Lumina::Reflection::Visitor
 
 	}
 
-	// A REFLECT(...) annotation tagged `ManualStub` opts the type out of the
-	// usual GENERATED_BODY()/companion-.generated.h requirements. It also tells
-	// the codegen to skip emitting T::StaticStruct() (the body member doesn't
-	// exist on the runtime alias). The reflected fields are still emitted and
-	// linked through the free `Construct_CStruct_<Ns>_<T>()` function the
-	// codegen normally produces.
+	// `ManualStub` opts the type out of GENERATED_BODY()/companion-.generated.h and skips T::StaticStruct()
+	// (no body member on the runtime alias); fields still link via the free Construct_CStruct_<Ns>_<T>().
 	static bool MacroHasManualStub(const FReflectionMacro& Macro)
 	{
 		return Macro.MacroContents.find("ManualStub") != eastl::string::npos;

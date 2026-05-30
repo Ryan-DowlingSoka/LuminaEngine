@@ -10,12 +10,8 @@ namespace Lumina
 {
     class FParticleCompiler;
 
-    /**
-     * One emitter's authoring data: ordered Spawn and Update module stacks (Niagara-style). Serialized
-     * into the particle asset's package alongside the asset; the runtime only consumes the compiled
-     * shader, so this object is editor-time only. CompileStacks walks the enabled modules in order and
-     * emits their HLSL into the compiler, which splices it into ParticleSimulateTemplate.slang.
-     */
+    // One emitter's authoring data: ordered Spawn/Update module stacks (editor-time only; runtime consumes only the compiled shader).
+    // CompileStacks walks enabled modules in order, emitting HLSL spliced into ParticleSimulateTemplate.slang.
     REFLECT()
     class CParticleEmitterStack : public CObject
     {

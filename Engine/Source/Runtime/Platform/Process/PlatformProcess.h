@@ -30,11 +30,8 @@ namespace Lumina::Platform
     // spawns afterward). Does not persist beyond the process lifetime.
     RUNTIME_API bool SetEnvVariable(const FString& Name, const FString& Value);
 
-    // Persist an environment variable to the user's environment so future
-    // processes (shells, IDEs, build tools) inherit it. Idempotent: skips the
-    // write when the stored value already matches, and returns true only when a
-    // change was actually made. No-op returning false on platforms without a
-    // user-environment store.
+    // Persist an env var to the user environment so future processes inherit it; idempotent, returns true
+    // only on an actual change. No-op returning false where there's no user-environment store.
     RUNTIME_API bool PersistUserEnvVariable(const FString& Name, const FString& Value);
 
     // Request the OS use its highest-resolution scheduler tick so std::this_thread::sleep_for
@@ -48,24 +45,11 @@ namespace Lumina::Platform
 	RUNTIME_API int LaunchProcess(const TCHAR* URL, const TCHAR* Params = nullptr, bool bLaunchDetached = true);
     RUNTIME_API void LaunchURL(const TCHAR* URL);
 
-    /**
-     * Synchronously runs a command line. The child process gets its own
-     * console window so the user can watch output (handy for MSBuild). This
-     * call blocks until the process exits and returns its exit code; -1
-     * means the process failed to spawn.
-     */
+    // Synchronously run a command line in its own console window; blocks, returns the exit code (-1 if spawn failed).
     RUNTIME_API int RunProcessAndWait(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory = nullptr);
 
-    /**
-     * Like RunProcessAndWait, but no console pops up — the child's stdout
-     * AND stderr are merged and streamed back through LineCallback, one
-     * complete line per call. Useful when the editor needs to display a
-     * subprocess's output inline (cooker, build pipeline).
-     *
-     * The callback runs on the calling thread between line boundaries, so
-     * it's safe to push into UI state without locks. Returns the exit code,
-     * or -1 if the process failed to spawn.
-     */
+    // Like RunProcessAndWait but no console; merged stdout+stderr stream back via LineCallback, one line per call.
+    // Callback runs on the calling thread (safe for lockless UI updates); returns the exit code (-1 if spawn failed).
     RUNTIME_API int RunProcessAndWaitCapture(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory, const TFunction<void(FStringView)>& LineCallback);
 
     RUNTIME_API const TCHAR* ExecutableName(bool bRemoveExtension = true);
@@ -80,51 +64,17 @@ namespace Lumina::Platform
 
     RUNTIME_API bool OpenFileDialogue(FFixedString& OutFile, const char* Title = "Open File", const char* Filter = nullptr, const char* InitialDir = nullptr);
 
-    // ============================================================================
-    // OS shell integration (cross-platform, but Windows-only impls today)
-    //
-    // Each function has a real implementation on the host platform if there is
-    // a sensible native equivalent, and a quiet no-op fallback on platforms
-    // that don't have one. Call them freely from platform-agnostic editor code
-    // without #ifdef walls — on unsupported OSes they just don't do anything
-    // and (where useful) log a one-shot warning.
-    // ============================================================================
+    // OS shell integration: real impl on the host platform, quiet no-op fallback elsewhere.
 
-    /**
-     * Open the user's file manager at the given file's parent directory with
-     * that file selected/highlighted.
-     *
-     * Windows: explorer.exe /select,"path".
-     * macOS:   open -R path.
-     * Linux:   no consistent "select" semantic across DEs — falls back to
-     *          showing the containing folder, or no-op if no opener is found.
-     */
+    // Open the file manager with this file selected (explorer /select, open -R, etc.).
     RUNTIME_API void ShowFileInExplorer(const TCHAR* Path);
 
-    /**
-     * Open the user's file manager at the given directory.
-     *
-     * Windows: explorer.exe "dir".
-     * macOS:   open "dir".
-     * Linux:   xdg-open "dir".
-     */
+    // Open the file manager at the given directory.
     RUNTIME_API void ShowFolderInExplorer(const TCHAR* Directory);
 
-    /**
-     * Open the user's preferred terminal/console with its working directory
-     * set to the given path. Useful for "open here" actions next to a file
-     * tree or project header.
-     *
-     * Windows: prefers Windows Terminal (`wt.exe`), falls back to cmd.exe.
-     * macOS:   opens Terminal.app at the directory.
-     * Linux:   tries a short list of common terminal emulators.
-     *
-     * No-op (with a one-shot warning) if no terminal can be located.
-     */
+    // Open the preferred terminal at the directory; no-op (one-shot warning) if none found.
     RUNTIME_API void OpenTerminalAt(const TCHAR* Directory);
 
-
-    
     template<typename TCall>
     requires(std::is_pointer_v<TCall> && std::is_function_v<std::remove_pointer_t<TCall>>)
     TCall LumGetProcAddress(void* Handle, const char* Procedure)

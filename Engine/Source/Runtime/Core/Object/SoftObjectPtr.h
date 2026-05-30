@@ -11,25 +11,8 @@ namespace Lumina
     class CObject;
     class FArchive;
 
-    /** Serializable reference to an asset by path. Does NOT force-load the
-     *  target — resolves to a CObject* on demand via FAssetManager. The GUID
-     *  is cached the first time the path is resolved through FAssetRegistry
-     *  so subsequent lookups don't re-walk the registry.
-     *
-     *  Identity and hashing are always path-based, NOT GUID-based, so that
-     *  a TryResolve() side-effect can never silently change a path's hash
-     *  bucket or its equality with another instance that hasn't resolved
-     *  yet. Container keys stay stable regardless of resolve state.
-     *
-     *  Cook-graph wiring (Phase 2B): the package serializer emits the
-     *  CachedGUID into the ImportTable tagged as EDependencyType::Soft, so
-     *  FCookGraph follows it for reachability but doesn't force the target
-     *  into the referrer's chunk.
-     *
-     *  Thread safety: TryResolve / LoadSynchronous / LoadAsync may be
-     *  called from any thread; the CachedGUID write inside TryResolve is
-     *  guarded by an atomic_flag so concurrent first-resolvers don't tear
-     *  the 16-byte GUID write. */
+    /** Serializable asset reference by path; resolves on demand, never force-loads. Identity is
+     *  always path-based (not GUID) so TryResolve can't move a hash bucket; CachedGUID write is atomic. */
     struct RUNTIME_API FSoftObjectPath
     {
         FSoftObjectPath() = default;
@@ -100,9 +83,8 @@ namespace Lumina
     };
 
 
-    /** Typed soft pointer. Pure wrapper around FSoftObjectPath that narrows
-     *  Get/Load results back to T*. Layout-identical to FSoftObjectPath
-     *  (single embedded member, no vtable) — the reflector relies on this. */
+    /** Typed soft pointer wrapping FSoftObjectPath; layout-identical to it
+     *  (single member, no vtable) — the reflector relies on this. */
     template<typename T>
     struct TSoftObjectPtr
     {
@@ -125,10 +107,7 @@ namespace Lumina
         TObjectPtr<T> LoadSynchronous() const
         {
             CObject* Obj = Inner.LoadSynchronous();
-            // Compile-time check that T is a CObject-derived type so the
-            // cast below is at least within the CObject hierarchy. Runtime
-            // type validation against the property's ObjectClass happens
-            // in FSoftObjectProperty.
+            // Runtime type validation against ObjectClass happens in FSoftObjectProperty.
             static_assert(eastl::is_base_of_v<CObject, T>, "TSoftObjectPtr<T>: T must derive from CObject");
             return TObjectPtr<T>(static_cast<T*>(Obj));
         }
@@ -164,9 +143,7 @@ namespace eastl
     {
         size_t operator()(const Lumina::FSoftObjectPath& P) const noexcept
         {
-            // Path-only — see FSoftObjectPath class comment. Hashing by
-            // GUID would silently rebucket the key the moment TryResolve
-            // ran on a path-constructed instance.
+            // Hash by path only; GUID-hashing would rebucket once TryResolve ran.
             const Lumina::FStringView V = P.GetPath();
             return eastl::hash<eastl::string_view>{}(eastl::string_view(V.data(), V.size()));
         }

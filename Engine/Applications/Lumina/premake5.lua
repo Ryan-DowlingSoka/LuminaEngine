@@ -5,11 +5,7 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
 })
 
--- Monolithic Shipping: every engine + plugin module is StaticLib and
--- statically linked here. /WHOLEARCHIVE per module so each one's
--- IMPLEMENT_MODULE file-scope FStaticModuleRegistration ctor isn't
--- dropped by the linker. Runs after Plugins group because root
--- premake5.lua includes Applications last.
+-- Monolithic Shipping: every module is StaticLib linked here with /WHOLEARCHIVE so its FStaticModuleRegistration ctor survives the linker.
 filter "configurations:Shipping"
     local Force = {}
     local Seen = {}
@@ -27,9 +23,7 @@ filter "configurations:Shipping"
         return false
     end
 
-    -- Engine modules. Skip Lumina (the exe), non-SharedLib projects
-    -- (apps, utilities -- no -Shipping.lib to archive), and modules
-    -- that removeplatforms "Game" (e.g. Editor).
+    -- Engine modules; skip Lumina (the exe), non-SharedLib projects, and Game-platform-removed modules (e.g. Editor).
     for Name, Mod in pairs(LuminaModules) do
         if Name ~= "Lumina"
             and Mod.Kind == "SharedLib"
@@ -53,12 +47,7 @@ filter "configurations:Shipping"
         linkoptions(Force)
     end
 
-    -- Third-party libs: in modular configs every module links its own
-    -- third-party set; in Shipping Module.lua strips those so static
-    -- libs don't bake in (and then duplicate) third-party .objs. Lumina
-    -- has to pick them up directly. Union all deps from every linked
-    -- engine module + plugin module, resolve through the third-party
-    -- registry, link the result.
+    -- In Shipping, Module.lua strips per-module third-party links to avoid duplicate .objs; Lumina unions all deps and links them directly.
     local AllThirdPartyDeps = {}
     local SeenDep = {}
     local function AddDeps(Deps)

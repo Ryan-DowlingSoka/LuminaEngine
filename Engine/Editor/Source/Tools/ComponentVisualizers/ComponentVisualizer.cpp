@@ -236,11 +236,8 @@ namespace Lumina
         const auto& Transform   = Registry.get<STransformComponent>(Entity);
         const auto& Camera      = Registry.get<SCameraComponent>(Entity);
 
-        // The component's cached ViewVolume is only refreshed at runtime by
-        // SCameraSystem, so in the editor it holds the construction-time default.
-        // Rebuild the view-projection from the entity's live transform. The camera's
-        // real far plane is effectively infinite, so clamp only the gizmo's far to a
-        // display-friendly distance -- this affects the drawing, never the camera.
+        // Cached ViewVolume only refreshes at runtime via SCameraSystem, so rebuild the view-projection from the live transform.
+        // The real far plane is effectively infinite; clamp only the gizmo's far for display (never affects the camera).
         constexpr float GizmoFar = 25.0f;
         const FVector3 Location = Transform.GetWorldLocation();
         const FQuat    Rotation = Transform.GetWorldRotation();

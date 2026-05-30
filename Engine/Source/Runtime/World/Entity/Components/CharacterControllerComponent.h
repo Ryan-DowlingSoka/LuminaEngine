@@ -64,9 +64,8 @@ namespace Lumina
         FUNCTION(Script)
         void Jump() { bJumpPressed = true; }
 
-        /** Add a velocity impulse to the character (jump pad, knockback, dash).
-         *  Override flags replace the existing velocity on that axis instead of
-         *  adding to it: horizontal = the X/Z plane, vertical = the Y (up) axis. */
+        // Add a velocity impulse (jump pad, knockback, dash). Override flags replace velocity on that axis
+        // instead of adding: horizontal = X/Z plane, vertical = Y (up).
         FUNCTION(Script)
         void Launch(const FVector3& Velocity, bool bOverrideHorizontal, bool bOverrideVertical)
         {
@@ -76,9 +75,8 @@ namespace Lumina
             bLaunchRequested          = true;
         }
 
-        /** Move the character to a world location. Use this instead of writing the
-         *  transform directly: the physics capsule owns the entity's position and
-         *  a plain transform write is overwritten on the next physics step. */
+        // Move the character to a world location. Use this, not a direct transform write -- the physics
+        // capsule owns position and a plain write is overwritten next physics step.
         FUNCTION(Script)
         void TeleportTo(const FVector3& Location)
         {

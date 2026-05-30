@@ -1,10 +1,8 @@
 #pragma once
 #include "SIMDConfig.h"
 
-// VFloat8: 8-lane f32 SIMD register (__m256, AVX). The primary workhorse on the
-// AVX baseline. Lane order is [0..7] low-to-high. Comparisons return a mask
-// (all-bits-set / zero per lane) of the same type; combine with Select /
-// MoveMask / Any / All.
+// VFloat8: 8-lane f32 SIMD register (__m256, AVX), lanes [0..7] low-to-high.
+// Comparisons return a per-lane mask; combine with Select/MoveMask/Any/All.
 
 namespace Lumina::SIMD
 {
@@ -38,7 +36,6 @@ namespace Lumina::SIMD
         }
     };
 
-    // ---- Arithmetic ----
     [[nodiscard]] FORCEINLINE VFloat8 operator+(VFloat8 A, VFloat8 B) { return _mm256_add_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat8 operator-(VFloat8 A, VFloat8 B) { return _mm256_sub_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat8 operator*(VFloat8 A, VFloat8 B) { return _mm256_mul_ps(A.V, B.V); }
@@ -75,7 +72,6 @@ namespace Lumina::SIMD
     #endif
     }
 
-    // ---- Comparisons (return per-lane masks) ----
     [[nodiscard]] FORCEINLINE VFloat8 CmpEq(VFloat8 A, VFloat8 B) { return _mm256_cmp_ps(A.V, B.V, _CMP_EQ_OQ); }
     [[nodiscard]] FORCEINLINE VFloat8 CmpNe(VFloat8 A, VFloat8 B) { return _mm256_cmp_ps(A.V, B.V, _CMP_NEQ_UQ); }
     [[nodiscard]] FORCEINLINE VFloat8 CmpLt(VFloat8 A, VFloat8 B) { return _mm256_cmp_ps(A.V, B.V, _CMP_LT_OQ); }
@@ -83,7 +79,6 @@ namespace Lumina::SIMD
     [[nodiscard]] FORCEINLINE VFloat8 CmpGt(VFloat8 A, VFloat8 B) { return _mm256_cmp_ps(A.V, B.V, _CMP_GT_OQ); }
     [[nodiscard]] FORCEINLINE VFloat8 CmpGe(VFloat8 A, VFloat8 B) { return _mm256_cmp_ps(A.V, B.V, _CMP_GE_OQ); }
 
-    // ---- Bitwise / blend ----
     [[nodiscard]] FORCEINLINE VFloat8 And(VFloat8 A, VFloat8 B)    { return _mm256_and_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat8 Or(VFloat8 A, VFloat8 B)     { return _mm256_or_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat8 Xor(VFloat8 A, VFloat8 B)    { return _mm256_xor_ps(A.V, B.V); }
@@ -97,7 +92,6 @@ namespace Lumina::SIMD
     [[nodiscard]] FORCEINLINE bool All(VFloat8 Mask)      { return _mm256_movemask_ps(Mask.V) == 0xFF; }
     [[nodiscard]] FORCEINLINE bool None(VFloat8 Mask)     { return _mm256_movemask_ps(Mask.V) == 0; }
 
-    // ---- Reductions (fold the two 128-bit halves, then reduce) ----
     [[nodiscard]] FORCEINLINE float HorizontalSum(VFloat8 A)
     {
         __m128 Lo  = _mm256_castps256_ps128(A.V);

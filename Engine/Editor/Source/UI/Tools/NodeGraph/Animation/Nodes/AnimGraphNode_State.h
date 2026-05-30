@@ -8,10 +8,8 @@ namespace Lumina
 {
     class CAnimationGraphNodeGraph;
 
-    // A state on the state machine canvas. It owns its own blend-tree graph
-    // (double-click to edit), and connects to other states with transition
-    // wires (StateFlow pins). The owning State Machine node compiles each
-    // state's blend tree into a pose register.
+    // A state on the state machine canvas, owning its blend-tree graph (double-click to edit) and connected
+    // to other states via StateFlow transition wires. The State Machine node compiles it to a pose register.
     REFLECT()
     class CAnimGraphNode_State : public CAnimGraphNode
     {

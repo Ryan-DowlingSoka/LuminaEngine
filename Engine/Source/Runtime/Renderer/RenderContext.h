@@ -38,9 +38,8 @@ namespace Lumina
         bool    bDiscrete = false;
     };
 
-    // One GPU memory heap, abstracted from the backend allocator. Bytes are device truth,
-    // not estimates: Usage is what the OS reports for the process, Allocated/Block come from
-    // the allocator's own bookkeeping (Block >= Allocated; the gap is fragmentation/reserve).
+    // One GPU memory heap. Usage is OS-reported for the process; Allocated/Block come from the
+    // allocator (Block >= Allocated, the gap is fragmentation/reserve).
     struct FGPUMemoryHeapStats
     {
         uint32 HeapIndex       = 0;
@@ -88,10 +87,8 @@ namespace Lumina
         virtual bool FrameEnd(ICommandList& CmdList) = 0;
         virtual void WaitForGPU() = 0;
 
-        // Acquire/release exclusive access to a queue from outside the RHI.
-        // Use when a third-party library (e.g. ImGui's multi-viewport backend)
-        // calls vkQueueSubmit/vkQueuePresentKHR on the same VkQueue we drive
-        // from the render thread.
+        // Acquire/release exclusive access to a queue from outside the RHI, e.g. ImGui's
+        // multi-viewport backend submitting/presenting on the same VkQueue we drive.
         virtual void LockQueueForExternalAccess(ECommandQueue Queue) = 0;
         virtual void UnlockQueueForExternalAccess(ECommandQueue Queue) = 0;
         

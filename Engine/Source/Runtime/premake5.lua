@@ -14,13 +14,7 @@ LuminaModule({
         "LUMINA_RPMALLOC",
         "LUMINA_HAS_RECAST",
     },
-    -- The full set of third-party libraries the Runtime links and exposes
-    -- through its public headers. Defined once in BuildScripts/ThirdParty so
-    -- module dependents and external game projects resolve the same closure.
-    -- Header-only entries (GLM, EnTT, spdlog, Vulkan, ...) contribute includes
-    -- only; the registry's Link flags decide what actually links.
-    -- Model-format parsers (tinyobjloader/OpenFBX/fastgltf) live in the Editor
-    -- module; they don't ship in the Game runtime.
+    -- Third-party closure shared with module dependents and external game projects; model-format parsers live in Editor, not the Game runtime.
     Dependencies = LuminaThirdParty.RuntimePublicDeps,
     ExtraLinks =
     {
@@ -35,8 +29,5 @@ LuminaModule({
     ExtraFiles = { },
 })
 
--- NVIDIA Aftermath import lib + runtime DLL copy, scoped to the configurations
--- where Aftermath is enabled (LuminaOptions / BuildConfig.lua). Runtime owns the
--- DLL copy since it always builds into the same Binaries dir as the executable;
--- the copy runs postbuild so the target dir is guaranteed to exist.
+-- Aftermath import lib + DLL copy; Runtime owns the copy since it builds into the executable's Binaries dir.
 LuminaOptions.LinkAftermath({ Copy = true })

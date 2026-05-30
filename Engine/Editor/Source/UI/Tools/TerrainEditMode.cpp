@@ -76,9 +76,8 @@ namespace Lumina
         // Start dead flat; the user sculpts from a clean slate.
         Terrain.Heightmap.assign(N, 0.0f);
 
-        // Seed four layers so a freshly created terrain can drive a four-input
-        // TerrainLayerBlend out of the box. Weights start at zero; painting
-        // increases them and the shader normalises the blend at sample time.
+        // Seed four layers so a fresh terrain drives a four-input TerrainLayerBlend out of
+        // the box. Weights start at zero; painting raises them, shader normalizes at sample.
         static const char* LayerNames[4] = { "Layer0", "Layer1", "Layer2", "Layer3" };
         for (int i = 0; i < 4; ++i)
         {
@@ -296,9 +295,8 @@ namespace Lumina
 
         ActiveLayer = std::clamp(ActiveLayer, 0, std::max(LayerCount - 1, 0));
 
-        // Per-layer settings for the currently selected swatch: inline rename, UV
-        // tiling, and reorder. Reorder mutates LayerWeights too so weights follow
-        // the layer instead of swapping under the user.
+        // Per-layer settings for the selected swatch (rename, UV tiling, reorder). Reorder
+        // also mutates LayerWeights so weights follow the layer rather than swapping under it.
         if (ActiveLayer >= 0 && ActiveLayer < LayerCount)
         {
             STerrainLayer& L = Terrain.Layers[ActiveLayer];
@@ -479,9 +477,8 @@ namespace Lumina
         LastHit   = Hit;
         bHitValid = true;
 
-        // Ctrl+click anywhere in Flatten mode samples the height under the cursor as
-        // the target. Wired off of click rather than down so a held stroke can't
-        // accidentally retarget itself.
+        // Ctrl+click in Flatten mode samples the cursor height as the target. Off click,
+        // not down, so a held stroke can't accidentally retarget itself.
         if (Mode == ETerrainBrushMode::Flatten
             && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
             && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
@@ -500,9 +497,8 @@ namespace Lumina
         // No gizmo guard here: the host suppresses gizmo manipulation entirely while
         // this mode owns viewport input, so ImGuizmo state is stale and must not be read.
 
-        // Use wall-clock delta so brushes integrate consistently even when the world
-        // is paused. The pass-in DeltaSeconds is the simulated tick which is zero in
-        // edit mode and would make every dab a no-op.
+        // Use wall-clock delta so brushes integrate even when paused; the passed-in
+        // DeltaSeconds is the simulated tick (zero in edit mode, every dab a no-op).
         const float RealDelta = std::max(ImGui::GetIO().DeltaTime, 0.0f);
 
         // Continuous brushes integrate by frame time, so apply every frame while held
@@ -552,10 +548,8 @@ namespace Lumina
             bTransactionOpen = true;
         }
 
-        // Ramp re-applies the whole Start->End line each frame, so a single dab is
-        // correct. The footprint brushes instead interpolate dabs along the cursor's
-        // travel since last frame so fast strokes don't leave gaps; the frame's time
-        // budget is split across them to keep total strength FPS-independent.
+        // Ramp re-applies the whole Start->End line each frame (single dab). Footprint brushes
+        // interpolate dabs along cursor travel (no gaps), splitting the frame's strength budget.
         if (Mode == ETerrainBrushMode::Ramp || !bHasStrokeHit)
         {
             FTerrainSculptSystem::ApplyDab(Terrain, Dab);
@@ -586,12 +580,8 @@ namespace Lumina
             return;
         }
 
-        // The brush footprint is a horizontal disk in world space; at oblique angles
-        // it projects to an ellipse on screen. Drawing a circle from a single extent
-        // looks distorted, so sample points along the world-space ring and project
-        // each one individually. NDC.y is mapped directly (not inverted) to match
-        // BuildRayFromScreen and the Vulkan-native framebuffer convention used by
-        // the renderer.
+        // Footprint is a world-space disk that projects to an ellipse at oblique angles, so
+        // project ring samples individually. NDC.y is direct (not inverted) per BuildRayFromScreen.
         const FMatrix4 ViewProj = Camera.GetProjectionMatrix() * Camera.GetViewMatrix();
         auto ProjectToScreen = [&](const FVector3& W, ImVec2& Out) -> bool
         {

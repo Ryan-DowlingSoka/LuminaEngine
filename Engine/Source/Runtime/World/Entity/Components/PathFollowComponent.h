@@ -6,12 +6,8 @@
 
 namespace Lumina
 {
-    /**
-     * Result of the most recent path query. Distinct from "is the agent
-     * currently moving" - the agent may keep walking the prior corners
-     * after a failed replan, so a follower can be Following with a
-     * Failed last query.
-     */
+    // Result of the most recent path query; distinct from "is the agent moving" -- a follower may keep
+    // walking prior corners after a failed replan.
     enum class EPathFollowStatus : uint8
     {
         None      = 0, // No target set, or target was just cleared.
@@ -21,18 +17,8 @@ namespace Lumina
         Failed    = 4, // Last query returned no valid path.
     };
 
-    /**
-     * Drives an entity along a navmesh path. Pair with SCharacterControllerComponent
-     * (or any other movement consumer) - the SPathFollowSystem fills its
-     * MoveInput each tick from the direction toward the next path corner.
-     *
-     * Gameplay sets a target by world position (SetTargetLocation) or
-     * tracks a moving entity (SetTargetEntity). The system internally
-     * requests a path via Nav::FindPath, caches the corner list, advances
-     * once the agent is within AcceptanceRadius of the current corner, and
-     * triggers a replan if the tracked target's position drifts past
-     * RepathDistance from where the path was originally generated.
-     */
+    // Drives an entity along a navmesh path; SPathFollowSystem fills the paired controller's MoveInput from
+    // the direction to the next corner. Target via SetTargetLocation/SetTargetEntity; replans past RepathDistance.
     REFLECT(Component, Category = "AI")
     struct RUNTIME_API SPathFollowComponent
     {
@@ -110,11 +96,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.0f, ClampMax = 1.0f)
         float Speed = 1.0f;
 
-        /**
-         * Replan when the tracked target's position has moved more than this
-         * from the source point of the cached path. Ignored when the goal is
-         * a static world location.
-         */
+        // Replan when the tracked target moves more than this from the cached path's source point. Ignored
+        // for a static world-location goal.
         PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.0f)
         float RepathDistance = 1.5f;
 

@@ -308,7 +308,7 @@ namespace Lumina
         return const_cast<FConfig*>(this)->NavigateToNode(Key, false);
     }
 
-    // Typed accessors -----------------------------------------------------
+    // Typed accessors.
 
     namespace
     {

@@ -7,15 +7,11 @@ namespace Lumina
 {
     class CMaterialInterface;
 
-    // Registry-context singletons that hold per-world state systems produce or
-    // consume. Plain (non-reflected) like the FUpdateStage_* tags: transient
-    // runtime state, never serialized or shown in the editor. Emplaced once in
-    // CWorld::InitializeWorld and read back in CWorld::Extract / the systems.
+    // Registry-context singletons holding per-world state systems produce/consume. Plain (non-reflected),
+    // transient, never serialized. Emplaced in CWorld::InitializeWorld, read in Extract / the systems.
 
-    // Resolved active view for the frame. SCameraSystem writes it at the end of
-    // the update (FrameEnd in game/simulation, Paused in editor); CWorld::Extract
-    // reads it and forwards to the render scene. Keeps camera/post-process
-    // resolution in a system instead of inline in the extract phase.
+    // Resolved active view. SCameraSystem writes it at end of update (FrameEnd, or Paused in editor);
+    // CWorld::Extract reads + forwards it, keeping camera/post-process resolution in a system.
     struct FResolvedSceneView
     {
         FViewVolume                     ViewVolume;

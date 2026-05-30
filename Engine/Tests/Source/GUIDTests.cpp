@@ -4,8 +4,7 @@
 using namespace Lumina;
 
 // Same seed must produce the same GUID. Regression for the eastl::hash +
-// shift-past-type-width UB that used to make Debug and Development emit
-// different bytes for the same string.
+// shift-past-type-width UB that made Debug and Development emit different bytes.
 TEST(GUIDTests, NewDeterministic_SameSeedSameGuid)
 {
     FGuid A = FGuid::NewDeterministic("Engine.PrimitiveMesh.Cube");
@@ -55,9 +54,8 @@ TEST(GUIDTests, NewDeterministic_VersionAndVariantBits)
     EXPECT_EQ((B[8] & 0xC0), 0x80);
 }
 
-// The high 8 bytes are derived from the low 8 by SplitMix64. The two halves
-// must not be a copy of each other - that was the symptom of the old
-// shift-past-type-width UB.
+// High 8 bytes derive from the low 8 via SplitMix64; the halves must differ
+// (a copy was the symptom of the old shift-past-type-width UB).
 TEST(GUIDTests, NewDeterministic_HighAndLowHalvesDiffer)
 {
     FGuid G = FGuid::NewDeterministic("Engine.PrimitiveMesh.Cube");
@@ -100,9 +98,8 @@ TEST(GUIDTests, NewDeterministic_RoundTripThroughString)
     EXPECT_EQ(Original, Restored);
 }
 
-// Determinism is per-seed-bits, not per-FStringView object identity. Pass
-// the same characters through different FStringView constructors and
-// verify the result is identical.
+// Determinism is per-seed-bits, not per-FStringView identity: same characters
+// through different FStringView constructors must yield identical results.
 TEST(GUIDTests, NewDeterministic_StringViewSourceIndependence)
 {
     const char* Literal = "Engine.PrimitiveMesh.Plane";

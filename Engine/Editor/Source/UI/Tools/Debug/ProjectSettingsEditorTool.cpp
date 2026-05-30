@@ -11,9 +11,8 @@ namespace Lumina
 {
     namespace
     {
-        // Comma-joined "Editor/Rendering" -> { "Editor", "Rendering" }.
-        // Empty input yields a single "General" bucket so undeclared-category
-        // settings still have somewhere to live.
+        // Splits "Editor/Rendering" -> { "Editor", "Rendering" }; empty input yields
+        // a single "General" bucket for undeclared-category settings.
         TVector<FString> SplitCategory(const FString& Category)
         {
             TVector<FString> Out;
@@ -283,10 +282,8 @@ namespace Lumina
                 const char* Filter = Setting.FileFilter.empty() ? nullptr : Setting.FileFilter.c_str();
                 if (Platform::OpenFileDialogue(Picked, Setting.Key.c_str(), Filter))
                 {
-                    // The dialog returns an absolute Windows path; convert to
-                    // a VFS path so the value matches what the asset registry,
-                    // LoadObject, and the cooker all key on. Falls back to the
-                    // raw path if no mount matches.
+                    // Convert the dialog's absolute path to a VFS path so it matches what the
+                    // registry/LoadObject/cooker key on; falls back to the raw path if unmounted.
                     const FFixedString Virtual = VFS::ResolveToVirtualPath(FStringView(Picked.c_str(), Picked.size()));
                     GConfig->Set(Setting.Key, std::string(Virtual.c_str()));
                 }
@@ -372,10 +369,8 @@ namespace Lumina
 
             if (ImGui::TreeNode("##list", "%s [%zu]", Preview.c_str(), Values.size()))
             {
-                // When the setting has a FileFilter, treat the array as a
-                // list of asset paths and offer a per-row Browse button
-                // (mirrors the single-Path renderer above). Otherwise it's
-                // just text inputs.
+                // With a FileFilter the array is asset paths with a per-row Browse button
+                // (like the single-Path renderer); otherwise plain text inputs.
                 const bool bHasPicker = !Setting.FileFilter.empty();
                 const float PickerWidth = bHasPicker ? 80.0f : 0.0f;
                 const float TrashWidth  = 28.0f;
@@ -394,10 +389,8 @@ namespace Lumina
                     const float Avail = ImGui::GetContentRegionAvail().x;
                     const float InputW = Avail - PickerWidth - (bHasPicker ? Spacing : 0.0f) - TrashWidth - Spacing;
                     ImGui::SetNextItemWidth(InputW);
-                    // Commit on every keystroke: without this, ImGui's
-                    // Buf gets reset from the stale Values[i] each frame
-                    // because we re-fetch from GConfig at the top, so
-                    // anything typed disappears between frames.
+                    // Commit on every keystroke; otherwise the re-fetch from GConfig at the top
+                    // resets Buf from stale Values[i] each frame and typed text disappears.
                     if (ImGui::InputText("##entry", Buf, sizeof(Buf)))
                     {
                         Values[i] = Buf;
@@ -412,9 +405,8 @@ namespace Lumina
                             FFixedString Picked;
                             if (Platform::OpenFileDialogue(Picked, Setting.Key.c_str(), Setting.FileFilter.c_str()))
                             {
-                                // Same VFS conversion as the single-Path
-                                // renderer — keep the value comparable to
-                                // anything the registry/cooker looks up.
+                                // Same VFS conversion as the single-Path renderer, so the
+                                // value matches what the registry/cooker look up.
                                 const FFixedString Virtual = VFS::ResolveToVirtualPath(FStringView(Picked.c_str(), Picked.size()));
                                 Values[i] = FString(Virtual.c_str(), Virtual.size());
                                 bDirty = true;

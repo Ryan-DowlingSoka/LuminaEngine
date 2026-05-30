@@ -1,16 +1,13 @@
 #pragma once
 
-// Lumina ECS facade. The only place in the engine that includes <entt/entt.hpp>.
-// Everywhere else uses these aliases so EnTT does not leak into call sites and
-// can be swapped or upgraded without touching 100+ files.
+// Lumina ECS facade; the only place that includes <entt/entt.hpp>. Everywhere else uses these
+// aliases so EnTT doesn't leak into call sites and can be swapped without touching 100+ files.
 
 #include <entt/entt.hpp>
 
 namespace Lumina
 {
-    // ------------------------------------------------------------------
     // Core handle & registry
-    // ------------------------------------------------------------------
 
     // Opaque per-registry entity handle. Cheap value type; pass by value.
     using FEntity = entt::entity;
@@ -44,9 +41,7 @@ namespace Lumina
     inline constexpr auto EntityGet = entt::get<Ts...>;
 
 
-    // ------------------------------------------------------------------
     // Meta / reflection
-    // ------------------------------------------------------------------
 
     // Type-erased meta-system value (the "any" of entt::meta).
     using FMetaAny = entt::meta_any;
@@ -132,20 +127,15 @@ namespace Lumina
     using entt::forward_as_meta;
 
 
-    // ------------------------------------------------------------------
     // Events
-    // ------------------------------------------------------------------
 
     // ECS event dispatcher. CWorld owns one for engine-side dispatch; gameplay
     // code uses CWorld::GetEventBus() / Subscribe<T>() rather than this directly.
     using FEventDispatcher = entt::dispatcher;
 }
 
-// ----------------------------------------------------------------------
-// "_hs" literal — used by the meta-system to spell function/property ids.
-// Pulled into the Lumina namespace so generated code and call sites do not
-// need `using namespace entt::literals;`.
-// ----------------------------------------------------------------------
+// "_hs" literal (meta-system function/property ids), pulled into Lumina so
+// generated code and call sites don't need `using namespace entt::literals;`.
 namespace Lumina::Literals
 {
     using entt::literals::operator""_hs;

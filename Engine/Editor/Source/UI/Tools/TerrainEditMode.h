@@ -14,16 +14,13 @@ namespace Lumina
     struct SCameraComponent;
     struct STerrainComponent;
 
-    /**
-     * Viewport mode for sculpting + painting terrain. Owns the brush settings
-     * window, cursor ring overlay, and per-frame stroke integration. Activation
-     * is managed by the host's mode registry; the mode itself no longer carries
-     * an on/off toggle.
-     */
+    // Terrain sculpt/paint viewport mode: brush settings window, cursor ring overlay,
+    // per-frame stroke integration. Activation owned by the host mode registry.
     class FTerrainEditMode final : public IWorldEditorMode
     {
     public:
         const char* GetDisplayName() const override { return "Terrain"; }
+        const char* GetIcon() const override { return LE_ICON_TERRAIN; }
         const char* GetTooltip() const override
         {
             return "Sculpt, smooth, ramp, noise, and paint layers on the active terrain.";

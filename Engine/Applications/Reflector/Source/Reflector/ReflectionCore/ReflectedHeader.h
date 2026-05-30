@@ -9,10 +9,8 @@ namespace Lumina::Reflection
 {
     class FReflectedProject;
 
-    // One #include directive captured during the clang preprocessing pass.
-    // Used by the post-parse validation step to enforce that a reflection-
-    // bearing header includes its companion `<stem>.generated.h` and that
-    // the include lives at the bottom of the include block.
+    // One #include directive captured during preprocessing; post-parse validation uses it to
+    // enforce that a reflection-bearing header ends its include block with `<stem>.generated.h`.
     struct FIncludeRef
     {
         eastl::string Spelling;     // The literal text inside the angle/quote brackets.
@@ -31,14 +29,10 @@ namespace Lumina::Reflection
         eastl::string                   HeaderPath;
         FReflectedProject*              Project;
 
-        // Captured via CXCursor_InclusionDirective during parsing. Order is
-        // by source line, which is what the GeneratedHeaderNotLast check
-        // relies on.
+        // Captured via CXCursor_InclusionDirective, ordered by source line (the GeneratedHeaderNotLast check relies on it).
         eastl::vector<FIncludeRef>      Includes;
 
-        // Set to true when the macro visitor sees REFLECT, GENERATED_BODY,
-        // PROPERTY, or FUNCTION inside this header. Validation that depends
-        // on the header being part of the reflection system is gated on it.
+        // True when the macro visitor saw REFLECT/GENERATED_BODY/PROPERTY/FUNCTION; gates reflection-dependent validation.
         bool                            bHasReflectionMacros = false;
 
         bool                            bDirty = false;

@@ -132,10 +132,8 @@ namespace Lumina
             InputPin->AddConnection(OutputPin);
         }
 
-        // Rebuild the serialized Connections array from the freshly-restored pin links. Each AddNode
-        // above ran ValidateGraph() while no connections existed yet, leaving the member empty; without
-        // this, saving after load (with no connection edit to re-trigger ValidateGraph) would persist an
-        // empty array and silently drop every link.
+        // Rebuild Connections from restored pin links: AddNode above ran ValidateGraph() before any links
+        // existed, so without this a save after load (no edit to re-trigger it) drops every link.
         ValidateGraph();
     }
 
@@ -666,9 +664,8 @@ namespace Lumina
             NodeSelectedCallback(nullptr);
         }
 
-        // Surface the currently selected link (if exactly one) to the graph.
-        // Links were built by the per-node loop above; their 1-based IDs below
-        // match last frame's emission order, so the index is stable.
+        // Surface the single selected link to the graph. Their 1-based IDs match last frame's
+        // emission order, so the index is stable.
         if (LinkSelectedCallback)
         {
             NodeEditor::LinkId SelectedLink;

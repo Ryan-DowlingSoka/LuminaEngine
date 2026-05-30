@@ -19,12 +19,8 @@ namespace Lumina
         TObjectPtr<CObject>  Object;
     };
 
-    // Per-entity blackboard instance. References a CBlackboard schema and owns
-    // its own value store, seeded from the schema's defaults the first time it is
-    // used. Two entities sharing the same schema asset keep fully independent
-    // values (this is the only place mutable blackboard state lives). Gameplay /
-    // Lua read and write through the Set*/Get* API; the animation system reads
-    // values by key name each frame.
+    // Per-entity blackboard: references a CBlackboard schema, owns its value store (seeded from schema
+    // defaults). Entities sharing a schema keep independent values. Read/written via the Set*/Get* API.
     REFLECT(Component, Category = "AI")
     struct SBlackboardComponent
     {

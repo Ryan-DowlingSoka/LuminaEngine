@@ -58,7 +58,6 @@ namespace Lumina
             "in non-editor builds; Developer modules are skipped in Shipping.");
     }
 
-    //-------------------------------------------------------------------------
 
     bool FPluginBrowserEditorTool::IsEffectivelyEnabled(const FPlugin* Plugin) const
     {
@@ -86,7 +85,6 @@ namespace Lumina
         }
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::DrawBrowserWindow(bool /*bIsFocused*/)
     {
@@ -151,7 +149,6 @@ namespace Lumina
         DrawFooter();
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::DrawToolbar()
     {
@@ -191,7 +188,6 @@ namespace Lumina
         ImGui::TextDisabled("%s", ScopeHint);
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::DrawTable(const TVector<FPlugin*>& Plugins)
     {
@@ -277,7 +273,6 @@ namespace Lumina
         ImGui::EndTable();
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::DrawDetailPanel(FPlugin* Plugin)
     {
@@ -379,7 +374,6 @@ namespace Lumina
         }
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::DrawFooter()
     {
@@ -425,7 +419,6 @@ namespace Lumina
         if (!bCanApply) ImGui::EndDisabled();
     }
 
-    //-------------------------------------------------------------------------
 
     bool FPluginBrowserEditorTool::ApplyAndPersist(FString& OutError)
     {
@@ -471,9 +464,8 @@ namespace Lumina
             return false;
         }
 
-        // Merge pending changes into Plugins array. Preserves existing
-        // entries (and any forward-compatible fields the editor doesn't
-        // know about); appends new ones.
+        // Merge pending changes into the Plugins array; preserves existing entries
+        // (and any forward-compatible fields) and appends new ones.
         nlohmann::json& PluginsArr = Root["Plugins"];
         if (!PluginsArr.is_array())
         {
@@ -549,7 +541,6 @@ namespace Lumina
             });
     }
 
-    //-------------------------------------------------------------------------
 
     void FPluginBrowserEditorTool::OpenCreatePluginDialog()
     {

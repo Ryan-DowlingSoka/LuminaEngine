@@ -1,10 +1,8 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// GPU vertex pre-skinning. One workgroup per skinned entity (uSkinDescriptors[d]); the
-// workgroup walks every meshlet of the entity's mesh and skins its vertices once into
-// uPreSkinnedVertices. All draw passes (depth, shadow cascades, shadow lights, base)
-// then read the pre-skinned object-space vertices instead of re-skinning per pass.
+// GPU vertex pre-skinning: one workgroup per skinned entity skins its vertices once into
+// uPreSkinnedVertices, which all draw passes then read instead of re-skinning per pass.
 
 struct FPushConstants
 {

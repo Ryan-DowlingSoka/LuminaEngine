@@ -17,14 +17,8 @@ namespace Lumina
     class FVulkanSwapchain;
     class FUpdateContext;
 
-    // A real RHI ImGui backend. Textures are sampled straight out of the engine
-    // bindless table (ImTextureID == FRHIImage::GetResourceID), so there are no
-    // per-texture descriptor sets, no descriptor pool, and no per-frame texture
-    // churn. The stock imgui_impl_vulkan renderer is gone; ImGui_ImplGlfw is
-    // kept for platform/input. Draws are recorded directly onto our command
-    // lists (main viewport on the render thread, secondary viewports on the
-    // game thread), one DrawIndexed per ImDrawCmd with the bindless table bound
-    // once and the texture id passed by push constant.
+    // RHI ImGui backend: ImTextureID == FRHIImage bindless ID, so no per-texture descriptor sets/pool.
+    // Replaces imgui_impl_vulkan (ImGui_ImplGlfw kept for input); one DrawIndexed per ImDrawCmd.
     class FVulkanImGuiRender : public IImGuiRenderer
     {
     public:
@@ -46,30 +40,22 @@ namespace Lumina
 
     private:
 
-        // Lazily create + cache a pipeline for a given color-attachment format.
-        // The main viewport RT and the secondary-window swapchains have different
-        // formats, so we key the pipeline by format.
+        // Lazily create + cache a pipeline keyed by color-attachment format (main RT and
+        // secondary-window swapchains differ).
         FRHIGraphicsPipeline* GetOrCreatePipeline(EFormat ColorFormat);
 
-        // Record one ImDrawData into Target (shared by main + secondary viewports).
-        // Caller has already transitioned Target to RenderTarget and any sampled
-        // user images to ShaderResource, with automatic barriers committed.
+        // Record one ImDrawData into Target (main + secondary). Caller has already transitioned
+        // Target to RenderTarget and sampled images to ShaderResource, barriers committed.
         void RecordDrawData(ICommandList& CmdList, ImDrawData* DrawData, FRHIImage* Target);
 
-        // Honor ImGui 1.92 dynamic-texture requests for the font atlas (the only
-        // ImGui-owned texture). Create + SetTexID happen on the game thread (so
-        // TexIDs are valid for the snapshot); the pixel upload is queued and
-        // flushed on the render-thread frame list right before the draw, so the
-        // upload and the sample are in one submit (robust, like FRmlUiRenderer).
+        // ImGui 1.92 dynamic-texture for the font atlas: Create + SetTexID on the game thread (TexIDs
+        // valid for the snapshot); pixel upload queued and flushed before the draw so it's one submit.
         void CreateFontTexture(ImTextureData* Tex);
         void DestroyFontTexture(ImTextureData* Tex);
         void FlushFontUploads_RenderThread(ICommandList& CmdList);
 
-        // Multi-viewport window-lifecycle hooks (installed into ImGuiPlatformIO),
-        // all on the game thread. CreateWindow makes the swapchain (GLFW surface
-        // creation is main-thread only); DestroyWindow defers swapchain teardown
-        // to the render thread (which owns acquire/present). No Render/SwapBuffers
-        // hooks: rendering + present happen in RenderViewports_RenderThread.
+        // Multi-viewport window-lifecycle hooks (ImGuiPlatformIO), game thread. CreateWindow makes the
+        // swapchain; DestroyWindow defers teardown to the render thread. Present is in RenderViewports.
         static void OnRendererCreateWindow(ImGuiViewport* Viewport);
         static void OnRendererDestroyWindow(ImGuiViewport* Viewport);
         static void OnRendererSetWindowSize(ImGuiViewport* Viewport, ImVec2 Size);
@@ -123,11 +109,10 @@ namespace Lumina
         };
         TVector<FPendingFontUpload> PendingFontUploads;
 
-        // --- Multi-viewport: capture on game thread, render+present on render thread ---
+        // Multi-viewport: capture on game thread, render+present on render thread.
 
-        // One ImDrawCmd, flattened with global vertex/index offsets and the clip
-        // rect pre-projected to framebuffer pixels (so the render thread does no
-        // ImGui math).
+        // One ImDrawCmd, flattened with global vertex/index offsets and clip rect
+        // pre-projected to framebuffer pixels (render thread does no ImGui math).
         struct FCapturedCmd
         {
             float  ClipMinX = 0, ClipMinY = 0, ClipMaxX = 0, ClipMaxY = 0;

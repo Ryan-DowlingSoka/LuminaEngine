@@ -1,14 +1,9 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Per-material shadow VS template. Substitutes the same vertex-graph chunk
-// as the base / depth-prepass templates so the shadow-receiver depth matches
-// the displaced geometry. Without this, animated grass casts a rigid shadow
-// from the un-displaced position.
-//
-// NOTE: the substitution token must appear exactly once in this file. Don't
-// reference it elsewhere (comments included) -- the substitution uses a
-// plain string find().
+// Per-material shadow VS template; substitutes the same vertex graph as base/depth so shadows match
+// displaced geometry (else animated grass casts a rigid shadow).
+// NOTE: the substitution token (plain string find) must appear exactly once -- don't reference it anywhere else.
 
 struct FPushConstants
 {
@@ -31,10 +26,7 @@ VSOutput VertexMain(
     FGPUInstance Inst        = GetInstance(Draw.InstanceID);
     float4x4     ModelMatrix = Inst.ModelMatrix;
 
-    // Shadow VS uses the shadow LOD's meshlet range. The cull shader emitted
-    // (InstanceID, MeshletLocalIndex) where MeshletLocalIndex indexes into
-    // the *shadow* range, not the camera range -- so we must use
-    // ShadowMeshletOffset here, not SurfaceMeshletOffset.
+    // MeshletLocalIndex indexes the shadow range, so use ShadowMeshletOffset, not Surface.
     uint GlobalMeshletIdx = Inst.ShadowMeshletOffset + Draw.MeshletLocalIndex;
     FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 

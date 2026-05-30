@@ -11,11 +11,8 @@ namespace Lumina
     // function editor (which creates/loads it) and the call node's inliner (which loads it).
     inline constexpr const char* GMaterialFunctionGraphObjectName = "MaterialFunctionGraph";
 
-    // The editable graph of a material function. Same node library as a material graph, minus the
-    // material output node (it has none) and plus FunctionInput / FunctionOutput nodes that declare
-    // the function's signature. It produces no shader of its own; the call node inlines it into a host
-    // material at compile time. CompileForValidation only exists so the function editor can surface
-    // node errors without building a real shader.
+    // The editable graph of a material function: the material node library minus the output node, plus
+    // FunctionInput / FunctionOutput. Produces no shader itself; the call node inlines it into a host material.
     REFLECT()
     class CMaterialFunctionGraph : public CMaterialNodeGraph
     {

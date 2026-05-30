@@ -116,8 +116,7 @@ enum class ERHIBindingResourceType : uint8
 	Buffer_Uniform_Dynamic,
 	Buffer_Storage_Dynamic,
 
-	// Layout-only. A bindless mutable image slot accepting either a sampled
-	// or storage image; per-write VkDescriptorType determines which.
+	// Layout-only bindless slot accepting sampled or storage; per-write VkDescriptorType decides.
 	// FBindingSetItem writes still use Texture_SRV / Texture_UAV.
 	Image_Mutable,
 };
@@ -364,8 +363,6 @@ namespace Lumina
 
     	mutable TAtomic<uint32> RefCount{0};
     };
-	
-	//-------------------------------------------------------------------------------------------------------------------
 
 	class IEventQuery : public IRHIResource { };
 	class ITimerQuery : public IRHIResource { };
@@ -468,8 +465,6 @@ namespace Lumina
 	};
 
 
-	//-------------------------------------------------------------------------------------------------------------------
-
 	struct FDynamicBufferWrite
 	{
 		int64 LatestVersion = 0;
@@ -534,9 +529,6 @@ namespace Lumina
 	};
 
 
-	//-------------------------------------------------------------------------------------------------------------------
-	
-	
 	struct FRHIImageDesc
 	{
 		TBitFlags<EImageCreateFlags> Flags = 0;
@@ -847,10 +839,8 @@ namespace Lumina
 		virtual int32 GetResourceID() const = 0;
 		virtual void SetResourceID(int32 InIndex) = 0;
 
-		// Per-mip storage-image bindless indices. Populated by FTextureManager
-		// for images created with EImageCreateFlags::Storage and NumMips > 1
-		// so SPD-style passes can write each mip via the bindless RW table
-		// without allocating a per-pass binding set. Returns -1 if not registered.
+		// Per-mip storage-image bindless indices so SPD-style passes write each mip via the
+		// bindless RW table without a per-pass binding set. Returns -1 if not registered.
 		virtual int32 GetMipUAVIndex(uint32 Mip) const = 0;
 		virtual TVector<int32>& GetMipUAVIndices() = 0;
 
@@ -865,11 +855,8 @@ namespace Lumina
 		NODISCARD virtual const FRHIImageDesc& GetDesc() const = 0;
 	};
 
-	//-------------------------------------------------------------------------------------------------------------------
-	// GPU memory accounting (API-agnostic). Walks the live RHI resource list and attributes an
-	// estimated device-memory footprint to coarse categories, sized from resource descriptions
-	// plus format info -- no backend types involved. Authoritative totals come from the backend
-	// (IRenderContext::GetGPUMemoryStats); this is the per-purpose attribution layered on top.
+	// GPU memory accounting (API-agnostic): estimates per-category footprint from resource descriptions.
+	// Authoritative totals come from the backend (GetGPUMemoryStats); this is per-purpose attribution.
 
 	enum class EGPUMemoryCategory : uint8
 	{
@@ -907,8 +894,6 @@ namespace Lumina
 	// Fills Out (which must hold EGPUMemoryCategory::Count entries) with per-category usage
 	// summed across every live RHI image and buffer.
 	RUNTIME_API void GatherGPUMemoryByCategory(FGPUMemoryCategoryUsage* Out, uint32 Count);
-
-	//-------------------------------------------------------------------------------------------------------------------
 
 	class RUNTIME_API FRHIShader : public IRHIResource
 	{
@@ -1001,8 +986,6 @@ namespace Lumina
     
 	};
 	
-	//-------------------------------------------------------------------------------------------------------------------
-
 	enum class RUNTIME_API ERasterFillMode : uint8
 	{
 		Solid,
@@ -1168,9 +1151,6 @@ namespace Lumina
             return !(*this == other);
         }
     };
-
-	
-	//-------------------------------------------------------------------------------------------------------------------
 
 	
 	struct RUNTIME_API FRasterState
@@ -1443,9 +1423,8 @@ namespace Lumina
 			return Result;
 		}
 
-		// Bindless-only. The backing descriptor type is VK_DESCRIPTOR_TYPE_MUTABLE_EXT
-		// with a {SAMPLED_IMAGE, STORAGE_IMAGE} type list, so a single ResourceID
-		// indexes both Textures[] and RWTextures[] in the shader.
+		// Bindless-only MUTABLE_EXT with a {SAMPLED_IMAGE, STORAGE_IMAGE} type list, so one
+		// ResourceID indexes both Textures[] and RWTextures[] in the shader.
 		static FBindingLayoutItem Image_Mutable(uint32 Slot, uint16 Size = 0)
 		{
 			FBindingLayoutItem Result;
@@ -1792,9 +1771,8 @@ namespace Lumina
 		FRHIGraphicsPipeline* Pipeline = nullptr;
 		FRenderPassDesc RenderPass = {};
 		FViewportState ViewportState;
-		// Inline capacities sized for typical passes so the by-value copy in SetGraphicsState
-		// stays on the stack instead of heap-allocating every frame (passes routinely bind
-		// 2-4 sets and read/write several resources; inline 1 overflowed on every call).
+		// Inline capacities sized for typical passes (2-4 sets) so the by-value copy in
+		// SetGraphicsState stays on the stack instead of heap-allocating every frame.
 		TFixedVector<FRHIBindingSet*, 4> Bindings;
 		TFixedVector<FBufferAccess, 4> BufferAccesses;
 		TFixedVector<FImageAccess, 4> ImageAccesses;
@@ -1872,9 +1850,6 @@ namespace Lumina
 		NODISCARD virtual const FGraphicsPipelineDesc& GetDesc() const = 0;
 		
 	};
-
-	
-	//-------------------------------------------------------------------------------------------------------------------
 
 
 	struct RUNTIME_API FComputePipelineDesc

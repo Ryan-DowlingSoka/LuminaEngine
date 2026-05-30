@@ -58,9 +58,79 @@ namespace Lumina::NavMeshBuilder
             return Grid;
         }
 
+        // Per-tile triangle index buckets. Rasterizing the full input per tile is O(tiles * tris) and
+        // grinds to a halt once terrain / large meshes are in the volume; binning makes each tile O(its tris).
+        struct FTileBins
+        {
+            TVector<uint32> Offsets;     // size TileCount + 1; tile t owns [Offsets[t], Offsets[t+1])
+            TVector<int32>  TriIndices;  // flattened global triangle indices
+        };
+
+        // A triangle belongs to a tile if its XZ AABB (grown by BorderSize, matching BakeTile's expanded
+        // bmin/bmax) overlaps the tile's world rect.
+        void TriTileRange(const FNavBuildInput& In, const FTileGrid& Grid, int32 Tri, int32& TX0, int32& TY0, int32& TX1, int32& TY1)
+        {
+            const FVector3& A = In.Vertices[In.Indices[Tri * 3 + 0]];
+            const FVector3& B = In.Vertices[In.Indices[Tri * 3 + 1]];
+            const FVector3& C = In.Vertices[In.Indices[Tri * 3 + 2]];
+            const float MinX = std::min(A.x, std::min(B.x, C.x)) - Grid.BorderSize;
+            const float MaxX = std::max(A.x, std::max(B.x, C.x)) + Grid.BorderSize;
+            const float MinZ = std::min(A.z, std::min(B.z, C.z)) - Grid.BorderSize;
+            const float MaxZ = std::max(A.z, std::max(B.z, C.z)) + Grid.BorderSize;
+            TX0 = std::clamp((int32)std::floor((MinX - Grid.Origin.x) / Grid.TileWorldSize), 0, Grid.TilesX - 1);
+            TX1 = std::clamp((int32)std::floor((MaxX - Grid.Origin.x) / Grid.TileWorldSize), 0, Grid.TilesX - 1);
+            TY0 = std::clamp((int32)std::floor((MinZ - Grid.Origin.z) / Grid.TileWorldSize), 0, Grid.TilesY - 1);
+            TY1 = std::clamp((int32)std::floor((MaxZ - Grid.Origin.z) / Grid.TileWorldSize), 0, Grid.TilesY - 1);
+        }
+
+        void BuildTileBins(const FNavBuildInput& In, const FTileGrid& Grid, FTileBins& Out)
+        {
+            const int32 TileCount = Grid.TilesX * Grid.TilesY;
+            const int32 NumTris   = (int32)(In.Indices.size() / 3);
+            Out.Offsets.assign((size_t)TileCount + 1, 0u);
+            if (NumTris == 0 || In.Vertices.empty())
+            {
+                return;
+            }
+
+            // Counting sort: tally per tile, prefix-sum into offsets, then scatter.
+            for (int32 t = 0; t < NumTris; ++t)
+            {
+                int32 TX0, TY0, TX1, TY1;
+                TriTileRange(In, Grid, t, TX0, TY0, TX1, TY1);
+                for (int32 ty = TY0; ty <= TY1; ++ty)
+                {
+                    for (int32 tx = TX0; tx <= TX1; ++tx)
+                    {
+                        ++Out.Offsets[(size_t)(ty * Grid.TilesX + tx) + 1];
+                    }
+                }
+            }
+            for (int32 i = 0; i < TileCount; ++i)
+            {
+                Out.Offsets[i + 1] += Out.Offsets[i];
+            }
+
+            Out.TriIndices.resize(Out.Offsets[TileCount]);
+            TVector<uint32> Cursor(Out.Offsets.begin(), Out.Offsets.begin() + TileCount);
+            for (int32 t = 0; t < NumTris; ++t)
+            {
+                int32 TX0, TY0, TX1, TY1;
+                TriTileRange(In, Grid, t, TX0, TY0, TX1, TY1);
+                for (int32 ty = TY0; ty <= TY1; ++ty)
+                {
+                    for (int32 tx = TX0; tx <= TX1; ++tx)
+                    {
+                        Out.TriIndices[Cursor[(size_t)(ty * Grid.TilesX + tx)]++] = t;
+                    }
+                }
+            }
+        }
+
 #if defined(LUMINA_HAS_RECAST)
-        // Pure over (Input, Grid, X, Y); safe to call concurrently.
-        bool BakeTile(const FNavBuildInput& In, const FTileGrid& Grid, int32 TX, int32 TY, FNavTileData& Out)
+        // Pure over (Input, Grid, X, Y, tri-subset); safe to call concurrently. TileTriIndices/NumTileTris
+        // are the global triangle indices overlapping this tile (from FTileBins).
+        bool BakeTile(const FNavBuildInput& In, const FTileGrid& Grid, int32 TX, int32 TY, const int32* TileTriIndices, int32 NumTileTris, FNavTileData& Out)
         {
             const FNavBuildSettings& S = In.Settings;
             Out.X = TX;
@@ -109,28 +179,42 @@ namespace Lumina::NavMeshBuilder
                 return false;
             }
 
-            const int32 NumTris = (int32)(In.Indices.size() / 3);
-            TVector<uint8> TriAreas(NumTris, 0);
-
-            // rcRasterizeTriangles clips against bmin/bmax internally, so no manual tile cull needed.
-            const float* Verts = reinterpret_cast<const float*>(In.Vertices.data());
-            const int32  NumVerts = (int32)In.Vertices.size();
-            const int*   Tris  = reinterpret_cast<const int*>(In.Indices.data());
-
-            rcMarkWalkableTriangles(&Ctx, Cfg.walkableSlopeAngle, Verts, NumVerts, Tris, NumTris, TriAreas.data());
-
-            if (!In.Areas.empty() && (int32)In.Areas.size() == NumTris)
+            // Empty tile is valid (no overlapping geometry); skip straight to a clear blob.
+            if (NumTileTris == 0)
             {
-                for (int32 i = 0; i < NumTris; ++i)
+                rcFreeHeightField(Solid);
+                return true;
+            }
+
+            const float* Verts    = reinterpret_cast<const float*>(In.Vertices.data());
+            const int32  NumVerts  = (int32)In.Vertices.size();
+            const int32  GlobalTris = (int32)(In.Indices.size() / 3);
+
+            // Gather just this tile's triangles into a local index list (rcRasterizeonly walks these).
+            TVector<int>   Tris;     Tris.resize((size_t)NumTileTris * 3);
+            TVector<uint8> TriAreas(NumTileTris, 0);
+            for (int32 i = 0; i < NumTileTris; ++i)
+            {
+                const int32 t = TileTriIndices[i];
+                Tris[i * 3 + 0] = (int)In.Indices[t * 3 + 0];
+                Tris[i * 3 + 1] = (int)In.Indices[t * 3 + 1];
+                Tris[i * 3 + 2] = (int)In.Indices[t * 3 + 2];
+            }
+
+            rcMarkWalkableTriangles(&Ctx, Cfg.walkableSlopeAngle, Verts, NumVerts, Tris.data(), NumTileTris, TriAreas.data());
+
+            if (!In.Areas.empty() && (int32)In.Areas.size() == GlobalTris)
+            {
+                for (int32 i = 0; i < NumTileTris; ++i)
                 {
                     if (TriAreas[i] != 0) // keep unwalkable
                     {
-                        TriAreas[i] = In.Areas[i];
+                        TriAreas[i] = In.Areas[TileTriIndices[i]];
                     }
                 }
             }
 
-            if (!rcRasterizeTriangles(&Ctx, Verts, NumVerts, Tris, TriAreas.data(), NumTris, *Solid, Cfg.walkableClimb))
+            if (!rcRasterizeTriangles(&Ctx, Verts, NumVerts, Tris.data(), TriAreas.data(), NumTileTris, *Solid, Cfg.walkableClimb))
             {
                 rcFreeHeightField(Solid);
                 return false;
@@ -277,12 +361,37 @@ namespace Lumina::NavMeshBuilder
         const FTileGrid Grid = ComputeGrid(Input);
         const uint32 TileCount = (uint32)(Grid.TilesX * Grid.TilesY);
 
+        // Hard cap: a huge tile count is one Recast pipeline per tile and reads as "stuck". Abort with a
+        // clear message (the drain turns the empty output into a Failed state) instead of grinding for minutes.
+        constexpr uint32 kMaxTiles = 8192;
+        if (TileCount > kMaxTiles)
+        {
+            LOG_ERROR("NavMesh bake aborted: {} tiles ({}x{}) exceeds the {}-tile cap for TileWorldSize={:.1f}. "
+                      "The bake volume is too large — raise Settings.CellSize or TileSizeVoxels, or shrink the bounds / entity scale.",
+                      TileCount, Grid.TilesX, Grid.TilesY, kMaxTiles, Grid.TileWorldSize);
+            Handle.Output.Tiles.clear();
+            Handle.TilesScheduled = 0;
+            Handle.bDone.store(true, std::memory_order_release);
+            return;
+        }
+
+        if (TileCount > 2048)
+        {
+            LOG_WARN("NavMesh bake scheduling {} tiles ({}x{}); large for TileWorldSize={:.1f}. Raise "
+                     "Settings.CellSize/TileSizeVoxels or shrink the bounds if the bake is slow.",
+                     TileCount, Grid.TilesX, Grid.TilesY, Grid.TileWorldSize);
+        }
+
         Handle.Output.Origin = Grid.Origin;
         Handle.Output.TileWorldSize = Grid.TileWorldSize;
         Handle.Output.MaxTiles = (int32)TileCount;
         Handle.Output.MaxPolysPerTile = 1 << 14;
         Handle.Output.Tiles.resize(TileCount);
         Handle.TilesScheduled = TileCount;
+
+        // Bin triangles per tile once so each tile bakes only its overlapping geometry.
+        FTileBins Bins;
+        BuildTileBins(Input, Grid, Bins);
 
         // Aggregate per-tile failures into one log line.
         std::atomic<uint32> FailCount{ 0 };
@@ -299,7 +408,10 @@ namespace Lumina::NavMeshBuilder
             const int32 TY = (int32)(Index / (uint32)Grid.TilesX);
 
 #if defined(LUMINA_HAS_RECAST)
-            if (!BakeTile(Input, Grid, TX, TY, Handle.Output.Tiles[Index]))
+            const uint32 Begin = Bins.Offsets[Index];
+            const uint32 End   = Bins.Offsets[Index + 1];
+            const int32* TileTris = (End > Begin) ? &Bins.TriIndices[Begin] : nullptr;
+            if (!BakeTile(Input, Grid, TX, TY, TileTris, (int32)(End - Begin), Handle.Output.Tiles[Index]))
             {
                 FailCount.fetch_add(1, std::memory_order_relaxed);
             }
@@ -351,7 +463,21 @@ namespace Lumina::NavMeshBuilder
         Grid.BorderSize = (float)BorderVoxels * Input.Settings.CellSize;
         Grid.TilesX = std::max(1, (int32)std::ceil((Input.BoundsMax.x - Input.BoundsMin.x) / Grid.TileWorldSize));
         Grid.TilesY = std::max(1, (int32)std::ceil((Input.BoundsMax.z - Input.BoundsMin.z) / Grid.TileWorldSize));
-        return BakeTile(Input, Grid, TX, TY, Out);
+
+        // Single tile: cull the input to just this tile's overlapping triangles.
+        const int32 NumTris = (int32)(Input.Indices.size() / 3);
+        TVector<int32> TileTris;
+        TileTris.reserve(64);
+        for (int32 t = 0; t < NumTris; ++t)
+        {
+            int32 tx0, ty0, tx1, ty1;
+            TriTileRange(Input, Grid, t, tx0, ty0, tx1, ty1);
+            if (TX >= tx0 && TX <= tx1 && TY >= ty0 && TY <= ty1)
+            {
+                TileTris.push_back(t);
+            }
+        }
+        return BakeTile(Input, Grid, TX, TY, TileTris.empty() ? nullptr : TileTris.data(), (int32)TileTris.size(), Out);
     }
 #else
     bool BakeSingleTile(const FNavBuildInput&, const FNavBuildOutput&, int32, int32, FNavTileData&)

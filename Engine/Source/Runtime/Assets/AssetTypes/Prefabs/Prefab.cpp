@@ -12,6 +12,7 @@
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/World.h"
+#include "World/WorldManager.h"
 
 namespace Lumina
 {
@@ -29,9 +30,7 @@ namespace Lumina
             return false;
         }
 
-        // Runtime-only / spawn-tagging components a refresh diff must never touch when
-        // deciding "instance has X, prefab doesn't, therefore remove X". These live on
-        // the instance for legitimate runtime reasons and would re-spawn next frame.
+        // Runtime-only / spawn-tagging components a refresh diff must never remove; they'd re-spawn next frame.
         bool IsRuntimeOnlyComponent(entt::id_type ID)
         {
             if (ID == entt::type_hash<SPrefabInstanceComponent>::value()) return true;
@@ -46,17 +45,15 @@ namespace Lumina
             return FName(FGuid::New().ToShortString());
         }
 
-        // CopyRegistry extra-skip used when capturing out of a live world: a captured nested
-        // instance's tracking component must not leak into the new prefab (it gets fresh
-        // SPrefabComponent tags instead).
+        // CopyRegistry extra-skip when capturing from a live world: nested instance tracking must not
+        // leak into the new prefab (it gets fresh SPrefabComponent tags instead).
         bool ShouldSkipInstanceComponent(entt::id_type ID)
         {
             return ID == entt::type_hash<SPrefabInstanceComponent>::value();
         }
 
-        // Tag the spawn root and every descendant so the transform system reconciles their
-        // world matrices this frame. Without this, freshly spawned entities can render at
-        // stale world positions for one frame.
+        // Tag root + descendants so the transform system reconciles world matrices this frame,
+        // else freshly spawned entities render at a stale position for one frame.
         void MarkSubtreeTransformsDirty(entt::registry& Registry, entt::entity Root)
         {
             if (!Registry.valid(Root))
@@ -133,10 +130,8 @@ namespace Lumina
             }
         }
 
-        // Rigid bodies own a runtime Jolt BodyID; carrying it to a copy makes the physics scene
-        // think the body already exists (TryBuildRigidBodyCreationSettings -> AlreadyExists) and
-        // skip creation. Re-emplace with an invalid id so on_construct builds a fresh body - same
-        // contract as CWorld::DuplicateEntity.
+        // Re-emplace rigid bodies with an invalid Jolt BodyID so on_construct builds a fresh body;
+        // copying the live id makes the physics scene skip creation (AlreadyExists).
         for (auto& [SrcE, DestE] : OutMap)
         {
             if (const SRigidBodyComponent* SrcBody = Source.try_get<SRigidBodyComponent>(SrcE))
@@ -189,9 +184,8 @@ namespace Lumina
 
         entt::registry& WorldRegistry = TargetWorld->GetEntityRegistry();
 
-        // Collect every parentless entity so we can pick a canonical root and rescue stragglers.
-        // A well-formed prefab has exactly one; multi-root prefabs are a data error (or an
-        // editor regression), but we handle them rather than silently orphaning entities.
+        // Collect parentless entities to pick a canonical root; multi-root is a data error but
+        // handled (extras reparented) rather than silently orphaned.
         TVector<entt::entity> PrefabRoots;
         PrefabRoots.reserve(2);
         Registry.view<entt::entity>().each([&](entt::entity E)
@@ -293,7 +287,7 @@ namespace Lumina
             return;
         }
 
-        // ---- 1. Index instance entities by StableID ------------------------
+        // Index instance entities by StableID.
         THashMap<FName, entt::entity> InstanceByStableID;
         InstanceByStableID[RootInstance->StableID] = InstanceRoot;
         ECS::Utils::ForEachDescendant(WorldRegistry, InstanceRoot, [&](entt::entity Descendant)
@@ -307,7 +301,7 @@ namespace Lumina
             }
         });
 
-        // ---- 2. Index prefab entities by StableID -------------------------
+        // Index prefab entities by StableID.
         THashMap<FName, entt::entity> PrefabByStableID;
         Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
         {
@@ -317,8 +311,7 @@ namespace Lumina
             }
         });
 
-        // ---- 3. Destroy instance entities whose prefab counterpart is gone ----
-        // Don't touch the root: the user placed it, and the prefab can be empty mid-edit.
+        // Destroy instance entities whose prefab counterpart is gone (never the user-placed root).
         TVector<entt::entity> ToDestroy;
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
@@ -345,7 +338,7 @@ namespace Lumina
             }
         }
 
-        // ---- 4. Spawn instance entities for new prefab entries -------------
+        // Spawn instance entities for new prefab entries.
         for (auto& [StableID, PrefabE] : PrefabByStableID)
         {
             if (InstanceByStableID.find(StableID) != InstanceByStableID.end())
@@ -361,7 +354,7 @@ namespace Lumina
             Inst.bIsRoot      = false;
         }
 
-        // ---- 5. Prefab-entity -> instance-entity remap table (for entity-handle fields) ----
+        // Prefab-entity -> instance-entity remap table (for entity-handle fields).
         THashMap<entt::entity, entt::entity> PrefabToInstance;
         for (auto& [StableID, PrefabE] : PrefabByStableID)
         {
@@ -372,7 +365,7 @@ namespace Lumina
             }
         }
 
-        // ---- 6. Copy/replace components from prefab -> instance, then prune removed ones ---
+        // Copy/replace components prefab -> instance, then prune ones the prefab dropped.
         Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
         {
             auto It = InstanceByStableID.find(PrefabComp.StableID);
@@ -384,8 +377,7 @@ namespace Lumina
             entt::entity WorldE = It->second;
             const bool bIsRoot = (WorldE == InstanceRoot);
 
-            // Track which storages the prefab has for this entity so we can remove ones
-            // the instance still carries that the prefab dropped.
+            // Track the prefab's storages for this entity so we can drop ones the prefab no longer has.
             THashSet<entt::id_type> PrefabComponentIDs;
             PrefabComponentIDs.reserve(8);
 
@@ -413,8 +405,7 @@ namespace Lumina
                     entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
             }
 
-            // Remove components present on the instance that the prefab no longer ships.
-            // Skip non-replicated, runtime-only, and the instance-tracking component itself.
+            // Remove components on the instance the prefab no longer ships (skip non-replicated/runtime-only).
             TVector<entt::id_type> ToRemoveStorages;
             for (auto&& [ID, WorldStorage] : WorldRegistry.storage())
             {
@@ -438,7 +429,7 @@ namespace Lumina
             ECS::Utils::RemapEntityReferences(WorldRegistry, WorldE, PrefabToInstance, /*bClearUnmapped*/ true);
         });
 
-        // ---- 7. Re-stamp instance tracking components and rebuild hierarchy ---
+        // Re-stamp instance tracking components and rebuild hierarchy.
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
             const bool bIsRoot = (WorldE == InstanceRoot);
@@ -448,8 +439,7 @@ namespace Lumina
             Inst.bIsRoot = bIsRoot;
         }
 
-        // Hierarchy: mirror the prefab's parent chain onto the instance, but never reparent
-        // the placed root (its parent is wherever the user dropped it in the world).
+        // Mirror the prefab's parent chain onto the instance; never reparent the placed root.
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
             if (WorldE == InstanceRoot) continue;
@@ -516,6 +506,41 @@ namespace Lumina
         }
     }
 
+    void CPrefab::RefreshInstancesInLoadedWorlds()
+    {
+        if (GWorldManager == nullptr)
+        {
+            return;
+        }
+
+        // Every registered world (editor level, PIE, etc.). Worlds with no instance of this prefab
+        // simply do no work; the prefab editor's own preview world holds SPrefabComponent (not instances).
+        for (const TUniquePtr<FWorldContext>& Context : GWorldManager->GetContexts())
+        {
+            CWorld* World = Context ? Context->World.Get() : nullptr;
+            if (World == nullptr)
+            {
+                continue;
+            }
+
+            entt::registry& WorldRegistry = World->GetEntityRegistry();
+
+            TVector<entt::entity> Roots;
+            WorldRegistry.view<SPrefabInstanceComponent>().each([&](entt::entity E, const SPrefabInstanceComponent& Inst)
+            {
+                if (Inst.bIsRoot && Inst.SourcePrefab.Get() == this)
+                {
+                    Roots.push_back(E);
+                }
+            });
+
+            for (entt::entity Root : Roots)
+            {
+                RefreshInstance(World, Root);
+            }
+        }
+    }
+
     bool CPrefab::DetachInstance(CWorld* World, entt::entity InstanceRoot)
     {
         if (World == nullptr)
@@ -535,9 +560,8 @@ namespace Lumina
             return false;
         }
 
-        // Strip the tracking component from the root + every descendant tagged for the same
-        // source prefab. After this the subtree is just plain entities; world load will no
-        // longer try to refresh them against the source asset.
+        // Strip the tracking component from root + descendants tagged for this prefab, leaving
+        // plain entities; world load no longer refreshes them against the source asset.
         TVector<entt::entity> ToStrip;
         ToStrip.reserve(16);
         ToStrip.push_back(InstanceRoot);
@@ -577,15 +601,14 @@ namespace Lumina
             EntitiesToCapture.push_back(E);
         });
 
-        // Copy the captured subtree straight into a fresh registry. CopyRegistry remaps the
-        // hierarchy (the root's parent and any escaping siblings fall to null) and entity-handle
-        // fields, and skips nested instances' tracking components.
+        // Copy the captured subtree into a fresh registry; CopyRegistry remaps hierarchy +
+        // entity-handle fields (escaping refs fall to null) and skips nested instance tracking.
         Registry = entt::registry{};
         THashMap<entt::entity, entt::entity> Map;
         CopyRegistry(WorldRegistry, Registry, Map, &EntitiesToCapture, &ShouldSkipInstanceComponent);
 
-        // Tag every captured entity with a stable id (reused from an existing instance tag when
-        // present) so RefreshInstance can later match prefab entities to their placed counterparts.
+        // Tag each captured entity with a stable id (reusing an existing instance tag when present)
+        // so RefreshInstance can match prefab entities to their placed counterparts.
         for (entt::entity SrcE : EntitiesToCapture)
         {
             auto It = Map.find(SrcE);

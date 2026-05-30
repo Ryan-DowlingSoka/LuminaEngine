@@ -17,16 +17,8 @@ namespace Lumina
         Update,     // Runs every frame on live particles; applies forces / over-life curves.
     };
 
-    /**
-     * A single behavior in an emitter's stack (Niagara-style "module"). A module exposes typed
-     * inputs as reflected PROPERTY()s (rendered inline in the stack's property panel) and emits
-     * HLSL into the Spawn or Update function of the generated compute shader. Modules read and
-     * write particle attributes on P directly (P.Position, P.Velocity, P.Color, ...) and may use
-     * the emitter uniforms in SimParams and the helper library in ParticleSimulateTemplate.slang.
-     *
-     * Modules are an editor-time authoring concept: they are serialized into the asset's package
-     * but the runtime only consumes the compiled shader, never the modules themselves.
-     */
+    // One behavior in an emitter stack (Niagara-style): typed PROPERTY() inputs + emitted HLSL into the Spawn/Update compute, reading/writing P.* attributes and SimParams.
+    // Editor-time authoring concept: serialized into the asset, but the runtime only consumes the compiled shader.
     REFLECT()
     class CParticleModule : public CObject
     {

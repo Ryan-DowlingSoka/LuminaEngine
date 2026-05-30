@@ -183,10 +183,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Simulation")
         bool bLooping = true;
 
-        // The behavior fields below are now authored as modules in the particle editor's stack and
-        // are baked into the generated compute shader. They remain as serialized data (non-editable)
-        // so the legacy uniform-driven ParticleSimulate.slang still works for assets that have not
-        // been compiled to a module stack yet. Do not surface them in the editor.
+        // Below: legacy uniform-driven fields kept (non-editable) for assets not yet compiled to a
+        // module stack; superseded by editor modules baked into the compute shader. Don't surface in editor.
         PROPERTY()
         EParticleShaderMode ShaderMode = EParticleShaderMode::Default;
 
@@ -266,13 +264,8 @@ namespace Lumina
         FRHIComputeShaderRef ComputeShader;
     };
 
-    /**
-     * Render-thread-owned GPU + simulation state for one emitter instance. Lives in the
-     * render scene's per-entity map (FForwardRenderScene::ParticleGPUStates), NOT on the
-     * component, so the render thread never dereferences a component the game thread may
-     * have destroyed. Only ever touched by the render thread (the persistent sim fields --
-     * age, accumulators, seed -- advance once per frame in ParticleSimulatePass).
-     */
+    /** Render-thread-only GPU + sim state per emitter; lives in FForwardRenderScene::ParticleGPUStates,
+     *  NOT on the component, so the render thread never touches a component the game thread may have destroyed. */
     struct FParticleGPUState
     {
         FRHIBufferRef   ParticleBuffer;      // RW structured buffer of FGPUParticle (64B stride)
@@ -287,9 +280,8 @@ namespace Lumina
         bool            bBurstPending       = true;
         FVector3        PrevEmitterPosition = FVector3(0.0f);
         bool            bHasPrevPosition    = false;
-        // CPU-side estimate of remaining simulated time before all particles are guaranteed
-        // dead. Bumped to MaxLifetime on every frame that spawns; decremented otherwise.
-        // When it hits 0 with no spawn this frame, the simulate dispatch is skipped.
+        // Estimated time until all particles are dead; bumped on spawn, decremented otherwise.
+        // At 0 with no spawn, the simulate dispatch is skipped.
         float           AliveTimeRemaining  = 0.0f;
     };
 

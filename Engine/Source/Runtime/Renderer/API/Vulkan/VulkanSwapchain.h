@@ -27,9 +27,8 @@ namespace Lumina
         FVulkanSwapchain& operator=(FVulkanSwapchain&&) = delete;
         
         
-        // Window is a raw GLFWwindow* so secondary ImGui viewport windows (which
-        // aren't FWindows) can drive their own swapchain. bPrimary gates the
-        // GRenderManager->SwapchainResized broadcast to the one real swapchain.
+        // Window is raw GLFWwindow* so secondary ImGui viewports (not FWindows) drive their own swapchain.
+        // bPrimary gates the GRenderManager->SwapchainResized broadcast to the one real swapchain.
         void CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, FUIntVector2 Extent, bool bFromResize = false, bool bPrimary = true);
 
         void RecreateSwapchain(const FUIntVector2& Extent);
@@ -70,9 +69,8 @@ namespace Lumina
         TVector<TRefCountPtr<FVulkanImage>>     SwapchainImages;
         TVector<VkSemaphore>                    PresentSemaphores;
         TVector<VkSemaphore>                    AcquireSemaphores;
-        // Fixed node-pool FIFO: holds at most FRAMES_IN_FLIGHT queries (drained in
-        // WaitForFramePace before Present pushes), so it never touches the heap.
-        // Was a deque-backed TQueue whose push/pop churned subarrays every frame.
+        // Fixed node-pool FIFO holding at most FRAMES_IN_FLIGHT queries (drained in WaitForFramePace
+        // before Present pushes), so it never touches the heap.
         TFixedList<FRHIEventQueryRef, FRAMES_IN_FLIGHT + 1>  FramesInFlight;
         TFixedVector<FRHIEventQueryRef, 4>      QueryPool;
         

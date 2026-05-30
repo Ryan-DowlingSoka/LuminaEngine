@@ -6,24 +6,8 @@
 
 namespace Lumina
 {
-    /**
-     * A decoupled event bus for entity communication in Lua scripts.
-     *
-     * Entities dispatch named events with an optional table payload; any script that
-     * subscribed to that name receives a callback.  Subscriptions can be either global
-     * (persist until manually removed) or entity-scoped (automatically removed when the
-     * entity's SScriptComponent is destroyed).
-     *
-     * Lua API (available as the "Events" global inside every script):
-     *
-     *   Events:Subscribe("OnDoorOpened", function(payload) ... end)
-     *   Events:SubscribeEntity(self.Entity, "OnDoorOpened", function(payload) ... end)
-     *   Events:Unsubscribe("OnDoorOpened", myHandler)
-     *   Events:Dispatch("OnDoorOpened", { Door = self.Entity, Speed = 2.0 })
-     *   Events:DispatchDeferred("OnGameOver", nil) -- fires at start of next frame
-     *   Events:ClearEvent("OnDoorOpened")
-     *   local count = Events:GetSubscriberCount("OnDoorOpened")
-     */
+    // Decoupled entity event bus for Lua: dispatch named events with an optional payload; subscriptions are
+    // global or entity-scoped (auto-removed on script destroy). Exposed as the "Events" global.
     class FLuaEventBus
     {
     public:
@@ -31,34 +15,21 @@ namespace Lumina
         /** Register a global Lua callback for the named event. */
         void Subscribe(FStringView EventName, Lua::FRef Callback);
 
-        /**
-         * Register a Lua callback owned by a specific entity.
-         * The subscription is automatically removed when the entity's script component
-         * is destroyed (via UnsubscribeEntity called from CWorld).
-         */
+        // Register an entity-owned callback; auto-removed when the entity's script component is destroyed.
         void SubscribeEntity(entt::entity Owner, FStringView EventName, Lua::FRef Callback);
 
         /** Remove a specific callback from the named event (global or entity-scoped). */
         void Unsubscribe(FStringView EventName, const Lua::FRef& Callback);
         
-        /**
-         * Immediately invoke all listeners registered for EventName.
-         * Payload may be a Lua table, a primitive, or nil.
-         */
+        // Immediately invoke all listeners for EventName. Payload may be a table, primitive, or nil.
         void Dispatch(FStringView EventName, const Lua::FRef& Payload);
 
-        /**
-         * Like Dispatch, but only invoke listeners whose Owner == Target. Used to deliver
-         * entity-targeted events (e.g. collisions) to the owning script without leaking
-         * to every other subscriber of the same name.
-         */
+        // Like Dispatch but only to listeners whose Owner == Target, so entity-targeted events (e.g. collisions)
+        // reach the owning script without leaking to every other subscriber of the same name.
         void DispatchToEntity(entt::entity Target, FStringView EventName, const Lua::FRef& Payload);
 
-        /**
-         * Queue an event to be dispatched at the beginning of the next frame
-         * (during CWorld::Update FrameStart stage). Safe to call from within a
-         * Dispatch callback without causing re-entrant iteration.
-         */
+        // Queue an event for the start of next frame (FrameStart). Safe to call inside a Dispatch
+        // callback without re-entrant iteration.
         void DispatchDeferred(FStringView EventName, Lua::FRef Payload);
         
         /** Remove all subscriptions (global and entity-scoped) for an event. */
@@ -82,9 +53,8 @@ namespace Lumina
         {
             entt::entity    Owner    = entt::null;
             Lua::FRef       Callback;
-            // Tombstone: set when an Unsubscribe lands while iteration is in flight on
-            // this listener's vector. Skipped during dispatch and reaped when the
-            // outermost dispatch unwinds. Avoids the per-Dispatch full-vector copy.
+            // Tombstone set when Unsubscribe lands mid-iteration; skipped during dispatch and reaped
+            // when the outermost dispatch unwinds. Avoids the per-Dispatch full-vector copy.
             bool            bDead    = false;
         };
 

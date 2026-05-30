@@ -8,13 +8,8 @@
 #include "Memory/SmartPtr.h"
 
 
-// IMPLEMENT_MODULE has two flavors driven by LUMINA_MONOLITHIC (set in
-// Shipping config). Modular builds export `InitializeModule` for the
-// DLL loader to find via GetProcAddress; monolithic builds drop a
-// FStaticModuleRegistration into an intrusive list that FModuleManager
-// drains on first lookup. Anonymous namespace per TU keeps the bookkeeping
-// names from colliding and dodges token-paste (which breaks on
-// namespace-qualified class arguments like Lumina::FFoo).
+// IMPLEMENT_MODULE has two flavors (LUMINA_MONOLITHIC): modular exports InitializeModule for
+// GetProcAddress; monolithic registers an intrusive FStaticModuleRegistration drained on lookup.
 #ifdef LUMINA_MONOLITHIC
 
 #define IMPLEMENT_MODULE(ModuleClass, ModuleName)                                           \
@@ -58,12 +53,8 @@ namespace Lumina
     using ModuleInitFunc = IModuleInterface* (*)();
     using ModuleShutdownFunc = void (*)();
 
-    // File-scope-static helper IMPLEMENT_MODULE emits in monolithic builds.
-    // Self-links into an intrusive list during static init. We deliberately
-    // touch zero runtime state in the ctor -- no FName, no Memory::New, no
-    // FModuleManager::Get() -- because static init order across TUs is
-    // undefined and any one of those would crash if its own statics weren't
-    // up yet. FModuleManager drains the list on first LoadModule call.
+    // Monolithic-build static registration; self-links into an intrusive list during static
+    // init. Ctor touches zero runtime state (static-init order across TUs is undefined).
     struct RUNTIME_API FStaticModuleRegistration
     {
         const char*                       Name;
@@ -72,9 +63,8 @@ namespace Lumina
 
         FStaticModuleRegistration(const char* InName, ModuleInitFunc InFactory);
 
-        // Head of the singly-linked list of pending registrations. Pointer
-        // lives in BSS (zero-init by the loader) so it's valid before any
-        // constructor runs.
+        // Head of the pending-registration list; lives in BSS (zero-init) so it's
+        // valid before any constructor runs.
         static FStaticModuleRegistration* Head;
     };
 
@@ -84,24 +74,18 @@ namespace Lumina
 
         static FModuleManager& Get();
 
-        // Load a module by DLL path. In modular builds this is the
-        // classic LoadLibrary path; in monolithic builds the path's
-        // basename (minus the -<Config> suffix) is looked up in the
-        // static registry first and instantiated via its factory if
-        // found, with no filesystem touch.
+        // Load a module by DLL path; monolithic builds resolve via the static registry
+        // (basename minus -<Config> suffix) with no filesystem touch.
         RUNTIME_API IModuleInterface* LoadModule(FStringView ModulePath);
         RUNTIME_API bool UnloadModule(FStringView ModuleName);
 
         void UnloadAllModules();
 
-        // Called by FStaticModuleRegistration's ctor at file-scope init.
-        // Safe to call before FModuleManager::Get() has otherwise been
-        // touched -- the Meyer's-singleton resolves on first use.
+        // Called by FStaticModuleRegistration's ctor at file-scope init; safe before
+        // FModuleManager::Get() is otherwise touched (Meyer's singleton resolves on first use).
         void AddStaticModuleFactory(const FName& Name, ModuleInitFunc Factory);
 
-        // True if a module with this bare name is statically linked (as
-        // in monolithic Shipping builds). Callers can use this to skip
-        // DLL-existence pre-checks before LoadModule.
+        // True if a module with this bare name is statically linked (monolithic builds).
         bool HasStaticFactory(const FName& Name) const { return FindStaticFactory(Name) != nullptr; }
 
 
@@ -109,8 +93,7 @@ namespace Lumina
 
         FModuleInfo* GetOrCreateModuleInfo(const FName& ModuleName);
 
-        // Lookup helper for the static registry. Returns nullptr if no
-        // module with the bare name (no config suffix) is registered.
+        // Static-registry lookup by bare name (no config suffix); nullptr if not registered.
         ModuleInitFunc FindStaticFactory(const FName& Name) const;
 
 
@@ -118,10 +101,7 @@ namespace Lumina
 
         THashMap<FName, FModuleInfo> ModuleHashMap;
 
-        // Static module factories registered by IMPLEMENT_MODULE in
-        // monolithic builds. Linear list; population is bounded by
-        // the number of modules linked (tens, not thousands), and
-        // lookup happens at most N times during engine bring-up.
+        // Static module factories from IMPLEMENT_MODULE in monolithic builds (linear list).
         TVector<eastl::pair<FName, ModuleInitFunc>> StaticModuleFactories;
     };
 }

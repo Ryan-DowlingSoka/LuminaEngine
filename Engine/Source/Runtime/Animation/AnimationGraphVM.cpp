@@ -343,9 +343,7 @@ namespace Lumina
                 {
                     const float AlphaValue = Alpha < NumScalar ? Scalars[Alpha] : 0.0f;
 
-                    // Look up the resolved per-bone weights. An out-of-range
-                    // mask index falls back to a whole-skeleton blend so the
-                    // bytecode still produces a usable pose.
+                    // Out-of-range mask index falls back to a whole-skeleton blend.
                     if (MaskIdx < Graph->BoneMasks.size())
                     {
                         AnimPose::BlendMasked(State.PoseRegisters[A], State.PoseRegisters[B], AlphaValue, Graph->BoneMasks[MaskIdx].Weights, State.PoseRegisters[Dst]);
@@ -419,10 +417,8 @@ namespace Lumina
                 }
                 else
                 {
-                    // Mid-transition: advance the timer. Transitions out of the
-                    // current target state that opt into bCanInterrupt are
-                    // re-checked every frame, so a higher-priority condition
-                    // can pre-empt the cross-fade in flight.
+                    // Mid-transition: bCanInterrupt transitions are re-checked each frame so a
+                    // higher-priority condition can pre-empt the cross-fade in flight.
                     From   = Math::Clamp(From, 0, NumStates - 1);
                     Timer += DeltaTime;
 

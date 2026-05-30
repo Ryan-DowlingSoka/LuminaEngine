@@ -1,9 +1,8 @@
 #pragma once
 #include "SIMDConfig.h"
 
-// VFloat4: 4-lane f32 SIMD register (__m128, SSE/SSE4.1). Lane order is [0..3]
-// low-to-high. Comparisons return a mask (all-bits-set / zero per lane) of the
-// same type; combine with Select / MoveMask / Any / All.
+// VFloat4: 4-lane f32 SIMD register (__m128, SSE/SSE4.1), lanes [0..3] low-to-high.
+// Comparisons return a per-lane mask; combine with Select/MoveMask/Any/All.
 
 namespace Lumina::SIMD
 {
@@ -36,7 +35,6 @@ namespace Lumina::SIMD
         }
     };
 
-    // ---- Arithmetic ----
     [[nodiscard]] FORCEINLINE VFloat4 operator+(VFloat4 A, VFloat4 B) { return _mm_add_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 operator-(VFloat4 A, VFloat4 B) { return _mm_sub_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 operator*(VFloat4 A, VFloat4 B) { return _mm_mul_ps(A.V, B.V); }
@@ -75,7 +73,6 @@ namespace Lumina::SIMD
     #endif
     }
 
-    // ---- Comparisons (return per-lane masks) ----
     [[nodiscard]] FORCEINLINE VFloat4 CmpEq(VFloat4 A, VFloat4 B) { return _mm_cmpeq_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 CmpNe(VFloat4 A, VFloat4 B) { return _mm_cmpneq_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 CmpLt(VFloat4 A, VFloat4 B) { return _mm_cmplt_ps(A.V, B.V); }
@@ -83,7 +80,6 @@ namespace Lumina::SIMD
     [[nodiscard]] FORCEINLINE VFloat4 CmpGt(VFloat4 A, VFloat4 B) { return _mm_cmpgt_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 CmpGe(VFloat4 A, VFloat4 B) { return _mm_cmpge_ps(A.V, B.V); }
 
-    // ---- Bitwise / blend ----
     [[nodiscard]] FORCEINLINE VFloat4 And(VFloat4 A, VFloat4 B)    { return _mm_and_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 Or(VFloat4 A, VFloat4 B)     { return _mm_or_ps(A.V, B.V); }
     [[nodiscard]] FORCEINLINE VFloat4 Xor(VFloat4 A, VFloat4 B)    { return _mm_xor_ps(A.V, B.V); }
@@ -97,7 +93,6 @@ namespace Lumina::SIMD
     [[nodiscard]] FORCEINLINE bool All(VFloat4 Mask)      { return _mm_movemask_ps(Mask.V) == 0xF; }
     [[nodiscard]] FORCEINLINE bool None(VFloat4 Mask)     { return _mm_movemask_ps(Mask.V) == 0; }
 
-    // ---- Reductions ----
     [[nodiscard]] FORCEINLINE float HorizontalSum(VFloat4 A)
     {
         __m128 Shuf = _mm_movehdup_ps(A.V);     // [1,1,3,3]

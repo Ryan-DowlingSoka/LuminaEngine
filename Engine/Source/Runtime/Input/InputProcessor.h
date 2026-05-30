@@ -8,9 +8,7 @@ namespace Lumina
 {
     class FInputContext;
 
-    // Facade over the active FInputContext. Queries fall through to the
-    // viewport registry's active context, with safe defaults when no
-    // viewport is registered.
+    // Facade over the active FInputContext; falls through to the viewport registry, safe defaults if none.
     class FInputProcessor
     {
     public:

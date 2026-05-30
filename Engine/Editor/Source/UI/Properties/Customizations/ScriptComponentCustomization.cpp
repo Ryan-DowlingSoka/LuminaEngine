@@ -231,10 +231,8 @@ namespace Lumina
             return false;
         }
 
-        // True for a Lua (non-C) function that takes no caller-supplied arguments: either zero
-        // params or a single `self` (the colon-method convention). lua_getinfo "a" yields arity;
-        // C functions report nparams=0/vararg=1 and are rejected so only script-authored routines
-        // surface as editor actions.
+        // True for a Lua (non-C) function taking no caller args: zero params or a lone `self`.
+        // C functions report nparams=0/vararg=1 and are rejected (only script routines qualify).
         bool IsZeroInputLuaFunction(const Lua::FRef& Func)
         {
             if (!Func.IsValid() || !Func.IsInvokable())
@@ -262,9 +260,8 @@ namespace Lumina
             return bResult;
         }
 
-        // A button per zero-input script function; clicking defers the call into OutInvoke so the
-        // script runs after the property draw completes (it may spawn/destroy entities, unsafe
-        // mid-draw). Self is passed to match the colon-method convention used by the lifecycle hooks.
+        // A button per zero-input script function; clicking defers the call into OutInvoke so it
+        // runs after the draw (may spawn/destroy entities). Self passed per the colon convention.
         void DrawCallableFunctionsSection(SScriptComponent& Component, TFunction<void()>& OutInvoke)
         {
             using namespace Lua;
@@ -438,23 +435,19 @@ namespace Lumina
 
                 if (ImGui::BeginChild("##OptList", ComboDropDownSize, false, ImGuiChildFlags_NavFlattened))
                 {
-                    VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& FileInfo)
+                    // Every script across all mounts (project, plugins, engine) — see Lua::GatherScriptPaths.
+                    for (const FFixedString& VirtualPath : Lua::GatherScriptPaths())
                     {
-                        if (!FileInfo.IsLua())
+                        if (!SearchFilter.PassFilter(VirtualPath.c_str()))
                         {
-                            return;
+                            continue;
                         }
-                        
-                        if (!SearchFilter.PassFilter(FileInfo.VirtualPath.c_str()))
-                        {
-                            return;
-                        }
-                        
+
                         FFixedString SelectableLabel;
-                        SelectableLabel.append(LE_ICON_LANGUAGE_LUA).append(" ").append(FileInfo.VirtualPath.c_str());
+                        SelectableLabel.append(LE_ICON_LANGUAGE_LUA).append(" ").append(VirtualPath.c_str());
                         if (ImGui::Selectable(SelectableLabel.c_str()))
                         {
-                            const FString NewPath(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                            const FString NewPath(VirtualPath.c_str(), VirtualPath.size());
                             PendingMutation = [ScriptComponent, NewPath]
                             {
                                 ScriptComponent->ScriptPath.Path = NewPath;
@@ -466,11 +459,11 @@ namespace Lumina
                             ImGui::CloseCurrentPopup();
                             bWasChanged = true;
                         }
-                        
+
                         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                         {
                             FString FileContents;
-                            if (VFS::ReadFile(FileContents, FileInfo.VirtualPath))
+                            if (VFS::ReadFile(FileContents, VirtualPath))
                             {
                                 FString Preview;
                                 int LineCount = 0;
@@ -491,7 +484,7 @@ namespace Lumina
                                 ImGui::EndTooltip();
                             }
                         }
-                    });
+                    }
                 }
                 
                 ImGui::EndChild();

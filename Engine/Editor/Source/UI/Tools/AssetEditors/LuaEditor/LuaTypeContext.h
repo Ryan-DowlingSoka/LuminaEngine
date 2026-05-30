@@ -5,9 +5,8 @@
 
 namespace Lumina
 {
-    // One autocomplete suggestion produced by Luau's typed Autocomplete pass,
-    // mapped into engine types so callers don't need Luau headers. Mirrors
-    // the kinds the editor's existing popup understands (single-char badge).
+    // A typed-autocomplete suggestion mapped into engine types (no Luau headers for callers);
+    // Kind mirrors the single-char badges the editor's popup understands.
     struct FLuaTypedCompletion
     {
         FString Name;
@@ -17,10 +16,8 @@ namespace Lumina
         bool    bDeprecated = false;
     };
 
-    // One type-checker error mapped from Luau::TypeError into engine types.
-    // Type errors are stricter than lint warnings: each one indicates code
-    // the runtime can't safely execute (calling a non-function, wrong arity,
-    // type mismatch, missing field, etc.).
+    // A type-checker error mapped from Luau::TypeError. Stricter than lint warnings: each
+    // marks code the runtime can't safely execute (bad call, wrong arity, type mismatch).
     struct FLuaTypeDiagnostic
     {
         int     Line      = 1; // 1-based start line
@@ -30,14 +27,8 @@ namespace Lumina
         FString Message;       // Human-readable error text from Luau::toString.
     };
 
-    // Owns a one-module Luau::Frontend. Each editor instance has its own
-    // context so type checks don't fight across documents. Cheap to construct;
-    // expensive to first-check (builtin globals get registered then).
-    //
-    // Without engine-specific .d.luau files registered the type checker still
-    // covers stdlib + locals + inferred shapes. Engine globals (Engine, World,
-    // Events, ...) appear as `any` until the user wires reflection-driven type
-    // definitions.
+    // Owns a one-module Luau::Frontend, per editor instance (no cross-document fighting).
+    // Without .d.luau registrations it covers stdlib/locals; engine globals appear as `any`.
     class FLuaTypeContext
     {
     public:
@@ -55,39 +46,20 @@ namespace Lumina
         // module pointer was produced (parseable + at least partial check).
         bool EnsureChecked();
 
-        // Run Luau's typed autocomplete at (Line1, Col1). The cursor uses
-        // Luau's convention: position points just after the partial token.
-        // Returns true iff a check produced any entries (entries may still
-        // be empty - e.g. cursor on whitespace - we report that via the
-        // bool so callers can fall back to the buffer-harvest popup).
+        // Typed autocomplete at (Line1, Col1) (cursor just after the partial token). True if a
+        // check ran; Out may still be empty (e.g. on whitespace) so callers can fall back.
         bool Autocomplete(int Line1, int Col1, TVector<FLuaTypedCompletion>& Out);
 
         // Inferred type at (Line1, Col1). Returns false if no expression
         // covers the position or the type couldn't be resolved.
         bool GetTypeAt(int Line1, int Col1, FString& OutType);
 
-        // Collect type-checker errors from the most recent check. Each entry
-        // points at a span of source the type checker rejected. Fills nothing
-        // if the buffer didn't parse, since type-check is gated on a clean
-        // parse and compile errors flow through OnScriptCompileError.
-        //
-        // Without engine .d.luau registrations, accesses on engine globals
-        // resolve to `any` and don't trigger type errors - the checker only
-        // flags genuine mismatches (calling a non-function, wrong arity on
-        // a typed function, assigning a string to a typed `number`, etc.).
+        // Collect type-checker errors from the last check; empty if the buffer didn't parse
+        // (compile errors flow through OnScriptCompileError). Engine globals are `any`.
         void GetTypeErrors(TVector<FLuaTypeDiagnostic>& Out);
 
-        // Register a name as a global value binding AND a type alias, both
-        // resolving to `any`. Used to teach the typed Frontend about every
-        // engine global the editor harvested from the live Lua VM, so:
-        //   - `local x: SImpulseEvent = ...` doesn't trigger UnknownType
-        //   - Reading `Engine`, `World`, etc. doesn't trigger UnknownGlobal
-        //   - Calls / property access on them resolve to `any` and pass
-        //     type-checking silently.
-        //
-        // Calling with the same name multiple times is a no-op replace.
-        // Marks the module dirty so the next check picks up the new
-        // bindings.
+        // Register a name as both a global value binding and a type alias (both `any`) to teach
+        // the Frontend about harvested engine globals, so they don't trigger Unknown*. Idempotent.
         void RegisterEngineSymbol(FStringView Name);
         void RegisterEngineSymbols(const TVector<FString>& Names);
 

@@ -5,10 +5,8 @@
 
 namespace Lumina
 {
-    // Customization for a uint32 property marked PROPERTY(Entity). Instead of a raw
-    // number field it draws a searchable picker listing the entities in the active world
-    // context (see FScopedEntityPropertyContext), Unreal-actor-reference style. The stored
-    // value is the entity's integral id; an unset reference is entt::null's integral.
+    // PROPERTY(Entity) uint32: a searchable picker over the active world context's entities.
+    // Stored value is the entity's integral id; unset is entt::null's integral.
     class FEntityPropertyCustomization : public IPropertyTypeCustomization
     {
     public:

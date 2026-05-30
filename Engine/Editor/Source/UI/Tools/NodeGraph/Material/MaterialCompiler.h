@@ -94,30 +94,20 @@ namespace Lumina
         // Backwards-compatible single-stage path (pixel shader only).
         FString BuildTree(size_t& StartReplacement, size_t& EndReplacement, EMaterialType MaterialType = EMaterialType::PBR) const;
 
-        // Per-stage build: substitutes $MATERIAL_INPUTS in the pixel template
-        // with the pixel chunks and $MATERIAL_VERTEX_INPUTS in the vertex
-        // template with the vertex chunks (plus a vertex-stage alias preamble
-        // so node-emit code that names WorldPosition / UV0 / etc. is valid).
+        // Per-stage build: substitutes $MATERIAL_INPUTS / $MATERIAL_VERTEX_INPUTS with the pixel / vertex
+        // chunks (plus a vertex-stage alias preamble so node code naming WorldPosition / UV0 / etc. is valid).
         void BuildShaders(FString& OutPixelShader, FString& OutVertexShader, EMaterialType MaterialType = EMaterialType::PBR) const;
 
-        // Substitute $MATERIAL_VERTEX_INPUTS in an arbitrary vertex template
-        // (e.g. MaterialShader/DepthPrePass.slang or
-        // MaterialShader/ShadowMappingVert.slang) with the same vertex chunks
-        // used by the base pass. Used to emit per-material depth/shadow
-        // shaders for WPO-using materials. MaterialType selects the vertex-
-        // stage alias preamble: terrain templates expose WorldPos / HeightUV /
-        // TerrainParams instead of VertexData / Inst.
+        // Substitute $MATERIAL_VERTEX_INPUTS in a depth/shadow vertex template with the base-pass vertex
+        // chunks (per-material depth/shadow shaders for WPO materials). MaterialType picks the alias preamble.
         FString BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType = EMaterialType::PBR) const;
 
         // True when the graph fed any chunks into the vertex stage. Equivalent
         // to "WorldPositionOffset pin had a connection."
         bool UsesVertexStage() const { return !VertexChunks.empty() || !VertexOutputChunks.empty(); }
 
-        // Stage routing: every node-emit op writes into the chunk corresponding
-        // to the current stage. CompileGraph flips this around the two-root
-        // walk so nodes reachable from WPO emit into vertex chunks and nodes
-        // reachable from pixel pins emit into pixel chunks. Shared nodes get
-        // visited twice, once per stage.
+        // Stage routing: each node-emit op writes the current stage's chunk. CompileGraph flips this around
+        // the two-root walk (WPO->vertex, pixel pins->pixel); shared nodes are visited once per stage.
         void SetStage(EMaterialShaderStage InStage) { CurrentStage = InStage; }
         EMaterialShaderStage GetStage() const { return CurrentStage; }
         FString& GetActiveChunk() { return CurrentStage == EMaterialShaderStage::Vertex ? VertexChunks : PixelChunks; }
@@ -127,18 +117,12 @@ namespace Lumina
         void AddPixelOutput(const FString& Raw) { PixelOutputChunks.append(Raw); }
         void AddVertexOutput(const FString& Raw) { VertexOutputChunks.append(Raw); }
 
-        // Stage gate for pixel-only nodes (ScreenPosition, FragmentDepth,
-        // CustomPrimitiveData, VertexTangent, VertexBitangent). Returns true
-        // when emission may proceed; on a vertex-stage call it pushes an
-        // error pointing at Node and returns false. Call at the top of the
-        // node's GenerateDefinition.
+        // Stage gate for pixel-only nodes (ScreenPosition, FragmentDepth, ...). Returns true when emission
+        // may proceed; on a vertex-stage call pushes an error at Node and returns false. Call first in GenerateDefinition.
         bool RequirePixelStage(CMaterialGraphNode* Node, const FString& NodeKindName);
 
-        // UI materials run as a fullscreen brush pass with no surface geometry,
-        // camera, scene depth, or vertex attributes. Returns true (and records a
-        // graph error on Node) when the calling input node is unavailable in the
-        // UI domain; the caller then emits a neutral default so the shader still
-        // compiles. Mirrors the SceneColor/Terrain domain checks.
+        // UI materials are a fullscreen brush pass with no geometry/camera/depth/vertex attributes. Returns
+        // true (and errors on Node) when the input node is unavailable in the UI domain; caller emits a default.
         bool RejectInUI(CMaterialGraphNode* Node, const char* NodeName);
 
         // Parameter definitions
@@ -330,17 +314,14 @@ namespace Lumina
         // material-function call node can declare its argument/result locals.
         static FString GetHLSLTypeName(EMaterialInputType Type);
 
-        // --- Material function inlining ---
-        // A function's inlined nodes get their variable names prefixed so repeated and nested calls
-        // never collide. The host graph compiles with an empty prefix; a function-call node pushes a
-        // per-call prefix (composed with the current one, so nesting accumulates) around its emission.
+        // Inlined function nodes get variable-name prefixes so repeated/nested calls never collide;
+        // a call node pushes a per-call prefix (composed with the current one, so nesting accumulates).
         void PushInlinePrefix(const FString& Prefix) { InlinePrefixStack.push_back(Prefix); }
         void PopInlinePrefix() { if (!InlinePrefixStack.empty()) { InlinePrefixStack.pop_back(); } }
         const FString& GetCurrentInlinePrefix() const;
 
-        // Recursion guard. BeginInlineFunction returns false when Function is already being inlined
-        // higher on the stack (a direct or transitive self-call); the caller then emits an error and
-        // bails instead of inlining forever. Always pair a true result with EndInlineFunction.
+        // Recursion guard: returns false when Function is already inlined higher on the stack (self-call);
+        // caller emits an error and bails. Pair a true result with EndInlineFunction.
         bool BeginInlineFunction(CMaterialFunction* Function);
         void EndInlineFunction(CMaterialFunction* Function);
 
@@ -365,10 +346,8 @@ namespace Lumina
         FString PixelChunks;
         FString VertexChunks;
 
-        // Output-node assignments (one declaration block + per-attribute
-        // writes). Kept separate so they always land at the *end* of the
-        // substituted block regardless of topo order, and so the output node
-        // can target each stage explicitly without driving the cursor.
+        // Output-node assignments, kept separate so they always land at the end of the substituted block
+        // regardless of topo order and the output node can target each stage without driving the cursor.
         FString PixelOutputChunks;
         FString VertexOutputChunks;
 

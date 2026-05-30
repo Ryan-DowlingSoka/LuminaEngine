@@ -1268,10 +1268,8 @@ namespace Lumina
 		GetActiveChunk().append("float " + ID + " = float(uSceneData.ScreenSize.x) / max(float(uSceneData.ScreenSize.y), 1.0);\n");
 	}
 
-	// SceneColor is only valid in PostProcess materials -- it samples the
-	// pass-input render target bound at set 2, binding 0. Other domains have
-	// no such binding, so emit a graph error rather than producing a shader
-	// that fails to link.
+	// SceneColor is only valid in PostProcess materials (samples the pass-input RT at set 2, binding 0);
+	// other domains have no such binding, so emit a graph error rather than a shader that fails to link.
 	void FMaterialCompiler::SceneColor(const FString& ID, CMaterialInput* UV)
 	{
 		if (CurrentMaterialType != EMaterialType::PostProcess)

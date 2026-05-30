@@ -4,29 +4,19 @@
 
 namespace Lumina
 {
-    /**
-     * Tone-mapping operator applied at the end of color grading, in linear HDR.
-     *   None      -- pure clamp (diagnostic / display-ready scenes).
-     *   ACES      -- Narkowicz ACES Film fit; saturated, hue-shifts reds.
-     *   AGX       -- Sobotka AGX (bwrensch fit); neutral, well-behaved highlights.
-     *   AGXPunchy -- AGX with extra slope/sat; closer to graded film print.
-     *   AGXGolden -- AGX biased warm; sunset/candlelit starting point.
-     */
+    // Tone-mapping operator applied after color grading, in linear HDR.
     REFLECT()
     enum class EToneMapper : uint8
     {
-        None        = 0,
-        ACES        = 1,
-        AGX         = 2,
-        AGXPunchy   = 3,
-        AGXGolden   = 4,
+        None        = 0,    // pure clamp (diagnostic / display-ready)
+        ACES        = 1,    // Narkowicz ACES Film fit; saturated, hue-shifts reds
+        AGX         = 2,    // Sobotka AGX (bwrensch fit); neutral highlights
+        AGXPunchy   = 3,    // AGX with extra slope/sat; graded-print look
+        AGXGolden   = 4,    // AGX biased warm; sunset/candlelit
     };
 
-    /**
-     * Per-camera color grading + tone mapping. Grading runs in linear HDR before
-     * the tone mapper; vignette is applied in display space after. Defaults
-     * produce an identity grade with AGX.
-     */
+    // Per-camera color grading + tone mapping. Grading is linear HDR before the tone mapper; vignette is
+    // display-space after. Defaults to an identity grade with AGX.
     REFLECT()
     struct RUNTIME_API SPostProcessSettings
     {
@@ -154,10 +144,7 @@ namespace Lumina
         float FilmGrainResponse = 0.6f;
     };
 
-    /**
-     * Blend In onto InOut by Weight. ToneMapper snaps when Weight >= 0.5.
-     * bEnabled is left untouched (per-source switch, not blendable).
-     */
+    // Blend In onto InOut by Weight; ToneMapper snaps at Weight >= 0.5. bEnabled untouched (not blendable).
     inline void BlendPostProcessSettings(SPostProcessSettings& InOut, const SPostProcessSettings& In, float Weight)
     {
         if (Weight <= 0.0f || !In.bEnabled)

@@ -1,23 +1,8 @@
---[[
-    Lumina Engine Setup Action
-    Replaces the old Python setup pipeline. Invoked as: premake5 setup [--force]
-
-    Responsibilities:
-        1. Download the External dependency archive from a remote URL
-        2. Extract it into the repository root
-        3. Configure git hooks
-        4. Persist LUMINA_DIR for tooling that runs outside the build (Reflector, etc.)
-
-    The orchestrating Setup.bat runs this action and then `premake5 vs2022`.
---]]
+-- Setup action (premake5 setup [--force]): downloads/extracts the External dependency archive, configures git hooks, and persists LUMINA_DIR. Run by Setup.bat before `premake5 vs2022`.
 
 local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 
-
--- ============================================================================
--- Configuration
--- ============================================================================
 
 local DEPENDENCY_URL =
     "https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&st=pw81jqsw&dl=0"
@@ -27,20 +12,12 @@ local DEPENDENCY_MARKER_DIR = "External"  -- skip download if this exists
 local GIT_HOOKS_PATH        = "BuildScripts/Hooks"
 
 
--- ============================================================================
--- Options
--- ============================================================================
-
-newoption 
+newoption
 {
     trigger     = "force",
     description = "Force re-download even if External/ already exists",
 }
 
-
--- ============================================================================
--- Helpers
--- ============================================================================
 
 local function NormalizeDropboxUrl(url)
     if url:find("dropbox%.com") and url:find("dl=0") then
@@ -167,10 +144,6 @@ local function ConfigureGitHooks()
     return false
 end
 
-
--- ============================================================================
--- Action
--- ============================================================================
 
 newaction {
     trigger     = "setup",

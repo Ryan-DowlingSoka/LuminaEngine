@@ -1,21 +1,5 @@
---[[
-    Lumina Workspace Settings
-
-    The single canonical set of workspace-scoped build settings: configurations,
-    platforms, preprocessor defines, warning suppressions and per-config/per-
-    system filters. Both the engine workspace (root premake5.lua) and external
-    game workspaces (BuildScripts/GameProject) call LuminaWorkspaceSettings()
-    so engine headers and third-party headers compile with IDENTICAL
-    preprocessor state everywhere. Anything that affects ABI (e.g. the LUA_*TAG
-    limits, RMLUI_STATIC_LIB, NOMINMAX) must live here and nowhere else.
-
-        LuminaWorkspaceSettings({
-            Name         = "Lumina",
-            StartProject = "Lumina",
-            TargetDir    = LuminaConfig.GetTargetDirectory(),
-            ObjDir       = LuminaConfig.GetObjDirectory(),
-        })
-]]
+-- Canonical workspace-scoped build settings; engine and game workspaces both call LuminaWorkspaceSettings() for identical preprocessor state.
+-- ABI-affecting defines (LUA_*TAG limits, RMLUI_STATIC_LIB, NOMINMAX) must live here and nowhere else.
 
 assert(LuminaConfig, "Workspace.lua must be included after BuildScripts/Dependencies")
 
@@ -32,24 +16,14 @@ function LuminaWorkspaceSettings(Opts)
         enableunitybuild "Off"
         fastuptodate "On"
         multiprocessorcompile "On"
-        -- AVX (not AVX2): the compiler may emit these instructions anywhere,
-        -- including pre-main static initializers, with no CPU-feature gate. AVX2
-        -- would #UD-crash on launch on any CPU without it (pre-Haswell Intel, all
-        -- Atom/Celeron/Pentium through ~2016, AMD pre-Zen). AVX covers everything
-        -- from ~2011. Keep this in sync with the /arch flag and __AVX__ define below,
-        -- and with vectorextensions in GameProject.lua / Module.lua -- Jolt selects
-        -- its SIMD path from the compiler's /arch macro.
+        -- AVX (not AVX2): AVX2 would #UD-crash at launch on pre-Haswell/pre-Zen CPUs. Keep in sync with /arch, __AVX__, and GameProject/Module vectorextensions.
         vectorextensions "AVX"
 
         if Opts.StartProject then
             startproject(Opts.StartProject)
         end
 
-        -- First-listed configuration is the .sln default for fresh opens.
-        -- Engine devs care about Debug for debugging the engine itself, so
-        -- the engine workspace stays Debug-first; game projects override
-        -- with Development-first since the user almost never wants the
-        -- slower Debug build for game iteration.
+        -- First-listed configuration is the .sln default; engine stays Debug-first, game projects override to Development-first.
         configurations(Opts.Configurations or { "Debug", "Development", "Shipping" })
         platforms { "Editor", "Game" }
         defaultplatform "Editor"
@@ -81,9 +55,7 @@ function LuminaWorkspaceSettings(Opts)
             "LUA_UTAG_LIMIT=2000",
             "LUA_LUTAG_LIMIT=2000",
 
-            -- Tracy, Vulkan validation and NVIDIA Aftermath defines are NOT
-            -- listed here; they are applied per-configuration further down,
-            -- driven by LuminaOptions (BuildConfig.lua + CLI flags).
+            -- Tracy/Validation/Aftermath defines are applied per-config below via LuminaOptions, not here.
 
             'LUMINA_SYSTEM_NAME=\"%{LuminaConfig.GetSystem()}\"',
             'LUMINA_ARCH_NAME=\"%{LuminaConfig.GetArchitecture()}\"',
@@ -141,9 +113,7 @@ function LuminaWorkspaceSettings(Opts)
             incrementallink "On"
             optimize "Off"
             symbols "On"
-            -- /Z7 embeds debug info in the .obj, avoiding mspdbsrv serialization
-            -- during /MP compile. Pairs with /DEBUG:FASTLINK so the linker just
-            -- references the .objs instead of merging everything into a PDB.
+            -- /Z7 embeds debug info in the .obj (no mspdbsrv serialization under /MP); pairs with /DEBUG:FASTLINK.
             debugformat "c7"
             editandcontinue "Off"
             runtime "Debug"
@@ -180,36 +150,22 @@ function LuminaWorkspaceSettings(Opts)
             -- /Gy: function-level COMDATs so /OPT:REF can strip unused functions
             -- at function (not object-file) granularity.
             buildoptions { "/Gy" }
-            -- LUMINA_MONOLITHIC strips dllexport/dllimport from API macros
-            -- and switches IMPLEMENT_MODULE to register into a static
-            -- table instead of exporting an InitializeModule entry. Paired
-            -- with the SharedLib -> StaticLib flip in Module.lua/Plugin.lua.
+            -- LUMINA_MONOLITHIC strips API dllexport/import and makes IMPLEMENT_MODULE register into a static table; pairs with the SharedLib->StaticLib flip.
             defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING", "LUMINA_MONOLITHIC" }
             removedefines { "JPH_DEBUG_RENDERER" }
 
-        -- /OPT:REF drops unreferenced code/data; /OPT:ICF folds identical COMDATs.
-        -- Both default on under LTCG+non-incremental, but make it explicit. Scoped
-        -- off StaticLib so lib.exe doesn't warn LNK4044 on the linker-only flags.
+        -- /OPT:REF drops unreferenced code/data, /OPT:ICF folds identical COMDATs; scoped off StaticLib to avoid lib.exe LNK4044.
         filter { "configurations:Shipping", "kind:not StaticLib" }
             linkoptions { "/OPT:REF", "/OPT:ICF" }
 
         filter {}
 
-        -- ====================================================================
-        -- Optional-feature defines (driven by LuminaOptions; see BuildConfig.lua)
-        --
-        -- Each feature is added only in the configurations where it is active,
-        -- so a "Tracy off" or non-Shipping-only feature simply never sees its
-        -- defines. The matching links / DLL copies are handled in Module.lua
-        -- and Options.LinkAftermath.
-        -- ====================================================================
+        -- Optional-feature defines, added only in configs where each is active (see BuildConfig.lua); links/DLL copies handled in Module.lua and Options.LinkAftermath.
         ApplyLuminaFeatureDefines()
 end
 
 
--- Apply the preprocessor defines for each optional feature in exactly the
--- configurations LuminaOptions marks active. Kept as a free function so the
--- workspace body above stays readable.
+-- Apply each optional feature's defines in exactly the configs LuminaOptions marks active.
 function ApplyLuminaFeatureDefines()
     local function Feature(name, defs)
         local fstr = LuminaOptions.FilterFor(name)

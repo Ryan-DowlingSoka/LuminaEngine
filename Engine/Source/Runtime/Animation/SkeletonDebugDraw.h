@@ -10,15 +10,7 @@ namespace Lumina
     class IPrimitiveDrawInterface;
     struct FSkeletonResource;
 
-    /**
-     * Stateless skeleton visualization helpers.
-     *
-     * These are deliberately free functions (no objects, no per-mesh state): any code
-     * with a draw interface and a skeleton can draw bones, and any tool with a world can
-     * draw every skeletal mesh in it. The editor base tool wires them up so the same
-     * visualization appears in the world editor, animation editor, anim-graph editor,
-     * skeleton/mesh editors, etc. -- nothing per-tool to maintain.
-     */
+    // Stateless skeleton visualization free functions; shared by every tool with a draw interface + skeleton.
     namespace SkeletonDebugDraw
     {
         // Plain options bag; pass by value/const-ref. No behavior, just knobs.
@@ -46,11 +38,8 @@ namespace Lumina
             FVector3 WorldPosition;
         };
 
-        /**
-         * Resolve model-space global transforms for every bone. When BoneTransforms holds
-         * a live pose (one skinning matrix per bone), recovers Global = Skinning * inverse(InvBind);
-         * otherwise falls back to the skeleton's bind pose via forward kinematics.
-         */
+        // Model-space global transform per bone: from a live pose recovers Global = Skinning * inverse(InvBind),
+        // else falls back to the bind pose via FK.
         RUNTIME_API void ComputeGlobalBoneTransforms(const FSkeletonResource* Skeleton,
                                                      const TVector<FMatrix4>& BoneTransforms,
                                                      TVector<FMatrix4>& OutGlobals);

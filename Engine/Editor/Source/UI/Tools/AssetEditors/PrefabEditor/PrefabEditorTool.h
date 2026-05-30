@@ -4,7 +4,7 @@
 #include <imgui.h>
 #include "ImGuizmo.h"
 #include "Tools/UI/ImGui/Widgets/TreeListView.h"
-#include "UI/Tools/AssetEditors/AssetEditorTool.h"
+#include "UI/Tools/FSceneEditorTool.h"
 #include "Containers/Array.h"
 
 
@@ -14,16 +14,13 @@ namespace Lumina
     class CStaticMesh;
     class CStruct;
 
-    class FPrefabEditorTool : public FAssetEditorTool
+    class FPrefabEditorTool : public FSceneEditorTool
     {
+        using Super = FSceneEditorTool;
+
     public:
 
         LUMINA_EDITOR_TOOL(FPrefabEditorTool)
-
-        struct FEntityListViewItemData
-        {
-            entt::entity Entity = entt::null;
-        };
 
         FPrefabEditorTool(IEditorToolContext* Context, CObject* InAsset);
 
@@ -32,21 +29,21 @@ namespace Lumina
         void OnInitialize() override;
         void SetupWorldForTool() override;
         void Update(const FUpdateContext& UpdateContext) override;
-        void EndFrame() override;
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
-        void OnAssetLoadFinished() override;
+        void OnSceneLoaded() override;
+        void CommitScene() override;
         void OnSave() override;
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
         void DrawHelpMenu() override;
         void DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize) override;
-        void DrawViewportToolbar(const FUpdateContext& UpdateContext) override;
+        // Viewport overlay toolbar is shared (FSceneEditorTool); the prefab only supplies its config section.
+        const char* GetGizmoConfigSection() const override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
         bool ShouldGenerateThumbnailOnSave() const override { return true; }
 
         bool bShowAABB = false;
 
-        ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;
-        ImGuizmo::MODE      GuizmoMode = ImGuizmo::WORLD;
+        // GuizmoOp/GuizmoMode + snap state now live in FSceneEditorTool.
         entt::entity DirectionalLightEntity = entt::null;
 
     protected:
@@ -55,41 +52,36 @@ namespace Lumina
 
     private:
 
-        void DrawOutliner(bool bFocused);
-        void DrawEntityProperties(bool bFocused);
-        void DrawAddEntityButton();
-        void DrawAddComponentButton(entt::entity Entity);
-        void DrawAddPrimitiveMenu(entt::entity Entity);
-        void DrawComponentList(entt::entity Entity);
-        void DrawComponentHeader(const TUniquePtr<FPropertyTable>& Table, entt::entity Entity, CStruct* StructType);
-        void DrawEmptyState();
-        void RebuildPropertyTables(entt::entity Entity);
+        // The Scene Graph panel + shared Add menu live in FSceneEditorTool; the prefab supplies the
+        // empty-area asset drop (spawns under the root) and the prefab-instantiation hook.
+        void HandleOutlinerEmptyAreaDrop() override;
 
-        void RebuildOutlinerTree(FTreeListView& Tree);
+        // The details panel is shared (FSceneEditorTool::DrawDetailsPanel); the prefab only guards
+        // root deletion and hides its internal SPrefabComponent.
+        bool CanDeleteEntity(entt::entity Entity) const override;
+        bool IsComponentHiddenInDetails(const CStruct* Type) const override;
+
+        // Restrict the shared outliner to prefab-owned entities (hides preview lights/floor/camera).
+        bool IsOutlinerEntityVisible(entt::entity Entity) const override;
+
         void HandleOutlinerDragDrop(FTreeListView& Tree, entt::entity DropItem);
-        void HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget);
+        void HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget) override;
 
-        entt::entity CreateEntityAtRoot(const char* DisplayName = "NewEntity");
-        entt::entity CreatePrimitiveEntityAtRoot(CStaticMesh* PrimitiveMesh, const char* DisplayName);
+        // Base CreateEntity*/component-add path; the prefab supplies these hooks: tag new entities
+        // with SPrefabComponent + parent them under the root, and spawn at identity (not the camera).
+        void OnEntityCreatedInScene(entt::entity Entity) override;
+        FTransform GetNewEntitySpawnTransform() const override;
+
         void RequestDestroyEntity(entt::entity Entity);
         void ProcessDestroyRequests();
-        void RemoveComponent(entt::entity Entity, CStruct* StructType);
         void ResetSelectionTransform();
 
         // Hierarchy / multi-select shortcuts.
         entt::entity DuplicatePrefabEntity(entt::entity Source);
         void ProcessClipboardShortcuts();
 
-        // Selection — multi-select via FSelectedInEditorComponent / FLastSelectedTag, mirrored
-        // by SelectedEntities. Mirrors WorldEditor's selection model so the same shortcuts work.
-        void SetSingleSelectedEntity(entt::entity Entity);
-        void AddSelectedEntity(entt::entity Entity, bool bRebuild);
-        void RemoveSelectedEntity(entt::entity Entity);
-        void ToggleSelectedEntity(entt::entity Entity);
-        void ClearSelectedEntities();
-        void ResyncSelectionFromRegistry();
-        entt::entity GetLastSelectedEntity() const;
-        bool IsEntitySelected(entt::entity Entity) const { return SelectedEntities.find(Entity) != SelectedEntities.end(); }
+        // Selection model (SetSingleSelectedEntity/Add/Remove/Toggle/Clear/Resync, the cached
+        // SelectedEntities + LastSelectedEntity) now lives in FSceneEditorTool.
 
         // View / camera helpers.
         void FrameAllEntities();
@@ -108,40 +100,16 @@ namespace Lumina
 
     private:
 
-        TVector<TUniquePtr<FPropertyTable>> ComponentPropertyTables;
-        TVector<CStruct*>                   ComponentStructs;
-        entt::entity                        CachedPropertyEntity = entt::null;
-        bool                                bPropertyTablesDirty = false;
-
-        FTreeListView                       OutlinerListView;
-        FTreeListViewContext                OutlinerContext;
-        TQueue<entt::entity>                EntityDestroyRequests;
-
-        // Multi-selection mirror; canonical state lives on the registry as FSelectedInEditorComponent.
-        THashSet<entt::entity>              SelectedEntities;
-
-        // Outliner search filter; mirrors world editor's pattern.
-        ImGuiTextFilter                     OutlinerNameFilter;
-
-        // Add-component popup filter; persists across opens.
-        ImGuiTextFilter                     AddComponentFilter;
-
-        bool                                bImGuizmoUsedOnce = false;
-
-        // Gizmo snap settings, persisted to the editor config so they stick across sessions.
-        bool                                bGuizmoSnapEnabled = true;
-        float                               GuizmoSnapTranslate = 0.1f;
-        float                               GuizmoSnapRotate = 5.0f;
-        float                               GuizmoSnapScale = 0.1f;
-
-        // Component visualizers — toggleable like the world editor; defaults on for prefab authoring.
-        bool                                bShowComponentVisualizers = true;
+        // Component property tables + the Scene Graph panel/engine (OutlinerListView/OutlinerContext/
+        // EntityToTreeNode/EntityFilterState), EntityDestroyRequests, and AddComponentFilter now live
+        // in FSceneEditorTool.
 
         // Track when a prefab-owning entity is destroyed mid-frame so we can mark the package
         // dirty exactly once even when several entities go down in the same batch.
         bool                                bPendingDirtyOnDestroy = false;
 
-        static constexpr const char* OutlinerWindowName = "PrefabOutliner";
-        static constexpr const char* PropertiesWindowName = "PrefabProperties";
+        // Match the world editor's window names so both editors read the same.
+        static constexpr const char* OutlinerWindowName = "Scene Graph";
+        static constexpr const char* PropertiesWindowName = "Details";
     };
 }

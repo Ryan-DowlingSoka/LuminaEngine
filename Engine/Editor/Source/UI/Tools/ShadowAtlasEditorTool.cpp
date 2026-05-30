@@ -122,9 +122,8 @@ namespace Lumina
         ImGui::Text("Tiles allocated: %u   Utilization: %.1f%% (%llu / %llu px)",
             (uint32)Tiles.size(), UsedPct, (unsigned long long)UsedPixels, (unsigned long long)AtlasPixels);
 
-        // Per-size-bucket histogram. Counts only power-of-two buckets that
-        // the allocator can produce; keeps the UI compact even if MaxTile
-        // is cranked up later.
+        // Per-size-bucket histogram; counts only power-of-two buckets the allocator
+        // can produce, keeping the UI compact even if MaxTile grows later.
         ImGui::Spacing();
         if (ImGui::BeginTable("##SizeHistogram", 3,
                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))

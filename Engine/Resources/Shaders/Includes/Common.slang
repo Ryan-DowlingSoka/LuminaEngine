@@ -1,8 +1,5 @@
 #pragma once
 
-// ---------------------------------------------------------------------------------
-//  Constants
-
 static const float PHI    = 1.618033988749895;
 static const float PI     = 3.1415926535897932384626433832795;
 static const float TWO_PI = 6.28318530718;
@@ -31,16 +28,8 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define NUM_CASCADES    3
 #define MAX_CULL_VIEWS  128
 
-// Bits inside FCullView.Flags. Controls which culling stages run for the view.
-//   Frustum:        plane cull against FrustumPlanes[6].
-//   ConeCull:       meshlet backface cone test using ViewOrigin or SunDirection.
-//   Occlusion:      Hi-Z occlusion test (camera view only).
-//   Distance:       drop instances outside FCullData.ShadowMaxDistance.
-//   CastShadowOnly: skip instances without EInstanceFlags::CastShadow.
-//   SunAligned:     cone cull uses SunDirection from FLightData (CSM views).
-//   PhaseLate:      view is emitted in the late-phase pass (re-tests the
-//                   last-frame HZB-occluded defer list against the rebuilt
-//                   current-frame HZB). Shadow/camera-early views skip this.
+// Bits inside FCullView.Flags, gating which culling stages run for the view.
+// PhaseLate views re-test last-frame's HZB-occluded defer list against the rebuilt HZB.
 #define CULL_VIEW_FLAG_FRUSTUM          BIT(0)
 #define CULL_VIEW_FLAG_CONE             BIT(1)
 #define CULL_VIEW_FLAG_OCCLUSION        BIT(2)
@@ -49,10 +38,8 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define CULL_VIEW_FLAG_SUN_ALIGNED      BIT(5)
 #define CULL_VIEW_FLAG_PHASE_LATE       BIT(6)
 
-// Phase push-constant values for CullMeshlets.slang. Phase 0 walks every
-// instance/meshlet pair and either emits surviving camera meshlets or
-// defers HZB-occluded ones. Phase 1 walks only the defer list and re-tests
-// it against the freshly-built HZB.
+// CullMeshlets phase: 0 walks all instance/meshlet pairs (emit or defer occluded);
+// 1 walks only the defer list and re-tests against the freshly-built HZB.
 #define CULL_PHASE_EARLY 0u
 #define CULL_PHASE_LATE  1u
 
@@ -62,10 +49,8 @@ static const int SSAO_KERNEL_SIZE = 32;
 
 #define BIT(X) (1u << (X))
 
-// Bit flags packed into FLight::Flags. Mirror of ELightFlags in
-// SceneRenderTypes.h -- keep the values in lockstep. Type bits are
-// mutually exclusive in practice but kept as bits (not a sequential
-// enum) so feature flags like CastShadow / Volumetric can OR in.
+// Mirror of ELightFlags in SceneRenderTypes.h -- keep values in lockstep.
+// Type bits stay as bits (not a sequential enum) so feature flags can OR in.
 enum ELightFlags
 {
     None        = 0,
@@ -90,9 +75,6 @@ enum EInstanceFlags
     Masked          = BIT(7),
 }
 
-// ---------------------------------------------------------------------------------
-//  Structs
-
 // Mirror of Lumina::FMeshletVertex. Position: 10-10-10 q (see UnpackMeshletPosition).
 // Tangent: 15-15 octahedral + 1-bit handedness (see UnpackTangent).
 struct FVertex
@@ -115,11 +97,9 @@ struct FSkinnedVertex
     uint    JointWeights;
 };
 
-// Mirror of Lumina::FPreSkinnedVertex. Written by Skinning.slang, read by every draw VS.
-// Holds the COMPLETE vertex (UV/Color carried through unchanged) so the draw VS reads only
-// this buffer -- never the source skinned vertex. Position is full-precision (skinning breaks
-// meshlet quantization); normal/tangent reuse the source octahedral packing. All-scalar so the
-// structured-buffer stride is a tight 28 B.
+// Mirror of Lumina::FPreSkinnedVertex. Written by Skinning.slang, read by every draw VS as the
+// only vertex source. Position is full-precision (skinning breaks meshlet quantization); all-scalar
+// for a tight 28 B stride.
 struct FPreSkinnedVertex
 {
     float   Px;
@@ -259,10 +239,8 @@ struct FMeshletBounds
     float  _Pad0;
 };
 
-// Mirror of Lumina::FMeshletHeaderGPU. MeshOrigin/MeshGridStep are per-LOD; select by
-// FMeshlet::LODIndex via GetMeshOrigin/GetMeshGridStep. The per-LOD grids are flattened into
-// explicit fields rather than arrays: Slang asserts internally laying out an array member inside
-// a buffer-pointer (BDA) struct. Byte layout matches Lumina::FMeshletHeaderGPU's vec4[6] pair.
+// Mirror of Lumina::FMeshletHeaderGPU. Per-LOD grids flattened to explicit fields (not arrays):
+// Slang asserts laying out an array member inside a buffer-pointer (BDA) struct. Select via GetMeshOrigin/Step.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
@@ -430,11 +408,8 @@ struct FWidgetInstance
 
 static const uint WIDGET_FLAG_BILLBOARD = 1u;
 
-// Hot per-light data. Sized to a single 64B cache line so the lighting loop
-// can stream lights with one L2 miss per light instead of reading through the
-// old 640B struct (which wasted ~90% of each fetched cache line on data only
-// used by the shadow passes). ShadowDataIndex points into the cold
-// FLightShadowData[] table, or INDEX_NONE if this light has no shadow.
+// Hot per-light data, sized to a single 64B cache line for one L2 miss per light in the
+// lighting loop. ShadowDataIndex points into the cold FLightShadowData[] table, or INDEX_NONE.
 struct FLight
 {
     float3 Position;
@@ -450,17 +425,13 @@ struct FLight
     uint   Flags;
     int    ShadowDataIndex;
 
-    // Per-light scattering strength. Only meaningful when Flags has
-    // ELightFlags::Volumetric; the volumetric pass scales each step's
-    // scattering by this value.
+    // Per-light scattering strength; only meaningful when Flags has ELightFlags::Volumetric.
     float  VolumetricIntensity;
     uint   _Pad0;
 };
 
-// Cold shadow data. Only fetched by the shadow rendering passes and by the
-// lit pixel shader *after* we know a light actually has a shadow
-// (`ShadowDataIndex != INDEX_NONE`), so it stays out of the hot loop's cache
-// footprint. One entry per shadow-casting light, capped at MAX_SHADOWS.
+// Cold shadow data, fetched only after a light is known to cast a shadow, so it stays out
+// of the hot loop's cache footprint. One entry per shadow-casting light, capped at MAX_SHADOWS.
 struct FLightShadowData
 {
     float4x4     ViewProjection[6];
@@ -475,9 +446,7 @@ struct FLightData
     uint   bHasSun;
     float4 CascadeSplits;
     float4 CascadeRadii;
-    // Per-cascade atlas resolution (pixels per side). With progressive
-    // cascade packing each cascade has a different texel size, so the
-    // pixel shader can't fall back to a single GCSM_RESOLUTION constant.
+    // Per-cascade atlas resolution (pixels per side); progressive packing gives each a different texel size.
     float4 CascadeResolutions;
     // Directional shadow tuning (mirror FSceneLightData::ShadowParams).
     // x = normal-bias scale, y = constant depth bias, z = PCSS softness, w = cascade blend fraction.
@@ -568,18 +537,8 @@ struct FSceneGlobalData
     FCullData     CullData;
 };
 
-// ---------------------------------------------------------------------------------
-//  Functions
-
-// Octahedral 16-16 unit-normal decode (Slang lacks unpackSnorm2x16).
-//
-// Branchless wrap follows Cigolle et al, "A Survey of Efficient
-// Representations for Independent Unit Vectors" (2014). The old outer
-// `if (n.z < 0.0)` diverged any warp that straddled a hemisphere boundary
-// -- common on every curved surface -- forcing the wave to serialize. The
-// closed form `n.xy -= signNotZero(n.xy) * max(-n.z, 0)` produces the same
-// result without control flow; when n.z >= 0 the offset is zero, when
-// n.z < 0 it's algebraically equal to the original mirror.
+// Octahedral 16-16 unit-normal decode (Slang lacks unpackSnorm2x16). Branchless wrap follows
+// Cigolle et al, "A Survey of Efficient Representations for Independent Unit Vectors" (2014).
 float3 UnpackNormal(uint Packed)
 {
     // BFE folds to a single sign-extending bitfield op per channel rather

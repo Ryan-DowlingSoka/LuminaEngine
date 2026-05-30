@@ -72,25 +72,17 @@ namespace Lumina
         PROPERTY(Editable, Category = "Particle System")
         bool bBurstOnSpawn = true;
 
-        /**
-         * Per-instance overrides for user parameters declared on the asset. Only entries that
-         * diverge from the asset default need to live here; reads fall back to the asset.
-         */
+        // Per-instance overrides for asset-declared parameters; only diverging entries live here, reads
+        // fall back to the asset.
         PROPERTY()
         TVector<FParticleParameter> ParameterOverrides;
 
-        /**
-         * Game-thread activation intents consumed by Extract and applied to the render-owned
-         * sim state (FForwardRenderScene::ParticleGPUStates). Not serialized; transient.
-         * bForceBurst re-arms the burst; bForceReset additionally clears live particles.
-         */
+        // Game-thread activation intents consumed by Extract into ParticleGPUStates; transient. bForceBurst
+        // re-arms the burst; bForceReset also clears live particles.
         bool bForceBurst = false;
         bool bForceReset = false;
 
-        /**
-         * Turn the emitter on. When bReset is true, any currently-alive particles are cleared
-         * on the next simulate tick and the burst fires again.
-         */
+        // Turn the emitter on. bReset clears live particles on the next tick and re-fires the burst.
         FUNCTION(Script)
         void Activate(bool bReset = false)
         {
@@ -102,10 +94,7 @@ namespace Lumina
             }
         }
 
-        /**
-         * Stop emitting new particles. Existing particles keep simulating until they expire
-         * naturally, so smoke trails fade out instead of popping.
-         */
+        // Stop emitting; existing particles keep simulating until they expire, so trails fade instead of popping.
         FUNCTION(Script)
         void Deactivate() { bEmit = false; }
 
@@ -172,10 +161,8 @@ namespace Lumina
         /** Resolve a parameter by name, preferring component overrides over the asset's default. */
         const FParticleParameter* FindParameter(const FName& Name) const;
 
-        /**
-         * Get-or-create the override entry for the given name and type. If the asset declares
-         * the parameter with a different type, that's a programmer error and we return nullptr.
-         */
+        // Get-or-create the override entry for (Name, type). Returns nullptr if the asset declares the
+        // parameter with a different type (programmer error).
         FParticleParameter* GetOrCreateOverride(FName Name, EParticleParameterType ExpectedType);
         //~ End User Parameters
     };

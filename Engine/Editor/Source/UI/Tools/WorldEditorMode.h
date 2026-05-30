@@ -2,17 +2,15 @@
 
 #define USE_IMGUI_API
 #include <imgui.h>
+#include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 
 namespace Lumina
 {
     class CWorld;
     struct SCameraComponent;
 
-    /**
-     * Host-provided services a mode can call into. Lets a mode wrap an interaction
-     * (e.g. a terrain sculpt stroke) in the editor's undo transaction without taking
-     * a hard dependency on the concrete tool class.
-     */
+    // Host services a mode can call into: wrap an interaction in the editor's undo
+    // transaction without depending on the concrete tool class.
     class IEditorModeContext
     {
     public:
@@ -25,25 +23,20 @@ namespace Lumina
         virtual void EndModeTransaction(const char* Name) = 0;
     };
 
-    /**
-     * Mutually-exclusive viewport input mode for the world editor.
-     *
-     * Exactly one mode is active at a time. The host (FWorldEditorTool) routes
-     * per-frame Tick, viewport overlay, and toolbar drawing to the active mode
-     * and suppresses its own click-to-select, drag-marquee, and transform
-     * gizmo handling when ConsumesViewportInput() is true. This is the seam
-     * for future modes (foliage, painting, splines, etc.) — they only need to
-     * implement this interface and register themselves on the tool.
-     */
+    // Mutually-exclusive viewport input mode. Host routes Tick/overlay/toolbar to the
+    // active mode and suppresses its own input when ConsumesViewportInput() is true.
     class IWorldEditorMode
     {
     public:
         virtual ~IWorldEditorMode() = default;
 
-        /** Short label shown on the mode-selector button. */
+        /** Short label shown on the mode-selector dropdown. */
         virtual const char* GetDisplayName() const = 0;
 
-        /** Optional hover tooltip shown on the mode-selector button. */
+        /** Glyph shown beside the label in the mode-selector dropdown. */
+        virtual const char* GetIcon() const { return LE_ICON_CURSOR_DEFAULT; }
+
+        /** Optional hover tooltip shown on the mode-selector dropdown. */
         virtual const char* GetTooltip() const { return nullptr; }
 
         /** Called once when the user switches into this mode. */
@@ -78,10 +71,8 @@ namespace Lumina
             (void)World; (void)ButtonSize;
         }
 
-        /** When true, the host suppresses its built-in click-to-select, drag-marquee
-         *  and transform-gizmo handling so this mode owns the viewport input fully.
-         *  The default Selection mode returns false; specialized modes (terrain,
-         *  foliage paint, etc.) return true. */
+        /** When true, this mode owns viewport input fully (host suppresses select/marquee/gizmo).
+         *  Selection mode returns false; specialized modes return true. */
         virtual bool ConsumesViewportInput() const { return true; }
 
         /** Host injects itself after construction so modes can reach editor services. */
@@ -92,17 +83,13 @@ namespace Lumina
         IEditorModeContext* Context = nullptr;
     };
 
-    /**
-     * Default mode: standard select / gizmo / drag-marquee interaction handled by
-     * the host. This mode is a placeholder so the mode registry has a stable
-     * "click stuff" entry; all the actual selection logic lives in
-     * FWorldEditorTool because it shares state with the outliner, details
-     * panel, and undo system.
-     */
+    // Default mode: select/gizmo/marquee handled by the host. Placeholder so the registry
+    // has a stable entry; actual selection logic lives in FWorldEditorTool.
     class FSelectionEditorMode final : public IWorldEditorMode
     {
     public:
         const char* GetDisplayName() const override { return "Select"; }
+        const char* GetIcon() const override { return LE_ICON_CURSOR_DEFAULT; }
         const char* GetTooltip() const override
         {
             return "Click to pick entities; drag to marquee-select; use the transform gizmo.";

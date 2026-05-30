@@ -68,9 +68,8 @@ namespace Lumina
         RegisterGraphNode(CAnimGraphNode_Cosine::StaticClass());
         RegisterGraphNode(CAnimGraphNode_Remap::StaticClass());
 
-        // State machine nodes can be placed in any blend-tree graph; the State
-        // node itself is only creatable on the state machine canvas (registered
-        // by CAnimStateMachineGraph).
+        // State machine nodes can be placed in any blend-tree graph; the State node
+        // itself is only creatable on the state machine canvas (CAnimStateMachineGraph).
         RegisterGraphNode(CAnimGraphNode_StateMachine::StaticClass());
 
         // Layered / additive blending: standard AAA building blocks for
@@ -86,9 +85,8 @@ namespace Lumina
 
     void CAnimationGraphNodeGraph::Initialize()
     {
-        // Initialize creates the node-editor context and must run exactly once:
-        // this graph type is re-entered (nested state blend trees), and a repeat
-        // Super::Initialize() would leak a second context.
+        // Must run exactly once: this graph type is re-entered (nested state blend trees), and a repeat
+        // Super::Initialize() would leak a second node-editor context.
         if (bInitialized)
         {
             return;
@@ -175,9 +173,8 @@ namespace Lumina
             return false;
         }
 
-        // SortedNodes is dependency-ordered (inputs before consumers, output
-        // last), so each node's input registers are populated by the time it
-        // emits.
+        // SortedNodes is dependency-ordered (inputs before consumers, output last),
+        // so each node's input registers are populated by the time it emits.
         for (uint32 i = 0; i < (uint32)SortedNodes.size(); ++i)
         {
             CEdGraphNode* Node = SortedNodes[i];
@@ -209,9 +206,8 @@ namespace Lumina
         {
             if (CAnimGraphNode_GetParameter* GetParam = Cast<CAnimGraphNode_GetParameter>(Node))
             {
-                // Register the parameter even if this Get Parameter node isn't
-                // wired anywhere -- otherwise the Parameters panel / Lua bindings
-                // never see the name.
+                // Register even when this node isn't wired anywhere, else the Parameters panel / Lua
+                // bindings never see the name.
                 Compiler.AddParameter(GetParam->ParameterName, EAnimGraphParamType::Float, GetParam->DefaultValue);
             }
             else if (CAnimGraphNode_StateMachine* StateMachine = Cast<CAnimGraphNode_StateMachine>(Node))

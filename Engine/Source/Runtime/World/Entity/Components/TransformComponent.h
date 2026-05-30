@@ -267,9 +267,8 @@ namespace Lumina
 
         void ResolveIfDirty() const
         {
-            // ResolveTransformChain handles the all_of check + locking
-            // itself - we drop the unsynced pre-check here so a stale
-            // read can't fire a chain resolve on already-clean data.
+            // No pre-check: ResolveTransformChain does the all_of check + locking, so a stale read
+            // can't fire a chain resolve on already-clean data.
             if (Registry)
             {
                 ECS::Utils::ResolveTransformChain(*Registry, Entity);

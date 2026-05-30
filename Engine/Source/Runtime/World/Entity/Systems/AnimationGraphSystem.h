@@ -5,11 +5,8 @@
 
 namespace Lumina
 {
-    // Evaluates SAnimationGraphComponent each frame: runs the graph's compiled
-    // bytecode through FAnimationGraphVM and writes the resolved skinning
-    // matrices into the entity's SSkeletalMeshComponent. Runs in PrePhysics so
-    // the pose is ready before rendering, and during Paused so editor-time
-    // scrubbing still resolves.
+    // Evaluates SAnimationGraphComponent each frame (FAnimationGraphVM bytecode into SSkeletalMeshComponent).
+    // Runs in PrePhysics so the pose is ready before rendering, and during Paused for editor scrubbing.
     REFLECT(System)
     struct SAnimationGraphSystem
     {

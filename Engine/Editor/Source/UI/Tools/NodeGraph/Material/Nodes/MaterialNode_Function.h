@@ -10,9 +10,8 @@ namespace Lumina
 {
     class CMaterialInput;
 
-    // Runtime EMaterialValueType and editor EMaterialInputType share Float..Float4 ordering, so the
-    // two conversions are just casts. Texture-typed function I/O is not supported, so a Texture input
-    // type clamps to Float4 on the way back.
+    // EMaterialValueType and EMaterialInputType share Float..Float4 ordering, so conversion is a cast.
+    // Texture-typed function I/O is unsupported, so a Texture input type clamps to Float4 on the way back.
     inline EMaterialInputType ToMaterialInputType(EMaterialValueType Type)
     {
         return static_cast<EMaterialInputType>(Type);
@@ -23,10 +22,8 @@ namespace Lumina
         return (Type == EMaterialInputType::Texture) ? EMaterialValueType::Float4 : static_cast<EMaterialValueType>(Type);
     }
 
-    // Declares one input of the owning material function. Lives only inside a function graph. Its
-    // single output pin feeds the function body; when the function is inlined into a host material the
-    // call node binds this output to the caller's argument, so GenerateDefinition (a constant emit) only
-    // runs in the function editor's standalone validation compile.
+    // Declares one input of the owning material function (function graph only). Its output feeds the body;
+    // on inline the call node binds it to the caller's argument, so GenerateDefinition only runs in validation.
     REFLECT()
     class CMaterialExpression_FunctionInput : public CMaterialExpression
     {
@@ -63,9 +60,8 @@ namespace Lumina
         void DrawNodeTitleBar() override;
     };
 
-    // Declares one output of the owning material function. Lives only inside a function graph; one node
-    // per output. Its single input pin is what the function body drives. The call node reads the
-    // resolved value during inlining, so GenerateDefinition only validates the type in the editor.
+    // Declares one output of the owning material function (one node per output). Its input is what the body
+    // drives; the call node reads the resolved value on inline, so GenerateDefinition only validates the type.
     REFLECT()
     class CMaterialFunctionOutput : public CMaterialGraphNode
     {
@@ -98,9 +94,8 @@ namespace Lumina
         CMaterialInput* Input = nullptr;
     };
 
-    // Calls a material function: a placeholder node in a host material (or another function) graph that,
-    // at compile time, inlines the referenced function's body with this call's argument pins bound to
-    // the function's inputs and the function's outputs exposed as this node's output pins.
+    // Calls a material function: at compile time inlines the referenced function's body, binding this node's
+    // argument pins to the function inputs and exposing the function outputs as this node's output pins.
     REFLECT()
     class CMaterialExpression_MaterialFunctionCall : public CMaterialGraphNode
     {

@@ -1,9 +1,5 @@
-// ImGui pixel shader (bindless backend).
-//
-// The texture is sampled straight out of the engine bindless table by the
-// push-constant resource id, so there are no per-texture descriptor sets --
-// the table is bound once for the whole UI. ImGui vertex colours are straight
-// (not premultiplied); final pixel = vertexColour * texel.
+// ImGui pixel shader (bindless backend). Samples the bindless table by push-constant resource id.
+// ImGui vertex colors are straight (not premultiplied); final = vertexColor * texel.
 #pragma once
 #include "Includes/ImGuiCommon.slang"
 

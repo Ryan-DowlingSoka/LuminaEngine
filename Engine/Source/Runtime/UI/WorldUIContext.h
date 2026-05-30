@@ -14,9 +14,7 @@ namespace Lumina
 {
     class FRHIImage;
 
-    // One world-space widget to rasterize this frame. Built on the game thread in
-    // TickWorldWidgets (iterating SWidgetComponent) and consumed on the render thread in
-    // RenderWorldWidgets, so the render thread never touches the live entity registry.
+    // One world-space widget to rasterize this frame; built game-thread in Tick, consumed render-thread in Render.
     // Non-owning: the Rml context + RT live on the SWidgetComponent that outlives the frame.
     struct FWidgetRenderJob
     {
@@ -25,10 +23,8 @@ namespace Lumina
         FUIntVector2    Size{0, 0};
     };
 
-    // Per-world UI state, owned by CWorld (mirrors RenderScene/PhysicsScene ownership).
-    // The RmlUi bridge holds only process-global backend state; this holds the world's
-    // own Rml context and its loaded documents. Created in InitializeWorld, destroyed
-    // in TeardownWorld, so its lifetime tracks the world with no external hooks.
+    // Per-world UI state owned by CWorld: the world's own Rml context + loaded documents (bridge holds only
+    // process-global state). Lifetime tracks the world via Initialize/TeardownWorld.
     struct FWorldUIContext
     {
         Rml::Context*                            Context = nullptr;

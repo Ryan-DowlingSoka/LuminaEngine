@@ -9,17 +9,8 @@ namespace Lumina
 {
     class FPlugin;
 
-    // View + per-project enable/disable for discovered plugins.
-    //
-    // Toggles are pending in-memory until the user clicks "Apply & Restart":
-    // the tool then rewrites the loaded .lproject's "Plugins" array (other
-    // top-level keys are preserved verbatim) and opens a restart-required
-    // modal. Plugin state only takes effect on next engine start because
-    // FModuleManager has no hot-unload — see project_plugin_system.md.
-    //
-    // If no project is loaded the tool is a read-only viewer: per-project
-    // overrides have nowhere to live yet. Engine plugins still show so
-    // the user can see what's available.
+    // View + per-project enable/disable for plugins. "Apply & Restart" rewrites the .lproject
+    // "Plugins" array; takes effect next start (no hot-unload). Read-only with no project loaded.
     class FPluginBrowserEditorTool : public FEditorTool
     {
     public:
@@ -45,8 +36,7 @@ namespace Lumina
         void DrawDetailPanel(FPlugin* Plugin);
         void DrawFooter();
 
-        // Returns the in-memory desired-enabled state for a plugin: if the
-        // user has staged a toggle, that wins; otherwise the plugin's
+        // Desired-enabled state: a staged toggle wins, else the plugin's
         // current state from FPluginManager.
         bool IsEffectivelyEnabled(const FPlugin* Plugin) const;
 
@@ -79,9 +69,8 @@ namespace Lumina
         // "<N> change(s) saved; restart to apply".
         bool     bChangesSavedBanner = false;
 
-        // Create-plugin modal state. Buffers persist across frames while the
-        // modal is open; CreatePluginResult holds the post-create confirmation
-        // (non-empty switches the modal to its "done" view).
+        // Create-plugin modal state. CreatePluginResult holds the post-create
+        // confirmation; non-empty switches the modal to its "done" view.
         char     NewPluginNameBuf[64]  = {};
         char     NewPluginDescBuf[160] = {};
         FString  NewPluginError;

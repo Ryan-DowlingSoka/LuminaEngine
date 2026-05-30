@@ -118,9 +118,8 @@ namespace Lumina
 
         ImU32 ToU32(const ImVec4& C) { return ImGui::ColorConvertFloat4ToU32(C); }
 
-        // RML/RCSS identifier rule: standard XID-style start, hyphens allowed
-        // anywhere after (so `font-size`, `border-top-left-radius` highlight
-        // as one token, not three).
+        // RML/RCSS identifier rule: XID-style start, hyphens allowed after, so
+        // `font-size`/`border-top-left-radius` highlight as one token.
         TextEditor::Iterator GetRmlIdentifier(TextEditor::Iterator start, TextEditor::Iterator end)
         {
             if (start < end && TextEditor::CodePoint::isXidStart(*start))
@@ -134,18 +133,8 @@ namespace Lumina
             return start;
         }
 
-        // Lazy-init the RML/RCSS language once. Static so multiple editor
-        // instances share the same definition. Highlights:
-        //   - <!-- ... --> as comments (multi-line)
-        //   - "..." and '...' attribute values as strings
-        //   - common RML tag names as keywords
-        //   - common RCSS property names as known-identifiers
-        // Limitations: embedded /* ... */ RCSS comments aren't colored
-        // (TextEditor's Language only supports one multi-line comment pair).
-        // A .rcss file can't render on its own. Wrap the (live, unsaved) buffer
-        // in a component specimen so the preview pane shows the stylesheet's
-        // effect on representative elements. SourceUrl stays the .rcss path, so
-        // relative @decorator / font references resolve from the sheet's folder.
+        // A .rcss can't render alone; wrap the live buffer in a component specimen so the preview
+        // shows its effect. SourceUrl stays the .rcss path so relative refs resolve from its folder.
         std::string BuildStylesheetSpecimen(const std::string& Rcss)
         {
             std::string Doc;
@@ -194,9 +183,8 @@ namespace Lumina
             return Doc;
         }
 
-        // A .rml whose root is <template> is a reusable chrome, not a document;
-        // feeding it to LoadDocumentFromMemory trips RmlUi's inline-injection
-        // handler ("requires 'src'"). Detect it so the preview can adapt.
+        // A <template>-root .rml is reusable chrome, not a document; LoadDocumentFromMemory
+        // trips RmlUi's inline-injection handler, so detect it and let the preview adapt.
         bool IsTemplateDocument(const std::string& Body)
         {
             size_t i = 0;
@@ -242,13 +230,8 @@ namespace Lumina
 
             Lang.name = "RML/RCSS";
             Lang.caseSensitive = false;
-            // Use /* */ as the built-in multi-line comment so CSS comments
-            // get proper cross-line state tracking. HTML <!-- --> is handled
-            // by the custom tokenizer below for the (much more common)
-            // single-line case. A multi-line HTML comment in an RML file
-            // won't carry comment styling onto its continuation lines, but
-            // the spill-into-strings bug we'd otherwise see (apostrophes in
-            // commentary opening a quoted string) is fully avoided.
+            // Built-in multi-line comment is /* */ (CSS cross-line tracking); HTML <!-- --> is
+            // handled single-line by the custom tokenizer, avoiding the apostrophe spill bug.
             Lang.commentStart = "/*";
             Lang.commentEnd = "*/";
             Lang.hasSingleQuotedStrings = true;
@@ -256,14 +239,12 @@ namespace Lumina
             Lang.stringEscape = '\\';
             Lang.getIdentifier = GetRmlIdentifier;
 
-            // Single-line <!-- ... --> recognition + CSS hex color literals.
-            // The hex case gives the inline color-swatch overlay a reliable
-            // anchor and stops `#abcdef` from being lexed as an identifier.
-            // The iterator only exposes ++ and comparisons, so step manually.
+            // Single-line <!-- --> + CSS hex color literals (anchors the swatch overlay and
+            // stops `#abcdef` lexing as an identifier). Iterator only does ++/compare, step manually.
             Lang.customTokenizer = [](TextEditor::Iterator start, TextEditor::Iterator end, TextEditor::Color& color) -> TextEditor::Iterator
             {
-                // <!-- ... --> single-line HTML comment. We consume to the
-                // closing --> if it's on this line, else to end-of-line.
+                // <!-- ... --> single-line HTML comment; consume to the closing -->
+                // if on this line, else to end-of-line.
                 if (start != end && *start == '<')
                 {
                     auto cursor = start;
@@ -467,11 +448,8 @@ namespace Lumina
         ReloadDocument();
         StartWatching();
 
-        // Delayed change callback: fires once after the editor has been quiet for
-        // the delay below. Kept long enough that typing a path (e.g. an `src`)
-        // doesn't reload -- and spam asset-not-found warnings -- on every brief
-        // pause mid-word. Compare against the last-synced text to ignore
-        // programmatic SetText.
+        // Delayed change callback: fires once the editor is quiet, kept long enough that typing
+        // a path doesn't reload mid-word. Compares last-synced text to ignore programmatic SetText.
         CodeEditor.SetChangeCallback([this]
         {
             const std::string Current = CodeEditor.GetText();
@@ -1255,9 +1233,8 @@ namespace Lumina
             return;
         }
 
-        // Push the bridge clear color according to the chosen background.
-        // For checker/transparent we clear to alpha=0 so ImGui composites
-        // bg below the image. For solid we clear with the chosen color.
+        // Bridge clear color: checker/transparent clears alpha=0 so ImGui composites bg
+        // below the image; solid clears with the chosen color.
         FVector4 ClearColor;
         switch (BgMode)
         {
@@ -1430,10 +1407,8 @@ namespace Lumina
             return;
         }
 
-        // Our own OnSave fires the directory watcher and routes back here.
-        // If the disk content matches what we last synced, the file hasn't
-        // actually changed under us — skip SetText so the user's cursor,
-        // selection, scroll, and undo/redo stack are preserved.
+        // Our OnSave routes back here via the watcher; if disk matches last-synced the file
+        // didn't change, so skip SetText to preserve cursor/selection/scroll/undo.
         if (Body.size() == LastSyncedText.size()
             && std::memcmp(Body.data(), LastSyncedText.data(), Body.size()) == 0)
         {
@@ -1507,9 +1482,8 @@ namespace Lumina
                     }
 
                     const bool ValidLength = (Digits == 3 || Digits == 4 || Digits == 6 || Digits == 8);
-                    // Also require that the next char (if any) isn't a hex digit
-                    // and isn't an identifier-continuation char like '_'. This
-                    // avoids matching the "#abcd" prefix of `#abcdef` etc.
+                    // Require the next char isn't a hex digit or '_', so we don't match
+                    // the "#abcd" prefix of `#abcdef`.
                     bool BoundaryOk = ValidLength;
                     if (BoundaryOk && i + 1 + Digits < Len)
                     {

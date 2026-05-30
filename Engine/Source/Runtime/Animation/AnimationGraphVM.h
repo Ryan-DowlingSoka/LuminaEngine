@@ -11,12 +11,7 @@ namespace Lumina
     class CAnimationGraph;
     struct FSkeletonResource;
 
-    // Bytecode operations executed by FAnimationGraphVM. The instruction stream
-    // is a flat byte array; each opcode byte is followed by its fixed-width
-    // operands -- register indices as uint16, immediates as float, sub-op
-    // selectors as uint8. See FAnimationGraphCompiler for the emission side.
-    // Controls what AdvanceClock does when the playback clock reaches a clip's
-    // duration. The clock register and the finished register are advanced together.
+    // What AdvanceClock does when the playback clock reaches a clip's duration.
     REFLECT()
     enum class EClipLoopMode : uint8
     {
@@ -105,9 +100,7 @@ namespace Lumina
     {
     public:
 
-        // Sizes the register files / state slots / parameter array from the
-        // graph and seeds parameters with their defaults. Call once when the
-        // component's graph asset is assigned or changes.
+        // Sizes register files / state slots / parameters from the graph; call when the graph asset changes.
         static void InitState(const CAnimationGraph* Graph, FAnimGraphVMState& State);
 
         // Executes the bytecode for one frame. DeltaTime advances playback

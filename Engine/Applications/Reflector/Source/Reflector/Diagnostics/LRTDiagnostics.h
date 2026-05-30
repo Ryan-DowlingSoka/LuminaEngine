@@ -7,12 +7,8 @@
 
 namespace Lumina::Reflection
 {
-    // Stable, grep-able error codes for LRT (Lumina Reflection Tool) diagnostics.
-    // Ranges:
-    //   1xxx -> property type errors (unsupported types, mis-used pointers, etc.)
-    //   2xxx -> macro / declaration errors (missing GENERATED_BODY, etc.)
-    //   3xxx -> function signature errors -- reserved
-    //   9xxx -> driver/tool errors (CLI, file I/O, libclang failures)
+    // Stable, grep-able LRT diagnostic codes. Ranges: 1xxx property-type, 2xxx macro/declaration,
+    // 3xxx function-signature (reserved), 9xxx driver/tool.
     enum class EDiagId : uint32_t
     {
         UnknownPropertyType    = 1000,  // PROPERTY field has a type the reflector cannot map.
@@ -46,9 +42,8 @@ namespace Lumina::Reflection
     // Build a location from a clang cursor. Returns an empty File on failure.
     FDiagLocation MakeLocationFromCursor(const CXCursor& Cursor);
 
-    // Singleton diagnostic sink. Errors emitted here are formatted in MSBuild's
-    // expected `path(line,col): error LRTxxxx: message` form so they show up in
-    // the IDE problem list and are counted toward the build's failure status.
+    // Singleton diagnostic sink; errors are formatted as MSBuild's `path(line,col): error LRTxxxx: message`
+    // so they appear in the IDE problem list and count toward build failure.
     class FDiagnostics
     {
     public:

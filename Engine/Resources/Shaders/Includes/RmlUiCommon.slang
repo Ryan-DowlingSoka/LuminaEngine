@@ -1,9 +1,7 @@
 #pragma once
 
-// Shared layout for the fully-bindless RmlUi pass. All per-draw data lives in a
-// device-address buffer indexed by a per-vertex draw index, so the whole UI is
-// drawn with a single DrawIndexed -- no per-draw push constants, scissor, or
-// state changes. Scissor is done in the fragment shader (ClipRect).
+// Shared layout for the fully-bindless RmlUi pass: per-draw data lives in a device-address buffer
+// indexed per-vertex, so the whole UI draws in one DrawIndexed. Scissor is done in the FS (ClipRect).
 
 struct FUiDraw
 {

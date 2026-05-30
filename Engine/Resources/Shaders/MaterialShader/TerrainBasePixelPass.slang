@@ -59,10 +59,7 @@ struct PSOutput
     uint   Picker   : SV_Target1;
 };
 
-// ============================================================================
-//  PBR helpers (kept in sync with BasePixelPass.slang)
-// ============================================================================
-
+// PBR helpers (kept in sync with BasePixelPass.slang).
 float DistributionGGX(float3 N, float3 H, float Roughness)
 {
     float A     = Roughness * Roughness;
@@ -93,11 +90,8 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
     return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
-// Vertex-tangent TBN; mirrors BasePixelPass::GetWorldNormal. The terrain VS
-// emits a smooth analytic tangent derived from the heightfield, so per-pixel
-// we just Gram-Schmidt it against the interpolated normal. Replaces a
-// screen-space-derivative TBN that went piecewise-flat per triangle and
-// produced visible lighting cut-offs along triangle edges.
+// Vertex-tangent TBN (mirrors BasePixelPass::GetWorldNormal): Gram-Schmidt the VS's analytic
+// heightfield tangent against the interpolated normal. Replaces a ddx/ddy TBN that faceted per triangle.
 float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
 {
     float3 N = normalize(FragNormal);
@@ -123,9 +117,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (HasFlag(LightFlags, ELightFlags::Directional))
     {
-        // Constant safety bias only; NormalOffsetWS below handles the
-        // slope-driven acne, so a large slope term would only cause peter-panning.
-        // ShadowParams.y is the per-light constant depth bias.
+        // Constant safety bias only; NormalOffsetWS handles slope acne. ShadowParams.y is the per-light constant bias.
         return 0.00015 + 0.0003 * SlopeFactor + uLightData[0].ShadowParams.y;
     }
 
@@ -429,9 +421,7 @@ float GetTerrainLayerWeight(float2 HeightUV, int i)
     return uLayerWeights.Sample(float3(HeightUV, float(i))).r;
 }
 
-// Hash-to-color used by the meshlet debug visualization. Mirrors
-// MeshletDebugColor in BasePixelPass.slang so meshes and terrain colorize
-// identically under the same debug mode.
+// Hash-to-color for the meshlet debug view; mirrors BasePixelPass so meshes and terrain match.
 float3 TerrainMeshletDebugColor(uint Index)
 {
     uint H = Index * 2654435761u;
@@ -448,9 +438,8 @@ float3 TerrainMeshletDebugColor(uint Index)
     );
 }
 
-// Layer 0 implicitly fills any unpainted weight so brushes blend smoothly
-// over a base layer. Without this, a tiny painted weight at a brush edge
-// would renormalise to 100%, producing hard stroke boundaries.
+// Layer 0 fills any unpainted weight so brushes blend over a base layer; else a tiny edge weight
+// would renormalize to 100% and produce hard stroke boundaries.
 float4 GetTerrainLayerWeights4(float2 HeightUV)
 {
     float4 W = float4(0.0, 0.0, 0.0, 0.0);
@@ -472,12 +461,7 @@ float4 GetTerrainLayerWeights4(float2 HeightUV)
     return W;
 }
 
-// ============================================================================
-//  Main
-// ============================================================================
-
-// Terrain runs a depth pre-pass; the shaded pass tests (no depth write), so
-// force the depth test ahead of this heavy ~80-tap shadow PBR shader even
+// Terrain has a depth pre-pass; force the depth test ahead of this heavy shadow PBR shader even
 // though it can discard (masked materials).
 [earlydepthstencil]
 [shader("fragment")]
@@ -554,9 +538,8 @@ PSOutput FragmentMain(PSInput Input)
     {
         FLight Light = GetLightAt(0);
 
-        // The sun's contribution is scaled by max(dot(N, L), 0), so a pixel facing
-        // away from the sun is fully self-shadowed regardless of the shadow map.
-        // Skip the 24-48 tap cascade PCSS for those pixels (~half a typical scene).
+        // Pixels facing away from the sun are fully self-shadowed (NdotL clamp), so skip the
+        // expensive cascade PCSS for them (~half a typical scene).
         float SunNdotL = dot(N, normalize(Light.Direction.xyz));
         if (SunNdotL > 0.0)
         {
@@ -570,10 +553,8 @@ PSOutput FragmentMain(PSInput Input)
     for (uint i = 0; i < SafeLightCount; ++i)
     {
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
-        // Cluster contents can be stale/uninitialized right after a scene switch
-        // (LightCull hasn't repopulated this froxel for the new light set yet).
-        // An index past the live count reads beyond Lights[MAX_LIGHTS] -> MMU
-        // fault in GetLightAt (SceneGlobals.slang). Skip out-of-range indices.
+        // Cluster contents can be stale after a scene switch; an index past the live count reads
+        // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
         if (LightIndex >= GetNumLights())
         {
             continue;
@@ -584,10 +565,8 @@ PSOutput FragmentMain(PSInput Input)
         float  DistToLight = length(LightToFrag);
         float3 L           = LightToFrag / max(DistToLight, 0.0001);
 
-        // Cluster membership is conservative: a froxel can list a light whose sphere
-        // overlaps it but doesn't reach this pixel, or that lights only its back face.
-        // Both make EvaluateLightContribution return zero (NdotL clamp / falloff hits
-        // 1.0 at the radius), so skip the BRDF for them.
+        // Cluster membership is conservative: a listed light may not reach this pixel or lights only
+        // its back face. Both contribute zero, so skip the BRDF for them.
         if (dot(N, L) <= 0.0 || DistToLight >= Light.Radius)
         {
             continue;
@@ -596,19 +575,14 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight, EnergyComp);
     }
 
-    // IBL ambient: see BasePixelPass for the rationale; mirrored here so
-    // terrain reflects the same sky cube and stays visually consistent
-    // with mesh surfaces under the same lighting.
+    // IBL ambient (see BasePixelPass); mirrored so terrain reflects the same sky cube as meshes.
     float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic, AO);
     float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
     float3 Color      = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
 
-    // Debug overrides. Kept in sync with BasePixelPass.slang so toggling a
-    // mode lights up meshes and terrain together; the meshlet hue uses the
-    // same hash so two meshlet IDs colliding (rare) at least look identical
-    // across mesh and terrain surfaces.
+    // Debug overrides, kept in sync with BasePixelPass.slang so a mode lights up meshes and terrain together.
     uint DebugMode = uSceneData.CullData.DebugMode;
     if (DebugMode != DEBUG_MODE_NONE)
     {

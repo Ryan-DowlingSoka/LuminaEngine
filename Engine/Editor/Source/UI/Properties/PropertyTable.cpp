@@ -172,6 +172,12 @@ namespace Lumina
         const bool bHasDefault = !bIsCategory && PropertyHandle && PropertyHandle->HasDefault();
         const bool bDiffers = bHasDefault && PropertyHandle->DiffersFromDefault();
 
+        // Multi-edit: a top-level property whose value disagrees across the selected objects is shown
+        // as a non-editable "(Multiple Values)" row. Only top-level rows (direct category children) qualify.
+        const bool bTopLevel = ParentRow && ParentRow->IsCategory();
+        const bool bMultipleValues = bTopLevel && PropertyHandle && PropertyHandle->Property
+            && Callbacks.IsMultiValueFn && Callbacks.IsMultiValueFn(PropertyHandle->Property);
+
         // Capture row top before drawing for later modified-marker rendering.
         ImGuiTable* CurrentTable = ImGui::GetCurrentTable();
         const float RowTopY = CurrentTable ? CurrentTable->RowPosY1 : 0.0f;
@@ -185,7 +191,7 @@ namespace Lumina
         {
             if (ImGui::BeginPopupContextItem("##PropCtx"))
             {
-                ImGui::BeginDisabled(!bDiffers || bReadOnly || IsReadOnly());
+                ImGui::BeginDisabled(!bDiffers || bReadOnly || IsReadOnly() || bMultipleValues);
                 if (ImGui::MenuItem(LE_ICON_REFRESH " Reset to Default"))
                 {
                     PerformResetToDefault();
@@ -199,9 +205,8 @@ namespace Lumina
         {
             const bool bHasExtras = HasExtraControls();
 
-            // Opt-in per-row trailing control (e.g. a delete button), gated to top-level
-            // rows -- a category child -- so nested struct members / array elements don't
-            // inherit it from the shared callbacks.
+            // Opt-in trailing control (e.g. delete button), gated to top-level rows so
+            // nested struct members / array elements don't inherit it from shared callbacks.
             const bool bHasTrailing = Callbacks.RowTrailingControlFn
                 && PropertyHandle && PropertyHandle->Property
                 && ParentRow != nullptr && ParentRow->IsCategory();
@@ -227,7 +232,14 @@ namespace Lumina
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::AlignTextToFramePadding();
-                DrawEditor(bReadOnly);
+                if (bMultipleValues)
+                {
+                    ImGui::TextDisabled("(Multiple Values)");
+                }
+                else
+                {
+                    DrawEditor(bReadOnly);
+                }
 
                 if (bHasExtras)
                 {
@@ -242,7 +254,7 @@ namespace Lumina
                 }
 
                 ImGui::TableNextColumn();
-                if (bDiffers && !bReadOnly && !IsReadOnly())
+                if (bDiffers && !bReadOnly && !IsReadOnly() && !bMultipleValues)
                 {
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
                     if (ImGuiX::FlatButton(LE_ICON_REFRESH "##Reset", ImVec2(ResetColumnWidth - 2, 22), ModifiedMarkerColor))
@@ -269,7 +281,9 @@ namespace Lumina
 
         ImGui::PopID();
 
-        if (bExpanded && !Children.empty())
+        // Multi-value top-level rows hide their children; the aggregate "(Multiple Values)" stands in
+        // for the whole subtree (which would otherwise show the focus object's values, misleadingly).
+        if (bExpanded && !Children.empty() && !bMultipleValues)
         {
             ImGui::BeginDisabled(IsReadOnly());
             DrawChildren(Offset + ChildIndentStep, bReadOnly);
@@ -640,9 +654,8 @@ namespace Lumina
         FProperty* InnerProperty = ArrayProperty->GetInternalProperty();
         for (size_t i = 0; i < ElementCount; ++i)
         {
-            // Element handle stores the array instance + index; it resolves the live element
-            // address on each access, so a mid-edit reallocation can't leave a dangling pointer.
-            // Indices past the default array's end resolve to a null default (treated as modified).
+            // Element handle stores array instance + index and resolves the live address per
+            // access (reallocation-safe); indices past the default's end treat as modified.
             TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(
                 ArrayProperty,
                 ContainerPtr,
@@ -824,9 +837,8 @@ namespace Lumina
         ImGui::BeginDisabled(bReadOnly || IsReadOnly());
         if (ImGui::Checkbox("##OptionalSet", &bEngaged))
         {
-            // Toggling switches the engaged state; engaging default-constructs
-            // the payload, disengaging discards it. Children are rebuilt next
-            // frame in Update() (or right now to keep the UI in sync).
+            // Engaging default-constructs the payload, disengaging discards it.
+            // Children rebuild now to keep the UI in sync (also next frame in Update).
             if (bEngaged)
             {
                 OptionalProperty->SetValue(ContainerPtr, nullptr);
@@ -983,9 +995,8 @@ namespace Lumina
             Struct = Class;
             ChangeEventCallbacks.Type = Class;
 
-            // The CDO compares against itself trivially, so don't plumb one
-            // when we _are_ the CDO. Avoids a misleading "modified" indicator
-            // on the rare CDO-edit flow (e.g. project-default editor).
+            // Don't plumb a default when we are the CDO; avoids a misleading
+            // "modified" indicator on the rare CDO-edit flow.
             if (Class != nullptr && !InObject->HasAnyFlag(OF_DefaultObject))
             {
                 DefaultObject = Class->GetDefaultObject();

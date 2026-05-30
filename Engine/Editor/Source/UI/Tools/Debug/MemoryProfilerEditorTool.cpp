@@ -231,7 +231,7 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.14f, 0.16f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
 
-        // ---- CPU card ----
+        // CPU card
         ImGui::BeginChild("##CPUCard", ImVec2(CardW, CardH), true);
         {
             ImGui::TextColored(ImVec4(0.66f, 0.78f, 0.95f, 1.0f), LE_ICON_CPU_64_BIT " CPU MEMORY");
@@ -257,7 +257,7 @@ namespace Lumina
 
         ImGui::SameLine();
 
-        // ---- GPU card ----
+        // GPU card
         ImGui::BeginChild("##GPUCard", ImVec2(CardW, CardH), true);
         {
             ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.55f, 1.0f), LE_ICON_EXPANSION_CARD " GPU MEMORY");
@@ -287,9 +287,7 @@ namespace Lumina
         ImGui::PopStyleColor();
     }
 
-    //--------------------------------------------------------------------------------------------------
     // Overview
-    //--------------------------------------------------------------------------------------------------
 
     void FMemoryProfilerEditorTool::DrawCategorySegmentBar(float Height)
     {
@@ -364,9 +362,7 @@ namespace Lumina
         ImGui::EndChild();
     }
 
-    //--------------------------------------------------------------------------------------------------
     // GPU
-    //--------------------------------------------------------------------------------------------------
 
     void FMemoryProfilerEditorTool::DrawGPUCategoryTable()
     {
@@ -567,9 +563,7 @@ namespace Lumina
         ImGui::EndChild();
     }
 
-    //--------------------------------------------------------------------------------------------------
     // CPU
-    //--------------------------------------------------------------------------------------------------
 
     void FMemoryProfilerEditorTool::DrawScriptMemory()
     {
@@ -984,7 +978,7 @@ namespace Lumina
         R += "byte counts in parentheses. Counts are live (currently outstanding) unless noted.\n";
         R += "Use this to find which purpose/category/call-site is driving memory growth.\n\n";
 
-        // ---- System ----
+        // System
         R += "## System\n";
         if (bDeviceInfoValid)
         {
@@ -997,7 +991,7 @@ namespace Lumina
         }
         R += "\n";
 
-        // ---- CPU ----
+        // CPU
         R += "## CPU memory\n";
         R += FString().sprintf("- Process RSS:     %s\n", SizeBoth(Process).c_str());
         R += FString().sprintf("- rpmalloc mapped: %s (allocator's OS footprint)\n", SizeBoth(Mapped).c_str());
@@ -1009,7 +1003,7 @@ namespace Lumina
         R += FString().sprintf("- Lua VM:          %s (Luau's own allocator; part of External above)\n\n",
             SizeBoth(LuaBytes).c_str());
 
-        // ---- GPU summary ----
+        // GPU summary
         const float VRAMFrac = (GPUStats.TotalBudget > 0)
             ? (float)((double)GPUStats.TotalUsage / (double)GPUStats.TotalBudget) : 0.0f;
         R += "## GPU summary\n";
@@ -1020,7 +1014,7 @@ namespace Lumina
             SizeBoth(GPUStats.TotalBlockBytes).c_str(), GPUStats.TotalBlocks);
         R += FString().sprintf("- Live allocations:    %u\n\n", GPUStats.TotalAllocations);
 
-        // ---- GPU heaps ----
+        // GPU heaps
         R += "## GPU heaps\n";
         R += "| Heap | Type | Used | Budget | Used% | Allocated | Blocks | Allocs |\n";
         R += "|------|------|------|--------|-------|-----------|--------|--------|\n";
@@ -1034,7 +1028,7 @@ namespace Lumina
         }
         R += "\n";
 
-        // ---- GPU memory by purpose ----
+        // GPU memory by purpose
         {
             uint64 Total = 0;
             for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i) { Total += GPUCategories[i].Bytes; }
@@ -1065,7 +1059,7 @@ namespace Lumina
             R += "\n";
         }
 
-        // ---- Live RHI resources ----
+        // Live RHI resources
         R += "## Live RHI resources\n";
         R += FString().sprintf("Total: %u\n\n", TotalResources);
         R += "| Type | Count |\n|------|-------|\n";
@@ -1077,7 +1071,7 @@ namespace Lumina
         R += "\n";
 
 #if LUMINA_MEMORY_TRACKING
-        // ---- CPU categories ----
+        // CPU categories
         {
             struct FRow { const Memory::FMemoryCategoryStats* S; int64 DeltaBytes; int64 DeltaCount; };
 
@@ -1121,7 +1115,7 @@ namespace Lumina
             R += "\n";
         }
 
-        // ---- Top call sites (only when capturing) ----
+        // Top call sites (only when capturing)
         R += "## Top call sites\n";
         if (!Memory::IsCapturingCallstacks())
         {

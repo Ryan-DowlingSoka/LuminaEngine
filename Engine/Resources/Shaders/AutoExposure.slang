@@ -2,21 +2,9 @@
 #include "Includes/Common.slang"
 #include "Includes/SceneGlobals.slang"
 
-// =============================================================================
-//  Auto Exposure (eye adaptation)
-// =============================================================================
-//
-//  One workgroup meters the HDR scene color and writes a single adapted
-//  luminance into a persistent 1x1 R32F image. Each thread samples one cell
-//  of a 16x16 grid over the frame, the group log-averages those samples
-//  (geometric mean = standard key luminance), then thread 0 eases the stored
-//  value toward the new target so exposure changes feel like an eye adapting
-//  rather than snapping. ColorGrading.slang reads the result and turns it into
-//  an exposure multiplier.
-//
-//  Resources are bindless (HDR SRV + adapted-luminance UAV via push-constant
-//  indices), so there is no pass-local binding set -- mirrors BloomDownsampleSPD.
-// =============================================================================
+// Auto exposure: one workgroup log-averages a 16x16 grid over the HDR frame (geometric mean =
+// key luminance), then eases the persistent 1x1 R32F adapted value toward it like an eye adapting.
+// Bindless resources via push-constant indices, no pass-local binding set.
 
 #define TILE_DIM     16
 #define THREAD_COUNT (TILE_DIM * TILE_DIM)
@@ -65,11 +53,8 @@ void ComputeMain(uint3 LocalID : SV_GroupThreadID)
         float TargetLum = exp(gLogLum[0] / float(THREAD_COUNT));
 
         float PrevLum = uBindlessRWTex2D[PC.AdaptUAV][int2(0, 0)].r;
-        // Seed the feedback the first time we run (the 1x1 image is created
-        // uncleared, so its initial contents are undefined). Reject anything
-        // outside a plausible luminance range -- this also catches NaN/Inf,
-        // since every comparison against NaN is false -- and snap straight to
-        // the metered target instead of easing from garbage.
+        // Seed the feedback on the first run (1x1 image starts uncleared). The range test also
+        // catches NaN/Inf (any NaN comparison is false), so we snap to the target, not garbage.
         if (!(PrevLum > 1e-6 && PrevLum < 1e6))
         {
             PrevLum = TargetLum;

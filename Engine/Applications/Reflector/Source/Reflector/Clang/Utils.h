@@ -15,16 +15,8 @@
 
 namespace Lumina::ClangUtils
 {
-    // Canonicalize a path for use as a hash key in the AllHeaders map.
-    // Both the JSON registration side (premake node.abspath) and the parse-time
-    // cursor lookup side must agree byte-for-byte, otherwise cursors get silently
-    // dropped and types simply don't register. std::filesystem::weakly_canonical
-    // resolves relative->absolute, collapses redundant separators, and (when the
-    // file exists) resolves junctions/symlinks/SUBST drives to a single canonical
-    // form. Slashes are normalized to forward; case is intentionally preserved
-    // so the same string also resolves on case-sensitive filesystems (Linux ext4,
-    // case-sensitive APFS). On Windows both ends produce the on-disk case, so
-    // hash lookups still match.
+    // Canonicalize a path for the AllHeaders hash key (forward slashes, case preserved): the JSON
+    // registration and parse-time cursor sides must agree byte-for-byte or types fail to register.
     inline eastl::string NormalizeHeaderPath(eastl::string Input)
     {
         if (Input.empty())
@@ -139,10 +131,8 @@ namespace Lumina::ClangUtils
         return clang::QualType::getFromOpaquePtr(type.data[0]); 
     }
     
-    // True when libclang's type printer fell back to its location-derived placeholder
-    // (e.g. "(unnamed struct at h:\path\file.h:20:5)"). Such strings leak the build
-    // path into generated C++ identifiers and break every consumer of the type — most
-    // visibly when the build path contains characters that aren't valid in identifiers.
+    // True when libclang fell back to its location-derived placeholder (e.g. "(unnamed struct at ...)"),
+    // which would leak the build path into generated identifiers and break consumers.
     inline bool IsLibclangPlaceholderName(const eastl::string& Name)
     {
         return Name.find("(unnamed ") != eastl::string::npos
@@ -233,10 +223,8 @@ namespace Lumina::ClangUtils
         }
         else if (pType->isPointerType())
         {
-            // Recurse instead of getAsString(): the latter routes through libclang's
-            // PrintingPolicy and can emit "(unnamed struct at <path>:line:col)" for
-            // records the printer considers anonymous, baking the build path into
-            // generated identifiers.
+            // Recurse instead of getAsString(): the latter can emit "(unnamed struct at <path>)"
+            // for anonymous records, baking the build path into generated identifiers.
             clang::QualType Pointee = pType->getAs<clang::PointerType>()->getPointeeType();
             if (!GetQualifiedNameForType(Pointee, QualifiedName))
             {
@@ -334,9 +322,8 @@ namespace Lumina::ClangUtils
             QualifiedName = "Lumina::CClass";
         }
 
-        // Refuse libclang's location-based placeholders. Letting them through
-        // produces broken generated identifiers like
-        // "Construct_CStruct_(unnamed struct at h:\repo-foo\...)".
+        // Refuse libclang location-based placeholders; they produce broken
+        // generated identifiers like "Construct_CStruct_(unnamed struct at ...)".
         if (IsLibclangPlaceholderName(QualifiedName))
         {
             QualifiedName.clear();
@@ -346,9 +333,8 @@ namespace Lumina::ClangUtils
         return !QualifiedName.empty();
     }
 
-    // Return a printable C++ type expression suitable for casts in generated code
-    // (e.g. "glm::vec3", "Lumina::FName"). Falls back to the semantic qualified name
-    // if libclang's printer would have produced an "(unnamed/anonymous ...)" placeholder.
+    // Printable C++ type expression for casts in generated code; falls back to the
+    // semantic qualified name when libclang's printer would emit an "(unnamed ...)" placeholder.
     inline eastl::string GetSafeTypeAsString(clang::QualType Type)
     {
         eastl::string Result = Type.getAsString().c_str();

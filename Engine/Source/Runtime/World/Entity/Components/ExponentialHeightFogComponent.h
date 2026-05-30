@@ -5,14 +5,8 @@
 
 namespace Lumina
 {
-    /**
-     * Exponential height fog. Density falls off exponentially with world height,
-     * giving thick fog in valleys and clear air on peaks. Drives an analytic
-     * composite (distance + directional sun inscatter) and, when bVolumetricFog
-     * is set, the same density profile shapes the volumetric light-shaft march.
-     *
-     * Singleton-style: only one enabled instance per frame is read.
-     */
+    // Exponential height fog: density falls off with world height (thick valleys, clear peaks). Drives the
+    // analytic composite + (when bVolumetricFog) the light-shaft march. Singleton: one enabled instance/frame.
     REFLECT(Component, Category = "Environment")
     struct RUNTIME_API SExponentialHeightFogComponent
     {
@@ -31,11 +25,11 @@ namespace Lumina
         float FogHeightFalloff = 0.2f;
 
         /** World-space Y at which FogDensity applies (the base of the fog layer). */
-        PROPERTY(Editable, Category = "Fog")
+        PROPERTY(Editable, Category = "Fog", Units = "m")
         float FogBaseHeight = 0.0f;
 
         /** Distance from the camera before fog begins to accumulate. */
-        PROPERTY(Editable, Category = "Fog", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Fog", ClampMin = 0.0f, Units = "m")
         float FogStartDistance = 0.0f;
 
         /** Upper bound on fog opacity so distant geometry never fully disappears. */
@@ -55,7 +49,7 @@ namespace Lumina
         float DirectionalInscatteringExponent = 4.0f;
 
         /** Distance before directional inscatter ramps in. */
-        PROPERTY(Editable, Category = "Directional Inscatter", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Directional Inscatter", ClampMin = 0.0f, Units = "m")
         float DirectionalInscatteringStartDistance = 0.0f;
 
         /** When true, the fog's height-density profile drives the volumetric light-shaft march. */
@@ -73,7 +67,7 @@ namespace Lumina
         float VolumetricAnisotropy = 0.6f;
 
         /** Maximum ray-march distance for the volumetric shafts. */
-        PROPERTY(Editable, Category = "Volumetric", ClampMin = 1.0f)
+        PROPERTY(Editable, Category = "Volumetric", ClampMin = 1.0f, Units = "m")
         float VolumetricMaxDistance = 200.0f;
 
         /** Ray-march step count; higher is smoother but costlier. */

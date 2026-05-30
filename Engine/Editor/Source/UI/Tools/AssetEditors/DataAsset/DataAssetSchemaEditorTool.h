@@ -13,9 +13,8 @@ namespace Lumina
     class FPropertyTable;
     class FProperty;
 
-    // Editor for CDataAssetSchema: authors the field list (add / delete / type) and the
-    // per-field default values via a reused FPropertyTable. Structural edits re-sync every
-    // loaded CDataAsset that references this schema.
+    // Editor for CDataAssetSchema: authors the field list (add/delete/type) and per-field
+    // defaults. Structural edits re-sync every loaded CDataAsset referencing this schema.
     class FDataAssetSchemaEditorTool : public FAssetEditorTool
     {
     public:

@@ -27,14 +27,10 @@ namespace Lumina
 
 		void FlushAsyncLoading();
 
-		// Primary-asset lookup. Searches FAssetRegistry for an asset whose
-		// AssetName == Id.Name AND has EAssetFlags::Primary set. Returns
-		// the FAssetData* on hit, nullptr on miss.
+		// Finds the asset whose AssetName == Id.Name with EAssetFlags::Primary set; nullptr on miss.
 		FAssetData* ResolvePrimaryAsset(const FPrimaryAssetId& Id) const;
 
-		// Sync load by primary id. Convenience over ResolvePrimaryAsset +
-		// LoadAssetSynchronous; nullptr if no Primary asset is registered
-		// under that name.
+		// Sync load by primary id; nullptr if no Primary asset is registered under that name.
 		CObject* LoadPrimaryAssetSynchronous(const FPrimaryAssetId& Id);
 
 		// Async load by primary id. Callback fires with nullptr if the id

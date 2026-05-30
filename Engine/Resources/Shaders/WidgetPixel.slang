@@ -9,9 +9,8 @@ struct FragmentInput
     nointerpolation uint EntityID       : ENTITY_ID;
 };
 
-// Drawn AFTER tone mapping, straight onto the final (display-referred) target -- so the
-// RmlUi RT's sRGB colors are written as-is and match the screen-space UI. No tone map,
-// no gamma conversion.
+// Drawn after tone mapping onto the display-referred target, so the RmlUi RT's sRGB colors
+// are written as-is and match the screen-space UI (no tone map, no gamma).
 [shader("fragment")]
 float4 FragmentMain(FragmentInput Input) : SV_Target0
 {

@@ -103,8 +103,6 @@ namespace Lumina::ImGuiX::Notifications
                 default:                break;
             }
 
-            //-------------------------------------------------------------------------
-
             return { 1.0f, 1.0f, 1.0f, 1.0f };
         }
 
@@ -119,8 +117,6 @@ namespace Lumina::ImGuiX::Notifications
                 default:                break;
             }
 
-            //-------------------------------------------------------------------------
-
             return {};
         }
 
@@ -134,8 +130,6 @@ namespace Lumina::ImGuiX::Notifications
                 case EType::Info:       return "Info";
                 default:                break;
             }
-
-            //-------------------------------------------------------------------------
 
             return {};
         }
@@ -152,7 +146,13 @@ namespace Lumina::ImGuiX::Notifications
     
     static FMutex NotificationMutex;
     static TFixedVector<FNotification, 10> GNotifications;
-    
+    static float GBottomInset = 0.0f;
+
+    void SetBottomInset(float Pixels)
+    {
+        GBottomInset = Pixels;
+    }
+
     void Initialize()
     {
     }
@@ -168,8 +168,11 @@ namespace Lumina::ImGuiX::Notifications
         constexpr static float PaddingNotificationY = 10.0f; // Padding Y between each message
         
         const ImGuiViewport* MainViewport = ImGui::GetMainViewport();
-        const ImVec2 ViewportSize = MainViewport->Size;
-        
+        // Anchor to the work area (excludes the status bar) and lift above any open
+        // footer drawer via GBottomInset so toasts are never covered/clipped.
+        const ImVec2 WorkPos  = MainViewport->WorkPos;
+        const ImVec2 WorkSize = MainViewport->WorkSize;
+
         FScopeLock Lock(NotificationMutex);
 
         float NotificationStartPosY = 0.0f;
@@ -201,12 +204,12 @@ namespace Lumina::ImGuiX::Notifications
                 ImGuiWindowFlags_NoFocusOnAppearing;
             
             ImGui::SetNextWindowBgAlpha(Opacity);
-            ImGui::SetNextWindowPos(MainViewport->Pos + ImVec2(ViewportSize.x - PaddingX, ViewportSize.y - PaddingY - NotificationStartPosY), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+            ImGui::SetNextWindowPos(WorkPos + ImVec2(WorkSize.x - PaddingX, WorkSize.y - PaddingY - GBottomInset - NotificationStartPosY), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
             ImGui::PushStyleColor(ImGuiCol_Border, TextColor);
             if (ImGui::Begin(WindowName.c_str(), nullptr, Flags))
             {
-                ImGui::PushTextWrapPos(ViewportSize.x / 3.0f);
+                ImGui::PushTextWrapPos(WorkSize.x / 3.0f);
 
                 bool DrawSeparator = false;
 

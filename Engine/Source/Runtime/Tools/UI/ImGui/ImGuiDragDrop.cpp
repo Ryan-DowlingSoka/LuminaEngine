@@ -227,9 +227,7 @@ namespace Lumina::DragDrop
 
     void EndFrameTick()
     {
-        // ImGui's drag drop lifecycle clears its own payload when a drag ends
-        // (delivery or cancel). Mirror that here so a stale FPayload does not
-        // outlive the drag.
+        // Mirror ImGui clearing its payload on drag end so a stale FPayload doesn't outlive the drag.
         if (ImGui::GetDragDropPayload() == nullptr && GPayload.Kind != EPayloadKind::None)
         {
             Reset();

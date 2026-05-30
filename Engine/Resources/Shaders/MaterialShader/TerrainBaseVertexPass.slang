@@ -82,19 +82,14 @@ struct VSOutput
 
     nointerpolation uint EntityID      : ENTITY_ID;
     nointerpolation uint MaterialIndex : MATERIAL_INDEX;
-    // Global meshlet index for the meshlet debug visualization. Carries
-    // through the visible-meshlet entry's MeshletIndex so the pixel shader
-    // can hash to a stable per-meshlet color.
+    // Global meshlet index, carried for the pixel shader's stable per-meshlet debug color.
     nointerpolation uint MeshletIndex  : MESHLET_INDEX;
 
     precise float4 Position         : SV_Position;
 };
 
-// Meshlet-driven terrain vertex shader. The terrain cull compute pass
-// emits one entry per surviving meshlet into uTerrainVisible; this VS is
-// drawn indirectly with InstanceCount = (number of survivors), so
-// InstanceID indexes that visible-meshlet array. Each meshlet draws
-// MeshletQuadSide^2 quads (six verts per quad).
+// Meshlet-driven terrain VS, drawn indirectly with InstanceCount = surviving meshlets, so InstanceID
+// indexes uTerrainVisible. Each meshlet draws MeshletQuadSide^2 quads (six verts each).
 [shader("vertex")]
 VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_VulkanInstanceID)
 {
@@ -118,10 +113,8 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     uint MqX = QuadIndex % (uint)MeshletQuads;
     uint MqY = QuadIndex / (uint)MeshletQuads;
 
-    // Edge meshlets along the chunk's far side cover fewer than the full
-    // MeshletQuadSide quads. Clamp the per-vertex coord so degenerate
-    // (collapsed) quads still rasterize as zero-area triangles instead of
-    // sampling outside the chunk's heightmap region.
+    // Edge meshlets cover fewer than MeshletQuadSide quads; clamp so degenerate quads collapse to
+    // zero-area triangles instead of sampling outside the chunk's heightmap region.
     uint ClampedX = min(MqX, (uint)max(Meshlet.QuadExtent.x - 1, 0));
     uint ClampedY = min(MqY, (uint)max(Meshlet.QuadExtent.y - 1, 0));
 
@@ -142,9 +135,7 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     WorldPos.z = TerrainParams.OriginXZ.y + float(SampleY) * Stride;
     WorldPos.y = TerrainParams.WorldOriginY.x + Height;
 
-    // Compute pass packs the post-normalize Normal.xz; recover Y from the
-    // unit-length constraint. Hardcoding Y=1 and re-normalizing tilts the
-    // normal toward +Y (lighting reads as too flat on slopes).
+    // Compute pass packs Normal.xz; recover Y from unit length (hardcoding Y=1 tilts toward +Y, flattening slopes).
     float4 NormalSample = uTerrainNormal.SampleLevel(HeightUV, 0);
     float  Nx = NormalSample.r * 2.0 - 1.0;
     float  Nz = NormalSample.g * 2.0 - 1.0;
@@ -161,11 +152,8 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     float4   ViewPos = mul(View, float4(WorldPos, 1.0));
     float3   NormalVS = normalize(mul((float3x3)View, NormalWS));
 
-    // Analytic surface tangent from the heightfield. Since UV = WorldPos.xz the
-    // tangent direction is dP/du = (1, dHdx, 0); recover dHdx from the packed
-    // normal (N = normalize(-dHdx, 1, -dHdz) => dHdx = -N.x / N.y). Emitting a
-    // smooth per-vertex tangent here avoids the per-triangle ddx/ddy TBN that
-    // produced visible lighting cut-offs along triangle edges.
+    // Analytic surface tangent: UV = WorldPos.xz so dP/du = (1, dHdx, 0), with dHdx = -N.x / N.y from
+    // the packed normal. A smooth per-vertex tangent avoids the faceting of a per-triangle ddx/ddy TBN.
     float  InvNy     = 1.0 / max(NormalWS.y, 1e-4);
     float  DhDx      = -NormalWS.x * InvNy;
     float3 TangentWS = normalize(float3(1.0, DhDx, 0.0));

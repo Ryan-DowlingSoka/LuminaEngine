@@ -81,17 +81,14 @@ namespace Lumina
 
         void VerifyDirtyPackages();
 
-        // Re-entry guard for the dirty-packages prompt. Goes true the first
-        // frame we open the dialog and stays true until the dialog closes
-        // (either an exit-completion path or user-cancel). Kept as a member
-        // — not a function-local static — so Cancel can re-arm it.
+        // Re-entry guard for the dirty-packages prompt; true while the dialog is open.
+        // A member (not a function-local static) so Cancel can re-arm it.
         bool bVerifyingDirtyPackages = false;
 
     private:
 
-        // Shared tail of tool creation: initializes the tool and queues it for
-        // addition. Accepts (and passes through) nullptr so registry-driven
-        // creation can chain without a null check at every call site.
+        // Shared tail of tool creation: initializes the tool and queues it. Passes
+        // through nullptr so registry-driven creation can chain without null checks.
         FEditorTool* FinalizeNewTool(FEditorTool* Tool);
 
         // Registers the built-in asset/file editors with FEditorToolRegistry.
@@ -113,10 +110,8 @@ namespace Lumina
         void DrawTitleBarMenu(const FUpdateContext& UpdateContext);
         void DrawTitleBarInfoStats(const FUpdateContext& UpdateContext);
 
-        // --- Footer drawers (UE-style Content Drawer) -----------------------
-        // A drawer tool lives in the bottom status bar as a toggle button and,
-        // when undocked, slides up as a transient overlay instead of eating a
-        // permanent dock split. "Dock in Layout" pins it back into the dockspace.
+        // Footer drawer: status-bar toggle that slides up as a transient overlay
+        // when undocked; "Dock in Layout" pins it back into the dockspace.
         struct FFooterDrawer
         {
             FEditorTool*  Tool       = nullptr;
@@ -145,9 +140,8 @@ namespace Lumina
         void NewProjectDialog();
         void ProjectCreatedDialog(FStringView ProjectFile);
 
-        // Queues a modal to be opened on the next frame; used to chain dialogs
-        // (Open → New) because FEditorModalManager only allows one active modal
-        // at a time. Consumed in OnInitialize/post-DrawDialogue.
+        // Queues a modal for next frame to chain dialogs (Open -> New), since
+        // FEditorModalManager allows only one active modal at a time.
         void DeferShowDialog(TFunction<void()> Action) { PendingDialogAction = std::move(Action); }
 
         void OnProjectLoaded();
@@ -186,10 +180,8 @@ namespace Lumina
         bool                                            bShowImGuiStyleEditor = false;
         bool                                            bShowImPlotDemoWindow = false;
 
-        // Last source path the debugger auto-opened. We re-open + refocus
-        // whenever the paused source changes — covers both the initial
-        // running→paused transition and the case where a step crosses into
-        // a different file, where we want the editor tab to follow.
+        // Last source the debugger auto-opened; re-open + refocus on each paused-source
+        // change so the editor tab follows running->paused and step-into-other-file.
         FString                                         LuaDebuggerLastOpenedSource;
 
         float                                           SmoothedFPS = 60.0f;

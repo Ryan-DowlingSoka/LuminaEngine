@@ -283,9 +283,8 @@ namespace Lumina
         const FMetaDataPairParam*   MetaDataArray;
     };
 
-    // Soft equivalent of FObjectPropertyParams. ClassFunc returns the
-    // expected target class (T from TSoftObjectPtr<T>); for bare
-    // FSoftObjectPath the codegen sets it to CObject::StaticClass.
+    // Soft equivalent of FObjectPropertyParams; ClassFunc returns the target class
+    // (T from TSoftObjectPtr<T>, or CObject::StaticClass for bare FSoftObjectPath).
     struct FSoftObjectPropertyParams : FPropertyParams
     {
         CClass*                     (*ClassFunc)();

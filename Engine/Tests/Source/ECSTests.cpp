@@ -122,11 +122,8 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
     Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
-    // Lazy resolve against the grandchild: A is dirty but B and C are
-    // not. Before the fix, this returned C's stale CachedMatrix because
-    // ResolveTransformChain bailed when the queried entity itself was
-    // clean. After the fix it walks up to A, refreshes the chain, and
-    // C tracks A's move while staying at the same offset from B.
+    // Lazy resolve via the grandchild: A is dirty, B/C clean. ResolveTransformChain
+    // must walk up to A and refresh the chain rather than serving C's stale matrix.
     ECS::Utils::ResolveTransformChain(Registry, C);
 
     const STransformComponent& WorldC = Registry.get<STransformComponent>(C);
@@ -166,9 +163,8 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
-    // Resolving via C must also refresh sibling D's CachedMatrix - D is
-    // not dirty itself and would otherwise serve a stale matrix on the
-    // next lazy query (A's dirty bit is gone after C's resolve).
+    // Resolving via C must also refresh sibling D, which isn't dirty itself and would
+    // otherwise serve a stale matrix once C's resolve clears A's dirty bit.
     ECS::Utils::ResolveTransformChain(Registry, C);
     ECS::Utils::ResolveTransformChain(Registry, D);
 

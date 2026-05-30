@@ -38,16 +38,8 @@ namespace Lumina
         FString                   ErrorMessage;
     };
 
-    /** Reachability-driven cooker.
-     *  Seeds the dependency graph from FEngine::GetCookRoots() (the union
-     *  of the loaded .lproject's CookRoots[] + every enabled plugin's
-     *  CookRoots[]). Every .lasset reachable via FAssetData::Dependencies
-     *  enters a PAK; anything else does not.
-     *
-     *  Output is chunked: one .pak per chunk name assigned by FCookGraph.
-     *  The "Main" chunk PAK uses OutputPakPath verbatim and also holds all
-     *  shared content (engine resources, shader cache, /Config, loose
-     *  /Game). Other chunks land at <stem>-<chunk>.pak next to it. */
+    // Reachability-driven cooker, seeded from FEngine::GetCookRoots(); only .lasset reachable via FAssetData::Dependencies enters a PAK.
+    // Chunked output: "Main" uses OutputPakPath verbatim + holds shared content; other chunks land at <stem>-<chunk>.pak.
     class FAssetCooker
     {
     public:

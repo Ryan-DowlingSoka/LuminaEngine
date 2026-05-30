@@ -32,11 +32,14 @@ namespace Lumina
         FPropertyChangedEventFn StartChangeCallback;
         FPropertyChangedEventFn FinishChangeCallback;
 
-        // Optional trailing control (e.g. a delete button) drawn at the end of each
-        // top-level property row, in its own fixed column. Receives that row's property.
-        // Null by default, so tables that don't set it render exactly as before.
+        // Optional trailing control (e.g. delete button) in a fixed column at the end of
+        // each top-level row; receives that row's property. Null = no trailing column.
         TFunction<void(FProperty*)> RowTrailingControlFn;
         float                       RowTrailingControlWidth = 0.0f;
+
+        // Multi-edit: when set and it returns true for a top-level property, that row renders as a
+        // non-editable "(Multiple Values)" because the selected objects disagree on the value. Null = off.
+        TFunction<bool(FProperty*)> IsMultiValueFn;
     };
     
     class FPropertyRow
@@ -50,15 +53,12 @@ namespace Lumina
         virtual ~FPropertyRow() = default;
         FPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& Callbacks);
 
-        // Width of just this row's own header label (text + collapse arrow if any),
-        // not counting indent. Overridden per-row-type so the table can size its
-        // header column to fit the widest visible label instead of using a fixed
-        // proportional split.
+        // This row's own header label width (text + collapse arrow), excluding indent.
+        // Overridden per-row-type so the table can size the header column to the widest label.
         virtual float GetMeasuredHeaderTextWidth() const { return 0.0f; }
 
-        // Walks this row plus its visible (expanded) children and returns the
-        // largest required header width including indent. Used by FPropertyTable
-        // to auto-size the header column each frame.
+        // Largest required header width across this row and its expanded children,
+        // including indent; auto-sizes the header column each frame.
         float ComputeRequiredHeaderWidth(float Offset) const;
 
         virtual void DrawHeader(float Offset) { }
@@ -75,30 +75,24 @@ namespace Lumina
         void DrawRow(float Offset, bool bReadOnly);
         virtual void DrawChildren(float ChildOffset, bool bReadOnly);
 
-        // Hook fired right after PropertyHandle->ResetToDefault() runs from
-        // the row's reset button or context menu. Container-shaped properties
-        // (array, optional, struct) override this to rebuild their child rows
-        // so the UI reflects the new structure on the next frame.
+        // Fired after ResetToDefault(); container rows (array/optional/struct) override
+        // to rebuild child rows so the UI reflects the new structure next frame.
         virtual void OnValueResetToDefault() { }
         bool IsReadOnly() const;
 
         void SetIsArrayElement(bool bTrue) { bArrayElement = bTrue; }
         bool IsArrayElementProperty() const { return bArrayElement; }
 
-        // True only for FCategoryPropertyRow. Used by category rows to find
-        // existing nested-category children when fanning out a `Foo|Bar|Baz`
-        // metadata path into a tree of rows.
+        // True only for FCategoryPropertyRow; lets category rows find existing
+        // nested-category children when fanning out a `Foo|Bar|Baz` path.
         virtual bool IsCategory() const { return false; }
 
     protected:
 
         void DispatchChange(EPropertyChangeOp Op);
 
-        // Centralized reset path used by both the toolbar button and the
-        // right-click menu. Writes the default into the container, then
-        // re-syncs the customization's cached value from the container so
-        // DispatchChange's subsequent UpdatePropertyValue doesn't immediately
-        // clobber the reset with the stale widget state.
+        // Writes the default into the container, then re-syncs the customization's
+        // cached value so DispatchChange's UpdatePropertyValue won't clobber the reset.
         void PerformResetToDefault();
 
         
@@ -156,11 +150,8 @@ namespace Lumina
         bool AllowResize() const;
         bool AllowReorder() const;
 
-        // Queue a structural change (push/remove/swap/clear) instead of running it
-        // immediately. The mutation runs at the start of the next frame in Update,
-        // before any row reads through its element ContainerPtr — necessary because
-        // mutations that reallocate vector storage (e.g. push_back) invalidate every
-        // child handle's cached ContainerPtr and any read through them is UB.
+        // Defer a structural change to next frame's Update: a reallocating mutation
+        // invalidates every child's cached ContainerPtr, so reading mid-frame is UB.
         void QueueMutation(TFunction<void()> Mutation);
 
         FArrayProperty*             ArrayProperty = nullptr;
@@ -194,12 +185,8 @@ namespace Lumina
         TUniquePtr<FPropertyTable>  PropertyTable;
     };
 
-    /**
-     * Editor row for TOptional<T>. The header is the property name; the
-     * editor cell hosts a "Set" checkbox plus a small status label. When
-     * engaged, the inner T property renders as a single child row beneath,
-     * reusing whichever PropertyRow class fits T's type.
-     */
+    // Editor row for TOptional<T>: a "Set" checkbox; when engaged, the inner T
+    // renders as a child row using whichever PropertyRow fits T's type.
     class FOptionalPropertyRow : public FPropertyRow
     {
     public:
@@ -212,9 +199,8 @@ namespace Lumina
         float GetMeasuredHeaderTextWidth() const override;
         void OnValueResetToDefault() override;
 
-        // Rebuilds the (0-or-1) child row to match the optional's current
-        // engaged state. Called after the user toggles the checkbox or when
-        // an external mutation flips it underneath us.
+        // Rebuilds the 0-or-1 child row to match the optional's engaged state, after
+        // a checkbox toggle or an external mutation flipping it underneath us.
         void RebuildChildren();
 
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
@@ -233,10 +219,8 @@ namespace Lumina
 
         void AddProperty(const TSharedPtr<FPropertyHandle>& InPropHandle);
 
-        // Returns the existing child category row with this name if one was
-        // already created for this row, else creates a new one and appends it
-        // to Children. Used by FPropertyTable::RebuildTree when expanding a
-        // `Outer|Inner` category path one segment at a time.
+        // Existing child category row by name, else a new one appended to Children.
+        // Used by RebuildTree when expanding an `Outer|Inner` path one segment at a time.
         FCategoryPropertyRow* FindOrCreateChildCategory(const FName& InCategory);
 
         FName GetCategoryName() const { return Category; }
@@ -261,9 +245,8 @@ namespace Lumina
         ~FPropertyTable() = default;
         FPropertyTable(void* InObject, CStruct* InType);
 
-        // Auto-derives Type from the CObject's class and DefaultObject from
-        // the class CDO. Use this for any details panel rooted at a CObject:
-        // it enables the "modified" indicator and reset-to-default button.
+        // Derives Type + DefaultObject from the CObject's class CDO; enables the
+        // "modified" indicator and reset-to-default for CObject-rooted details panels.
         explicit FPropertyTable(CObject* InObject);
 
         // Explicit default-object form, for callers that have a hand-built
@@ -305,8 +288,7 @@ namespace Lumina
         TSharedPtr<FPropertyHandle>                         PropertyHandle;
         CStruct*                                            Struct = nullptr;
         void*                                               Object = nullptr;
-        // Parallel pointer used to resolve a property's default value when
-        // computing diff-from-default and reset-to-default. Null when no
+        // Resolves a property's default for diff/reset-to-default; null when no
         // default is plumbed in (e.g. plain struct details with no CDO).
         void*                                               DefaultObject = nullptr;
         THashMap<FName, TUniquePtr<FCategoryPropertyRow>>   CategoryMap;

@@ -1,9 +1,7 @@
 #include "Includes/IBL.slang"
 
-// Bakes the split-sum BRDF integration LUT once at engine init. Output is
-// indexed by (NdotV, Roughness) -> (scale, bias) for F0; runtime sampling
-// in BasePixelPass collapses an environment specular convolution into a
-// single multiply-add against the pre-filtered cubemap.
+// Bakes the split-sum BRDF integration LUT once at init, indexed by (NdotV, Roughness) -> (scale, bias);
+// runtime IBL specular collapses to one multiply-add against the pre-filtered cubemap.
 
 [[vk::binding(0)]] RWTexture2D<float2> uBRDFLut;
 

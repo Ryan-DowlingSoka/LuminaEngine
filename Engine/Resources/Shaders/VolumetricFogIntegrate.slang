@@ -1,9 +1,7 @@
 #include "Includes/Froxel.slang"
 
-// Froxel volumetric fog -- integrate pass. One thread per (x,y) column marches the Z
-// slices front-to-back, accumulating in-scattered light attenuated by transmittance and
-// the running transmittance itself. Writes (accumulated in-scatter rgb, transmittance)
-// per froxel so the apply pass can sample it by depth.
+// Froxel volumetric fog integrate pass: one thread per (x,y) column marches Z front-to-back,
+// accumulating transmittance-weighted in-scatter and writing (accum rgb, transmittance) per froxel.
 
 struct FPushConstants
 {

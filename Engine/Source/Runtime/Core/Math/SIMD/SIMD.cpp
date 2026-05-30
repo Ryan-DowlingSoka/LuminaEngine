@@ -1,8 +1,6 @@
 #include "SIMD.h"
 
-// No out-of-line definitions -- Lumina::SIMD is header-only. This TU exists to
-// force the headers through the compiler (and assert ABI invariants) as part of
-// the normal build, since nothing else may include them yet.
+// Lumina::SIMD is header-only; this TU just forces the headers through the compiler.
 
 namespace Lumina::SIMD
 {

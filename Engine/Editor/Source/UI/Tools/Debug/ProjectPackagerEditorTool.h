@@ -9,20 +9,8 @@
 
 namespace Lumina
 {
-    /**
-     * Editor tool for packaging the project — Godot-style "Export":
-     *   1. Cooks the asset graph rooted at FEngine::GetCookRoots() — union
-     *      of project + enabled-plugin CookRoots[] + every asset flagged
-     *      EAssetFlags::Primary — into one .pak per chunk.
-     *   2. Optionally invokes MSBuild to produce the Game|Shipping executable
-     *   3. Copies the resulting exe + DLLs alongside the .pak set
-     *
-     * The cook step runs on the main thread (touches the asset registry +
-     * CObject system, both racy with engine GC), but the long MSBuild +
-     * binary-copy stage runs on a worker thread so the editor stays
-     * interactive. Build output streams into the log live via a
-     * mutex-protected buffer drained on each UI tick.
-     */
+    // Project packaging tool: cooks the asset graph into per-chunk .paks, optionally builds the
+    // Shipping exe + copies it. Cook on the main thread (GC-racy); MSBuild + copy on a worker.
     class FProjectPackagerEditorTool : public FEditorTool
     {
     public:
@@ -55,9 +43,8 @@ namespace Lumina
             Done,
         };
 
-        // Shared between the UI thread and the worker thread. Owned by a
-        // shared_ptr so the worker keeps it alive even if the tool is
-        // closed mid-build.
+        // Shared between UI and worker threads via shared_ptr so the worker keeps it
+        // alive even if the tool closes mid-build.
         struct FBuildSession
         {
             std::atomic<bool>           bDone{false};

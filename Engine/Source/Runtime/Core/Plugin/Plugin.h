@@ -10,9 +10,7 @@ namespace Lumina
 {
     class IModuleInterface;
 
-    // Runtime state for one loaded plugin module. Mirrors what
-    // FModuleManager keeps, but scoped to the plugin so we can unload in
-    // the right order.
+    // Runtime state for one loaded plugin module; scoped to the plugin for ordered unload.
     struct FLoadedPluginModule
     {
         FPluginModuleDescriptor Descriptor;
@@ -20,9 +18,8 @@ namespace Lumina
         bool                    bStartupCalled  = false;
     };
 
-    // Runtime state for one plugin: its parsed descriptor plus any modules
-    // that have been loaded so far, plus the on-disk location it was
-    // discovered at (used to resolve module DLL paths + Content/).
+    // Runtime state for one plugin: parsed descriptor, loaded modules, and discovery
+    // location (resolves module DLL paths + Content/).
     class RUNTIME_API FPlugin
     {
     public:

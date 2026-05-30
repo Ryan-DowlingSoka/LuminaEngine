@@ -9,9 +9,8 @@ namespace Lumina
     class FPropertyTable;
     class CStruct;
 
-    // Editor for CDataAsset: nothing but a property grid over the instance's values. The
-    // structure is owned by the asset's CDataAssetSchema (edited in its own tool), so there
-    // are no add/remove/type controls here.
+    // Editor for CDataAsset: a property grid over the instance's values. Structure is owned
+    // by the asset's CDataAssetSchema (its own tool), so no add/remove/type controls here.
     class FDataAssetEditorTool : public FAssetEditorTool
     {
     public:

@@ -32,13 +32,14 @@
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Traits.h"
+#include "World/Scene/RenderScene/RenderScene.h"
 #include "World/World.h"
 
 
 namespace Lumina
 {
     FPrefabEditorTool::FPrefabEditorTool(IEditorToolContext* Context, CObject* InAsset)
-        : FAssetEditorTool(Context, InAsset->GetName().c_str(), InAsset, NewObject<CWorld>())
+        : FSceneEditorTool(Context, InAsset->GetName().c_str(), InAsset, NewObject<CWorld>())
     {
     }
 
@@ -56,7 +57,7 @@ namespace Lumina
 
         CreateToolWindow(PropertiesWindowName, [this](bool bFocused)
         {
-            DrawEntityProperties(bFocused);
+            DrawDetailsPanel(bFocused);
         });
 
         bGuizmoSnapEnabled  = GConfig->Get("Editor.PrefabEditorTool.GuizmoSnapEnabled", true);
@@ -66,13 +67,18 @@ namespace Lumina
 
         OutlinerContext.RebuildTreeFunction = [this](FTreeListView& Tree)
         {
-            RebuildOutlinerTree(Tree);
+            RebuildSceneOutliner(Tree);
+        };
+
+        OutlinerContext.BuildChildrenFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
+        {
+            BuildEntityChildren(Tree, Item);
         };
 
         OutlinerContext.FilterFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             const FTreeNodeDisplay& Display = Tree.Get<FTreeNodeDisplay>(Item);
-            return OutlinerNameFilter.PassFilter(Display.DisplayName.c_str());
+            return EntityFilterState.FilterName.PassFilter(Display.DisplayName.c_str());
         };
 
         OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, FTreeNodeID Item, bool bShouldClear)
@@ -312,17 +318,9 @@ namespace Lumina
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
-
-        // Pitch the preview light so meshes don't render with a flat-top look.
-        if (STransformComponent* LightTransform = World->GetEntityRegistry().try_get<STransformComponent>(DirectionalLightEntity))
-        {
-            LightTransform->SetRotationFromEuler(FVector3(-50.0f, 35.0f, 0.0f));
-        }
-
-        CreateFloorPlane(0.0f);
     }
 
-    void FPrefabEditorTool::OnAssetLoadFinished()
+    void FPrefabEditorTool::OnSceneLoaded()
     {
         LoadPrefabIntoPreviewWorld();
         OutlinerListView.MarkTreeDirty();
@@ -343,8 +341,8 @@ namespace Lumina
 
         // Component pointers in PropertyTables are stale after the registry serialize.
         OutlinerListView.MarkTreeDirty();
-        bPropertyTablesDirty = true;
-        CachedPropertyEntity = entt::null;
+        bDetailsDirty = true;
+        DetailsEntity = entt::null;
     }
 
     void FPrefabEditorTool::LoadPrefabIntoPreviewWorld()
@@ -420,17 +418,28 @@ namespace Lumina
             +[](entt::id_type ID) { return EditorEntityUtils::IsEditorOnlyComponent(ID); });
     }
 
-    void FPrefabEditorTool::OnSave()
+    void FPrefabEditorTool::CommitScene()
     {
         CommitPreviewWorldToPrefab();
+    }
 
+    void FPrefabEditorTool::OnSave()
+    {
         // Persist gizmo prefs alongside the asset save so they survive across editor sessions.
         GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapEnabled",   bGuizmoSnapEnabled);
         GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapTranslate", GuizmoSnapTranslate);
         GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapRotate",    GuizmoSnapRotate);
         GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapScale",     GuizmoSnapScale);
 
-        FAssetEditorTool::OnSave();
+        // Super commits the preview world into the prefab (CommitScene) then saves the package.
+        Super::OnSave();
+
+        // Push the just-committed edits onto every live instance in open worlds so they update
+        // immediately instead of only on the next world load.
+        if (CPrefab* Prefab = GetPrefab())
+        {
+            Prefab->RefreshInstancesInLoadedWorlds();
+        }
     }
 
     void FPrefabEditorTool::Update(const FUpdateContext& UpdateContext)
@@ -449,20 +458,21 @@ namespace Lumina
         const entt::entity LastSelected = GetLastSelectedEntity();
         if (Registry.valid(LastSelected))
         {
-            if (LastSelected != CachedPropertyEntity || bPropertyTablesDirty)
+            // RebuildPropertyTables sets DetailsEntity + clears bDetailsDirty internally.
+            if (LastSelected != DetailsEntity || bDetailsDirty)
             {
                 RebuildPropertyTables(LastSelected);
-                CachedPropertyEntity = LastSelected;
-                bPropertyTablesDirty = false;
             }
         }
-        else if (!ComponentPropertyTables.empty() || CachedPropertyEntity != entt::null)
+        else if (!PropertyTables.empty() || DetailsEntity != entt::null)
         {
-            ComponentPropertyTables.clear();
-            ComponentStructs.clear();
-            CachedPropertyEntity = entt::null;
-            bPropertyTablesDirty = false;
+            PropertyTables.clear();
+            DetailsEntity = entt::null;
+            bDetailsDirty = false;
         }
+
+        // Drain queued reflected-component removals (the shared DrawComponentHeader pushes here).
+        ProcessComponentEditRequests();
 
         if (bViewportHovered)
         {
@@ -490,35 +500,6 @@ namespace Lumina
                 const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
                 World->DrawBox(Transform.GetWorldLocation(), MeshComp->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::Red, 5.0f);
             }
-        });
-    }
-
-    void FPrefabEditorTool::EndFrame()
-    {
-        using namespace entt::literals;
-
-        if (!bShowComponentVisualizers || World == nullptr)
-        {
-            return;
-        }
-
-        CComponentVisualizerRegistry& VisualizerRegistry = CComponentVisualizerRegistry::Get();
-
-        entt::registry& Registry = World->GetEntityRegistry();
-        Registry.view<FSelectedInEditorComponent>(entt::exclude<SDisabledTag>).each([&](entt::entity SelectedEntity)
-        {
-            ECS::Utils::ForEachComponent(Registry, SelectedEntity,
-                [&](void*, entt::basic_sparse_set<>&, const entt::meta_type& Type)
-            {
-                if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
-                {
-                    CStruct* StructType = ReturnValue.cast<CStruct*>();
-                    if (CComponentVisualizer* Visualizer = VisualizerRegistry.GetComponentVisualizer(StructType))
-                    {
-                        Visualizer->Draw(World, Registry, SelectedEntity);
-                    }
-                }
-            });
         });
     }
 
@@ -575,8 +556,7 @@ namespace Lumina
 
     void FPrefabEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
-        ComponentPropertyTables.clear();
-        ComponentStructs.clear();
+        PropertyTables.clear();
         SelectedEntities.clear();
     }
 
@@ -604,63 +584,27 @@ namespace Lumina
         return Root;
     }
 
-    entt::entity FPrefabEditorTool::CreateEntityAtRoot(const char* DisplayName)
+    void FPrefabEditorTool::OnEntityCreatedInScene(entt::entity Entity)
     {
-        entt::registry& WorldRegistry = World->GetEntityRegistry();
+        entt::registry& Registry = World->GetEntityRegistry();
 
-        // Resolve parent root BEFORE creating the new entity. Otherwise the
-        // fresh entity (has SPrefabComponent, no parent) becomes its own root,
-        // self-parenting into an infinite ForEachChild loop.
+        // Resolve the root BEFORE tagging the new entity, or it becomes a root candidate itself.
         const entt::entity Root = FindPrefabRoot();
 
-        BeginTransaction();
+        Registry.emplace<SPrefabComponent>(Entity).StableID = FName(FGuid::New().ToShortString());
 
-        entt::entity NewEntity = WorldRegistry.create();
-        WorldRegistry.emplace<SNameComponent>(NewEntity).Name = FName(DisplayName);
-        WorldRegistry.emplace<STransformComponent>(NewEntity);
-        WorldRegistry.emplace<SPrefabComponent>(NewEntity).StableID = FName(FGuid::New().ToShortString());
-
-        if (Root != entt::null && Root != NewEntity)
+        if (Root != entt::null && Root != Entity)
         {
-            ECS::Utils::ReparentEntity(WorldRegistry, NewEntity, Root);
+            ECS::Utils::ReparentEntity(Registry, Entity, Root);
         }
 
-        EndTransaction("New Entity");
-
-        Asset->GetPackage()->MarkDirty();
         OutlinerListView.MarkTreeDirty();
-        return NewEntity;
     }
 
-    entt::entity FPrefabEditorTool::CreatePrimitiveEntityAtRoot(CStaticMesh* PrimitiveMesh, const char* DisplayName)
+    FTransform FPrefabEditorTool::GetNewEntitySpawnTransform() const
     {
-        if (PrimitiveMesh == nullptr)
-        {
-            return entt::null;
-        }
-
-        entt::registry& WorldRegistry = World->GetEntityRegistry();
-        const entt::entity Root = FindPrefabRoot();
-
-        BeginTransaction();
-
-        entt::entity NewEntity = WorldRegistry.create();
-        WorldRegistry.emplace<SNameComponent>(NewEntity).Name = FName(DisplayName);
-        WorldRegistry.emplace<STransformComponent>(NewEntity);
-        WorldRegistry.emplace<SPrefabComponent>(NewEntity).StableID = FName(FGuid::New().ToShortString());
-        SStaticMeshComponent& MeshComp = WorldRegistry.emplace<SStaticMeshComponent>(NewEntity);
-        MeshComp.StaticMesh = PrimitiveMesh;
-
-        if (Root != entt::null && Root != NewEntity)
-        {
-            ECS::Utils::ReparentEntity(WorldRegistry, NewEntity, Root);
-        }
-
-        EndTransaction("New Primitive");
-
-        Asset->GetPackage()->MarkDirty();
-        OutlinerListView.MarkTreeDirty();
-        return NewEntity;
+        // New prefab entities parent under the root at identity, not at the editor camera.
+        return FTransform();
     }
 
     void FPrefabEditorTool::RequestDestroyEntity(entt::entity Entity)
@@ -672,43 +616,10 @@ namespace Lumina
         EntityDestroyRequests.push(Entity);
     }
 
-    void FPrefabEditorTool::RemoveComponent(entt::entity Entity, CStruct* StructType)
+    bool FPrefabEditorTool::IsComponentHiddenInDetails(const CStruct* Type) const
     {
-        if (StructType == nullptr || World == nullptr)
-        {
-            return;
-        }
-
-        entt::registry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity))
-        {
-            return;
-        }
-
-        bool bRemoved = false;
-        ECS::Utils::ForEachComponent(Registry, Entity,
-            [&](void*, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
-        {
-            using namespace entt::literals;
-            if (entt::meta_any Any = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
-            {
-                if (Any.cast<CStruct*>() == StructType)
-                {
-                    Set.remove(Entity);
-                    bRemoved = true;
-                }
-            }
-        });
-
-        if (bRemoved)
-        {
-            bPropertyTablesDirty = true;
-            Asset->GetPackage()->MarkDirty();
-        }
-        else
-        {
-            ImGuiX::Notifications::NotifyError("Failed to remove component: {0}", StructType->GetName().c_str());
-        }
+        // Hide tags (base) plus the prefab's internal bookkeeping component.
+        return Super::IsComponentHiddenInDetails(Type) || (Type != nullptr && Type->GetName() == FName("SPrefabComponent"));
     }
 
     void FPrefabEditorTool::ResetSelectionTransform()
@@ -749,140 +660,6 @@ namespace Lumina
         Asset->GetPackage()->MarkDirty();
     }
 
-    void FPrefabEditorTool::SetSingleSelectedEntity(entt::entity Entity)
-    {
-        if (World == nullptr)
-        {
-            return;
-        }
-        entt::registry& Registry = World->GetEntityRegistry();
-        if (Entity != entt::null && !Registry.valid(Entity))
-        {
-            Entity = entt::null;
-        }
-
-        Registry.clear<FSelectedInEditorComponent>();
-        Registry.clear<FLastSelectedTag>();
-        SelectedEntities.clear();
-
-        if (Entity != entt::null)
-        {
-            SelectedEntities.insert(Entity);
-            Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
-            Registry.emplace_or_replace<FLastSelectedTag>(Entity);
-        }
-    }
-
-    void FPrefabEditorTool::AddSelectedEntity(entt::entity Entity, bool bRebuild)
-    {
-        if (World == nullptr)
-        {
-            return;
-        }
-        entt::registry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity))
-        {
-            return;
-        }
-
-        SelectedEntities.insert(Entity);
-        Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
-        Registry.clear<FLastSelectedTag>();
-        Registry.emplace_or_replace<FLastSelectedTag>(Entity);
-
-        if (bRebuild)
-        {
-            OutlinerListView.MarkTreeDirty();
-        }
-    }
-
-    void FPrefabEditorTool::RemoveSelectedEntity(entt::entity Entity)
-    {
-        if (World == nullptr || Entity == entt::null)
-        {
-            return;
-        }
-
-        auto It = SelectedEntities.find(Entity);
-        if (It == SelectedEntities.end())
-        {
-            return;
-        }
-        SelectedEntities.erase(It);
-
-        entt::registry& Registry = World->GetEntityRegistry();
-        if (Registry.valid(Entity))
-        {
-            Registry.remove<FSelectedInEditorComponent>(Entity);
-        }
-
-        // If the deselected entity was the focal one, pick a fresh last-selected from the
-        // remaining set so the property panel doesn't blank.
-        if (GetLastSelectedEntity() == Entity)
-        {
-            Registry.clear<FLastSelectedTag>();
-            for (entt::entity Candidate : SelectedEntities)
-            {
-                if (Registry.valid(Candidate))
-                {
-                    Registry.emplace_or_replace<FLastSelectedTag>(Candidate);
-                    break;
-                }
-            }
-        }
-    }
-
-    void FPrefabEditorTool::ToggleSelectedEntity(entt::entity Entity)
-    {
-        if (IsEntitySelected(Entity))
-        {
-            RemoveSelectedEntity(Entity);
-        }
-        else
-        {
-            AddSelectedEntity(Entity, false);
-        }
-    }
-
-    void FPrefabEditorTool::ClearSelectedEntities()
-    {
-        if (World == nullptr)
-        {
-            SelectedEntities.clear();
-            return;
-        }
-        World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
-        World->GetEntityRegistry().clear<FLastSelectedTag>();
-        SelectedEntities.clear();
-    }
-
-    void FPrefabEditorTool::ResyncSelectionFromRegistry()
-    {
-        SelectedEntities.clear();
-        if (World == nullptr)
-        {
-            return;
-        }
-        World->GetEntityRegistry().view<FSelectedInEditorComponent>().each([&](entt::entity Entity)
-        {
-            SelectedEntities.insert(Entity);
-        });
-    }
-
-    entt::entity FPrefabEditorTool::GetLastSelectedEntity() const
-    {
-        if (World == nullptr)
-        {
-            return entt::null;
-        }
-        entt::entity Last = entt::null;
-        World->GetEntityRegistry().view<FLastSelectedTag>().each([&](entt::entity E)
-        {
-            Last = E;
-        });
-        return Last;
-    }
-
     void FPrefabEditorTool::FrameAllEntities()
     {
         if (World == nullptr)
@@ -919,123 +696,10 @@ namespace Lumina
         EditorTransform.SetRotation(Math::FindLookAtRotation(Center, Center - Forward * Distance));
     }
 
-    void FPrefabEditorTool::DrawAddEntityButton()
+    bool FPrefabEditorTool::IsOutlinerEntityVisible(entt::entity Entity) const
     {
-        if (ImGui::Button(LE_ICON_PLUS " Add Entity"))
-        {
-            ImGui::OpenPopup("##AddEntityRoot");
-        }
-
-        if (ImGui::BeginPopup("##AddEntityRoot"))
-        {
-            if (ImGui::MenuItem(LE_ICON_CUBE " Empty Entity"))
-            {
-                entt::entity New = CreateEntityAtRoot();
-                if (New != entt::null)
-                {
-                    SetSingleSelectedEntity(New);
-                }
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::Separator();
-            DrawAddPrimitiveMenu(entt::null);
-
-            ImGui::EndPopup();
-        }
-    }
-
-    void FPrefabEditorTool::DrawAddPrimitiveMenu(entt::entity Entity)
-    {
-        struct FPrimitiveEntry
-        {
-            const char* Label;
-            const char* EntityName;
-            CStaticMesh* (*GetMesh)();
-        };
-        static const FPrimitiveEntry PrimitiveEntries[] =
-        {
-            { LE_ICON_CUBE         " Cube",     "Cube",     []() -> CStaticMesh* { return CPrimitiveManager::Get().CubeMesh; } },
-            { LE_ICON_CIRCLE       " Sphere",   "Sphere",   []() -> CStaticMesh* { return CPrimitiveManager::Get().SphereMesh; } },
-            { LE_ICON_SQUARE       " Plane",    "Plane",    []() -> CStaticMesh* { return CPrimitiveManager::Get().PlaneMesh; } },
-            { LE_ICON_CYLINDER     " Cylinder", "Cylinder", []() -> CStaticMesh* { return CPrimitiveManager::Get().CylinderMesh; } },
-            { LE_ICON_CONE         " Cone",     "Cone",     []() -> CStaticMesh* { return CPrimitiveManager::Get().ConeMesh; } },
-            { LE_ICON_GAS_CYLINDER " Capsule",  "Capsule",  []() -> CStaticMesh* { return CPrimitiveManager::Get().CapsuleMesh; } },
-        };
-
-        for (const FPrimitiveEntry& Entry : PrimitiveEntries)
-        {
-            if (ImGui::MenuItem(Entry.Label))
-            {
-                if (Entity != entt::null && World->GetEntityRegistry().valid(Entity))
-                {
-                    BeginTransaction();
-                    SStaticMeshComponent& MeshComp = World->GetEntityRegistry().emplace_or_replace<SStaticMeshComponent>(Entity);
-                    MeshComp.StaticMesh = Entry.GetMesh();
-                    EndTransaction("Set Primitive Mesh");
-                    bPropertyTablesDirty = true;
-                    Asset->GetPackage()->MarkDirty();
-                }
-                else
-                {
-                    entt::entity New = CreatePrimitiveEntityAtRoot(Entry.GetMesh(), Entry.EntityName);
-                    if (New != entt::null)
-                    {
-                        SetSingleSelectedEntity(New);
-                    }
-                }
-            }
-        }
-    }
-
-    void FPrefabEditorTool::RebuildOutlinerTree(FTreeListView& Tree)
-    {
-        entt::registry& Registry = World->GetEntityRegistry();
-
-        TFunction<void(entt::entity, FTreeNodeID)> AddRecursive;
-        AddRecursive = [&](entt::entity WorldEntity, FTreeNodeID ParentItem)
-        {
-            const SNameComponent* NameComp = Registry.try_get<SNameComponent>(WorldEntity);
-            const FFixedString DisplayName = EditorEntityUtils::MakeOutlinerDisplayName(NameComp, WorldEntity);
-
-            FTreeNodeID ItemEntity = Tree.CreateNode(ParentItem, FStringView(DisplayName.data(), DisplayName.length()));
-            FTreeNodeDisplay& Display = Tree.Get<FTreeNodeDisplay>(ItemEntity);
-            Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(WorldEntity))).c_str();
-            Display.bAllowRenaming = true;
-
-            FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
-            State.bDisabled = Registry.any_of<SDisabledTag>(WorldEntity);
-
-            Tree.EmplaceUserData<FEntityListViewItemData>(ItemEntity).Entity = WorldEntity;
-
-            if (Registry.any_of<FSelectedInEditorComponent>(WorldEntity))
-            {
-                State.bSelected = true;
-            }
-
-            ECS::Utils::ForEachChild(Registry, WorldEntity, [&](entt::entity Child)
-            {
-                AddRecursive(Child, ItemEntity);
-            });
-        };
-
-        // Only show prefab-tagged entities in the outliner. The root has no prefab parent.
-        TVector<entt::entity> Roots;
-        Registry.view<SPrefabComponent>().each([&](entt::entity E, const SPrefabComponent&)
-        {
-            const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(E);
-            const bool bHasPrefabParent = Rel && Rel->Parent != entt::null &&
-                Registry.any_of<SPrefabComponent>(Rel->Parent);
-            if (!bHasPrefabParent)
-            {
-                Roots.push_back(E);
-            }
-        });
-
-        for (entt::entity Root : Roots)
-        {
-            AddRecursive(Root, InvalidTreeNode);
-        }
+        // Only prefab-owned entities belong in the outliner; preview lights/floor/camera are hidden.
+        return Super::IsOutlinerEntityVisible(Entity) && GetSceneRegistry().any_of<SPrefabComponent>(Entity);
     }
 
     void FPrefabEditorTool::HandleOutlinerDragDrop(FTreeListView& Tree, entt::entity DropItem)
@@ -1119,7 +783,7 @@ namespace Lumina
             // Existing entity was modified in-place (e.g. material override applied to mesh slot).
             EndTransaction("Drop Asset");
             Asset->GetPackage()->MarkDirty();
-            bPropertyTablesDirty = true;
+            bDetailsDirty = true;
         }
         else
         {
@@ -1148,9 +812,8 @@ namespace Lumina
             return entt::null;
         }
 
-        // Force unique stable IDs across the whole subtree. The duplicate copies the source's
-        // SPrefabComponent (and all descendant copies) verbatim, which would collide with the
-        // source's entity-pairing on save.
+        // Force unique stable IDs across the subtree; the duplicate copies the source's
+        // SPrefabComponent verbatim, which would collide with its entity-pairing on save.
         auto FreshenStableID = [&](entt::entity E)
         {
             if (SPrefabComponent* Prefab = Registry.try_get<SPrefabComponent>(E))
@@ -1267,375 +930,20 @@ namespace Lumina
         }
     }
 
-    void FPrefabEditorTool::DrawOutliner(bool bFocused)
+    void FPrefabEditorTool::HandleOutlinerEmptyAreaDrop()
     {
-        if (World == nullptr)
+        // A content-browser asset dropped on empty space spawns under the prefab root.
+        const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+        if (Peek && Peek->Kind == DragDrop::EPayloadKind::Asset && DragDrop::IsDelivered())
         {
-            return;
-        }
-
-        DrawAddEntityButton();
-        ImGui::SameLine();
-
-        const float SearchWidth = ImGui::GetContentRegionAvail().x;
-        ImGui::SetNextItemWidth(SearchWidth);
-        if (OutlinerNameFilter.Draw("##PrefabSearch"))
-        {
-            OutlinerListView.InvalidateVisibleList();
-        }
-
-        if (!OutlinerNameFilter.IsActive())
-        {
-            const ImGuiStyle& Style = ImGui::GetStyle();
-            ImDrawList* DrawList = ImGui::GetWindowDrawList();
-            ImVec2 TextPos = ImGui::GetItemRectMin();
-            TextPos.x += Style.FramePadding.x + 2.0f;
-            TextPos.y += Style.FramePadding.y;
-            DrawList->AddText(TextPos, IM_COL32(110, 110, 110, 255), LE_ICON_FILE_SEARCH " Search...");
-        }
-
-        ImGui::Separator();
-
-        // Stat row: total prefab entity count + a manual rebuild button.
-        size_t EntityCount = 0;
-        World->GetEntityRegistry().view<SPrefabComponent>().each([&](entt::entity, const SPrefabComponent&)
-        {
-            ++EntityCount;
-        });
-        ImGui::Text(LE_ICON_FORMAT_LIST_NUMBERED " Entities: %zu", EntityCount);
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 24 - ImGui::GetStyle().FramePadding.x);
-        if (ImGui::Button(LE_ICON_REFRESH))
-        {
-            OutlinerListView.MarkTreeDirty();
-        }
-
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.1f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-        if (ImGui::BeginChild("##PrefabEntityList", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar))
-        {
-            OutlinerListView.Draw(OutlinerContext);
-
-            // Drop into empty area drops onto the prefab root.
-            if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(), ImGui::GetCurrentWindow()->ID))
-            {
-                const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
-                if (Peek && Peek->Kind == DragDrop::EPayloadKind::Asset && DragDrop::IsDelivered())
-                {
-                    HandlePrefabContentDrop(FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size()), entt::null);
-                }
-                ImGui::EndDragDropTarget();
-            }
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-    }
-
-    void FPrefabEditorTool::DrawAddComponentButton(entt::entity Entity)
-    {
-        if (!ImGui::Button(LE_ICON_PLUS " Add Component"))
-        {
-            return;
-        }
-        AddComponentFilter.Clear();
-        ImGui::OpenPopup("##AddPrefabComponent");
-    }
-
-    void FPrefabEditorTool::RebuildPropertyTables(entt::entity Entity)
-    {
-        ComponentPropertyTables.clear();
-        ComponentStructs.clear();
-
-        if (World == nullptr || !World->GetEntityRegistry().valid(Entity))
-        {
-            return;
-        }
-
-        using namespace entt::literals;
-
-        entt::registry& Registry = World->GetEntityRegistry();
-
-        struct FPair { void* Ptr; CStruct* Struct; };
-        TVector<FPair> Sorted;
-
-        ECS::Utils::ForEachComponent(Registry, Entity, [&](void* CompPtr, entt::basic_sparse_set<>& /*Storage*/, entt::meta_type MetaType)
-        {
-            entt::meta_any StructAny = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
-            if (!StructAny)
-            {
-                return;
-            }
-
-            CStruct* Struct = StructAny.cast<CStruct*>();
-            if (Struct == nullptr)
-            {
-                return;
-            }
-
-            // Hide tool-internal bookkeeping from the property panel; it's never user-editable.
-            const FName StructName = Struct->GetName();
-            if (StructName == FName("SPrefabComponent"))
-            {
-                return;
-            }
-
-            Sorted.push_back({ CompPtr, Struct });
-        });
-
-        // Same priority ordering the world editor uses: name → transform → everything else alphabetically.
-        eastl::sort(Sorted.begin(), Sorted.end(), [&](const FPair& LHS, const FPair& RHS)
-        {
-            auto Priority = [](const CStruct* Type)
-            {
-                if (Type == SNameComponent::StaticStruct())      return 0;
-                if (Type == STransformComponent::StaticStruct()) return 1;
-                return 2;
-            };
-
-            const uint32 APriority = Priority(LHS.Struct);
-            const uint32 BPriority = Priority(RHS.Struct);
-            if (APriority != BPriority)
-            {
-                return APriority < BPriority;
-            }
-            return LHS.Struct->MakeDisplayName() < RHS.Struct->MakeDisplayName();
-        });
-
-        for (const FPair& Pair : Sorted)
-        {
-            auto Table = MakeUnique<FPropertyTable>(Pair.Ptr, Pair.Struct);
-            Table->SetPreEditCallback([this](const FPropertyChangedEvent&)
-            {
-                BeginTransaction();
-            });
-            Table->SetFinishEditCallback([this](const FPropertyChangedEvent& Event)
-            {
-                EndTransaction(Event.PropertyName);
-            });
-            Table->SetPostEditCallback([this](const FPropertyChangedEvent&)
-            {
-                if (Asset && Asset->GetPackage())
-                {
-                    Asset->GetPackage()->MarkDirty();
-                }
-            });
-            ComponentPropertyTables.push_back(eastl::move(Table));
-            ComponentStructs.push_back(Pair.Struct);
+            HandlePrefabContentDrop(FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size()), entt::null);
         }
     }
 
-    void FPrefabEditorTool::DrawComponentList(entt::entity Entity)
+    bool FPrefabEditorTool::CanDeleteEntity(entt::entity Entity) const
     {
-        for (size_t i = 0; i < ComponentPropertyTables.size(); ++i)
-        {
-            DrawComponentHeader(ComponentPropertyTables[i], Entity, ComponentStructs[i]);
-            ImGui::Spacing();
-        }
-    }
-
-    void FPrefabEditorTool::DrawComponentHeader(const TUniquePtr<FPropertyTable>& Table, entt::entity Entity, CStruct* StructType)
-    {
-        const bool bIsRequired = (StructType == STransformComponent::StaticStruct() || StructType == SNameComponent::StaticStruct());
-
-        ImGui::PushID(Table.get());
-
-        constexpr ImGuiTableFlags Flags =
-            ImGuiTableFlags_BordersOuter |
-            ImGuiTableFlags_NoBordersInBodyUntilResize |
-            ImGuiTableFlags_SizingFixedFit;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 10.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
-        bool bIsOpen = false;
-        if (ImGui::BeginTable("##GridTable", 1, Flags))
-        {
-            ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-
-            ImGui::PushStyleColor(ImGuiCol_Header, 0xFF3A3A3A);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0xFF484848);
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0xFF404040);
-            ImGui::SetNextItemAllowOverlap();
-            bIsOpen = ImGui::CollapsingHeader(StructType->MakeDisplayName().c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
-            ImGui::PopStyleColor(3);
-
-            if (!bIsRequired)
-            {
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 28.0f);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.0f, 0.0f, 0.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.25f, 0.25f, 0.8f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.2f, 0.2f, 0.9f));
-                if (ImGui::SmallButton(LE_ICON_TRASH_CAN "##Remove"))
-                {
-                    BeginTransaction();
-                    RemoveComponent(Entity, StructType);
-                    EndTransaction("Remove Component");
-                }
-                ImGui::PopStyleColor(3);
-                if (ImGui::IsItemHovered())
-                {
-                    ImGui::SetTooltip("Remove component");
-                }
-            }
-
-            ImGui::EndTable();
-        }
-        ImGui::PopStyleVar(2);
-
-        if (bIsOpen)
-        {
-            Table->DrawTree();
-        }
-
-        ImGui::PopID();
-    }
-
-    void FPrefabEditorTool::DrawEmptyState()
-    {
-        ImVec2 WindowSize = ImGui::GetWindowSize();
-        ImVec2 CenterPos = ImVec2(WindowSize.x * 0.5f - 100.0f, WindowSize.y * 0.5f - 40.0f);
-        ImGui::SetCursorPos(CenterPos);
-
-        ImGui::BeginGroup();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.45f, 1.0f));
-        ImGui::TextUnformatted(LE_ICON_INBOX "  Nothing selected");
-        ImGui::PopStyleColor();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 0.3f, 0.35f, 1.0f));
-        ImGui::TextUnformatted("Select an entity to edit its properties.");
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-    }
-
-    void FPrefabEditorTool::DrawEntityProperties(bool bFocused)
-    {
-        if (World == nullptr)
-        {
-            return;
-        }
-
-        entt::registry& Registry = World->GetEntityRegistry();
-        const entt::entity SelectedEntity = GetLastSelectedEntity();
-        if (SelectedEntity == entt::null || !Registry.valid(SelectedEntity))
-        {
-            DrawEmptyState();
-            return;
-        }
-
-        if (SNameComponent* Name = Registry.try_get<SNameComponent>(SelectedEntity))
-        {
-            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::LargeBold);
-            ImGui::TextUnformatted(Name->Name.c_str());
-            ImGui::PopFont();
-
-            char Buffer[128];
-            const FString NameStr = Name->Name.ToString();
-            std::snprintf(Buffer, sizeof(Buffer), "%s", NameStr.c_str());
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputText("##Rename", Buffer, sizeof(Buffer), ImGuiInputTextFlags_EnterReturnsTrue))
-            {
-                BeginTransaction();
-                Name->Name = FName(Buffer);
-                EndTransaction("Rename");
-                OutlinerListView.MarkTreeDirty();
-                Asset->GetPackage()->MarkDirty();
-            }
-        }
-
-        // Multi-select badge so it's obvious when typing affects more than one entity downstream.
-        if (SelectedEntities.size() > 1)
-        {
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-            ImGui::Text("(+%zu more selected)", SelectedEntities.size() - 1);
-            ImGui::PopStyleColor();
-        }
-
-        ImGui::Separator();
-
-        DrawAddComponentButton(SelectedEntity);
-        ImGui::SameLine();
-
-        const entt::entity Root = FindPrefabRoot();
-        ImGui::BeginDisabled(SelectedEntity == Root);
-        if (ImGui::Button(LE_ICON_DELETE " Delete Entity"))
-        {
-            RequestDestroyEntity(SelectedEntity);
-        }
-        ImGui::EndDisabled();
-        if (SelectedEntity == Root && ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("The prefab root cannot be deleted.");
-        }
-
-        if (ImGui::BeginPopup("##AddPrefabComponent"))
-        {
-            using namespace entt::literals;
-
-            ImGui::SetNextItemWidth(250.0f);
-            AddComponentFilter.Draw("##Search", 250.0f);
-
-            TVector<TPair<entt::meta_type, CStruct*>> Sorted;
-            for (auto&& [ID, MetaType] : entt::resolve())
-            {
-                ECS::ETraits Traits = MetaType.traits<ECS::ETraits>();
-                if (!EnumHasAllFlags(Traits, ECS::ETraits::Component))
-                {
-                    continue;
-                }
-
-                entt::meta_any StructAny = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
-                if (!StructAny)
-                {
-                    continue;
-                }
-
-                CStruct* Struct = StructAny.cast<CStruct*>();
-                if (Struct == nullptr || Struct->HasMeta("HideInComponentList"))
-                {
-                    continue;
-                }
-
-                const FString DisplayName = Struct->MakeDisplayName().c_str();
-                if (!AddComponentFilter.PassFilter(DisplayName.c_str()))
-                {
-                    continue;
-                }
-
-                Sorted.emplace_back(MetaType, Struct);
-            }
-
-            eastl::sort(Sorted.begin(), Sorted.end(), [](const auto& LHS, const auto& RHS)
-            {
-                return LHS.second->MakeDisplayName() < RHS.second->MakeDisplayName();
-            });
-
-            const float ChildHeight = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
-            if (ImGui::BeginChild("##PrefabComponentList", ImVec2(0, ChildHeight), true))
-            {
-                for (auto&& [MetaType, Struct] : Sorted)
-                {
-                    if (ImGui::Selectable(Struct->MakeDisplayName().c_str()))
-                    {
-                        BeginTransaction();
-                        ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
-                            entt::forward_as_meta(Registry), SelectedEntity, entt::forward_as_meta(entt::meta_any{}));
-                        EndTransaction("Add Component");
-                        bPropertyTablesDirty = true;
-                        Asset->GetPackage()->MarkDirty();
-                    }
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::EndPopup();
-        }
-
-        ImGui::Separator();
-
-        DrawComponentList(SelectedEntity);
+        // The prefab root is structural and cannot be deleted.
+        return Entity != FindPrefabRoot();
     }
 
     void FPrefabEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
@@ -1673,6 +981,46 @@ namespace Lumina
                     HandlePrefabContentDrop(FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size()), entt::null);
                 }
                 ImGui::EndDragDropTarget();
+            }
+        }
+
+        // Viewport entity picking: left-click a prefab entity to select it (Ctrl-click toggles).
+        // Selects the actual clicked entity (children included) — no instance-root resolution here.
+        if (bViewportHovered)
+        {
+            IRenderScene* Renderer = World->GetRenderer();
+            if (Renderer != nullptr && Renderer->GetRenderTarget() != nullptr)
+            {
+                const uint32 PickerWidth  = Renderer->GetRenderTarget()->GetExtent().x;
+                const uint32 PickerHeight = Renderer->GetRenderTarget()->GetExtent().y;
+
+                const ImVec2 WinPos = ImGui::GetWindowPos();
+                const ImVec2 Mouse  = ImGui::GetMousePos();
+                const float LocalX = Math::Clamp(Mouse.x - WinPos.x, 0.0f, ViewportSize.x - 1.0f);
+                const float LocalY = Math::Clamp(Mouse.y - WinPos.y, 0.0f, ViewportSize.y - 1.0f);
+                const uint32 TexX = static_cast<uint32>(LocalX * static_cast<float>(PickerWidth)  / ViewportSize.x);
+                const uint32 TexY = static_cast<uint32>(LocalY * static_cast<float>(PickerHeight) / ViewportSize.y);
+
+                // Publish the cursor so the renderer reads back the pixel under it.
+                Renderer->SetPickerCursor(TexX, TexY, true);
+
+                const bool bOverGizmo = (bImGuizmoUsedOnce && ImGuizmo::IsOver()) || ImGuizmo::IsUsing();
+                if (!bOverGizmo && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    entt::entity Hit = Renderer->GetEntityAtPixel(TexX, TexY);
+                    entt::registry& Registry = World->GetEntityRegistry();
+                    if (Hit != entt::null && Registry.valid(Hit) && Registry.any_of<SPrefabComponent>(Hit))
+                    {
+                        if (ImGui::GetIO().KeyCtrl)
+                        {
+                            ToggleSelectedEntity(Hit);
+                        }
+                        else
+                        {
+                            SetSingleSelectedEntity(Hit);
+                        }
+                    }
+                }
             }
         }
 
@@ -1734,9 +1082,8 @@ namespace Lumina
 
             entt::registry& Registry = World->GetEntityRegistry();
 
-            // Pivot delta in world space. Apply the same translation/rotation to every selected
-            // entity so multi-select drags move as a rigid group; scale is per-entity to avoid
-            // skew artefacts when selection has mixed parent transforms.
+            // Apply the same world translation/rotation to every selected entity (rigid group);
+            // scale stays per-entity to avoid skew under mixed parent transforms.
             FMatrix4 DeltaWorld = EntityMatrix * Math::Inverse(PreManipulate);
             FVector3 DeltaTranslation, DeltaScale, DeltaSkew;
             FQuat DeltaRotation;
@@ -1806,90 +1153,9 @@ namespace Lumina
         }
     }
 
-    void FPrefabEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
+    const char* FPrefabEditorTool::GetGizmoConfigSection() const
     {
-        // Compact in-viewport toolbar mirroring the world editor's gizmo strip.
-        const float ButtonSize = 28.0f;
-
-        if (BeginViewportToolbarGroup("PrefabGizmoBar", ImVec2(0, 0), ImVec2(4, 4)))
-        {
-            auto GizmoButton = [&](const char* Icon, const char* Tooltip, ImGuizmo::OPERATION Op)
-            {
-                const bool bActive = (GuizmoOp == Op);
-                if (bActive)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.5f, 0.85f, 1.0f));
-                }
-                if (ImGui::Button(Icon, ImVec2(ButtonSize, ButtonSize)))
-                {
-                    GuizmoOp = Op;
-                }
-                if (bActive)
-                {
-                    ImGui::PopStyleColor();
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-                {
-                    ImGui::SetTooltip("%s", Tooltip);
-                }
-                ImGui::SameLine();
-            };
-
-            GizmoButton(LE_ICON_AXIS_ARROW,         "Translate (W)", ImGuizmo::TRANSLATE);
-            GizmoButton(LE_ICON_ROTATE_ORBIT,       "Rotate (E)",    ImGuizmo::ROTATE);
-            GizmoButton(LE_ICON_RESIZE,             "Scale (R)",     ImGuizmo::SCALE);
-
-            // Mode toggle (X).
-            const char* ModeLabel = (GuizmoMode == ImGuizmo::WORLD) ? LE_ICON_EARTH : LE_ICON_AXIS_ARROW_LOCK;
-            if (ImGui::Button(ModeLabel, ImVec2(ButtonSize, ButtonSize)))
-            {
-                EditorEntityUtils::ToggleGizmoMode(GuizmoMode);
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip(GuizmoMode == ImGuizmo::WORLD ? "World space (X)" : "Local space (X)");
-            }
-            ImGui::SameLine();
-
-            // Snap toggle + popup.
-            if (bGuizmoSnapEnabled)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.5f, 0.85f, 1.0f));
-            }
-            if (ImGui::Button(LE_ICON_GRID, ImVec2(ButtonSize, ButtonSize)))
-            {
-                bGuizmoSnapEnabled = !bGuizmoSnapEnabled;
-            }
-            if (bGuizmoSnapEnabled)
-            {
-                ImGui::PopStyleColor();
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Toggle gizmo snap");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(LE_ICON_COG "##SnapSettings", ImVec2(ButtonSize, ButtonSize)))
-            {
-                ImGui::OpenPopup("##PrefabSnapSettings");
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Snap step settings");
-            }
-
-            EndViewportToolbarGroup();
-        }
-
-        if (ImGui::BeginPopup("##PrefabSnapSettings"))
-        {
-            ImGui::TextUnformatted("Snap Steps");
-            ImGui::Separator();
-            ImGui::DragFloat("Translate", &GuizmoSnapTranslate, 0.01f, 0.001f, 100.0f);
-            ImGui::DragFloat("Rotate (deg)", &GuizmoSnapRotate, 0.5f, 0.1f, 90.0f);
-            ImGui::DragFloat("Scale", &GuizmoSnapScale, 0.01f, 0.001f, 10.0f);
-            ImGui::EndPopup();
-        }
+        return "Editor.PrefabEditorTool";
     }
 
     void FPrefabEditorTool::DrawHelpMenu()

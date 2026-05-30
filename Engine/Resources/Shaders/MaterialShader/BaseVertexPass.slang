@@ -6,10 +6,8 @@ struct VSOutput
     float4 FragColor                : COLOR;
     float4 NormalVS                 : NORMAL_VS;
     float4 NormalWS                 : NORMAL_WS;
-    // xyz: world-space tangent (forward-transformed by the model matrix);
-    //   w: MikkTSpace handedness sign for B = cross(N, T) * w. Re-
-    // orthogonalize against the interpolated NormalWS in the pixel shader
-    // to recover the per-pixel TBN under non-uniform model scale.
+    // xyz: world-space tangent; w: MikkTSpace handedness for B = cross(N, T) * w.
+    // Re-orthogonalized against NormalWS per-pixel to absorb non-uniform-scale skew.
     float4 TangentWS                : TANGENT_WS;
     float4 FragPos                  : FRAG_POS;
     float2 UV                       : TEXCOORD0;
@@ -72,15 +70,11 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
     float3 NormalWS         = mul(NormalMatrixWS, VertexData.Normal);
     float3 NormalVS         = normalize(mul((float3x3)View, NormalWS));
 
-    // Tangents take the forward 3x3 (not the inverse-transpose used for
-    // the normal): they're directions *in* the surface, not perpendicular
-    // to it. Re-orthogonalization happens per-pixel against the interpolated
-    // NormalWS to absorb any non-uniform-scale skew.
+    // Tangents take the forward 3x3 (not the normal's inverse-transpose): they lie in the surface.
+    // Re-orthogonalized per-pixel against NormalWS.
     float3 TangentWS        = mul((float3x3)ModelMatrix, VertexData.Tangent.xyz);
 
-    // Material vertex graph emission (e.g. WorldPositionOffset). The token
-    // expands to assignments into `Material`; default substitution is a
-    // zero-init so unmodified materials produce identical geometry.
+    // Material vertex graph emission (e.g. WorldPositionOffset); zero-init default leaves geometry unchanged.
     FMaterialVertexInputs Material;
     $MATERIAL_VERTEX_INPUTS
     WorldPos.xyz += Material.WorldPositionOffset;

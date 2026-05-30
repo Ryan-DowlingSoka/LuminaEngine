@@ -12,13 +12,8 @@ namespace Lumina
 {
     namespace
     {
-        // Strip Luau comments so the literal scanner doesn't pick up
-        // commented-out Asset.Hard("…") examples in docs. Walks string
-        // literals as opaque blocks so a `--` inside a string never opens
-        // a comment, and a `]]` inside one never closes a long comment.
-        // String contents are preserved as-is (over-discovery from a real
-        // asset path embedded in a string is benign; under-discovery from
-        // mis-stripping is not).
+        // Strip Luau comments so the scanner skips commented-out Asset.Hard("…") examples; string literals walked as opaque blocks so `--`/`]]` inside them don't open/close comments.
+        // String contents preserved as-is (over-discovery is benign, mis-stripping under-discovery is not).
         FString StripComments(FStringView Src)
         {
             FString Out;
@@ -84,9 +79,7 @@ namespace Lumina
                     continue;
                 }
 
-                // Long-bracket string literal (no `--` prefix). Preserve
-                // verbatim so the scanner can see contents but a closing
-                // `]]` inside it never escapes the literal.
+                // Long-bracket string literal (no `--` prefix); preserved verbatim so a `]]` inside never escapes the literal.
                 size_t StrLevel = 0;
                 if (c == '[' && MatchLongBracketOpen(i, StrLevel))
                 {
@@ -141,10 +134,7 @@ namespace Lumina
             return Src.substr(Start, Pos - Start);
         }
 
-        // For each `Asset.<FnName>(` occurrence, capture the first
-        // string-literal argument and emit it. Left-anchored so user
-        // variables like `MyAsset.Hard(...)` don't false-match the
-        // global `Asset.Hard(...)` we're actually looking for.
+        // For each `Asset.<FnName>(`, capture the first string-literal arg; left-anchored so `MyAsset.Hard(...)` doesn't false-match the global `Asset.Hard(...)`.
         void ScanCallSites(FStringView Src, FStringView FnName, TVector<FString>& Out)
         {
             FString Token = "Asset.";
@@ -181,13 +171,8 @@ namespace Lumina
             }
         }
 
-        // Bare `require("/Game/Scripts/Foo")` style calls. We deliberately
-        // ignore Luau-relative requires (`./Foo`) and dotted module names
-        // (`Stdlib.Foo`) — those are VM concerns and resolve against the
-        // engine's hardcoded script roots; absolute VFS paths are the only
-        // shape we can statically attribute to a cookable file. Mirrors the
-        // runtime resolver at FScriptingContext::ResolveModulePath which
-        // appends `.luau` when the user omits it.
+        // Bare `require("/Game/Scripts/Foo")` calls only; relative (`./Foo`) and dotted (`Stdlib.Foo`) are VM concerns we can't statically attribute to a cookable file.
+        // Mirrors FScriptingContext::ResolveModulePath, which appends `.luau` when omitted.
         void ScanRequireCalls(FStringView Src, TVector<FString>& Out)
         {
             const FStringView TokenView("require");
@@ -199,9 +184,7 @@ namespace Lumina
                 if (Hit == FStringView::npos) return;
                 Pos = Hit + TokenView.size();
 
-                // Reject member calls (`x.require(`) and any identifier-ish
-                // char immediately before `require` so we don't match the
-                // tail of a longer name.
+                // Reject member calls (`x.require(`) / identifier-tails so we don't match the end of a longer name.
                 if (Hit > 0)
                 {
                     const char Prev = Src[Hit - 1];
@@ -260,10 +243,7 @@ namespace Lumina
         THashSet<FString> VisitedScripts;
         TVector<FString>  Worklist;
 
-        // Seed: every .luau under the configured content roots. Chains
-        // through require() are followed below so .luau files referenced
-        // from outside the seed (e.g. /Engine/Resources/Content/Scripts)
-        // still get analyzed once a /Game-rooted script requires them.
+        // Seed: every .luau under the content roots; require() chains followed below so scripts outside the seed (e.g. /Engine/Resources/Content/Scripts) get analyzed once required.
         for (const FString& Root : VirtualRoots)
         {
             VFS::RecursiveDirectoryIterator(Root, [&](const VFS::FFileInfo& Info)
@@ -298,9 +278,7 @@ namespace Lumina
             {
                 FStringView CandView(Candidate.c_str(), Candidate.size());
 
-                // require() chains: a .luau candidate that exists on disk
-                // is queued for its own analysis, regardless of whether the
-                // registry knows about it (scripts are loose files today).
+                // require() chains: a .luau candidate on disk is queued for analysis even if the registry doesn't know it (scripts are loose files today).
                 if (IsLuauFile(CandView) && VFS::Exists(Candidate)
                     && VisitedScripts.find(Candidate) == VisitedScripts.end())
                 {

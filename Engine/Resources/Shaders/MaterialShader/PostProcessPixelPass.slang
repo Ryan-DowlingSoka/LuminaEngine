@@ -1,17 +1,13 @@
 #include "Includes/SceneGlobals.slang"
 
-// Post-process material template. Runs as a fullscreen pass after tone
-// mapping; the chain ping-pongs between the LDR target and a scratch
-// image so each material can read the previous output via uSceneColor.
-// The fragment shader returns Material.Emissive as the new scene color.
+// Post-process material template; fullscreen pass after tone mapping, ping-ponging LDR target and a
+// scratch image so each material reads the previous output via uSceneColor. Returns Material.Emissive.
 
 [[vk::binding(0, 2)]] Sampler2D uSceneColor;       // Current pass input (ping-pong source)
 [[vk::binding(1, 2)]] Sampler2D uSceneDepth;       // Opaque depth (raw NDC z, reverse-Z 0..1)
 [[vk::binding(2, 2)]] Sampler2D uHDRSceneColor;    // Pre-tone-mapping HDR scene color
 
-// Convert raw NDC depth into linear view-space distance from the camera.
-// Matches the project's reverse-Z perspective. Caller passes raw [0, 1]
-// depth; output is in world units along view -Z.
+// Raw reverse-Z NDC depth [0,1] -> linear view-space distance (world units along view -Z).
 float LinearizeSceneDepth(float RawDepth)
 {
     float ZNear = GetNearPlane();

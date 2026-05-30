@@ -1,9 +1,7 @@
 #pragma once
 #include "Platform/GenericPlatform.h"
 
-/**
-* Traits class which tests if a type is a signed integral type.
- */
+/** Traits class testing if a type is a signed integral type. */
 template <typename T>
 struct TIsSigned
 {

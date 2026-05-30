@@ -3,15 +3,8 @@
 
 namespace Lumina
 {
-    /**
-     * Godot-style project settings editor. Reads the FConfig registry to
-     * group declared settings by category and render the right widget per
-     * type (Path -> file picker, Color -> ColorEdit4, Enum -> Combo, etc.).
-     *
-     * Unregistered values that exist on disk are still present and writable
-     * via the script/console paths, but they don't appear here — declaring
-     * a setting with FConfig::RegisterSetting is what makes it visible.
-     */
+    // Project settings editor: groups FConfig-declared settings by category with a per-type
+    // widget. Only settings registered via FConfig::RegisterSetting appear here.
     class FProjectSettingsEditorTool : public FEditorTool
     {
     public:

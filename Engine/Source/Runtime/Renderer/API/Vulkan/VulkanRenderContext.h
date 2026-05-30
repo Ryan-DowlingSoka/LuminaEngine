@@ -50,10 +50,8 @@ namespace Lumina
         HostImageCopy,
     };
 
-    // Pipeline states moved to dynamic so descs differing only in these no longer mint a
-    // separate PSO. Cull/front-face/depth are core in Vulkan 1.4 (always on); the EDS3
-    // states are gated per-feature on VK_EXT_extended_dynamic_state3 and fall back to
-    // baked-in-the-PSO when unsupported.
+    // Dynamic states so descs differing only here don't mint a separate PSO. Cull/front-face/depth
+    // are core in 1.4; EDS3 states gate on VK_EXT_extended_dynamic_state3, else bake into the PSO.
     struct FDynamicPipelineStates
     {
         bool bCullMode           = false;
@@ -180,8 +178,6 @@ namespace Lumina
         NODISCARD VkInstance GetVulkanInstance() const { return VulkanInstance; }
         NODISCARD FVulkanDevice* GetDevice() const { return VulkanDevice; }
         NODISCARD FVulkanSwapchain* GetSwapchain() const { return Swapchain; }
-        
-        //-------------------------------------------------------------------------------------
 
         NODISCARD FRHIEventQueryRef CreateEventQuery() override;
         void SetEventQuery(IEventQuery* Query, ECommandQueue Queue) override;
@@ -200,17 +196,12 @@ namespace Lumina
         void ResetPipelineStatsQuery(IPipelineStatsQuery* Query) override;
 
         void AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn) override;
-        
-        //-------------------------------------------------------------------------------------
 
         NODISCARD void* MapBuffer(FRHIBuffer* Buffer) override;
         NODISCARD void UnMapBuffer(FRHIBuffer* Buffer) override;
         NODISCARD FRHIBufferRef CreateBuffer(const FRHIBufferDesc& Description) override;
         NODISCARD FRHIBufferRef CreateBuffer(ICommandList* CommandList, const void* InitialData, const FRHIBufferDesc& Description) override;
         NODISCARD uint64 GetAlignedSizeForBuffer(uint64 Size, TBitFlags<EBufferUsageFlags> Usage) override;
-
-        
-        //-------------------------------------------------------------------------------------
 
         NODISCARD FRHIViewportRef CreateViewport(const FUIntVector2& Size, FString&& DebugName) override;
         
@@ -220,9 +211,6 @@ namespace Lumina
         
         NODISCARD FRHIImageRef CreateImage(const FRHIImageDesc& ImageSpec) override;
         NODISCARD FRHISamplerRef CreateSampler(const FSamplerDesc& SamplerDesc) override;
-        
-        
-        //-------------------------------------------------------------------------------------
 
         NODISCARD FRHIVertexShaderRef CreateVertexShader(const FShaderHeader& Shader) override;
         NODISCARD FRHIPixelShaderRef CreatePixelShader(const FShaderHeader& Shader) override;
@@ -232,9 +220,6 @@ namespace Lumina
         NODISCARD IShaderCompiler* GetShaderCompiler() const override;
         NODISCARD FRHIShaderLibraryRef GetShaderLibrary() const override;
         void OnShaderCompiled(FRHIShader* Shader, bool bAddToLibrary, bool bReloadPipelines) override;
-
-        
-        //-------------------------------------------------------------------------------------
 
         void ClearBindingCaches() override;
         NODISCARD FRHIDescriptorTableRef CreateDescriptorTable(FRHIBindingLayout* InLayout) override;
@@ -256,8 +241,6 @@ namespace Lumina
         NODISCARD VkQueryPool GetTimerQueryPool() const { return TimerQueryPool; }
         NODISCARD VkQueryPool GetPipelineStatsQueryPool() const { return PipelineStatsQueryPool; }
 
-        //-------------------------------------------------------------------------------------
-
         void SetObjectName(IRHIResource* Resource, const char* Name, EAPIResourceType Type) override;
         
         void FlushPendingDeletes() override;
@@ -265,9 +248,8 @@ namespace Lumina
         void SetVulkanObjectName(FName Name, VkObjectType ObjectType, uint64 Handle);
         FVulkanRenderContextFunctions& GetDebugUtils();
 
-        // VK_KHR_unified_image_layouts: when enabled, GENERAL is universally optimal,
-        // so every image stays in GENERAL for its whole life and no layout transitions
-        // are issued (the swapchain still needs PRESENT_SRC to present).
+        // VK_KHR_unified_image_layouts: every image stays GENERAL for life, no transitions issued
+        // (swapchain still needs PRESENT_SRC to present).
         FORCEINLINE bool SupportsUnifiedImageLayouts() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::UnifiedImageLayouts); }
 
         // VK_EXT_memory_priority (not core in 1.4): gates VMA's MEMORY_PRIORITY allocator bit;
@@ -288,8 +270,7 @@ namespace Lumina
         FORCEINLINE VkExtent2D GetMaxShadingRate() const { return ShadingRateMax; }
 
         // Collapses any optimal layout to GENERAL when unified layouts are active.
-        // PRESENT_SRC and UNDEFINED pass through (present is the one real transition,
-        // UNDEFINED is the initial discard).
+        // PRESENT_SRC (the one real transition) and UNDEFINED (initial discard) pass through.
         FORCEINLINE VkImageLayout GetEffectiveImageLayout(VkImageLayout Layout) const
         {
             if (SupportsUnifiedImageLayouts() && Layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && Layout != VK_IMAGE_LAYOUT_UNDEFINED)
@@ -300,8 +281,7 @@ namespace Lumina
         }
 
         // Which pipeline states are dynamic on this device (see FDynamicPipelineStates).
-        // Read by both pipeline creation (which states to declare dynamic + canonicalize
-        // out of the cache key) and SetGraphicsState (which vkCmdSet* to issue).
+        // Read by pipeline creation (declare dynamic + canonicalize the cache key) and SetGraphicsState.
         FORCEINLINE const FDynamicPipelineStates& GetDynamicPipelineStates() const { return DynamicPipelineStates; }
 
     private:
@@ -328,11 +308,8 @@ namespace Lumina
         
         FVulkanPipelineCache                                PipelineCache;
 
-        // Owning storage: graphics always owns; compute/transfer own a slot only
-        // when they have a distinct queue family. QueueByType is the resolver --
-        // it maps each ECommandQueue to its effective FQueue, aliasing onto the
-        // graphics (or compute) queue when families collapse onto one. Always go
-        // through GetQueue()/QueueByType, never index Queues directly for submits.
+        // Owning storage; QueueByType resolves each ECommandQueue to its effective FQueue,
+        // aliasing when families collapse. Submit via GetQueue()/QueueByType, never index Queues.
         FQueueArray                                         Queues;
         FQueue*                                             QueueByType[(uint32)ECommandQueue::Num] = {};
 

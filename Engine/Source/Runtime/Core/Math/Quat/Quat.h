@@ -4,12 +4,8 @@
 #include "Core/LuminaMacros.h"
 #include <cmath>
 
-// Lumina quaternion. Memory layout is x,y,z,w (imaginary first, real last) and the
-// 4-scalar constructor takes the real part FIRST — TQuat(w, x, y, z). Left-handed;
-// unit quaternions represent rotations.
-//
-// Plain members (no union) so the type is standard-layout and offsetof on x/y/z/w
-// is well-defined for reflection.
+// Lumina quaternion. Layout x,y,z,w but the 4-scalar ctor takes real FIRST: TQuat(w,x,y,z).
+// Left-handed; plain members (no union) so offsetof on x/y/z/w is well-defined for reflection.
 
 #if defined(_MSC_VER)
     #pragma warning(push)
@@ -121,13 +117,8 @@ namespace Lumina
     using FDoubleQuat = TQuat<double>;
 }
 
-// Reflection-parser-only shim for FQuat. ManualStub tag tells codegen to
-// skip T::StaticStruct() since the runtime alias has no such member.
-// Layout matches TQuat<float>: x,y,z,w as plain floats.
-//
-// See VectorTypes.h for the rationale on defining REFLECT/PROPERTY locally
-// instead of including ObjectMacros.h (an ObjectMacros include here would
-// reach Archiver -> Math -> Vector -> Quat and form a cycle).
+// Reflection-parser-only shim for FQuat; ManualStub tells codegen to skip StaticStruct().
+// REFLECT/PROPERTY defined locally (not via ObjectMacros.h) to avoid an include cycle.
 #ifdef REFLECTION_PARSER
 #ifndef REFLECT
 #define REFLECT(...)

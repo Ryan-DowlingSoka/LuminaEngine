@@ -8,11 +8,8 @@
 
 namespace Lumina
 {
-    /**
-     * Opaque handle returned by FTimerManager::SetTimer. Safe to keep across frames,
-     * the underlying entt::entity is generational, so a stale handle will report invalid
-     * through FTimerManager::IsTimerActive even if the slot is later recycled.
-     */
+    // Opaque handle from FTimerManager::SetTimer; safe across frames. The underlying entt::entity is
+    // generational, so a stale handle reports invalid via IsTimerActive even after the slot is recycled.
     struct FTimerHandle
     {
         entt::entity Handle = entt::null;
@@ -23,24 +20,8 @@ namespace Lumina
         bool operator==(const FTimerHandle& Other) const { return Handle == Other.Handle; }
     };
 
-    /**
-     * Per-world timer manager. Drives one-shot and looping callbacks against the
-     * world's delta time. Ticks advance only while the world is unpaused.
-     *
-     * Lua API (available as the "Timer" global inside every script):
-     *
-     *   local h = Timer:Delay(1.5, function() print("hi") end)
-     *   local h = Timer:SetTimer(0.5, function() ... end, true)       -- looping
-     *   Timer:SetEntityTimer(self.Entity, 2.0, function() ... end)    -- auto-cleared on entity destroy
-     *   Timer:ClearTimer(h)
-     *   Timer:PauseTimer(h, true)
-     *   local remaining = Timer:GetTimerRemaining(h)
-     *
-     *   -- Coroutine: yield the current script coroutine for `seconds`. Must be called
-     *   -- from a script lifecycle entry point (Update/OnReady/OnAttach/OnDetach) or a
-     *   -- coroutine spawned from one. The wait is auto-cleared if the owning entity dies.
-     *   Timer:Wait(seconds)
-     */
+    // Per-world timer manager: one-shot + looping callbacks against the world's delta time, advancing
+    // only while unpaused. Exposed to scripts as the "Timer" global (Delay/SetTimer/ClearTimer/Wait/...).
     class RUNTIME_API FTimerManager
     {
     public:
@@ -93,9 +74,8 @@ namespace Lumina
         float        GetTimerRemaining_Lua(entt::entity Handle) const;
         void         PauseTimer_Lua(entt::entity Handle, bool bPause);
 
-        // Raw lua_CFunction: yields the calling coroutine and schedules a one-shot timer
-        // that resumes it after `seconds`. Bound via TClass::AddRawFunction since the
-        // templated Invoker path can't represent functions that yield.
+        // Raw lua_CFunction: yields the coroutine and schedules a one-shot timer to resume it after
+        // `seconds`. Bound via AddRawFunction since the templated Invoker can't represent yielding functions.
         static int   Wait_Lua(struct lua_State* L);
 
         entt::entity CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback, Lua::FRef LuaCallback);

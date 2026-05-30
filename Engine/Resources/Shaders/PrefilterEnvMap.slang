@@ -1,17 +1,8 @@
 #include "Includes/Sky.slang"
 #include "Includes/IBL.slang"
 
-// GGX pre-filtered environment map (Karis 2013 split-sum, "first sum").
-// Each output mip corresponds to a fixed roughness; the runtime shader
-// samples the right mip for its surface roughness:
-//
-//     mip = Roughness * (NumMips - 1)
-//     Specular = SamplePrefilter(R, mip) * (F * BRDF_LUT.x + BRDF_LUT.y)
-//
-// The C++ side dispatches this once per mip with a private UAV view of
-// just that mip and a Roughness push constant; mip 0 collapses to a
-// near-mirror sample because GGX with roughness=0 returns H = N for every
-// sample, so L = R for every sample.
+// GGX pre-filtered environment map (Karis 2013 split-sum "first sum"); each mip = a fixed roughness,
+// sampled at runtime as mip = Roughness * (NumMips - 1). Dispatched once per mip with a Roughness push constant.
 
 [[vk::binding(0, 0)]] SamplerCube                              uSrcCube;
 [[vk::binding(1, 0)]] RWTexture2DArray<float4>                 uOutMip;
@@ -41,9 +32,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 
     float2 UV = (float2(DTid.xy) + 0.5) / float2(Width, Height);
 
-    // Karis split-sum approximation: V = N = R. Loses the off-axis
-    // anisotropy of the real specular lobe but gets us a pre-integrated
-    // mip chain indexable by the runtime's reflection vector.
+    // Karis split-sum: V = N = R. Drops off-axis lobe anisotropy for a mip chain indexable by R.
     float3 N = CubeFaceDirection(DTid.z, UV);
     float3 R = N;
     float3 V = N;
@@ -61,9 +50,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 
         if (NdotL > 0.0)
         {
-            // NdotL weighting matches the reference UE4 / learnopengl
-            // implementation: brighter samples toward N count more,
-            // grazing samples are de-emphasized.
+            // NdotL weighting (UE4 / learnopengl): samples toward N count more, grazing less.
             Sum    += uSrcCube.SampleLevel(L, 0.0).rgb * NdotL;
             Weight += NdotL;
         }

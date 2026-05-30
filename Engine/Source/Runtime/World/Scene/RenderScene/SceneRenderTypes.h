@@ -375,9 +375,8 @@ namespace Lumina
         // Per-cascade shadow-map resolution; xyzw = cascades 0..3.
         FVector4           CascadeResolutions{};
 
-        // Directional shadow tuning from SDirectionalLightComponent.
-        // x = normal-bias scale, y = constant depth bias, z = PCSS softness (light size),
-        // w = cascade cross-fade fraction.
+        // Directional shadow tuning (SDirectionalLightComponent): x = normal-bias scale, y = depth bias,
+        // z = PCSS softness (light size), w = cascade cross-fade fraction.
         FVector4           ShadowParams{ 1.0f, 0.0f, 0.05f, 0.20f };
         // x = far-cascade distance-fade fraction; yzw reserved.
         FVector4           ShadowParams2{ 0.15f, 0.0f, 0.0f, 0.0f };
@@ -395,7 +394,14 @@ namespace Lumina
         float   Thickness;
         bool    bDepthTest;
     };
-    
+
+    struct FSolidBatch
+    {
+        uint32  StartVertex;
+        uint32  VertexCount;
+        bool    bDepthTest;
+    };
+
     struct FSSAOSettings
     {
         float Radius = 1.0f;
@@ -481,9 +487,8 @@ namespace Lumina
         uint32          BoneOffset;
         uint32          MaterialIndex;
         uint32          EntityID;
-        // Base index into the pre-skinned vertex buffer for this instance's entity.
-        // The skinning compute pass writes there; the draw VS reads from it instead of
-        // re-skinning. 0 for static (non-skinned) instances.
+        // Base index into the pre-skinned vertex buffer; the skinning pass writes there, the draw VS
+        // reads instead of re-skinning. 0 for static instances.
         uint32          SkinnedVertexBase;
         uint32          _Pad1;
         uint32          _Pad2;
@@ -492,10 +497,8 @@ namespace Lumina
     static_assert(sizeof(FGPUInstance) == 144, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
 
-    // One per skinned vertex (per entity, per meshlet-vertex), produced by the skinning compute
-    // pass and consumed by every draw VS. Holds the COMPLETE vertex (UV/Color carried through)
-    // so the draw VS reads only this buffer, never the source skinned vertex. Position is
-    // full-precision; normal/tangent reuse the source octahedral packing. All-scalar => 28 B.
+    // One per skinned vertex, produced by the skinning pass and read by every draw VS. Holds the COMPLETE
+    // vertex so the VS never touches the source. Position full-precision; normal/tangent octahedral. 28 B.
     struct FPreSkinnedVertex
     {
         float       Px;
@@ -523,9 +526,8 @@ namespace Lumina
     };
     static_assert(sizeof(FSkinDescriptor) == 24, "FSkinDescriptor must match shader");
 
-    // A bone skinning matrix with its always-(0,0,0,1) last row dropped: the first 3 rows of
-    // the 4x4 (row r = (M[0][r], M[1][r], M[2][r], M[3][r]) in column-major storage).
-    // 48 B vs 64 B, lossless for affine transforms. Read only by the skinning compute now.
+    // Bone skinning matrix with its always-(0,0,0,1) last row dropped: first 3 rows of the 4x4.
+    // 48 B vs 64 B, lossless for affine transforms. Read only by the skinning compute.
     struct FBoneTransform
     {
         FVector4   Row0;

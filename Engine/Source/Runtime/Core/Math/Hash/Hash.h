@@ -41,8 +41,6 @@ namespace Lumina::Hash
 			return GetHash32(data.data(), data.size());
 		}
 
-		//-------------------------------------------------------------------------
-
 		RUNTIME_API uint64 GetHash64(void const* Data, size_t Size);
 
 		inline uint64 GetHash64(const FString& String)

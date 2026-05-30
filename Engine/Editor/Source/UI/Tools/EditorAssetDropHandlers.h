@@ -11,9 +11,8 @@ namespace Lumina
     class CWorld;
     class CObject;
 
-    // Spawns or applies an asset to a world. Called when a content-browser tile is dropped on a
-    // viewport (DropTarget = entt::null) or on an outliner row (DropTarget = that row's entity).
-    // Returns the affected entity (newly created or DropTarget); entt::null on failure.
+    // Spawns/applies a dropped asset. DropTarget = entt::null for a viewport drop, else the outliner
+    // row's entity. Returns the affected entity (created or DropTarget); entt::null on failure.
     using FEditorAssetDropHandler = TFunction<entt::entity(CWorld* World, CObject* Asset, const FTransform& SpawnTransform, entt::entity DropTarget)>;
 
     class FEditorAssetDropRegistry

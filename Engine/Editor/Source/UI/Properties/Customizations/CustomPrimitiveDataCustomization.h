@@ -22,10 +22,8 @@ namespace Lumina
         SCustomPrimitiveData Value;
         ImGuiTextFilter SearchFilter;
 
-        // Edits are buffered in Value and only written to the container via UpdatePropertyValue.
-        // Emit Started on the change frame and Finished the next so the edit is wrapped in an
-        // undo transaction instead of a bare Updated that never opens or commits one. A drag
-        // across many frames folds into the single open transaction via the Updated branch.
+        // Edits buffer in Value, written via UpdatePropertyValue. Started/Finished across
+        // two frames forms an undo transaction; multi-frame drags fold into the open one.
         bool bFinishPending = false;
     };
 }

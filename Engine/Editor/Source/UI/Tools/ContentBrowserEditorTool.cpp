@@ -20,6 +20,7 @@
 #include <cstdarg>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <iterator>
 #include <string>
 #include <Assets/AssetRegistry/AssetData.h>
@@ -55,8 +56,47 @@
 
 namespace Lumina
 {
+    // Starter contents for a freshly created Lua entity script. Lives at
+    // Templates/Scripts/EntityScript.luau so it can be edited without a
+    // rebuild; the inline fallback only fires if that file is missing.
+    FString LoadNewEntityScriptTemplate()
+    {
+        const FString& EngineDir = Paths::GetEngineInstallDirectory();
+        if (!EngineDir.empty())
+        {
+            const FFixedString TemplatePath =
+                Paths::Combine(EngineDir, "Templates", "Scripts", "EntityScript.luau");
+
+            std::ifstream Input(TemplatePath.c_str(), std::ios::binary);
+            if (Input.is_open())
+            {
+                std::string Contents(
+                    (std::istreambuf_iterator<char>(Input)),
+                    std::istreambuf_iterator<char>());
+                if (!Contents.empty())
+                {
+                    return FString(Contents.c_str(), Contents.size());
+                }
+            }
+        }
+
+        return
+            "local EntityScript = require(\"Stdlib/EntityScript\")\n"
+            "local Script: EntityScript = EntityScript.new()\n"
+            "\n"
+            "function Script:OnReady()\n"
+            "end\n"
+            "\n"
+            "-- Per-frame tick in play mode. Define it and the engine ticks this entity.\n"
+            "function Script:OnUpdate(DeltaTime)\n"
+            "end\n"
+            "\n"
+            "return Script\n";
+    }
+
     namespace
     {
+
         constexpr ImVec4 kMenuBg            = ImVec4(0.10f, 0.10f, 0.12f, 0.98f);
         constexpr ImVec4 kMenuBorder        = ImVec4(0.22f, 0.23f, 0.27f, 1.00f);
         constexpr ImVec4 kMenuText          = ImVec4(0.90f, 0.90f, 0.93f, 1.00f);
@@ -233,7 +273,8 @@ namespace Lumina
 
         if (GEditorEngine->HasLoadedProject())
         {
-            SelectedPath = GEditorEngine->GetProjectContentDirectory();
+            // Virtual mount path, not the native content dir — the browser iterates VFS.
+            SelectedPath = "/Game";
         }
 
         const TVector<CFactory*>& Factories = CFactoryRegistry::Get().GetFactories();
@@ -601,6 +642,10 @@ namespace Lumina
             FTreeNodeID ItemEntity = Tree.CreateNode(Parent, FStringView(DisplayName.data(), DisplayName.length()), Hash::GetHash64(Info.PathSource));
             Tree.EmplaceUserData<FContentBrowserListViewItemData>(ItemEntity).Path.assign(Info.VirtualPath.begin(), Info.VirtualPath.end());
 
+            FTreeNodeDisplay& FolderDisplay = Tree.Get<FTreeNodeDisplay>(ItemEntity);
+            FolderDisplay.IconText = LE_ICON_FOLDER;
+            FolderDisplay.IconColor = ImVec4(0.93f, 0.79f, 0.36f, 1.0f);
+
             if (Info.VirtualPath == SelectedPath)
             {
                 FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
@@ -632,6 +677,11 @@ namespace Lumina
                 Name.assign(LE_ICON_FOLDER).append(" ").append(Label);
                 FTreeNodeID RootItem = Tree.CreateNode(InvalidTreeNode, FStringView(Name.data(), Name.length()), Hash::GetHash64(FStringView(Path).data(), FStringView(Path).length()));
                 Tree.EmplaceUserData<FContentBrowserListViewItemData>(RootItem).Path = Path;
+
+                FTreeNodeDisplay& RootDisplay = Tree.Get<FTreeNodeDisplay>(RootItem);
+                RootDisplay.IconText = LE_ICON_FOLDER;
+                RootDisplay.IconColor = ImVec4(0.93f, 0.79f, 0.36f, 1.0f);
+
                 Tree.MarkHasLazyChildren(RootItem);
                 return RootItem;
             };
@@ -952,9 +1002,8 @@ namespace Lumina
 
     void FContentBrowserEditorTool::OnProjectLoaded()
     {
-        // Tear down any prior set; project reload (or plugin reconfiguration)
-        // rebuilds it from scratch. FDirectoryWatcher's destructor stops its
-        // worker thread, so just clearing the vector is safe.
+        // Tear down any prior set; clearing is safe since FDirectoryWatcher's
+        // destructor stops its worker thread. Project reload rebuilds from scratch.
         for (FContentWatcher& W : Watchers)
         {
             if (W.Watcher) W.Watcher->Stop();
@@ -980,9 +1029,8 @@ namespace Lumina
             Entry.WatchRootLen = DiskRoot.size();
             Entry.Watcher      = MakeUnique<FDirectoryWatcher>();
 
-            // Capture the prefix + root length by value so the callback is
-            // self-contained even if Watchers ever reallocates (we hold
-            // TUniquePtr<FDirectoryWatcher>, so the watcher itself is stable).
+            // Capture prefix + root length by value so the callback is self-contained
+            // even if Watchers reallocates (the TUniquePtr'd watcher itself is stable).
             const FFixedString Prefix = Entry.VirtualPrefix;
             const size_t       RootLen = Entry.WatchRootLen;
 
@@ -1056,6 +1104,11 @@ namespace Lumina
             SpawnWatcher(FFixedString(Disk.c_str(), Disk.size()),
                          FStringView(Mount.c_str(), Mount.size()));
         }
+
+        // Land on the project's /Game root so the browser shows content immediately after a
+        // load instead of sitting on a stale/empty path.
+        SelectedPath = "/Game";
+        RefreshContentBrowser();
     }
 
     void FContentBrowserEditorTool::TryImport(const FFixedString& Path)
@@ -1726,7 +1779,7 @@ namespace Lumina
         {
             FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
             NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
-            VFS::WriteFile(NewScriptPath, "");
+            VFS::WriteFile(NewScriptPath, LoadNewEntityScriptTemplate());
             RefreshContentBrowser();
         }
 
@@ -1761,7 +1814,7 @@ namespace Lumina
         if (ImGui::MenuItem(LE_ICON_IMPORT " Import Asset..."))
         {
             FFixedString SelectedFile;
-            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj\0All Files (*.*)\0*.*\0";
+            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf\0All Files (*.*)\0*.*\0";
             if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
             {
                 TryImport(SelectedFile);

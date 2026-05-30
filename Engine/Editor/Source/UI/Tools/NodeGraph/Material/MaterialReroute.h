@@ -10,9 +10,8 @@ namespace Lumina
 
 namespace Lumina
 {
-    // Material-typed reroute. Hands the base reroute its CMaterialInput / CMaterialOutput pin
-    // classes so type-aware compiler walks (GetTypedInputValue, etc.) keep working when the user
-    // routes a connection through one of these.
+    // Material-typed reroute: hands the base reroute its CMaterialInput / CMaterialOutput pin classes
+    // so type-aware compiler walks (GetTypedInputValue, etc.) keep working through it.
     REFLECT()
     class CMaterialReroute : public CEdNode_Reroute
     {

@@ -60,21 +60,3 @@ namespace eastl
         size_t operator()(const Lumina::FStringHash& ID) const { return (uint64_t) ID; }
     };
 }
-
-/*namespace fmt
-{
-    template <>
-    struct formatter<Lumina::FStringHash>
-    {
-        constexpr auto parse(::fmt::format_parse_context& ctx) -> decltype(ctx.begin())
-        {
-            return ctx.begin();
-        }
-
-        template <typename FormatContext>
-        auto format(const Lumina::FName& str, FormatContext& ctx) -> decltype(ctx.out())
-        {
-            return fmt::format_to(ctx.out(), "{}", str.c_str());
-        }
-    };
-}*/

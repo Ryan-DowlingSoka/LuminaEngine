@@ -529,10 +529,8 @@ namespace Lumina::Import::Mesh
             }
         });
 
-        // Per-LOD grid: each LOD sizes its own grid to its own largest meshlet so a coarse
-        // sloppy LOD can't inflate the cell size that LOD 0 quantizes against. The grid is
-        // still shared by every meshlet within a LOD, so adjacent meshlets in a LOD snap a
-        // shared boundary vertex to the same cell and never crack.
+        // Per-LOD grid: each LOD sizes to its own largest meshlet (a coarse LOD can't inflate
+        // LOD 0's cell size); still shared within a LOD so adjacent meshlets snap and never crack.
         FVector3 LODOrigin[MAX_MESH_LODS];
         FVector3 LODInvStep[MAX_MESH_LODS];
         for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)

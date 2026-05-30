@@ -2,18 +2,8 @@
 #include "SceneGlobals.slang"
 #include "IBL.slang"
 
-// ============================================================================
-//  Runtime IBL ambient
-//
-//  Karis 2013 split-sum approximation:
-//
-//      Ambient = kD * SkyIrradiance(N) * Albedo
-//              + SkyPrefilter(R, roughness) * (F * BRDF_LUT.x + BRDF_LUT.y)
-//
-//  Where the irradiance map stores Irradiance/pi (so no extra /pi here),
-//  the prefilter map's mip is selected from material roughness, and the
-//  BRDF LUT integrates F0's scale + bias for the runtime to dot against.
-// ============================================================================
+// Runtime IBL ambient, Karis 2013 split-sum:
+//   Ambient = kD * SkyIrradiance(N) * Albedo + SkyPrefilter(R, roughness) * (F * BRDF_LUT.x + BRDF_LUT.y)
 
 float3 SampleIrradiance(float3 N)
 {
@@ -37,26 +27,15 @@ float2 SampleBRDFLUT(float NdotV, float Roughness)
     return uBRDFLut.SampleLevel(float2(saturate(NdotV), saturate(Roughness)), 0.0).rg;
 }
 
-// Frostbite specular occlusion (Lagarde & de Rousiers, "Moving Frostbite to
-// PBR", 2014). Scalar AO occludes diffuse uniformly, but the specular cone is
-// narrower and view-dependent, so reusing AO directly leaks glossy reflections
-// into cavities. This widens the occlusion with roughness and grazing angle so
-// the mirror term darkens in creases where it should.
+// Frostbite specular occlusion (Lagarde & de Rousiers, "Moving Frostbite to PBR", 2014).
+// Widens AO with roughness/grazing angle so the narrower specular cone doesn't leak into cavities.
 float ComputeSpecularOcclusion(float NdotV, float AO, float Roughness)
 {
     return saturate(pow(NdotV + AO, exp2(-16.0 * Roughness - 1.0)) - 1.0 + AO);
 }
 
-// Final IBL ambient term, energy-conserving. Adds Fdez-Aguera 2019 multiple-
-// scattering compensation on top of the Karis split-sum: a single-scatter
-// microfacet model discards the energy that bounces a second time off the
-// microsurface, which makes rough metals/dielectrics read too dark and
-// desaturated. The precomputed split-sum integral already carries everything
-// needed to add those bounces back at near-zero cost. AO occludes the diffuse
-// + multi-scatter term; specular occlusion (above) occludes the mirror term.
-//
-// N must be the *shading* normal; V points from the surface to the camera;
-// F0 / Roughness / Metallic / Albedo are the usual material inputs.
+// Energy-conserving IBL ambient: Karis split-sum + Fdez-Aguera 2019 multi-scatter compensation.
+// N is the shading normal; V points surface->camera. AO occludes diffuse+multi-scatter, SpecAO the mirror.
 float3 EvaluateIBLAmbient(float3 N, float3 V, float3 Albedo, float3 F0, float Roughness, float Metallic, float AO)
 {
     float  NdotV = saturate(dot(N, V));
@@ -64,15 +43,12 @@ float3 EvaluateIBLAmbient(float3 N, float3 V, float3 Albedo, float3 F0, float Ro
 
     float2 DFG = SampleBRDFLUT(NdotV, Roughness);   // (scale, bias)
 
-    // Roughness-aware Fresnel as the specular weight. Standard Schlick falls
-    // off too fast on rough surfaces; this clamps the (1 - cos)^5 envelope to
-    // (1 - R) so metals keep their colored grazing response.
+    // Roughness-aware Fresnel as the specular weight (clamps the (1 - cos)^5 envelope to (1 - R)).
     float3 kS     = FresnelSchlickRoughness(NdotV, F0, Roughness);
     float3 FssEss = kS * DFG.x + DFG.y;             // single-scatter specular
 
-    // Multiple-scattering compensation (Fdez-Aguera). Ems is the energy the
-    // single-scatter lobe failed to reflect; F_avg is the cosine-averaged
-    // Fresnel; the closed form sums the geometric series of remaining bounces.
+    // Multi-scatter compensation (Fdez-Aguera): Ems = energy the single-scatter lobe missed,
+    // Favg = cosine-averaged Fresnel; the closed form sums the remaining bounces.
     float  Ems    = saturate(1.0 - (DFG.x + DFG.y));
     float3 Favg   = F0 + (1.0 - F0) / 21.0;
     float3 FmsEms = (Ems * FssEss * Favg) / max(1.0 - Favg * Ems, 1e-4);

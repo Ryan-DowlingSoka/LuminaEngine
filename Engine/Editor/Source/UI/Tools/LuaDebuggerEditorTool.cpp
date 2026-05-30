@@ -127,9 +127,8 @@ namespace Lumina
 
         ImGui::EndDisabled();
 
-        // Global keyboard shortcuts. ImGuiKey_F5 is bound to Continue, etc.
-        // Only fire if the panel is the focused window so they don't steal
-        // user input from the code editor.
+        // Global debugger shortcuts (F5 = Continue, etc.); only fire when this panel
+        // is focused so they don't steal input from the code editor.
         if (bPaused)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_F5,  false)) Debugger.RequestContinue();

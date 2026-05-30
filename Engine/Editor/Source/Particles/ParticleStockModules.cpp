@@ -9,9 +9,7 @@ namespace Lumina
         return FString(eastl::to_string((uint32)Shape)) + "u";
     }
 
-    // -------------------------------------------------------------------------
-    //  Spawn modules
-    // -------------------------------------------------------------------------
+    // Spawn modules
 
     void CParticleModule_SpawnLocation::Generate(FParticleCompiler& Compiler, int32 ModuleIndex)
     {
@@ -75,9 +73,7 @@ namespace Lumina
         Compiler.EmitSpawn("P.RotationSpeed = radians(lerp(" + Lit(RotationSpeedRange.x) + ", " + Lit(RotationSpeedRange.y) + ", RandUnit(Seed)));");
     }
 
-    // -------------------------------------------------------------------------
-    //  Update modules
-    // -------------------------------------------------------------------------
+    // Update modules
 
     void CParticleModule_GravityForce::Generate(FParticleCompiler& Compiler, int32 ModuleIndex)
     {

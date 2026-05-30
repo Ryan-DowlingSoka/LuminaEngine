@@ -4,9 +4,8 @@
 
 namespace Lumina
 {
-    // Runtime counterpart to FObjectProperty for TSoftObjectPtr<T> /
-    // FSoftObjectPath. Serialize routes through FSoftObjectPath::operator<<
-    // so the saver records a Soft ImportTable entry for the cook graph.
+    // FObjectProperty counterpart for soft refs; Serialize routes through FSoftObjectPath::operator<<
+    // so the saver records a Soft ImportTable entry.
     class FSoftObjectProperty : public FProperty
     {
     public:

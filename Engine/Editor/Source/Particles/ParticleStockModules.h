@@ -19,9 +19,7 @@ namespace Lumina
         Cone,
     };
 
-    // -------------------------------------------------------------------------
-    //  Spawn modules
-    // -------------------------------------------------------------------------
+    // Spawn modules
 
     /** Places newborn particles by sampling an emitter shape and writing P.Position. */
     REFLECT()
@@ -150,9 +148,7 @@ namespace Lumina
         FVector2 RotationSpeedRange = FVector2(0.0f, 0.0f);
     };
 
-    // -------------------------------------------------------------------------
-    //  Update modules
-    // -------------------------------------------------------------------------
+    // Update modules
 
     /** Accelerates particles by a constant gravity vector. */
     REFLECT()

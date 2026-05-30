@@ -13,12 +13,7 @@ namespace Lumina
 {
     namespace
     {
-        // Global mutex guarding the rare "first resolve" GUID write on any
-        // FSoftObjectPath. Per-path mutexes would balloon the size of
-        // every soft pointer; this single lock is only contended during
-        // the brief registry lookup that happens at most once per (path,
-        // process) pair. Hot reads (CachedGUID already set) skip locking
-        // via the fast path below.
+        // Single global mutex for the rare first-resolve GUID write; hot reads skip it.
         std::mutex& ResolveMutex()
         {
             static std::mutex M;
@@ -45,9 +40,7 @@ namespace Lumina
             return false;
         }
 
-        // Serialise the GUID write so concurrent first-resolvers can't
-        // tear the 16-byte FGuid. The double-check inside the lock means
-        // we don't re-do the assignment if a peer beat us to it.
+        // Serialize the GUID write so concurrent first-resolvers can't tear the 16-byte FGuid.
         std::lock_guard<std::mutex> Lock(ResolveMutex());
         if (!CachedGUID.IsValid())
         {
@@ -62,10 +55,8 @@ namespace Lumina
         {
             return nullptr;
         }
-        // AssetManager API takes FFixedString; soft paths are FString so
-        // they can hold arbitrarily-deep package paths without truncation.
-        // The bridge construction here is the only narrowing; the load
-        // itself rejects oversize paths via its own bounds check.
+        // Soft paths are FString (deep package paths); narrow to FFixedString here,
+        // the load rejects oversize paths via its own bounds check.
         return FAssetManager::Get().LoadAssetSynchronous(
             FFixedString(Path.c_str(), Path.size()), CachedGUID);
     }
@@ -89,10 +80,8 @@ namespace Lumina
 
     FArchive& operator<<(FArchive& Ar, FSoftObjectPath& Self)
     {
-        // On-disk: path string + cached GUID. On write, resolve the path
-        // first so the persisted GUID is current, then nudge the archive's
-        // soft-ref hook so package savers can fold the GUID into their
-        // ImportTable as a Soft edge for the cook graph.
+        // On write, resolve first so the persisted GUID is current and the saver can fold
+        // it into the ImportTable as a Soft edge for the cook graph.
         if (Ar.IsWriting() && !Self.Path.empty() && !Self.CachedGUID.IsValid())
         {
             Self.TryResolve();

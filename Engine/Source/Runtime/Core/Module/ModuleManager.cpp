@@ -19,14 +19,8 @@ namespace Lumina
 
     IModuleInterface* FModuleManager::LoadModule(FStringView ModulePath)
     {
-        // Module names on disk look like "Foo-Development.dll"; the
-        // static registry is keyed by bare "Foo". Strip path + ext, then
-        // strip a trailing "-<CurrentConfig>" if present.
-        // Accept both full DLL paths and already-bare module names (the
-        // latter is how plugin manager calls into us in monolithic builds:
-        // there's no DLL on disk so it just passes the descriptor name).
-        // VFS::FileName returns empty when the input has no slash, so we
-        // fall back to the input itself in that case.
+        // Reduce "Foo-Development.dll" (or an already-bare name) to the registry key "Foo".
+        // VFS::FileName returns empty with no slash, so fall back to the input itself.
         FStringView FileNameView = VFS::FileName(ModulePath, true);
         FString BareName = FileNameView.empty()
             ? FString(ModulePath.data(), ModulePath.size())
@@ -50,9 +44,7 @@ namespace Lumina
         }
         const FName BareFName(BareName);
 
-        // Monolithic / pre-registered path: every module in a monolithic
-        // build, plus anything a test fixture might have AddStaticModuleFactory'd,
-        // lands here -- no LoadLibrary, no filesystem.
+        // Monolithic / pre-registered path: no LoadLibrary, no filesystem.
         if (ModuleInitFunc Factory = FindStaticFactory(BareFName))
         {
             IModuleInterface* ModuleInterface = Factory();
@@ -116,9 +108,8 @@ namespace Lumina
         StaticModuleFactories.emplace_back(Name, Factory);
     }
 
-    // Drain the intrusive linked list of pending static registrations into
-    // the FName-keyed map. Called lazily by FindStaticFactory on first use
-    // -- by then global allocators / FName pool are up.
+    // Drain pending static registrations into the FName map; called lazily on first
+    // FindStaticFactory use, by which point allocators / FName pool are up.
     static void DrainStaticRegistrationsOnce(FModuleManager& Mgr)
     {
         static bool bDrained = false;

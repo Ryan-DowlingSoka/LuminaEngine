@@ -5,11 +5,8 @@
 
 namespace Lumina
 {
-    // On-disk: Header | concatenated (possibly compressed) blobs | TOC at TocOffset.
-    // TOC entries (v3): u32 PathLen, char[PathLen] Path, u64 Offset, u64 CompressedSize,
-    //                   u64 UncompressedSize, u64 ContentHash (xxh64 of UNCOMPRESSED bytes),
-    //                   u8 Method, u8 Pad[7].
-    // TOC is last so blobs append without seeking.
+    // On-disk: Header | blobs | TOC at TocOffset (TOC last so blobs append without seeking).
+    // v3 TOC entry: u32 PathLen, char[PathLen], u64 Offset/CompressedSize/UncompressedSize/ContentHash(xxh64), u8 Method, u8 Pad[7].
 
     static constexpr uint32 PAK_MAGIC   = 0x4B41504Cu; // 'LPAK'
     static constexpr uint32 PAK_VERSION = 3u;

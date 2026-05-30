@@ -57,10 +57,8 @@ namespace Lumina
 
 		static FAssetRegistry& Get();
 
-		// Walks the engine + project + plugin content trees, extracts
-		// FAssetData (incl. Dependencies) for every .lasset. Skips unchanged
-		// entries on incremental passes via .assetdb cache (mtime + content
-		// hash). Async via Task::AsyncTask.
+		// Walks engine/project/plugin content, extracting FAssetData (incl. Dependencies) per .lasset.
+		// Incremental via .assetdb cache (mtime + content hash); async on Task::AsyncTask.
 		void RunInitialDiscovery();
 		void OnInitialDiscoveryCompleted();
 
@@ -73,15 +71,11 @@ namespace Lumina
 		FAssetData* GetAssetByPath(FStringView Path) const;
 		TVector<FAssetData*> FindByPredicate(const TFunction<bool(const FAssetData&)>& Predicate);
 
-		// Reverse-dep query: every asset that lists the given GUID in its
-		// Dependencies. O(1) average via the precomputed reverse map.
-		// Built lazily on first call after registry change.
+		// Every asset listing GUID in its Dependencies; O(1) avg via a reverse map built lazily after change.
 		TVector<FAssetData*> GetReferencersOf(const FGuid& GUID) const;
 
-		// Serialize the live registry to/from a binary archive. Same wire
-		// format as the on-disk .assetdb cache; the cooker uses these to
-		// bundle a pre-baked registry into the shipped PAK so the runtime
-		// can skip the full filesystem rescan at game start.
+		// Serialize the live registry (same wire format as the .assetdb cache); the cooker bundles a
+		// pre-baked registry into the PAK so the runtime skips the filesystem rescan at start.
 		void WriteToArchive(FArchive& Ar) const;
 		bool LoadFromArchive(FArchive& Ar);
 
@@ -92,12 +86,10 @@ namespace Lumina
 
 	private:
 
-		// Returns true iff the asset on disk is new or has changed since
-		// the cached entry was extracted; ProcessPackagePath then re-parses.
+		// True iff the on-disk asset is new or changed since the cached entry was extracted.
 		bool NeedsReextract(FStringView Path, int64 MTimeNs, uint64 ContentHash) const;
 
 		// Full parse: header + ImportTable -> FAssetData incl. Dependencies.
-		// The caller decides whether to insert/replace based on NeedsReextract.
 		void ProcessPackagePath(FStringView Path);
 
 		void ClearAssets();
@@ -106,18 +98,15 @@ namespace Lumina
 
 		void RecordFailedAsset(FStringView Path);
 
-		// Persistence to <EngineInstall>/Intermediates/AssetRegistry.assetdb.
-		// Binary, FArchive-serialized; tolerant of stale entries (caller
-		// re-validates each on next discovery via NeedsReextract).
+		// Persistence to <EngineInstall>/Intermediates/AssetRegistry.assetdb; stale entries re-validated on next discovery.
 		void SaveCache() const;
 		bool LoadCache();
 
 		// (Re)build the reverse-dep map from current Assets. Cheap O(N*avgDeps).
 		void RebuildReverseMap();
 
-		// Reap cached entries whose path is under a walked root but whose
-		// file wasn't visited this discovery (i.e. externally deleted).
-		// Disabled-plugin content is preserved — its mount isn't a walked root.
+		// Reap cached entries under a walked root not visited this discovery (externally deleted).
+		// Disabled-plugin content survives: its mount isn't a walked root.
 		void ReapStaleEntries();
 
 

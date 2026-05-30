@@ -15,9 +15,8 @@ namespace Lumina
     struct STransformComponent;
 }
 
-// Shared helpers used by FWorldEditorTool and FPrefabEditorTool — anything that
-// touches the editor-only tag set, the transform/gizmo math, or the outliner
-// row formatting belongs here so the two tools agree by construction.
+// Shared helpers for FWorldEditorTool and FPrefabEditorTool (editor-only tag set,
+// transform/gizmo math, outliner row formatting) so the two tools agree by construction.
 namespace Lumina::EditorEntityUtils
 {
     /** True for tags/components that are tool-internal bookkeeping and must NOT be
@@ -35,23 +34,19 @@ namespace Lumina::EditorEntityUtils
     /** WORLD ↔ LOCAL. */
     void ToggleGizmoMode(ImGuizmo::MODE& InOutMode);
 
-    /** Decompose a world-space matrix into the entity's local transform, accounting
-     *  for any parent. Writes Local{Location,Rotation,Scale} via the transform setters
-     *  so the dirty flag is raised. Safe to call when the entity has no parent. */
+    /** Decompose a world matrix into the entity's local transform (parent-aware); writes
+     *  via the transform setters so the dirty flag is raised. Safe with no parent. */
     void ApplyWorldMatrixToTransform(FEntityRegistry& Registry, entt::entity Entity, const FMatrix4& WorldMatrix);
 
     /** Standard formatting for an entity's outliner row: "<icon> <name> - (<id>)". */
     FFixedString MakeOutlinerDisplayName(const SNameComponent* Name, entt::entity Entity, const char* Icon = LE_ICON_CUBE);
 
-    /** Camera-frame focus helper: returns world-space center + radius covering Entity
-     *  and all descendants with mesh AABBs / transforms. Returns false if the entity
-     *  has nothing focusable. */
+    /** Returns world-space center + radius covering Entity and descendants (mesh AABBs/
+     *  transforms); false if nothing focusable. */
     bool ComputeFocusBoundsForEntity(FEntityRegistry& Registry, entt::entity Entity, FVector3& OutCenter, float& OutRadius);
 
-    /** Oriented box the editor draws around an entity: center = world location, half-extents
-     *  from the mesh AABB (+20% padding) for static/skeletal meshes, or a unit box scaled by the
-     *  transform for everything else. Returns false if the entity has no transform. The single
-     *  source of truth for selection/hover boxes so every entity type is treated identically. */
+    /** Single source of truth for selection/hover boxes: AABB+20% for meshes, else a unit box
+     *  scaled by the transform. Returns false if the entity has no transform. */
     bool GetEntityDrawBox(FEntityRegistry& Registry, entt::entity Entity, FVector3& OutCenter, FVector3& OutHalfExtents, FQuat& OutRotation);
 
     /** Hover-style wireframe bounds box around any entity (via GetEntityDrawBox). No-op if unbounded. */

@@ -50,9 +50,8 @@ namespace Lumina
 
         virtual CEdGraphNode* CreateNode(CClass* NodeClass);
 
-        // Picks a pin on NewNode that should be auto-connected to SourcePin when the user drops a
-        // drag-from-pin on empty space and creates a node from the popup. Default implementation
-        // returns the first opposite-direction pin the schema accepts. Override for type-aware matching.
+        // Picks a pin on NewNode to auto-connect to SourcePin after a drag-from-pin creates a node.
+        // Default returns the first opposite-direction pin the schema accepts; override for type-aware matching.
         virtual CEdNodeGraphPin* FindAutoConnectPin(CEdGraphNode* NewNode, CEdNodeGraphPin* SourcePin) const;
 
         // Connects SourcePin to TargetPin honoring the graph schema (breaks existing single-input links
@@ -65,14 +64,12 @@ namespace Lumina
         virtual void HandleQuickPlace(int Digit, ImVec2 CanvasPos) {}
         virtual void HandleQuickPlace(char Key, ImVec2 CanvasPos) {}
 
-        // Class returned here (when non-null) is instantiated when the user double-clicks an
-        // existing wire. The node is inserted at the click position and the wire is rerouted
-        // through it. Default is null -- graphs that want this UX (e.g. material) override.
+        // When non-null, instantiated on double-clicking a wire: inserted at the click and the wire
+        // reroutes through it. Default null; graphs wanting this UX (e.g. material) override.
         virtual CClass* GetRerouteNodeClass() const { return nullptr; }
 
-        // Splits the link between OutputPin -> InputPin by inserting a freshly-constructed reroute
-        // node at CanvasPos. No-op if GetRerouteNodeClass() returns null. Used by the double-click
-        // wire handler in DrawGraph; safe to call directly from custom UI as well.
+        // Splits OutputPin -> InputPin by inserting a reroute node at CanvasPos.
+        // No-op if GetRerouteNodeClass() returns null.
         CEdGraphNode* InsertRerouteOnLink(CEdNodeGraphPin* OutputPin, CEdNodeGraphPin* InputPin, ImVec2 CanvasPos);
 
         
@@ -83,15 +80,12 @@ namespace Lumina
         // editor uses this to descend into a node's sub-graph.
         void SetNodeDoubleClickedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeDoubleClickedCallback = Callback; }
 
-        // Fired every frame with the two pins of the currently selected link, or
-        // (null, null) when no single link is selected. Used by the state machine
-        // canvas to surface the selected transition in the properties panel.
+        // Fired every frame with the selected link's two pins, or (null, null) when none is selected.
+        // The state machine canvas uses it to surface the selected transition in the properties panel.
         void SetLinkSelectedCallback(const TFunction<void(CEdNodeGraphPin*, CEdNodeGraphPin*)>& Callback) { LinkSelectedCallback = Callback; }
 
-        // Transient per-frame debug overlay data, pushed by an asset editor while
-        // a graph is "running" (e.g. the animation graph preview). The draw loop
-        // animates link flow, prints live pin values, and highlights active nodes.
-        // All pointers are owned by the caller and only valid for the frame.
+        // Transient per-frame debug overlay data, pushed by an asset editor while a graph is "running";
+        // the draw loop animates link flow, prints pin values, highlights active nodes. Caller-owned, frame-only.
         struct FGraphDebugContext
         {
             bool                                            bEnabled = false;
@@ -106,10 +100,8 @@ namespace Lumina
         // Schema that governs what connections are allowed in this graph.
         virtual const FEdGraphSchema& GetSchema() const { return GetDefaultEdGraphSchema(); }
 
-        // When true, the draw loop calls CEdNodeGraphPin::DrawPin() for each
-        // unconnected input pin so pins can render inline editors (default
-        // values, enum combos) on the node face. Off for graphs that don't want
-        // it so their pin layout is unaffected.
+        // When true, the draw loop calls DrawPin() on each unconnected input pin so pins can render
+        // inline editors (default values, enum combos) on the node face.
         virtual bool ShouldDrawInlinePinEditors() const { return false; }
 
         // Package under which newly constructed nodes are allocated. Defaults to this graph's package,
@@ -122,9 +114,8 @@ namespace Lumina
         static bool GraphSaveSettings(const char* data, size_t size, ax::NodeEditor::SaveReasonFlags reason, void* userPointer);
         static size_t GraphLoadSettings(char* data, void* userPointer);
 
-        // Compact reroute renderer: single small dot, no header, no padding. Pushes the node's
-        // input/output connections into OutLinks just like the regular per-node loop so the link
-        // pass downstream picks up the wires going through this reroute.
+        // Compact reroute renderer (single dot, no header). Pushes the node's connections into OutLinks
+        // like the regular loop so the downstream link pass picks up wires through this reroute.
         void DrawRerouteNode(CEdGraphNode* Node, TVector<TPair<CEdNodeGraphPin*, CEdNodeGraphPin*>>& OutLinks);
 
         // Draws a pin's live debug value (when the debug context supplies one) as a

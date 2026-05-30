@@ -17,8 +17,7 @@ namespace Lumina
         Bool,
     };
 
-    // Comparison applied by a state-machine transition condition: the named
-    // parameter's current value is tested against the transition's CompareValue.
+    // Transition-condition comparison: the named parameter's value vs the transition's CompareValue.
     REFLECT()
     enum class EAnimTransitionCompare : uint8
     {
@@ -30,8 +29,7 @@ namespace Lumina
         NotEqual,
     };
 
-    // A graph parameter: a named value the editor and Lua scripts can tweak at
-    // runtime to drive blend weights, playback speeds, etc.
+    // A named value editor/Lua tweak at runtime to drive blend weights, playback speeds, etc.
     struct FAnimGraphParameter
     {
         FName Name;
@@ -47,30 +45,23 @@ namespace Lumina
         }
     };
 
-    // A single state-machine edge. Resolved from the editor's name-based
-    // transition definitions into state indices at compile time. The VM checks
-    // the condition each frame the FromState is active and, when it passes,
-    // cross-fades to ToState over BlendDuration seconds.
+    // One compiled state-machine edge; the VM cross-fades FromState->ToState over BlendDuration
+    // when the condition passes while FromState is active.
     struct FAnimGraphTransition
     {
-        // Index into the owning state machine's state list. -1 means "any
-        // state" -- the transition is checked regardless of the active state.
+        // -1 means "any state" (checked regardless of active state).
         int32 FromState = -1;
         int32 ToState = 0;
 
-        // Parameter compared against CompareValue to gate the transition. A
-        // parameter the graph does not declare evaluates as 0.
+        // Gating parameter; an undeclared parameter evaluates as 0.
         FName ConditionParameter;
         EAnimTransitionCompare Compare = EAnimTransitionCompare::Greater;
         float CompareValue = 0.0f;
 
-        // Cross-fade length in seconds. 0 snaps instantly.
+        // Cross-fade length in seconds; 0 snaps instantly.
         float BlendDuration = 0.2f;
 
-        // When true, the VM re-evaluates this transition's condition every
-        // frame *during* an ongoing cross-fade, so it can pre-empt the
-        // transition in flight. Default off: once a transition starts, it
-        // runs to completion.
+        // Re-evaluate the condition mid-cross-fade to pre-empt in flight; default off (runs to completion).
         bool bCanInterrupt = false;
 
         friend FArchive& operator << (FArchive& Ar, FAnimGraphTransition& Data)
@@ -86,9 +77,7 @@ namespace Lumina
         }
     };
 
-    // One bone of a bone mask: a per-bone weight applied during a masked blend.
-    // Bone names are resolved to skeleton bone indices at compile time and
-    // baked into FAnimGraphBoneMask::Weights for cheap runtime access.
+    // One bone of a bone mask; resolved to a skeleton index and baked into FAnimGraphBoneMask::Weights at compile.
     REFLECT()
     struct FAnimGraphBoneMaskBone
     {
@@ -103,9 +92,7 @@ namespace Lumina
         float Weight = 1.0f;
     };
 
-    // Editor-authored bone mask: a named list of (bone, weight) entries. The
-    // compiler resolves these against the skeleton and writes the per-bone
-    // weight array into the runtime FAnimGraphBoneMask table.
+    // Editor-authored bone mask (named (bone, weight) list); the compiler resolves it into a runtime FAnimGraphBoneMask.
     REFLECT()
     struct FAnimGraphBoneMaskDef
     {
@@ -120,8 +107,7 @@ namespace Lumina
         TVector<FAnimGraphBoneMaskBone> Bones;
     };
 
-    // Compiled bone mask: a dense per-bone weight array sized to the skeleton's
-    // bone count. The VM's BlendMasked op indexes this directly.
+    // Compiled bone mask: dense per-bone weight array (skeleton bone count); the VM's BlendMasked op indexes it directly.
     struct FAnimGraphBoneMask
     {
         TVector<float> Weights;
@@ -133,26 +119,21 @@ namespace Lumina
         }
     };
 
-    // A compiled state machine. Each state owns a pose register holding its
-    // (already evaluated) blend-tree pose; the VM picks the active state, runs
-    // transition conditions, and cross-fades between states. Mutable per-frame
-    // bookkeeping (active state, transition timer) lives in the per-instance
-    // FAnimGraphVMState.StateSlots, addressed by the *Slot indices below.
+    // Compiled state machine; each state owns a pose register. Per-frame bookkeeping (active state,
+    // timer) lives in per-instance FAnimGraphVMState.StateSlots, addressed by the *Slot indices below.
     struct FAnimGraphStateMachine
     {
-        // State entered when the VM state is first initialized.
+        // State entered on first init.
         int32 EntryState = 0;
 
         // One pose register per state, in state-index order.
         TVector<uint16> StatePoseRegisters;
 
-        // Outgoing edges, checked in list order; the first passing one wins.
+        // Outgoing edges, checked in list order; first passing wins.
         TVector<FAnimGraphTransition> Transitions;
 
-        // Indices into FAnimGraphVMState.StateSlots for this machine's
-        // persistent bookkeeping. CurrentState / FromState hold state indices
-        // (FromState is -1 when not mid-transition); Timer is elapsed transition
-        // time; Duration is the active transition's length.
+        // Slots into FAnimGraphVMState.StateSlots: Current/From state indices (From -1 when not
+        // transitioning), Timer elapsed, Duration of the active transition.
         uint16 CurrentStateSlot = 0;
         uint16 FromStateSlot = 0;
         uint16 TimerSlot = 0;
@@ -171,11 +152,8 @@ namespace Lumina
         }
     };
 
-    // Runtime animation-graph asset: a compiled bytecode program plus the
-    // resources and metadata its instructions reference. The editor authors a
-    // node graph (CAnimationGraphNodeGraph) and compiles it into this asset;
-    // SAnimationGraphComponent / SAnimationGraphSystem execute it each frame
-    // through FAnimationGraphVM.
+    // Runtime anim-graph asset: compiled bytecode + referenced resources/metadata. Editor compiles a
+    // CAnimationGraphNodeGraph into this; SAnimationGraphSystem runs it each frame via FAnimationGraphVM.
     REFLECT()
     class RUNTIME_API CAnimationGraph : public CObject
     {
@@ -196,9 +174,7 @@ namespace Lumina
         PROPERTY(Editable, Category = "Animation")
         TObjectPtr<CSkeleton> Skeleton;
 
-        /** Blackboard schema this graph reads parameters from. Get Parameter
-         *  nodes and transition conditions pick keys from it; at runtime the
-         *  values come from the entity's SBlackboardComponent. */
+        /** Blackboard schema graph parameters are picked from; runtime values come from SBlackboardComponent. */
         PROPERTY(Editable, Category = "Animation")
         TObjectPtr<CBlackboard> Blackboard;
 

@@ -576,11 +576,8 @@ namespace Lumina
 
     namespace
     {
-        // Build the on-disk byte sequence (uncompressed + compressed) for a
-        // package. Shared by editor save (write to disk + refresh loader)
-        // and cook save (return bytes only). Mutates Package->ExportTable
-        // and Package->ImportTable — both paths clear-then-repopulate so
-        // back-to-back saves stay consistent.
+        // Build the on-disk bytes for a package (shared by editor and cook save).
+        // Clears then repopulates Package->Export/ImportTable so back-to-back saves stay consistent.
         bool BuildPackageBytes(CPackage* Package, bool bCooking,
                                TVector<uint8>& OutUncompressed,
                                TVector<uint8>& OutCompressed)

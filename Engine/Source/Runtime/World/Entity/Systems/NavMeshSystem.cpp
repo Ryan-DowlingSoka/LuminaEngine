@@ -12,8 +12,10 @@
 #include "World/Entity/Components/NavMeshComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
+#include "World/Entity/Components/TerrainComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/World.h"
+#include "World/WorldTypes.h"
 #include "Scripting/Lua/Reference.h"
 #include "Scripting/Lua/Class.h"
 
@@ -25,11 +27,14 @@ namespace Lumina
     static TConsoleVar<bool>  CVarNavDrawDebug      ("Nav.DrawDebug",          false, "Master toggle for navmesh debug visualization.");
 
     // Per-layer toggles. Defaults aim for a useful "first look" when the master is flipped on.
-    static TConsoleVar<bool>  CVarNavDebugEdges     ("Nav.Debug.Edges",        true,  "Draw detail-triangle edges (faint) and poly boundary edges (thick).");
+    static TConsoleVar<bool>  CVarNavDebugSurface   ("Nav.Debug.Surface",      true,  "Translucent filled walkable surface (Unreal/Godot-style overlay).");
+    static TConsoleVar<float> CVarNavDebugSurfAlpha ("Nav.Debug.SurfaceAlpha", 0.35f, "Opacity of the filled navmesh surface.");
+    static TConsoleVar<bool>  CVarNavDebugEdges     ("Nav.Debug.Edges",        true,  "Draw poly boundary edges (thick).");
+    static TConsoleVar<bool>  CVarNavDebugTriEdges  ("Nav.Debug.TriEdges",     false, "Draw interior detail-triangle edges (faint).");
     static TConsoleVar<bool>  CVarNavDebugColorArea ("Nav.Debug.ColorByArea",  true,  "Color edges/centers by ENavArea (ground/water/door/danger).");
     static TConsoleVar<bool>  CVarNavDebugVerts     ("Nav.Debug.Vertices",     false, "Sphere at every poly boundary vertex (intersections).");
     static TConsoleVar<bool>  CVarNavDebugCenters   ("Nav.Debug.Centers",      false, "Small sphere at every walkable triangle center.");
-    static TConsoleVar<bool>  CVarNavDebugTiles     ("Nav.Debug.TileBounds",   true,  "Wireframe box for each loaded nav tile.");
+    static TConsoleVar<bool>  CVarNavDebugTiles     ("Nav.Debug.TileBounds",   false, "Wireframe box for each loaded nav tile.");
     static TConsoleVar<bool>  CVarNavDebugBounds    ("Nav.Debug.BakeBounds",   true,  "Wireframe box for the bake volume (Center +/- Extents).");
     static TConsoleVar<bool>  CVarNavDebugLinks     ("Nav.Debug.OffMeshLinks", true,  "Arrows for off-mesh connections.");
     static TConsoleVar<bool>  CVarNavDebugLog       ("Nav.Debug.LogStats",     false, "Log triangle/edge/tile counts on every cache refresh.");
@@ -61,9 +66,31 @@ namespace Lumina
             const FVector3 Lift(0.0f, CVarNavDebugLift.GetValue(), 0.0f);
             const bool bColorByArea = CVarNavDebugColorArea.GetValue();
 
+            // Translucent filled walkable surface: the headline "is this walkable" read.
+            if (CVarNavDebugSurface.GetValue())
+            {
+                const float Alpha = CVarNavDebugSurfAlpha.GetValue();
+                const FNavDebugStats Stats = Mesh.GetDebugStats();
+                TVector<FSimpleElementVertex> SurfaceVerts;
+                SurfaceVerts.reserve((size_t)Stats.Triangles * 3);
+                Mesh.ForEachTriangle([&](const FVector3& A, const FVector3& B, const FVector3& C, uint8 Area)
+                {
+                    FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(0.15f, 0.85f, 0.35f, 1.0f);
+                    Color.w = Alpha;
+                    const uint32 Packed = PackColor(Color);
+                    SurfaceVerts.push_back({ A + Lift, Packed });
+                    SurfaceVerts.push_back({ B + Lift, Packed });
+                    SurfaceVerts.push_back({ C + Lift, Packed });
+                });
+                if (!SurfaceVerts.empty())
+                {
+                    Context.DrawDebugSolidTriangles(std::move(SurfaceVerts), true, -1.0f);
+                }
+            }
+
             if (CVarNavDebugBounds.GetValue())
             {
-                Context.DrawDebugBox(Comp.Center, Comp.Extents, FQuat(1.0f, 0.0f, 0.0f, 0.0f),
+                Context.DrawDebugBox(Comp.Center, Comp.GetWorldExtents(), FQuat(1.0f, 0.0f, 0.0f, 0.0f),
                     FVector4(1.0f, 0.85f, 0.10f, 1.0f), 4.0f, -1.0f);
             }
 
@@ -78,9 +105,9 @@ namespace Lumina
                 });
             }
 
-            if (CVarNavDebugEdges.GetValue())
+            // Faint interior triangle edges (off by default; the fill already conveys the surface).
+            if (CVarNavDebugTriEdges.GetValue())
             {
-                // Faint interior triangle edges so the mesh fill reads, without drowning the boundary.
                 Mesh.ParallelForEachTriangle([&Context, &Lift, bColorByArea](const FVector3& A, const FVector3& B, const FVector3& C, uint8 Area)
                 {
                     FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(0.05f, 1.0f, 0.15f, 1.0f);
@@ -90,8 +117,11 @@ namespace Lumina
                     Context.DrawDebugLine(B + Lift, C + Lift, Color, Thickness, -1.0f);
                     Context.DrawDebugLine(C + Lift, A + Lift, Color, Thickness, -1.0f);
                 });
+            }
 
-                // Poly perimeter on top, thicker and brighter so the actual nav polygon shape stands out.
+            // Poly perimeter: thick + bright so the nav polygon shape stands out over the fill.
+            if (CVarNavDebugEdges.GetValue())
+            {
                 Mesh.ForEachBoundaryEdge([&Context, &Lift, bColorByArea](const FVector3& A, const FVector3& B, uint8 Area)
                 {
                     const FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(0.0f, 0.95f, 1.0f, 1.0f);
@@ -178,7 +208,7 @@ namespace Lumina
         }
 
         // Tag-bit packed into cache key so one entity may track one collider of each type.
-        enum class ENavColliderType : uint8 { Box = 0, Sphere = 1, Mesh = 2, Capsule = 3 };
+        enum class ENavColliderType : uint8 { Box = 0, Sphere = 1, Mesh = 2, CharacterCapsule = 3, Capsule = 4, Cylinder = 5, Terrain = 6 };
 
         FORCEINLINE uint64 PackSourceKey(entt::entity E, ENavColliderType T)
         {
@@ -318,6 +348,31 @@ namespace Lumina
             }
         }
 
+        // Flat-capped cylinder along +Y (Jolt CylinderShape). CapRadius rounding is ignored for nav.
+        void EmitCylinderGeometry(const FMatrix4& W, float HalfHeight, float Radius, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
+        {
+            constexpr int Segments = 16;
+            FVector3 Top[Segments + 1];
+            FVector3 Bot[Segments + 1];
+            for (int i = 0; i <= Segments; ++i)
+            {
+                const float Theta = (2.0f * LE_PI_F) * (float)i / (float)Segments;
+                const float C = std::cos(Theta);
+                const float S = std::sin(Theta);
+                Top[i] = FVector3(W * FVector4(Radius * C,  HalfHeight, Radius * S, 1.0f));
+                Bot[i] = FVector3(W * FVector4(Radius * C, -HalfHeight, Radius * S, 1.0f));
+            }
+            const FVector3 TopC = FVector3(W * FVector4(0.0f,  HalfHeight, 0.0f, 1.0f));
+            const FVector3 BotC = FVector3(W * FVector4(0.0f, -HalfHeight, 0.0f, 1.0f));
+            for (int i = 0; i < Segments; ++i)
+            {
+                EmitTri(Acc, BakeMin, BakeMax, Top[i], Bot[i], Bot[i + 1]);
+                EmitTri(Acc, BakeMin, BakeMax, Top[i], Bot[i + 1], Top[i + 1]);
+                EmitTri(Acc, BakeMin, BakeMax, TopC, Top[i + 1], Top[i]);
+                EmitTri(Acc, BakeMin, BakeMax, BotC, Bot[i], Bot[i + 1]);
+            }
+        }
+
         // Explicit Mesh wins; falls back to StaticMeshComponent. Mirrors Jolt's resolution.
         CStaticMesh* ResolveMeshColliderAsset(const SMeshColliderComponent& MC, const SStaticMeshComponent* Fallback)
         {
@@ -365,45 +420,270 @@ namespace Lumina
             }
         }
 
-        // Collect nav source colliders from all entities with bAffectsNavigation set.
-        void GatherSourceGeometry(const FSystemContext& Context, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
+        // Walk the heightfield grid (matching BuildTerrainHeightFieldShape's local layout), transform to
+        // world, keep only tris overlapping the bake bounds. Subsampled so a quad ~= one cell.
+        void TessellateTerrain(const STerrainComponent& T, const FMatrix4& W, const FVector3& BakeMin, const FVector3& BakeMax, float CellSize, TVector<FVector3>& Out)
         {
-            auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
-            for (entt::entity Entity : BoxView)
+            const int32 Res = T.Resolution;
+            if (Res < 2 || (int64)T.Heightmap.size() < (int64)Res * (int64)Res)
             {
-                SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
+                return;
+            }
+
+            const float Stride = T.TileWorldSize / float(Res - 1);
+            const float Half   = T.TileWorldSize * 0.5f;
+
+            // One nav cell per quad is the finest worth emitting; also cap the grid so huge terrains stay bounded.
+            int32 Step = std::max(1, (int32)std::floor(std::max(CellSize, 0.01f) / std::max(Stride, 1e-4f)));
+            Step = std::max(Step, (int32)std::ceil((float)(Res - 1) / 256.0f));
+
+            auto Height = [&](int32 Col, int32 Row) -> float
+            {
+                return T.Heightmap[(size_t)Row * (size_t)Res + (size_t)Col] * T.MaxHeight;
+            };
+            auto Pos = [&](int32 Col, int32 Row) -> FVector3
+            {
+                const FVector3 Local(-Half + (float)Col * Stride, Height(Col, Row), -Half + (float)Row * Stride);
+                return FVector3(W * FVector4(Local, 1.0f));
+            };
+
+            for (int32 Row = 0; Row < Res - 1; Row += Step)
+            {
+                const int32 RowN = std::min(Row + Step, Res - 1);
+                for (int32 Col = 0; Col < Res - 1; Col += Step)
+                {
+                    const int32 ColN = std::min(Col + Step, Res - 1);
+                    const FVector3 A = Pos(Col,  Row);
+                    const FVector3 B = Pos(ColN, Row);
+                    const FVector3 C = Pos(ColN, RowN);
+                    const FVector3 D = Pos(Col,  RowN);
+                    // Wound so the surface normal points +Y (Recast's slope test marks it walkable).
+                    if (TriIntersectsAABB(A, C, B, BakeMin, BakeMax))
+                    {
+                        Out.push_back(A); Out.push_back(C); Out.push_back(B);
+                    }
+                    if (TriIntersectsAABB(A, D, C, BakeMin, BakeMax))
+                    {
+                        Out.push_back(A); Out.push_back(D); Out.push_back(C);
+                    }
+                }
+            }
+        }
+
+        // POD shape snapshot; safe to ship to a bake worker (Mesh ptr / terrain tri-soup are read-only there).
+        struct FNavSourcePrim
+        {
+            ENavColliderType                Type  = ENavColliderType::Box;
+            FMatrix4                        World = FMatrix4(1.0f);
+            FVector3                        Shape = FVector3(0.0f);   // Box: half-extent; Sphere: x=Radius; Capsule/Cylinder: x=Radius, y=HalfHeight
+            CStaticMesh*                    Mesh  = nullptr;
+            TSharedPtr<TVector<FVector3>>   TerrainTris;              // world-space tri soup (groups of 3); terrain only
+        };
+
+        struct FNavSourceEntry
+        {
+            uint64          Key = 0;
+            FNavSourcePrim  Prim;
+            FVector3        AABBMin = FVector3( FLT_MAX);
+            FVector3        AABBMax = FVector3(-FLT_MAX);
+        };
+
+        void EmitNavSourcePrim(const FNavSourcePrim& P, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
+        {
+            switch (P.Type)
+            {
+                case ENavColliderType::Box:    EmitBoxGeometry(P.World, P.Shape, BakeMin, BakeMax, Acc); break;
+                case ENavColliderType::Sphere: EmitSphereGeometry(P.World, P.Shape.x, BakeMin, BakeMax, Acc); break;
+                case ENavColliderType::Mesh:   EmitMeshGeometry(P.World, P.Mesh, BakeMin, BakeMax, Acc); break;
+                case ENavColliderType::Capsule:
+                case ENavColliderType::CharacterCapsule: EmitCapsuleGeometry(P.World, P.Shape.y, P.Shape.x, BakeMin, BakeMax, Acc); break;
+                case ENavColliderType::Cylinder: EmitCylinderGeometry(P.World, P.Shape.y, P.Shape.x, BakeMin, BakeMax, Acc); break;
+                case ENavColliderType::Terrain:
+                    if (P.TerrainTris)
+                    {
+                        const TVector<FVector3>& Tris = *P.TerrainTris;
+                        for (size_t i = 0; i + 2 < Tris.size(); i += 3)
+                        {
+                            EmitTri(Acc, BakeMin, BakeMax, Tris[i], Tris[i + 1], Tris[i + 2]);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        // Conservative world AABBs. Change detector and cache rebuild MUST produce byte-identical values,
+        // so all four consumers share this single traversal.
+        void CollectNavSources(const FSystemContext& Context, const FVector3& BakeMin, const FVector3& BakeMax, bool bTessellateTerrain, float CellSize, TVector<FNavSourceEntry>& Out)
+        {
+            auto CornersAABB = [](const FMatrix4& W, const FVector3* Local, int32 N, FVector3& Mn, FVector3& Mx)
+            {
+                Mn = FVector3( FLT_MAX);
+                Mx = FVector3(-FLT_MAX);
+                for (int32 i = 0; i < N; ++i)
+                {
+                    const FVector3 Pt = FVector3(W * FVector4(Local[i], 1.0f));
+                    Mn = Math::Min(Mn, Pt);
+                    Mx = Math::Max(Mx, Pt);
+                }
+            };
+            auto ScaledRadius = [](const FMatrix4& W, float Radius) -> float
+            {
+                const float Sx = Math::Length(FVector3(W[0]));
+                const float Sy = Math::Length(FVector3(W[1]));
+                const float Sz = Math::Length(FVector3(W[2]));
+                return Radius * std::max(Sx, std::max(Sy, Sz));
+            };
+
+            auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
+            for (entt::entity E : BoxView)
+            {
+                SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(E);
                 if (!Box.bAffectsNavigation) continue;
-                const FMatrix4 W = ColliderToWorld(BoxView.get<STransformComponent>(Entity), Box.TranslationOffset, Box.RotationOffset);
-                EmitBoxGeometry(W, Box.HalfExtent, BakeMin, BakeMax, Acc);
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Box);
+                Entry.Prim.Type = ENavColliderType::Box;
+                Entry.Prim.World = ColliderToWorld(BoxView.get<STransformComponent>(E), Box.TranslationOffset, Box.RotationOffset);
+                Entry.Prim.Shape = Box.HalfExtent;
+                const FVector3 H = Box.HalfExtent;
+                const FVector3 Corners[8] = {
+                    {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z}, { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
+                    {-H.x, H.y,-H.z}, { H.x, H.y,-H.z}, { H.x, H.y, H.z}, {-H.x, H.y, H.z},
+                };
+                CornersAABB(Entry.Prim.World, Corners, 8, Entry.AABBMin, Entry.AABBMax);
+                Out.push_back(std::move(Entry));
             }
 
             auto SphereView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
-            for (entt::entity Entity : SphereView)
+            for (entt::entity E : SphereView)
             {
-                SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
+                SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(E);
                 if (!Sphere.bAffectsNavigation) continue;
-                const FMatrix4 W = ColliderToWorld(SphereView.get<STransformComponent>(Entity), Sphere.TranslationOffset, FVector3(0.0f));
-                EmitSphereGeometry(W, Sphere.Radius, BakeMin, BakeMax, Acc);
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Sphere);
+                Entry.Prim.Type = ENavColliderType::Sphere;
+                Entry.Prim.World = ColliderToWorld(SphereView.get<STransformComponent>(E), Sphere.TranslationOffset, FVector3(0.0f));
+                Entry.Prim.Shape = FVector3(Sphere.Radius, 0.0f, 0.0f);
+                const FVector3 Center = FVector3(Entry.Prim.World * FVector4(0.0f, 0.0f, 0.0f, 1.0f));
+                const float R = ScaledRadius(Entry.Prim.World, Sphere.Radius);
+                Entry.AABBMin = Center - FVector3(R);
+                Entry.AABBMax = Center + FVector3(R);
+                Out.push_back(std::move(Entry));
             }
 
             auto MeshView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
-            for (entt::entity Entity : MeshView)
+            for (entt::entity E : MeshView)
             {
-                SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(Entity);
+                SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(E);
                 if (!MC.bAffectsNavigation) continue;
-                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
+                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
                 CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
-                const FMatrix4 W = ColliderToWorld(MeshView.get<STransformComponent>(Entity), MC.TranslationOffset, MC.RotationOffset);
-                EmitMeshGeometry(W, Mesh, BakeMin, BakeMax, Acc);
+                if (!Mesh || Mesh->GetMeshResource().bSkinnedMesh) continue;
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Mesh);
+                Entry.Prim.Type = ENavColliderType::Mesh;
+                Entry.Prim.World = ColliderToWorld(MeshView.get<STransformComponent>(E), MC.TranslationOffset, MC.RotationOffset);
+                Entry.Prim.Mesh = Mesh;
+                const FAABB& Local = Mesh->GetAABB();
+                const FVector3 Corners[8] = {
+                    {Local.Min.x, Local.Min.y, Local.Min.z}, {Local.Max.x, Local.Min.y, Local.Min.z},
+                    {Local.Min.x, Local.Max.y, Local.Min.z}, {Local.Max.x, Local.Max.y, Local.Min.z},
+                    {Local.Min.x, Local.Min.y, Local.Max.z}, {Local.Max.x, Local.Min.y, Local.Max.z},
+                    {Local.Min.x, Local.Max.y, Local.Max.z}, {Local.Max.x, Local.Max.y, Local.Max.z},
+                };
+                CornersAABB(Entry.Prim.World, Corners, 8, Entry.AABBMin, Entry.AABBMax);
+                Out.push_back(std::move(Entry));
             }
 
-            auto CapsuleView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
-            for (entt::entity Entity : CapsuleView)
+            auto CapsuleView = Context.CreateView<SCapsuleColliderComponent, STransformComponent>();
+            for (entt::entity E : CapsuleView)
             {
-                SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
+                SCapsuleColliderComponent& Cap = CapsuleView.get<SCapsuleColliderComponent>(E);
                 if (!Cap.bAffectsNavigation) continue;
-                const FMatrix4 W = ColliderToWorld(CapsuleView.get<STransformComponent>(Entity), FVector3(0.0f), FVector3(0.0f));
-                EmitCapsuleGeometry(W, Cap.HalfHeight, Cap.Radius, BakeMin, BakeMax, Acc);
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Capsule);
+                Entry.Prim.Type = ENavColliderType::Capsule;
+                Entry.Prim.World = ColliderToWorld(CapsuleView.get<STransformComponent>(E), Cap.TranslationOffset, Cap.RotationOffset);
+                Entry.Prim.Shape = FVector3(Cap.Radius, Cap.HalfHeight, 0.0f);
+                const FVector3 Top = FVector3(Entry.Prim.World * FVector4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
+                const FVector3 Bot = FVector3(Entry.Prim.World * FVector4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
+                const float R = ScaledRadius(Entry.Prim.World, Cap.Radius);
+                Entry.AABBMin = Math::Min(Top, Bot) - FVector3(R);
+                Entry.AABBMax = Math::Max(Top, Bot) + FVector3(R);
+                Out.push_back(std::move(Entry));
+            }
+
+            auto CylinderView = Context.CreateView<SCylinderColliderComponent, STransformComponent>();
+            for (entt::entity E : CylinderView)
+            {
+                SCylinderColliderComponent& Cyl = CylinderView.get<SCylinderColliderComponent>(E);
+                if (!Cyl.bAffectsNavigation) continue;
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Cylinder);
+                Entry.Prim.Type = ENavColliderType::Cylinder;
+                Entry.Prim.World = ColliderToWorld(CylinderView.get<STransformComponent>(E), Cyl.TranslationOffset, Cyl.RotationOffset);
+                Entry.Prim.Shape = FVector3(Cyl.Radius, Cyl.HalfHeight, 0.0f);
+                const FVector3 Top = FVector3(Entry.Prim.World * FVector4(0.0f,  Cyl.HalfHeight, 0.0f, 1.0f));
+                const FVector3 Bot = FVector3(Entry.Prim.World * FVector4(0.0f, -Cyl.HalfHeight, 0.0f, 1.0f));
+                const float R = ScaledRadius(Entry.Prim.World, Cyl.Radius);
+                Entry.AABBMin = Math::Min(Top, Bot) - FVector3(R);
+                Entry.AABBMax = Math::Max(Top, Bot) + FVector3(R);
+                Out.push_back(std::move(Entry));
+            }
+
+            // Character capsule: opt-in (default off) since agents shouldn't normally carve the navmesh.
+            auto CharView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
+            for (entt::entity E : CharView)
+            {
+                SCharacterPhysicsComponent& Cap = CharView.get<SCharacterPhysicsComponent>(E);
+                if (!Cap.bAffectsNavigation) continue;
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::CharacterCapsule);
+                Entry.Prim.Type = ENavColliderType::CharacterCapsule;
+                Entry.Prim.World = CharView.get<STransformComponent>(E).GetWorldMatrix();
+                Entry.Prim.Shape = FVector3(Cap.Radius, Cap.HalfHeight, 0.0f);
+                const FVector3 Top = FVector3(Entry.Prim.World * FVector4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
+                const FVector3 Bot = FVector3(Entry.Prim.World * FVector4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
+                const float R = ScaledRadius(Entry.Prim.World, Cap.Radius);
+                Entry.AABBMin = Math::Min(Top, Bot) - FVector3(R);
+                Entry.AABBMax = Math::Max(Top, Bot) + FVector3(R);
+                Out.push_back(std::move(Entry));
+            }
+
+            // Terrain heightfield: needs both the collider (collision present) and the source component.
+            auto TerrainView = Context.CreateView<STerrainColliderComponent, STransformComponent>();
+            for (entt::entity E : TerrainView)
+            {
+                STerrainColliderComponent& TC = TerrainView.get<STerrainColliderComponent>(E);
+                if (!TC.bAffectsNavigation) continue;
+                const STerrainComponent* Terrain = Context.GetRegistry().try_get<STerrainComponent>(E);
+                if (!Terrain || Terrain->Heightmap.empty()) continue;
+                FNavSourceEntry Entry;
+                Entry.Key = PackSourceKey(E, ENavColliderType::Terrain);
+                Entry.Prim.Type = ENavColliderType::Terrain;
+                Entry.Prim.World = TerrainView.get<STransformComponent>(E).GetWorldMatrix();
+                const float Half = Terrain->TileWorldSize * 0.5f;
+                const FVector3 Corners[8] = {
+                    {-Half, 0.0f, -Half}, { Half, 0.0f, -Half}, { Half, 0.0f,  Half}, {-Half, 0.0f,  Half},
+                    {-Half, Terrain->MaxHeight, -Half}, { Half, Terrain->MaxHeight, -Half}, { Half, Terrain->MaxHeight,  Half}, {-Half, Terrain->MaxHeight,  Half},
+                };
+                CornersAABB(Entry.Prim.World, Corners, 8, Entry.AABBMin, Entry.AABBMax);
+                if (bTessellateTerrain)
+                {
+                    Entry.Prim.TerrainTris = MakeShared<TVector<FVector3>>();
+                    TessellateTerrain(*Terrain, Entry.Prim.World, BakeMin, BakeMax, CellSize, *Entry.Prim.TerrainTris);
+                }
+                Out.push_back(std::move(Entry));
+            }
+        }
+
+        // Collect nav source colliders from all entities with bAffectsNavigation set.
+        void GatherSourceGeometry(const FSystemContext& Context, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc, float CellSize)
+        {
+            TVector<FNavSourceEntry> Sources;
+            CollectNavSources(Context, BakeMin, BakeMax, true, CellSize, Sources);
+            for (const FNavSourceEntry& Entry : Sources)
+            {
+                EmitNavSourcePrim(Entry.Prim, BakeMin, BakeMax, Acc);
             }
         }
 
@@ -418,142 +698,95 @@ namespace Lumina
 
         FORCEINLINE uint64 PackTileKey(int32 TX, int32 TY) { return ((uint64)(uint32)TY << 32) | (uint32)TX; }
 
-        // Conservative world AABBs; change detector and cache rebuild MUST produce byte-identical values.
-
-        bool ComputeBoxColliderAABB(const SBoxColliderComponent& Box, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
-        {
-            const FMatrix4 W = ColliderToWorld(X, Box.TranslationOffset, Box.RotationOffset);
-            const FVector3 H = Box.HalfExtent;
-            const FVector3 LocalCorners[8] = {
-                {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z},
-                { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
-                {-H.x, H.y,-H.z}, { H.x, H.y,-H.z},
-                { H.x, H.y, H.z}, {-H.x, H.y, H.z},
-            };
-            OutMin = FVector3( FLT_MAX);
-            OutMax = FVector3(-FLT_MAX);
-            for (int i = 0; i < 8; ++i)
-            {
-                const FVector3 P = FVector3(W * FVector4(LocalCorners[i], 1.0f));
-                OutMin = Math::Min(OutMin, P);
-                OutMax = Math::Max(OutMax, P);
-            }
-            return true;
-        }
-
-        bool ComputeSphereColliderAABB(const SSphereColliderComponent& Sphere, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
-        {
-            const FMatrix4 W = ColliderToWorld(X, Sphere.TranslationOffset, FVector3(0.0f));
-            const FVector3 Center = FVector3(W * FVector4(0.0f, 0.0f, 0.0f, 1.0f));
-            // Conservative radius: longest column basis under arbitrary scale.
-            const float Sx = Math::Length(FVector3(W[0]));
-            const float Sy = Math::Length(FVector3(W[1]));
-            const float Sz = Math::Length(FVector3(W[2]));
-            const float R  = Sphere.Radius * std::max(Sx, std::max(Sy, Sz));
-            OutMin = Center - FVector3(R);
-            OutMax = Center + FVector3(R);
-            return true;
-        }
-
-        bool ComputeCapsuleColliderAABB(const SCharacterPhysicsComponent& Cap, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
-        {
-            const FMatrix4 W = X.GetWorldMatrix();
-            const FVector3 TopCenter = FVector3(W * FVector4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
-            const FVector3 BotCenter = FVector3(W * FVector4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
-            const float Sx = Math::Length(FVector3(W[0]));
-            const float Sy = Math::Length(FVector3(W[1]));
-            const float Sz = Math::Length(FVector3(W[2]));
-            const float R  = Cap.Radius * std::max(Sx, std::max(Sy, Sz));
-            OutMin = Math::Min(TopCenter, BotCenter) - FVector3(R);
-            OutMax = Math::Max(TopCenter, BotCenter) + FVector3(R);
-            return true;
-        }
-
-        bool ComputeMeshColliderAABB(const SMeshColliderComponent& MC, const STransformComponent& X, const SStaticMeshComponent* Fallback, FVector3& OutMin, FVector3& OutMax)
-        {
-            CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
-            if (!Mesh || Mesh->GetMeshResource().bSkinnedMesh) return false;
-
-            const FAABB& Local = Mesh->GetAABB();
-            const FVector3 Corners[8] = {
-                {Local.Min.x, Local.Min.y, Local.Min.z}, {Local.Max.x, Local.Min.y, Local.Min.z},
-                {Local.Min.x, Local.Max.y, Local.Min.z}, {Local.Max.x, Local.Max.y, Local.Min.z},
-                {Local.Min.x, Local.Min.y, Local.Max.z}, {Local.Max.x, Local.Min.y, Local.Max.z},
-                {Local.Min.x, Local.Max.y, Local.Max.z}, {Local.Max.x, Local.Max.y, Local.Max.z},
-            };
-            const FMatrix4 W = ColliderToWorld(X, MC.TranslationOffset, MC.RotationOffset);
-            OutMin = FVector3( FLT_MAX);
-            OutMax = FVector3(-FLT_MAX);
-            for (int i = 0; i < 8; ++i)
-            {
-                const FVector3 P = FVector3(W * FVector4(Corners[i], 1.0f));
-                OutMin = Math::Min(OutMin, P);
-                OutMax = Math::Max(OutMax, P);
-            }
-            return true;
-        }
-
-        // Snapshot AABBs at bake completion so next change-detector tick reports zero diff.
-        void RebuildEntityAABBCache(const FSystemContext& Context, THashMap<uint64, FNavSourceEntity>& OutCache)
+        // Snapshot AABBs at bake completion so next change-detector tick reports zero diff. Shares the one
+        // CollectNavSources traversal (no terrain tessellation: the cheap AABB path only needs bounds).
+        void RebuildEntityAABBCache(const FSystemContext& Context, const FVector3& BakeMin, const FVector3& BakeMax, THashMap<uint64, FNavSourceEntity>& OutCache)
         {
             OutCache.clear();
-
-            auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
-            for (entt::entity Entity : BoxView)
+            TVector<FNavSourceEntry> Sources;
+            CollectNavSources(Context, BakeMin, BakeMax, false, 0.0f, Sources);
+            for (const FNavSourceEntry& Entry : Sources)
             {
-                SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
-                if (!Box.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeBoxColliderAABB(Box, BoxView.get<STransformComponent>(Entity), Mn, Mx)) continue;
-                OutCache[PackSourceKey(Entity, ENavColliderType::Box)] = FNavSourceEntity{ Mn, Mx };
-            }
-
-            auto SphereView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
-            for (entt::entity Entity : SphereView)
-            {
-                SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
-                if (!Sphere.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeSphereColliderAABB(Sphere, SphereView.get<STransformComponent>(Entity), Mn, Mx)) continue;
-                OutCache[PackSourceKey(Entity, ENavColliderType::Sphere)] = FNavSourceEntity{ Mn, Mx };
-            }
-
-            auto MeshView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
-            for (entt::entity Entity : MeshView)
-            {
-                SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(Entity);
-                if (!MC.bAffectsNavigation) continue;
-                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
-                FVector3 Mn, Mx;
-                if (!ComputeMeshColliderAABB(MC, MeshView.get<STransformComponent>(Entity), Fallback, Mn, Mx)) continue;
-                OutCache[PackSourceKey(Entity, ENavColliderType::Mesh)] = FNavSourceEntity{ Mn, Mx };
-            }
-
-            auto CapsuleView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
-            for (entt::entity Entity : CapsuleView)
-            {
-                SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
-                if (!Cap.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeCapsuleColliderAABB(Cap, CapsuleView.get<STransformComponent>(Entity), Mn, Mx)) continue;
-                OutCache[PackSourceKey(Entity, ENavColliderType::Capsule)] = FNavSourceEntity{ Mn, Mx };
+                OutCache[Entry.Key] = FNavSourceEntity{ Entry.AABBMin, Entry.AABBMax };
             }
         }
 
         void FillBuildInput(const FSystemContext& Context, SNavMeshComponent& Comp, FNavBuildInput& Out)
         {
             Out.Settings  = Comp.Settings;
-            Out.BoundsMin = Comp.Center - Comp.Extents;
-            Out.BoundsMax = Comp.Center + Comp.Extents;
+            Out.BoundsMin = Comp.Center - Comp.GetWorldExtents();
+            Out.BoundsMax = Comp.Center + Comp.GetWorldExtents();
 
             FGatherAccumulator Acc;
-            GatherSourceGeometry(Context, Out.BoundsMin, Out.BoundsMax, Acc);
+            GatherSourceGeometry(Context, Out.BoundsMin, Out.BoundsMax, Acc, Comp.Settings.CellSize);
             Out.Vertices = std::move(Acc.Vertices);
             Out.Indices  = std::move(Acc.Indices);
         }
 
         void TickComponent(const FSystemContext& Context, entt::entity Entity, SNavMeshComponent& Comp)
         {
+            // Mirror the entity transform into the bake volume: scale always (effective extents match
+            // what was baked), location editor-only (runtime keeps the serialized Center). Auto-bake picks it up.
+            if (const STransformComponent* X = Context.GetRegistry().try_get<STransformComponent>(Entity))
+            {
+                const FTransform& WT = X->GetWorldTransform();
+                Comp.Runtime.WorldScale = FVector3(std::fabs(WT.Scale.x), std::fabs(WT.Scale.y), std::fabs(WT.Scale.z));
+                if (Context.GetWorldType() == EWorldType::Editor)
+                {
+                    Comp.Center = WT.Location;
+                }
+            }
+
+            // Auto-bake: once the bounds/settings stop changing (placed, moved, or scaled in the editor)
+            // and differ from what's baked, request a bake. Debounced so dragging doesn't bake every frame.
+            if (Comp.bAutoBake)
+            {
+                FNavMeshRuntime& RT = Comp.Runtime;
+                const FVector3 WExt = Comp.GetWorldExtents();
+
+                // A loaded/already-baked component starts in sync: don't re-bake until something changes.
+                if (!RT.bAutoBuiltValid && Comp.HasBakedData())
+                {
+                    RT.AutoBuiltCenter   = Comp.Center;
+                    RT.AutoBuiltExtents  = WExt;
+                    RT.AutoBuiltSettings = Comp.Settings;
+                    RT.bAutoBuiltValid   = true;
+                }
+
+                const bool bChangedThisTick =
+                    !Math::IsNearlyEqual(Comp.Center, RT.AutoPrevCenter) ||
+                    !Math::IsNearlyEqual(WExt, RT.AutoPrevExtents) ||
+                    std::memcmp(&Comp.Settings, &RT.AutoPrevSettings, sizeof(FNavBuildSettings)) != 0;
+                RT.AutoPrevCenter   = Comp.Center;
+                RT.AutoPrevExtents  = WExt;
+                RT.AutoPrevSettings = Comp.Settings;
+
+                if (bChangedThisTick)
+                {
+                    RT.AutoSettleTimer = 0.0f;
+                }
+                else
+                {
+                    RT.AutoSettleTimer += (float)Context.GetDeltaTime();
+
+                    const bool bDiffersFromBuilt =
+                        !RT.bAutoBuiltValid ||
+                        !Math::IsNearlyEqual(Comp.Center, RT.AutoBuiltCenter) ||
+                        !Math::IsNearlyEqual(WExt, RT.AutoBuiltExtents) ||
+                        std::memcmp(&Comp.Settings, &RT.AutoBuiltSettings, sizeof(FNavBuildSettings)) != 0;
+                    const bool bIdle = !RT.ActiveBake && !RT.PendingInit;
+
+                    if (RT.AutoSettleTimer >= 0.25f && bDiffersFromBuilt && bIdle)
+                    {
+                        RT.AutoBuiltCenter   = Comp.Center;
+                        RT.AutoBuiltExtents  = WExt;
+                        RT.AutoBuiltSettings = Comp.Settings;
+                        RT.bAutoBuiltValid   = true;
+                        Comp.bBakeRequested  = true;
+                    }
+                }
+            }
+
             if (Comp.bBakeRequested)
             {
                 Comp.bBakeRequested = false;
@@ -571,15 +804,6 @@ namespace Lumina
                 {
                     if (!T.Blob.empty()) ++NonEmptyTiles;
                 }
-                if (Out.Tiles.empty() || NonEmptyTiles == 0)
-                {
-                    LOG_WARN("NavMesh bake produced no walkable tiles ({} tiles total). Verify the bounds volume overlaps source geometry and that meshes are not skinned.", Out.Tiles.size());
-                }
-                else
-                {
-                    LOG_INFO("NavMesh bake complete: {}/{} tiles walkable, origin=({:.2f}, {:.2f}, {:.2f}), tileSize={:.2f}.",
-                        NonEmptyTiles, (int32)Out.Tiles.size(), Out.Origin.x, Out.Origin.y, Out.Origin.z, Out.TileWorldSize);
-                }
 
                 Comp.Tiles           = std::move(Out.Tiles);
                 Comp.Origin          = Out.Origin;
@@ -590,9 +814,24 @@ namespace Lumina
                 Comp.Runtime.LiveLayout.MaxTiles = Out.MaxTiles;
                 Comp.Runtime.LiveLayout.MaxPolysPerTile = Out.MaxPolysPerTile;
                 Comp.Runtime.ActiveBake.reset();
-                Comp.Runtime.bRuntimeDirty = true;
-                RebuildEntityAABBCache(Context, Comp.Runtime.EntityAABBs);
                 Comp.Runtime.DirtyTiles.clear();
+
+                if (NonEmptyTiles == 0)
+                {
+                    // Fail explicitly. Leaving State=Building here (hydration only kicks when HasBakedData()
+                    // is true, which an empty Tiles list is not) is what read as "stuck on Baking".
+                    LOG_WARN("NavMesh bake produced no walkable tiles ({} total). Check the bounds overlap source geometry, and that the volume/scale isn't so large the bake was capped.", (int32)Comp.Tiles.size());
+                    Comp.Runtime.bRuntimeDirty = false;
+                    Comp.Runtime.Mesh.reset();
+                    Comp.Runtime.State = ENavBakeState::Failed;
+                }
+                else
+                {
+                    LOG_INFO("NavMesh bake complete: {}/{} tiles walkable, origin=({:.2f}, {:.2f}, {:.2f}), tileSize={:.2f}.",
+                        NonEmptyTiles, (int32)Comp.Tiles.size(), Comp.Origin.x, Comp.Origin.y, Comp.Origin.z, Comp.TileWorldSize);
+                    Comp.Runtime.bRuntimeDirty = true;
+                    RebuildEntityAABBCache(Context, Comp.Center - Comp.GetWorldExtents(), Comp.Center + Comp.GetWorldExtents(), Comp.Runtime.EntityAABBs);
+                }
             }
 
             // Drain finished async hydration.
@@ -624,8 +863,8 @@ namespace Lumina
             // bRuntimeDirty branch is essential: re-bake otherwise leaves old Mesh and state stuck Building.
             if (Comp.HasBakedData() && !Comp.Runtime.PendingInit && (Comp.Runtime.bRuntimeDirty || !Comp.Runtime.Mesh))
             {
-                const FVector3 BakeMin = Comp.Center - Comp.Extents;
-                const FVector3 BakeMax = Comp.Center + Comp.Extents;
+                const FVector3 BakeMin = Comp.Center - Comp.GetWorldExtents();
+                const FVector3 BakeMax = Comp.Center + Comp.GetWorldExtents();
                 Comp.Runtime.TilesX = std::max(1, (int32)std::ceil((BakeMax.x - BakeMin.x) / Comp.TileWorldSize));
                 Comp.Runtime.TilesY = std::max(1, (int32)std::ceil((BakeMax.z - BakeMin.z) / Comp.TileWorldSize));
                 Comp.Runtime.LiveLayout.Origin          = Comp.Origin;
@@ -653,7 +892,7 @@ namespace Lumina
                     Job->bDone.store(true, std::memory_order_release);
                 });
 
-                RebuildEntityAABBCache(Context, Comp.Runtime.EntityAABBs);
+                RebuildEntityAABBCache(Context, BakeMin, BakeMax, Comp.Runtime.EntityAABBs);
                 Comp.Runtime.DirtyTiles.clear();
             }
 
@@ -743,45 +982,11 @@ namespace Lumina
                 }
             };
 
-            auto BoxCheckView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
-            for (entt::entity E : BoxCheckView)
+            TVector<FNavSourceEntry> CurrentSources;
+            CollectNavSources(Context, Comp.Center - Comp.GetWorldExtents(), Comp.Center + Comp.GetWorldExtents(), false, 0.0f, CurrentSources);
+            for (const FNavSourceEntry& Src : CurrentSources)
             {
-                SBoxColliderComponent& Box = BoxCheckView.get<SBoxColliderComponent>(E);
-                if (!Box.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeBoxColliderAABB(Box, BoxCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
-                VisitSource(PackSourceKey(E, ENavColliderType::Box), Mn, Mx);
-            }
-
-            auto SphereCheckView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
-            for (entt::entity E : SphereCheckView)
-            {
-                SSphereColliderComponent& Sphere = SphereCheckView.get<SSphereColliderComponent>(E);
-                if (!Sphere.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeSphereColliderAABB(Sphere, SphereCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
-                VisitSource(PackSourceKey(E, ENavColliderType::Sphere), Mn, Mx);
-            }
-
-            auto MeshCheckView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
-            for (entt::entity E : MeshCheckView)
-            {
-                SMeshColliderComponent& MC = MeshCheckView.get<SMeshColliderComponent>(E);
-                if (!MC.bAffectsNavigation) continue;
-                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
-                FVector3 Mn, Mx;
-                if (!ComputeMeshColliderAABB(MC, MeshCheckView.get<STransformComponent>(E), Fallback, Mn, Mx)) continue;
-                VisitSource(PackSourceKey(E, ENavColliderType::Mesh), Mn, Mx);
-            }
-
-            auto CapCheckView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
-            for (entt::entity E : CapCheckView)
-            {
-                SCharacterPhysicsComponent& Cap = CapCheckView.get<SCharacterPhysicsComponent>(E);
-                if (!Cap.bAffectsNavigation) continue;
-                FVector3 Mn, Mx;
-                if (!ComputeCapsuleColliderAABB(Cap, CapCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
-                VisitSource(PackSourceKey(E, ENavColliderType::Capsule), Mn, Mx);
+                VisitSource(Src.Key, Src.AABBMin, Src.AABBMax);
             }
 
             // Removed colliders dirty their last-known tiles.
@@ -818,65 +1023,32 @@ namespace Lumina
                 Comp.Runtime.PendingRebakes.push_back(std::move(Job));
             }
 
-            struct FBoxSnap     { FMatrix4 World; FVector3 HalfExtent; };
-            struct FSphereSnap  { FMatrix4 World; float Radius; };
-            struct FMeshSnap    { FMatrix4 World; CStaticMesh* Mesh; };
-            struct FCapsuleSnap { FMatrix4 World; float HalfHeight; float Radius; };
-
+            // Snapshot all nav sources into POD prims (terrain pre-tessellated on this thread); the worker
+            // re-emits + bakes the dirty tiles. One traversal, same as gather/cache/change-detect.
             struct FInputSnapshot
             {
-                TVector<FBoxSnap>     Boxes;
-                TVector<FSphereSnap>  Spheres;
-                TVector<FMeshSnap>    Meshes;
-                TVector<FCapsuleSnap> Capsules;
-                FVector3             BakeMin;
-                FVector3             BakeMax;
-                FNavBuildSettings     Settings;
-                FNavBuildOutput       Layout;
+                TVector<FNavSourcePrim> Prims;
+                FVector3                BakeMin;
+                FVector3                BakeMax;
+                FNavBuildSettings       Settings;
+                FNavBuildOutput         Layout;
             };
             auto Snap = MakeShared<FInputSnapshot>();
-            Snap->BakeMin  = Comp.Center - Comp.Extents;
-            Snap->BakeMax  = Comp.Center + Comp.Extents;
+            Snap->BakeMin  = Comp.Center - Comp.GetWorldExtents();
+            Snap->BakeMax  = Comp.Center + Comp.GetWorldExtents();
             Snap->Settings = Comp.Settings;
             Snap->Layout   = Comp.Runtime.LiveLayout;
             {
-                auto BoxSnapView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
-                for (entt::entity E : BoxSnapView)
+                TVector<FNavSourceEntry> Sources;
+                CollectNavSources(Context, Snap->BakeMin, Snap->BakeMax, true, Comp.Settings.CellSize, Sources);
+                Snap->Prims.reserve(Sources.size());
+                for (FNavSourceEntry& Entry : Sources)
                 {
-                    SBoxColliderComponent& Box = BoxSnapView.get<SBoxColliderComponent>(E);
-                    if (!Box.bAffectsNavigation) continue;
-                    Snap->Boxes.push_back({ ColliderToWorld(BoxSnapView.get<STransformComponent>(E), Box.TranslationOffset, Box.RotationOffset), Box.HalfExtent });
-                }
-
-                auto SphereSnapView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
-                for (entt::entity E : SphereSnapView)
-                {
-                    SSphereColliderComponent& Sphere = SphereSnapView.get<SSphereColliderComponent>(E);
-                    if (!Sphere.bAffectsNavigation) continue;
-                    Snap->Spheres.push_back({ ColliderToWorld(SphereSnapView.get<STransformComponent>(E), Sphere.TranslationOffset, FVector3(0.0f)), Sphere.Radius });
-                }
-
-                auto MeshSnapView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
-                for (entt::entity E : MeshSnapView)
-                {
-                    SMeshColliderComponent& MC = MeshSnapView.get<SMeshColliderComponent>(E);
-                    if (!MC.bAffectsNavigation) continue;
-                    const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
-                    CStaticMesh* M = ResolveMeshColliderAsset(MC, Fallback);
-                    if (!M || M->GetMeshResource().bSkinnedMesh) continue;
-                    Snap->Meshes.push_back({ ColliderToWorld(MeshSnapView.get<STransformComponent>(E), MC.TranslationOffset, MC.RotationOffset), M });
-                }
-
-                auto CapSnapView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
-                for (entt::entity E : CapSnapView)
-                {
-                    SCharacterPhysicsComponent& Cap = CapSnapView.get<SCharacterPhysicsComponent>(E);
-                    if (!Cap.bAffectsNavigation) continue;
-                    Snap->Capsules.push_back({ ColliderToWorld(CapSnapView.get<STransformComponent>(E), FVector3(0.0f), FVector3(0.0f)), Cap.HalfHeight, Cap.Radius });
+                    Snap->Prims.push_back(std::move(Entry.Prim));
                 }
             }
 
-            // Coordinator: tessellate once on a worker, ParallelFor the per-tile bakes.
+            // Coordinator: emit geometry once on a worker, ParallelFor the per-tile bakes.
             Task::AsyncTask(1, 1, [Snap, Jobs = std::move(BatchJobs)](uint32, uint32, uint32) mutable
             {
                 FNavBuildInput Input;
@@ -885,21 +1057,9 @@ namespace Lumina
                 Input.Settings  = Snap->Settings;
 
                 FGatherAccumulator Acc;
-                for (const FBoxSnap& B : Snap->Boxes)
+                for (const FNavSourcePrim& Prim : Snap->Prims)
                 {
-                    EmitBoxGeometry(B.World, B.HalfExtent, Snap->BakeMin, Snap->BakeMax, Acc);
-                }
-                for (const FSphereSnap& S : Snap->Spheres)
-                {
-                    EmitSphereGeometry(S.World, S.Radius, Snap->BakeMin, Snap->BakeMax, Acc);
-                }
-                for (const FMeshSnap& M : Snap->Meshes)
-                {
-                    EmitMeshGeometry(M.World, M.Mesh, Snap->BakeMin, Snap->BakeMax, Acc);
-                }
-                for (const FCapsuleSnap& C : Snap->Capsules)
-                {
-                    EmitCapsuleGeometry(C.World, C.HalfHeight, C.Radius, Snap->BakeMin, Snap->BakeMax, Acc);
+                    EmitNavSourcePrim(Prim, Snap->BakeMin, Snap->BakeMax, Acc);
                 }
                 Input.Vertices = std::move(Acc.Vertices);
                 Input.Indices  = std::move(Acc.Indices);
@@ -1001,7 +1161,7 @@ namespace Lumina
         }
 
         // Catch zero/negative bounds up front; otherwise user gets a misleading "0 walkable" warning later.
-        const FVector3 Span = Comp.Extents * 2.0f;
+        const FVector3 Span = Comp.GetWorldExtents() * 2.0f;
         if (Span.x <= 0.0f || Span.y <= 0.0f || Span.z <= 0.0f)
         {
             LOG_ERROR("NavMesh bake skipped: bounds extents must be positive on all axes (got {:.2f}, {:.2f}, {:.2f}).",
@@ -1040,6 +1200,11 @@ namespace Lumina
 
     namespace Nav
     {
+        FNavMesh* GetReadyNavMesh(const FSystemContext& Context)
+        {
+            return FirstReadyNavMesh(Context);
+        }
+
         bool FindPath(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FNavPath& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMesh(Context);

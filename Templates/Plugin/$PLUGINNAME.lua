@@ -1,7 +1,4 @@
--- Build script for the $PLUGINNAME plugin.
--- Discovered automatically by the owning project's premake generation
--- (LuminaDiscoverPlugins scans <Project>/Plugins/*/<Name>.lua).
-
+-- Build script for the $PLUGINNAME plugin; auto-discovered by LuminaDiscoverPlugins.
 LuminaPlugin({
     Name = "$PLUGINNAME",
 })
@@ -19,10 +16,7 @@ LuminaPluginModule({
     },
 })
 
--- Editor module: editor-only, stripped from packaged (Game-platform) builds.
--- Put editor customizations here (asset editor tools, property customizations,
--- menus). It links the Editor module automatically and the plugin's own
--- Runtime module so it can reference the gameplay types declared above.
+-- Editor module: editor-only, stripped from packaged builds. Links the Editor module and this plugin's Runtime module.
 LuminaPluginModule({
     Plugin = "$PLUGINNAME",
     Name   = "$EDITORMODULE",

@@ -14,21 +14,8 @@ namespace Lumina
     struct FAssetData;
 }
 
-// Single, typed drag-drop channel for the editor and runtime UIs. Replaces ad-hoc
-// per-tool payload type strings (ContentBrowserItem, DragDropID, PrefabDragDropID)
-// with one ImGui payload type ("LumDD") and a strongly-typed FPayload that
-// targets inspect via PeekPayload / Accept... helpers.
-//
-// Source side (inside BeginDragDropSource / EndDragDropSource):
-//     DragDrop::SetAssetPayload(AssetData);
-//     DragDrop::SetEntityPayload(World, Entity);
-//     DragDrop::SetFilePayload(VirtualPath);
-//
-// Target side (inside BeginDragDropTarget / EndDragDropTarget):
-//     if (CMaterial* M = DragDrop::AcceptAsset<CMaterial>()) { ... }
-//     if (DragDrop::AcceptEntity(&World, &Entity)) { ... }
-//     if (DragDrop::AcceptFile("luau", OutPath)) { ... }
-//     if (const auto* P = DragDrop::PeekPayload()) { /* hover styling */ }
+// Single typed drag-drop channel ("LumDD") for editor and runtime UIs; replaces ad-hoc
+// per-tool payload strings. Set* on the source side, Accept*/PeekPayload on the target.
 namespace Lumina::DragDrop
 {
     enum class EPayloadKind : uint8
@@ -56,26 +43,23 @@ namespace Lumina::DragDrop
 
     constexpr const char* GImGuiPayloadType = "LumDD";
 
-    //~ Source helpers --------------------------------------------------
-
+    // Source helpers
     RUNTIME_API void SetAssetPayload(FName ClassName, FStringView Path, CObject* Object = nullptr);
     RUNTIME_API void SetAssetPayload(const FAssetData& Asset);
     RUNTIME_API void SetAssetPayload(CObject* Asset);
     RUNTIME_API void SetEntityPayload(CWorld* World, entt::entity Entity);
     RUNTIME_API void SetFilePayload(FStringView VirtualPath);
 
-    //~ Target helpers --------------------------------------------------
+    // Target helpers
 
-    // Read-only inspection of the payload currently being dragged (regardless of
-    // hover). Returns null when no LumDD drag is active.
+    // Read-only inspection of the payload being dragged; null when no LumDD drag is active.
     RUNTIME_API const FPayload* PeekPayload();
 
     // True only on the frame the mouse releases over an active drop target.
     RUNTIME_API bool IsDelivered();
 
-    // Class-checked asset accept. Returns the resolved CObject only on delivery
-    // and only when the dragged asset is-a Class. Will lazily load when the
-    // source did not provide an already-loaded object.
+    // Class-checked asset accept; returns the resolved CObject only on delivery when the
+    // dragged asset is-a Class. Lazily loads if the source gave no loaded object.
     RUNTIME_API CObject* AcceptAssetOfClass(CClass* Class);
 
     template <typename T>

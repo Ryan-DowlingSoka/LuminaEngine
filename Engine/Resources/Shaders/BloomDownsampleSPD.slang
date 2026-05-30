@@ -2,20 +2,9 @@
 #include "Includes/Common.slang"
 #include "Includes/SceneGlobals.slang"
 
-// =============================================================================
-//  Bloom Downsample (Single-Pass Downsampler)
-// =============================================================================
-//
-//  One compute dispatch generates the entire bloom mip chain (mips 0..N-1) from
-//  HDR scene color. Built on the daxa/foundation gen_hiz pattern (same one as
-//  DepthPyramidSPD): 16x16 thread tile produces a 32x32 patch of mip 0, then
-//  ping-pong LDS reductions emit mips 1..5 in-flight. Bloom only ever needs 5
-//  mips total, so phase 1 alone is sufficient -- no atomic counter, no last-WG
-//  hand-off.
-//
-//  Resources are bindless: HDR via uBindlessTex2D[HDRIndex], per-mip writes via
-//  uBindlessRWTex2D[MipUAV[i]]. No pass-local binding set.
-// =============================================================================
+// Single-pass bloom downsampler: one dispatch builds the whole mip chain (daxa gen_hiz pattern,
+// like DepthPyramidSPD). Bloom needs only 5 mips so phase 1 alone suffices, no atomic/last-WG hand-off.
+// Bindless: HDR via uBindlessTex2D[HDRIndex], per-mip writes via uBindlessRWTex2D[MipUAV[i]].
 
 #define TILE_THREAD_WIDTH 16
 #define TILE_THREAD_COUNT (TILE_THREAD_WIDTH * TILE_THREAD_WIDTH)
@@ -114,9 +103,8 @@ float3 PrefilterHDR(float2 UV, float2 T, float Threshold, float3 KneeCurve)
     return QuadraticThreshold(max(Result, 0.0), Threshold, KneeCurve);
 }
 
-// Each thread writes a 2x2 sub-quad of mip 0 by prefiltering HDR. Returns the
-// 4 values via out params so DownsampleMipN1 can reduce them to mip 1 without
-// going through LDS.
+// Each thread writes a 2x2 sub-quad of mip 0 by prefiltering HDR, returning the 4 values via
+// out params so DownsampleMipN1 reduces them to mip 1 without going through LDS.
 void DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread,
     out float3 Q0, out float3 Q1, out float3 Q2, out float3 Q3)
 {

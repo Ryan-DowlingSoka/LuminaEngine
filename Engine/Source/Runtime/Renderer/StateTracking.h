@@ -76,10 +76,8 @@ namespace Lumina
 
     struct FTextureState
     {
-        // Arena-backed: overflow lives in the tracker's FBlockLinearAllocator (bulk-reset
-        // per command list), so it never heap-leaks even though FTextureState is allocated
-        // from the arena and never individually destroyed. Allocator is wired up in
-        // GetTextureStateTracking right after the object is created.
+        // Arena-backed: overflow lives in the tracker's FBlockLinearAllocator (bulk-reset per command
+        // list), so it never heap-leaks despite never being individually destroyed. Wired up in GetTextureStateTracking.
         TFrameVector<EResourceStates> SubresourceStates;
         EResourceStates State = EResourceStates::Unknown;
         uint32 bEnableUavBarriers:1 = true;

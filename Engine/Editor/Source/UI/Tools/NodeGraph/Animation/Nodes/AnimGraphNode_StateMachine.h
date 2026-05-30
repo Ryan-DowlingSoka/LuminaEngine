@@ -8,9 +8,8 @@ namespace Lumina
 {
     class CAnimStateMachineGraph;
 
-    // A state machine inside a blend-tree graph. Double-click to open its own
-    // canvas, where State nodes are boxes and transitions are the wires between
-    // them. Outputs the resolved pose for whichever state is active.
+    // A state machine inside a blend-tree graph (double-click for its own canvas of State
+    // nodes + transition wires); outputs the resolved pose of whichever state is active.
     REFLECT()
     class CAnimGraphNode_StateMachine : public CAnimGraphNode
     {

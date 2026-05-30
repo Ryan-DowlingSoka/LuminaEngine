@@ -31,9 +31,8 @@ namespace Lumina
         FRHIGraphicsPipeline* GetOrCreateGraphicsPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc);
         FRHIComputePipeline* GetOrCreateComputePipeline(FVulkanDevice* Device, const FComputePipelineDesc& InDesc);
 
-        // Returns the VkPipeline shared by all RHI pipeline objects whose desc canonicalizes
-        // identically (dynamic-state fields zeroed). Creates one on first use. The cache owns
-        // the handle's lifetime. OutCanonicalHash identifies it for invalidation bookkeeping.
+        // VkPipeline shared by all RHI pipelines whose desc canonicalizes identically (dynamic fields zeroed);
+        // cache owns its lifetime. OutCanonicalHash identifies it for invalidation bookkeeping.
         VkPipeline GetOrCreateSharedVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc, VkPipelineLayout Layout, size_t& OutCanonicalHash);
 
         void PostShaderRecompiled(const FRHIShader* Shader);

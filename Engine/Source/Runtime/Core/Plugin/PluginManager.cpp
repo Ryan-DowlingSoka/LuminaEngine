@@ -63,9 +63,7 @@ namespace Lumina
             return;
         }
 
-        // Each immediate subdir is a candidate plugin. We expect a single
-        // <SubDir>/<SubDir>.lplugin file inside; falling back to ANY
-        // .lplugin if the conventional name is missing.
+        // Each subdir is a candidate plugin; prefer <SubDir>/<SubDir>.lplugin, else any .lplugin.
         auto It = std::filesystem::directory_iterator(Root, EC);
         if (EC)
         {
@@ -243,14 +241,8 @@ namespace Lumina
 
     TVector<FPlugin*> FPluginManager::BuildLoadOrder()
     {
-        // Kahn-style toposort on the enabled set. Dependency edges point
-        // from dependency to dependent; missing non-optional deps disable
-        // the dependent and log.
-        //
-        // Determinism: every iteration source here is OwnedPlugins (a
-        // vector, insertion-ordered) rather than PluginLookup (a hashmap)
-        // so the emitted order is stable across runs. Cook output relies
-        // on plugin load order being reproducible.
+        // Kahn-style toposort; missing non-optional deps disable the dependent and log.
+        // Iterate OwnedPlugins (insertion order), not PluginLookup, so order is reproducible.
         TVector<FPlugin*> Enabled;
         Enabled.reserve(OwnedPlugins.size());
         for (auto& Owned : OwnedPlugins)
@@ -333,9 +325,7 @@ namespace Lumina
 
         if (Result.size() != Enabled.size())
         {
-            // Cycle: emit anything left in Enabled (= OwnedPlugins) order
-            // so the recovery order is at least deterministic, and name
-            // every leftover so the cycle is actually debuggable.
+            // Cycle: emit leftovers in OwnedPlugins order (deterministic) and log each.
             THashSet<FPlugin*> Emitted;
             Emitted.reserve(Result.size());
             for (FPlugin* Q : Result) Emitted.insert(Q);
@@ -412,11 +402,8 @@ namespace Lumina
             }
         }
 
-        // Monolithic (Shipping) builds statically link plugin modules via
-        // IMPLEMENT_MODULE + the FStaticModuleRegistration intrusive list.
-        // No DLL exists on disk in that case; FModuleManager::LoadModule's
-        // static-factory branch picks the module up by bare name, so we
-        // pass it the name and skip the DLL-existence pre-check.
+        // Monolithic builds statically link plugin modules (no DLL on disk); LoadModule's
+        // static-factory branch resolves by bare name, so skip the DLL-existence pre-check.
         const FName BareName(Module.Name);
         if (FModuleManager::Get().HasStaticFactory(BareName))
         {
@@ -463,9 +450,7 @@ namespace Lumina
         Loaded.bStartupCalled  = true; // FModuleManager called StartupModule
         Plugin.GetLoadedModules().emplace_back(Move(Loaded));
 
-        // DISPLAY parity with the static-factory branch above: plugin
-        // module load is a boot milestone we want surviving Shipping for
-        // post-mortem debugging (LOG_INFO is stripped in Shipping).
+        // LOG_DISPLAY (not INFO) so this boot milestone survives Shipping.
         LOG_DISPLAY("[PluginManager] Loaded plugin '{}' module '{}' (phase {})",
             Plugin.GetName(), Module.Name, LexToString(Module.LoadingPhase));
         return true;
@@ -479,11 +464,8 @@ namespace Lumina
             bLoadOrderDirty = false;
         }
 
-        // Mount content for any newly-enabled plugin the first time it
-        // gets visited. We can't do this in DiscoverDirectory because the
-        // engine VFS isn't fully up at Earliest; doing it here means
-        // Earliest-phase modules see no content, which matches their
-        // contract.
+        // Mount content here, not in DiscoverDirectory (VFS isn't up at Earliest);
+        // Earliest-phase modules see no content, which matches their contract.
         for (FPlugin* Plugin : CachedLoadOrder)
         {
             if (Phase != EPluginLoadingPhase::Earliest)
@@ -502,11 +484,8 @@ namespace Lumina
 
     void FPluginManager::ShutdownAllPlugins()
     {
-        // Reverse-order tear-down: walk CachedLoadOrder back-to-front so
-        // dependents shut down before their dependencies, and call into
-        // FModuleManager::UnloadModule for each loaded module so its
-        // ShutdownModule actually runs in the right order (rather than in
-        // whatever order ModuleHashMap happens to iterate in).
+        // Reverse-order teardown: walk CachedLoadOrder back-to-front so dependents shut
+        // down before deps, calling UnloadModule for each so ShutdownModule runs in order.
         for (auto It = CachedLoadOrder.rbegin(); It != CachedLoadOrder.rend(); ++It)
         {
             FPlugin* Plugin = *It;

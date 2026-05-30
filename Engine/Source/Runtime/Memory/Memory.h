@@ -65,11 +65,8 @@ namespace Lumina::Memory
         rpmalloc_thread_finalize(1);
     }
 
-    // rpmalloc global statistics. These MUST be exported (not header-inline): each
-    // module statically links its own copy of rpmalloc, so an inline body would query
-    // the caller module's near-empty instance. Defined in Memory.cpp so they always
-    // report Runtime.dll's instance -- the one Memory::Malloc actually allocates from.
-    // All return 0 unless rpmalloc was built with ENABLE_STATISTICS (Debug/Development).
+    // rpmalloc global stats; MUST be exported (each module links its own rpmalloc, an inline body
+    // would query the caller's empty instance). Return 0 unless built with ENABLE_STATISTICS.
     RUNTIME_API NODISCARD size_t GetCurrentMappedMemory();
     RUNTIME_API NODISCARD size_t GetPeakMappedMemory();
     RUNTIME_API NODISCARD size_t GetCachedMemory();
@@ -173,15 +170,8 @@ namespace Lumina::Memory
     }
 }
 
-// C-ABI allocator shim for third-party static libs that allocate via raw malloc/free
-// and expose no allocator-injection hook (e.g. miniz, OpenFBX, MikkTSpace, RmlUi).
-// Routes their allocations through Memory::Malloc so they are tracked instead of
-// escaping to the CRT. Category is a string literal interned per call. A lib must use
-// these consistently for any given allocation (never mix with raw malloc/free).
-//
-// Declared plain (no RUNTIME_API) so vendored TUs can forward-declare them identically
-// without a dllexport/dllimport linkage clash. They are exported from Runtime.dll via
-// linker /EXPORT pragmas at their definition in Memory.cpp.
+// C-ABI shim routing third-party libs (miniz, OpenFBX, MikkTSpace, RmlUi) through Memory::Malloc. Declared
+// plain (no RUNTIME_API) to avoid a vendored-TU linkage clash; exported via /EXPORT pragmas in Memory.cpp.
 extern "C"
 {
     void* LmThirdPartyMalloc(size_t Size, const char* Category);

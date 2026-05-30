@@ -4,13 +4,8 @@
 
 namespace Lumina
 {
-    // Resolves the active view for the frame: bakes the active camera's view
-    // matrix from its transform and blends post-process volumes the camera is
-    // inside, writing the result into the FResolvedSceneView context singleton
-    // that CWorld::Extract forwards to the render scene. Runs last in the stage
-    // (Low priority sorts to the tail) so it sees every camera/transform change
-    // made earlier in the frame -- FrameEnd in game/simulation worlds, Paused in
-    // editor worlds (the only stage an idle editor world ticks).
+    // Resolves the active view: bakes the camera matrix + blends post-process volumes into the
+    // FResolvedSceneView singleton that CWorld::Extract forwards. Runs last (Low) so it sees every change.
     REFLECT(System)
     struct SCameraSystem
     {

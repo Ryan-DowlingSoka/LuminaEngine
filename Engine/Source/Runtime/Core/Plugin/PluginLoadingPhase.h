@@ -5,9 +5,8 @@
 
 namespace Lumina
 {
-    // When a plugin module's StartupModule is called during engine bring-up.
-    // Phases fire in declaration order; modules within a phase load in
-    // dependency order.
+    // When a plugin's StartupModule fires during bring-up; phases run in declaration
+    // order, modules within a phase in dependency order.
     enum class EPluginLoadingPhase : uint8
     {
         // Before any engine subsystem. Reserved for modules that wrap third-
@@ -27,9 +26,7 @@ namespace Lumina
         // After all engine init has finished, before the main loop.
         PostEngineInit,
 
-        // Fired by Engine::LoadProject after the project DLL loads. Plugin
-        // modules that build on top of a loaded project (e.g. Lua bindings
-        // for project-specific types) belong here.
+        // After the project DLL loads; for modules building on project types (e.g. Lua bindings).
         PostProjectLoad,
 
         // Editor-only: after the editor UI is initialized. Editor tooling

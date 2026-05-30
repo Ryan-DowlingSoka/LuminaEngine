@@ -5,9 +5,8 @@
 #include "Core/LuminaMacros.h"
 #include <cmath>
 
-// Free functions over Lumina vector types. Generic over TVec<T, N> wherever the
-// operation is dimension-agnostic; dimension-specific entries (Cross, Reflect)
-// constrain to the dimension they need.
+// Free functions over Lumina vector types; generic over TVec<T,N> except dimension-specific
+// entries (Cross, Reflect) which constrain to their dimension.
 
 namespace Lumina::Math
 {
@@ -71,7 +70,6 @@ namespace Lumina::Math
         return Incident - Normal * (T(2) * Dot(Incident, Normal));
     }
 
-    // ---- Component-wise reductions ------------------------------------------
 
     template<typename T, int N>
     [[nodiscard]] constexpr TVec<T, N> Min(const TVec<T, N>& A, const TVec<T, N>& B)
@@ -131,7 +129,6 @@ namespace Lumina::Math
         return true;
     }
 
-    // ---- Component-wise unary (applied per element) -------------------------
     // Each maps the matching scalar Math:: function over the components.
     #define LUMINA_VEC_MAP1(Name)                                                          \
         template<typename T, int N> [[nodiscard]] TVec<T, N> Name(const TVec<T, N>& V)      \
@@ -157,7 +154,6 @@ namespace Lumina::Math
     LUMINA_VEC_MAP1(Saturate)
     #undef LUMINA_VEC_MAP1
 
-    // ---- Scalar-broadcast min/max/clamp (e.g. Max(v, 0.0f)) -----------------
     template<typename T, int N>
     [[nodiscard]] constexpr TVec<T, N> Max(const TVec<T, N>& V, std::type_identity_t<T> S)
     {
@@ -182,7 +178,6 @@ namespace Lumina::Math
         return R;
     }
 
-    // ---- Component-wise binary ----------------------------------------------
     template<typename T, int N>
     [[nodiscard]] TVec<T, N> Pow(const TVec<T, N>& Base, const TVec<T, N>& Exp)
     {

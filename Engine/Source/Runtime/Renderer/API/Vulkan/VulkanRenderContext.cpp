@@ -131,8 +131,6 @@ namespace Lumina
         default: return VK_OBJECT_TYPE_UNKNOWN;
         }
     }
-    
-    //------------------------------------------------------------------------------------
 
 
     VkImageAspectFlags GuessImageAspectFlags(VkFormat Format)
@@ -944,9 +942,8 @@ namespace Lumina
         Features12.shaderInt8                       = VK_TRUE;
         Features12.shaderFloat16                    = VK_TRUE;
 
-        // VK_EXT_mutable_descriptor_type lets the bindless table host both
-        // sampled and storage images at one binding slot, with the per-write
-        // descriptorType picking which interpretation to use.
+        // VK_EXT_mutable_descriptor_type lets the bindless table host both sampled
+        // and storage images at one slot; the per-write descriptorType picks the interpretation.
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT MutableDescriptorFeature{};
         MutableDescriptorFeature.sType                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
         MutableDescriptorFeature.mutableDescriptorType  = VK_TRUE;
@@ -965,11 +962,8 @@ namespace Lumina
             .set_required_features_13(Features13)
             .add_required_extension_features(MutableDescriptorFeature)
             .add_required_extension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)
-            // Dedicated compute/transfer queues are a preference, not a hard
-            // requirement -- requiring them rejects GPUs that expose a single
-            // combined queue family (many Intel iGPUs, virtualized GPUs). We
-            // alias onto the graphics queue at queue-setup time when they're
-            // absent (see CreateDevice queue block).
+            // Dedicated compute/transfer queues are a preference, not a requirement (single-queue iGPUs).
+            // Absent ones alias onto the graphics queue at queue-setup time (see CreateDevice queue block).
             .defer_surface_initialization()
             .select();
 
@@ -1218,11 +1212,8 @@ namespace Lumina
 
         const uint32 GraphicsFamily = GraphicsQueue ? GraphicsQueue->QueueFamilyIndex : UINT32_MAX;
 
-        // Own a dedicated compute FQueue only when it's a distinct family. On a
-        // single combined-family GPU, vkb hands back the graphics queue here; we
-        // alias onto it so exactly one FQueue (and one mutex) owns each VkQueue --
-        // two FQueues submitting to the same VkQueue would race (Vulkan requires
-        // external synchronization per queue).
+        // Own a dedicated compute FQueue only when it's a distinct family; else alias graphics.
+        // Exactly one FQueue (and mutex) must own each VkQueue -- Vulkan requires external sync per queue.
         uint32 ComputeFamily = GraphicsFamily;
         if (vkbDevice.get_queue(vkb::QueueType::compute).has_value()
             && vkbDevice.get_queue_index(vkb::QueueType::compute).value() != GraphicsFamily)
@@ -1426,10 +1417,8 @@ namespace Lumina
                 {
                     FVulkanImage* Image = static_cast<FVulkanImage*>(Binding.ResourceHandle);
 
-                    // SRVs span every mip the caller asked for. SampleLevel(UV, lod) on
-                    // multi-mip images (HZB taps especially) requires the view to expose
-                    // all mips, otherwise reads outside the view's mip range are
-                    // implementation-defined.
+                    // SRVs must expose every requested mip; SampleLevel on multi-mip images (HZB)
+                    // reading outside the view's mip range is implementation-defined.
                     const FTextureSubresourceSet Subresource = Binding.GetTextureResource().Subresources.Resolve(Image->GetDescription(), false);
                     FVulkanImage::ESubresourceViewType ViewType = Vk::GetTextureViewType(Binding.Format, Image->GetDescription().Format);
                     VkImageView View = Image->GetSubresourceView(Subresource, Binding.GetTextureResource().Dimension, Binding.Format, VK_IMAGE_USAGE_SAMPLED_BIT, ViewType).View;
@@ -1438,10 +1427,8 @@ namespace Lumina
                     ImageInfo.imageView = View;
                     ImageInfo.imageLayout = GetEffectiveImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-                    // SRV-into-mutable writes a plain SAMPLED_IMAGE (sampler comes
-                    // from the bindless sampler array). Otherwise fall back to the
-                    // legacy COMBINED_IMAGE_SAMPLER path with the static default
-                    // sampler baked in.
+                    // SRV-into-mutable writes a plain SAMPLED_IMAGE (sampler from the bindless array);
+                    // else the legacy COMBINED_IMAGE_SAMPLER path with the static default sampler.
                     const bool bMutable = (LayoutBinding.descriptorType == VK_DESCRIPTOR_TYPE_MUTABLE_EXT);
                     if (bMutable)
                     {
@@ -1869,9 +1856,8 @@ namespace Lumina
         FQueue* WaitingQueue = GetQueue(Waiting);
         FQueue* WaitOnQueue = GetQueue(WaitOn);
 
-        // When families collapse, both resolve to the same FQueue. Work submitted
-        // to one VkQueue is already ordered against itself, so a self-wait is
-        // unnecessary (and would wait on a timeline value from the same queue).
+        // When families collapse, both resolve to the same FQueue; a VkQueue is already ordered
+        // against itself, so a self-wait is unnecessary (and would wait on its own timeline value).
         if (WaitingQueue == WaitOnQueue)
         {
             return;

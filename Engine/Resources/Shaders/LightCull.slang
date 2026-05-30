@@ -3,10 +3,6 @@
 
 #define LOCAL_SIZE 128
 
-// ============================================================================
-//  Helpers
-// ============================================================================
-
 bool SphereAABBIntersection(float3 Center, float Radius, float3 AABBMin, float3 AABBMax)
 {
     float3 ClosestPoint    = clamp(Center, AABBMin, AABBMax);
@@ -15,15 +11,9 @@ bool SphereAABBIntersection(float3 Center, float Radius, float3 AABBMin, float3 
     return DistanceSquared <= Radius * Radius;
 }
 
-// View-space light position (xyz) + radius (w). Staged once per batch so the
-// LOCAL_SIZE clusters in a group share a single view-space transform and a
-// single global load per light, instead of every cluster re-transforming and
-// re-reading every light from the FLightData buffer.
+// View-space light position (xyz) + radius (w), staged once per batch so the group's clusters
+// share one transform and one global load per light instead of each cluster re-reading every light.
 groupshared float4 gLightViewPosRadius[LOCAL_SIZE];
-
-// ============================================================================
-//  Main
-// ============================================================================
 
 [shader("compute")]
 [numthreads(LOCAL_SIZE, 1, 1)]
@@ -49,9 +39,8 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
     float4x4 View         = GetCameraView();
     uint     VisibleCount = 0;
 
-    // LightCount is uniform across the group, so every thread runs the same
-    // number of iterations and reaches both barriers each pass -- the syncs
-    // are never in divergent control flow.
+    // LightCount is group-uniform, so every thread runs the same iterations and reaches both
+    // barriers each pass -- the syncs are never in divergent control flow.
     for (uint Base = 0; Base < LightCount; Base += LOCAL_SIZE)
     {
         uint LoadIndex = Base + Local;

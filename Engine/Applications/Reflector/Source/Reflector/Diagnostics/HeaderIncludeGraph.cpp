@@ -14,9 +14,8 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        // Forward slashes + absolute, case preserved. Mirrors NormalizeHeaderPath
-        // so the strings produced here compare equal to AllHeaders entries on
-        // every filesystem (Windows case-insensitive, Linux/macOS case-sensitive).
+        // Forward slashes + absolute, case preserved; mirrors NormalizeHeaderPath
+        // so these strings compare equal to AllHeaders entries on every filesystem.
         eastl::string Normalise(const std::filesystem::path& InPath)
         {
             std::error_code Ec;
@@ -53,10 +52,8 @@ namespace Lumina::Reflection
             return Normalise(Parent);
         }
 
-        // Returns true for paths the cycle detector should ignore even if they
-        // resolve cleanly. Today that's the `.inl` idiom: a header X.h that
-        // includes X.inl which in turn includes X.h to keep IDE indexers happy.
-        // This is a deliberate design pattern, not a circular dependency.
+        // Paths the cycle detector ignores even when they resolve: the `.inl` idiom
+        // (X.h includes X.inl includes X.h) is a deliberate pattern, not a cycle.
         bool IsExtensionIgnored(const eastl::string& Path)
         {
             const size_t Dot = Path.find_last_of('.');
@@ -76,9 +73,8 @@ namespace Lumina::Reflection
             return false;
         }
 
-        // Match `# include "x"` allowing any whitespace between tokens. We
-        // ignore `#include <...>`: those are system / external headers we
-        // can't resolve into the workspace and shouldn't follow.
+        // Match `#include "x"` (any inter-token whitespace); `#include <...>` is
+        // skipped since system/external headers can't be resolved into the workspace.
         static const std::regex IncludeRegex(R"(^\s*#\s*include\s*\"([^\"]+)\")");
 
         std::string LineBuf;
@@ -175,10 +171,8 @@ namespace Lumina::Reflection
             }
         }
 
-        // BFS-ish crawl: start from every reflected header, follow its includes,
-        // queue any newly-discovered file that lives inside a project root. We
-        // explicitly stop at non-project paths so cycles in third-party code
-        // don't get reported back to the user.
+        // BFS-ish crawl from every reflected header, queuing files inside a project root.
+        // Stops at non-project paths so third-party cycles aren't reported to the user.
         eastl::vector<eastl::string> Frontier = Seeds;
         while (!Frontier.empty())
         {
@@ -216,9 +210,8 @@ namespace Lumina::Reflection
                 }
                 if (IsExtensionIgnored(Resolved))
                 {
-                    // .inl files are intentionally self-referential with their
-                    // owning .h. Skip the edge so the idiom doesn't surface as
-                    // a false-positive cycle.
+                    // .inl files are intentionally self-referential with their owning .h;
+                    // skip the edge so the idiom isn't reported as a false-positive cycle.
                     continue;
                 }
 
@@ -253,9 +246,8 @@ namespace Lumina::Reflection
 
     eastl::vector<FHeaderCycle> FHeaderIncludeGraph::DetectCycles() const
     {
-        // Standard three-colour DFS. White = unvisited, Grey = on the active
-        // recursion stack, Black = fully explored. Hitting a Grey node means
-        // we've found a cycle and the active stack contains its members.
+        // Standard three-color DFS (White=unvisited, Grey=on stack, Black=done);
+        // hitting a Grey node means the active stack holds a cycle's members.
         enum class EColor : uint8_t { White, Grey, Black };
 
         eastl::hash_map<eastl::string, EColor> Colour;
@@ -331,9 +323,8 @@ namespace Lumina::Reflection
                     FHeaderCycle Cycle(StackIt, Stack.end());
                     Cycle.push_back(Target);   // close the loop: last == first
 
-                    // Canonicalise: rotate so the lexicographically smallest
-                    // path is first. Two different start nodes that walked the
-                    // same loop now produce identical keys.
+                    // Canonicalize: rotate so the smallest path is first, giving
+                    // identical keys for any start node that walked the same loop.
                     auto MinIt = eastl::min_element(Cycle.begin(), Cycle.end() - 1);
                     eastl::vector<eastl::string> Canonical;
                     Canonical.reserve(Cycle.size());

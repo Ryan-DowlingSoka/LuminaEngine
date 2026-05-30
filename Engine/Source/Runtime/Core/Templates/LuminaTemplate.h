@@ -22,12 +22,6 @@ namespace Lumina
 			RefValue = OriginalValue;
 		}
     	
-		/**
-		 * Provides read-only access to the original value of the data being tracked by this struct
-		 *
-		 * @return	a const reference to the original data value
-		 */
-    	
 		FORCEINLINE const AssignedType& GetOriginalValue() const
 		{
 			return OriginalValue;

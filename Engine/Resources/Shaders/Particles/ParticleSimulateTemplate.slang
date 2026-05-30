@@ -1,7 +1,4 @@
-// -----------------------------------------------------------------------------
-//  ParticleSimulateTemplate.slang
-//  Skeleton compiled by FParticleCompiler for module-stack particle systems.
-// -----------------------------------------------------------------------------
+// Skeleton compiled by FParticleCompiler for module-stack particle systems.
 
 struct FGPUParticle
 {
@@ -53,10 +50,6 @@ struct FParticleSimParams
 [[vk::binding(1, 0)]] ConstantBuffer<FParticleSimParams>  SimParams;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint>            SpawnCounter;
 
-// -----------------------------------------------------------------------------
-//  RNG / hashing helpers
-// -----------------------------------------------------------------------------
-
 uint PCGHash(uint state)
 {
     state = state * 747796405u + 2891336453u;
@@ -93,10 +86,7 @@ float3 RandOnUnitSphere(inout uint state)
     return float3(sinPhi * cos(theta), sinPhi * sin(theta), cos(phi));
 }
 
-// -----------------------------------------------------------------------------
-//  Cheap value / curl noise for turbulence. Output in [-1, 1].
-// -----------------------------------------------------------------------------
-
+// Cheap value / curl noise for turbulence. Output in [-1, 1].
 float Hash31(float3 p)
 {
     p = frac(p * 0.3183099 + 0.1);
@@ -141,10 +131,7 @@ float3 CurlishNoise(float3 p, float time, float scale, float speed)
     return d * (1.0 / (2.0 * e));
 }
 
-// -----------------------------------------------------------------------------
-//  Emitter shape sampling. Shape ids match EParticleEmitterShape.
-// -----------------------------------------------------------------------------
-
+// Emitter shape sampling. Shape ids match EParticleEmitterShape.
 float3 SampleEmitterShape(inout uint state, uint shape, float3 shapeSize, float coneAngle,
                           float3 forward, float3 right, float3 up)
 {
@@ -194,10 +181,7 @@ float3 RandDirectionInCone(inout uint state, float3 forward, float3 right, float
     return forward * cos(angle) + (right * cos(t) + up * sin(t)) * s;
 }
 
-// -----------------------------------------------------------------------------
-//  Module-stack function bodies (filled in by FParticleCompiler).
-// -----------------------------------------------------------------------------
-
+// Module-stack function bodies (filled in by FParticleCompiler).
 void SpawnParticleGraph(inout FGPUParticle P, inout uint Seed, float TotalTime, uint SpawnIndex)
 {
 $PARTICLE_SPAWN_FUNC
@@ -208,10 +192,6 @@ void UpdateParticleGraph(inout FGPUParticle P, float DeltaTime, float TotalTime)
     float LifeRatio = saturate(P.Age / max(P.Lifetime, 0.0001));
 $PARTICLE_UPDATE_FUNC
 }
-
-// -----------------------------------------------------------------------------
-//  Entry point.
-// -----------------------------------------------------------------------------
 
 [shader("compute")]
 [numthreads(64, 1, 1)]

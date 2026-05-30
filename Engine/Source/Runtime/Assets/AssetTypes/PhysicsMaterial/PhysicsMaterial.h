@@ -6,11 +6,8 @@
 
 namespace Lumina
 {
-    /**
-     * How two PhysicsMaterial values are combined at a contact. The pair's effective mode is the
-     * max of the two bodies' modes (Max > Min > Multiply > Average), matching the convention used
-     * by most engines so a "sticky" material always wins.
-     */
+    /** How two materials combine at a contact; the pair's effective mode is the max of both bodies'
+     *  modes (Max > Min > Multiply > Average), so a "sticky" material wins. */
     REFLECT()
     enum class RUNTIME_API EPhysicsMaterialCombineMode : uint8
     {
@@ -20,15 +17,8 @@ namespace Lumina
         Max,
     };
 
-    /**
-     * Designer-authored physical surface properties (friction, restitution, density) plus the
-     * combine modes used when two surfaces touch. Assigned per collider component; the rigid
-     * body's *Override fields remain the fallback when no material is set.
-     *
-     * The combine modes drive the contact callback in FJoltContactListener::OverrideFrictionAndRestitution:
-     * the pair's effective mode is the max of the two bodies' modes, then friction and restitution
-     * are combined under that rule. Without a material the body keeps Jolt's default combining.
-     */
+    /** Per-collider surface properties (friction, restitution, density) + combine modes, consumed by
+     *  FJoltContactListener::OverrideFrictionAndRestitution. No material = rigid body *Override fallback / Jolt defaults. */
     REFLECT()
     class RUNTIME_API CPhysicsMaterial : public CObject
     {

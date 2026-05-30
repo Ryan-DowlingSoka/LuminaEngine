@@ -3,11 +3,8 @@
 
 namespace Lumina
 {
-    // Reflector model for TOptional<T>. Mirrors FReflectedArrayProperty's shape
-    // but only emits the four function-pointer wrappers an optional needs:
-    // HasValue / GetValue / SetValue / Reset. The inner T is described by an
-    // adjacent property entry the runtime stitches in via FProperty::AddProperty,
-    // so the inner type can be a struct / enum / object / numeric like any field.
+    // Reflector model for TOptional<T>; emits HasValue/GetValue/SetValue/Reset wrappers.
+    // Inner T is an adjacent property entry the runtime stitches in via FProperty::AddProperty.
     class FReflectedOptionalProperty : public FReflectedProperty
     {
     public:

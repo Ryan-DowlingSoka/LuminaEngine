@@ -1,17 +1,8 @@
 #include "Includes/Sky.slang"
 #include "Includes/IBL.slang"
 
-// Diffuse irradiance convolution. For each output texel of each face the
-// shader integrates incoming radiance L(omega) weighted by max(N . omega, 0)
-// over the unit hemisphere around N, where N is the world-space direction
-// implied by (face, texelUV). Cosine-weighted importance sampling (Malley's
-// method) gives PDF p(omega) = (N . omega) / pi, so the importance-weighted
-// monte carlo estimator collapses to:
-//
-//      Irradiance(N) / pi  =  (1 / NumSamples) * sum L(omega_i)
-//
-// We bake this "diffuse-BRDF-convolved" form so the runtime shader does
-// `Diffuse = SampleIrradiance(N) * Albedo` without an explicit / pi.
+// Diffuse irradiance convolution. Cosine-weighted importance sampling (Malley's method) collapses the
+// estimator to Irradiance(N)/pi = mean(L(omega_i)); baked so runtime does Diffuse = SampleIrradiance(N) * Albedo.
 
 [[vk::binding(0, 0)]] SamplerCube                              uSrcCube;
 [[vk::binding(1, 0)]] RWTexture2DArray<float4>                 uOutCube;

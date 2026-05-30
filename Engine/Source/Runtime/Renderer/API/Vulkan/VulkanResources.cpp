@@ -836,9 +836,6 @@ namespace Lumina
     }
 
 
-    //----------------------------------------------------------------------------------------------
-    
-
     FVulkanImage::FVulkanImage(FVulkanDevice* InDevice, const FRHIImageDesc& InDescription)
         : IDeviceChild(InDevice)
         , FTextureStateExtension(Description)
@@ -1199,7 +1196,6 @@ namespace Lumina
     {
         vkDestroyShaderModule(Device->GetDevice(), ShaderModule, VK_ALLOC_CALLBACK);
     }
-    //----------------------------------------------------------------------------------------------
 
 
     FVulkanInputLayout::FVulkanInputLayout(const FVertexAttributeDesc* InAttributeDesc, uint32 AttributeCount)

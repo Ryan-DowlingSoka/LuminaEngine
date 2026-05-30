@@ -29,10 +29,8 @@ namespace Lumina
         int CurrentMipLevel = 0;
         float ZoomFactor = 1.0f;
         ImVec2 PanOffset = ImVec2(0.0f, 0.0f);
-        // Exposure stop applied as a tint multiplier to HDR previews.
-        // ImGui's pipeline doesn't tone-map, so HDR values >1 clip to
-        // white in the swap chain; let the user dim the preview to
-        // recover detail in bright regions.
+        // Exposure stop tinting HDR previews; ImGui doesn't tone-map, so >1 clips to
+        // white. Lets the user dim the preview to recover bright detail.
         float ExposureStops = 0.0f;
     };
 }

@@ -6,11 +6,8 @@
 
 namespace Lumina
 {
-    // Data behind a transition wire on the state machine canvas. It is not a
-    // graph node -- the wire between two State nodes is the visual; this object
-    // holds the condition and is shown in the properties panel when its wire is
-    // selected. CAnimStateMachineGraph owns these and reconciles them against
-    // the live State -> State connections in ValidateGraph().
+    // Data behind a transition wire (not a graph node): holds the condition, shown in the properties
+    // panel when its wire is selected. CAnimStateMachineGraph owns and reconciles these in ValidateGraph().
     REFLECT()
     class CAnimStateTransition : public CObject
     {

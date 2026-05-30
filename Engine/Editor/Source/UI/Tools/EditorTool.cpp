@@ -682,9 +682,8 @@ namespace Lumina
 
         if (CameraState.Mode == EEditorCameraMode::Orbit)
         {
-            // Re-anchor on the focused entity; the orbit-target lerp in TickEditorCamera
-            // drives toward this position over a few frames. Anchor snaps so a later
-            // ResetOrbitPan returns to the focused entity.
+            // Re-anchor on the focused entity; TickEditorCamera lerps the orbit target here
+            // over a few frames. Anchor snaps so a later ResetOrbitPan returns to it.
             CameraState.OrbitAnchor      = EntityWorldLocation;
             CameraState.FocusOrbitTarget = EntityWorldLocation;
             CameraState.FocusOrbitDistance = FocusDistance;
@@ -1140,7 +1139,7 @@ namespace Lumina
 
     void FEditorTool::BeginTransaction()
     {
-        if (World == nullptr)
+        if (!CanTransact())
         {
             return;
         }
@@ -1156,7 +1155,7 @@ namespace Lumina
 
     void FEditorTool::EndTransaction(FName Name)
     {
-        if (World == nullptr)
+        if (!CanTransact())
         {
             return;
         }
@@ -1184,7 +1183,7 @@ namespace Lumina
 
     void FEditorTool::Undo()
     {
-        if (UndoStack.empty() || World == nullptr)
+        if (UndoStack.empty() || !CanTransact())
         {
             return;
         }
@@ -1213,7 +1212,7 @@ namespace Lumina
 
     void FEditorTool::Redo()
     {
-        if (RedoStack.empty() || World == nullptr)
+        if (RedoStack.empty() || !CanTransact())
         {
             return;
         }

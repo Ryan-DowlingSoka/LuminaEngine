@@ -11,9 +11,8 @@ namespace Lumina::Lua
         using RawT   = eastl::remove_pointer_t<DecayT>;
 
         RawT*                            External = nullptr;
-        // Inline value storage, used only when T is a value type. For pointer storage the External
-        // path is used and this buffer is inert, so it's sized by the decayed type (pointer-sized)
-        // rather than the pointee -- otherwise a forward-declared pointee would fail to compile.
+        // Inline value storage (value types only); pointer types use External and leave this inert.
+        // Sized by the decayed type, not the pointee, so a forward-declared pointee still compiles.
         alignas(DecayT) unsigned char    Buffer[sizeof(DecayT)];
 
         template<typename... TArgs>

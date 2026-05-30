@@ -13,9 +13,8 @@ namespace Lumina
 
 namespace Lumina::RenderUtils
 {
-    // Grows immediately when DesiredSize exceeds capacity; shrinks back only after the live
-    // size stays well below capacity for a sustained run of frames (hysteresis), reclaiming
-    // memory without thrashing. LowUsageFrames is per-buffer state the caller persists.
+    // Grows immediately on overflow; shrinks only after sustained low usage (hysteresis, no thrash).
+    // LowUsageFrames is per-buffer state the caller persists.
     RUNTIME_API bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor, uint32& LowUsageFrames);
     
     RUNTIME_API FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, FUIntVector2 Size = {});

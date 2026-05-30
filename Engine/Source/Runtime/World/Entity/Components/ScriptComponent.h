@@ -13,10 +13,8 @@ namespace Lumina
 {
     class CWorld;
 
-    // Runtime presence tags. Added/removed in CWorld::SetupScriptComponent based on which
-    // tick hooks the script actually defines, so the script systems iterate filtered views
-    // instead of testing each FRef per entity. Plain (non-reflected) like FUpdateStage_*:
-    // transient runtime state, never serialized or shown in the editor.
+    // Runtime presence tags set in CWorld::SetupScriptComponent per defined tick hook, so script systems
+    // iterate filtered views instead of testing each FRef. Plain (non-reflected), transient, never serialized.
     struct FScriptHasUpdateFn       {};
     struct FScriptHasFixedUpdateFn  {};
     struct FScriptHasEditorUpdateFn {};
@@ -41,16 +39,13 @@ namespace Lumina
         Lua::FRef       UpdateFunc;
         Lua::FRef       DetachFunc;
 
-        // Optional. FixedUpdateFunc ticks at the physics fixed rate (game/simulation
-        // worlds); EditorUpdateFunc ticks every frame in an editor world. Like the
-        // physics hooks, the base script table ships no no-op fallback, so the FRef
-        // stays invalid when the script doesn't define them and the tick is skipped.
+        // Optional. FixedUpdateFunc ticks at the physics rate; EditorUpdateFunc every frame in editor.
+        // No no-op fallback, so an undefined hook leaves the FRef invalid and the tick is skipped.
         Lua::FRef       FixedUpdateFunc;
         Lua::FRef       EditorUpdateFunc;
 
-        // Optional physics-event hooks. Cached at attach time; the physics
-        // scene invokes them directly when contacts begin/end on this entity's
-        // body. Contact = solid collision, Overlap = sensor/trigger.
+        // Optional physics-event hooks, cached at attach; the physics scene invokes them on contact
+        // begin/end. Contact = solid collision, Overlap = sensor/trigger.
         Lua::FRef       ContactBeginFunc;
         Lua::FRef       ContactEndFunc;
         Lua::FRef       OverlapBeginFunc;

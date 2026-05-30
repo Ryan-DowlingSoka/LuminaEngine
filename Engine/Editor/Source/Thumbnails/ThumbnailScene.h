@@ -23,9 +23,7 @@ namespace Lumina
 
         LE_NO_COPYMOVE(FThumbnailScene);
 
-        // Constructs the world, initializes its renderer, resizes the render
-        // target to the requested square size, and creates a default camera
-        // entity at SetCameraTransform's neutral pose. Call before populating.
+        // Constructs the world + renderer at the requested square size and adds a default camera. Call before populating.
         void Begin();
 
         // Tears down the world. Safe to call repeatedly; called by destructor.

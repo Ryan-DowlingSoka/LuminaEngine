@@ -6,8 +6,6 @@ namespace eastl
 {
     allocator g_defaultAllocator;
 
-    //-------------------------------------------------------------------------
-
     allocator* GetDefaultAllocator()
     {
         return &g_defaultAllocator;
@@ -15,12 +13,8 @@ namespace eastl
 
     allocator* SetDefaultAllocator(allocator* pAllocator)
     {
-        // Typically, you'd want to set the default allocator here
-        // We're assuming you might want a getter/setter pattern, but this is just for the default.
         return &g_defaultAllocator;
     }
-
-    //-------------------------------------------------------------------------
 
     allocator::allocator(const char* EASTL_NAME(pName))
     {

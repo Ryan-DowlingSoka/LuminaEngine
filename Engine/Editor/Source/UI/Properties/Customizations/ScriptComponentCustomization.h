@@ -23,10 +23,8 @@ namespace Lumina
 
     private:
 
-        // The component is mutated directly during draw, so discrete edits (clear / pick / drop /
-        // refresh) are captured here and replayed from UpdatePropertyValue — which runs after
-        // BeginTransaction — so the undo snapshot captures the pre-change state. Started is emitted
-        // on the change frame and Finished the next, wrapping the edit in one transaction.
+        // Discrete edits (clear/pick/drop/refresh) are captured here and replayed from
+        // UpdatePropertyValue (after BeginTransaction) so the undo snapshot is pre-change.
         TFunction<void()> PendingMutation;
         bool bFinishPending = false;
     };

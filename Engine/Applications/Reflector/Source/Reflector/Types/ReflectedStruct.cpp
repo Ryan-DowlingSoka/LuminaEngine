@@ -29,10 +29,6 @@ namespace Lumina::Reflection
         }
     }
 
-    //-------------------------------------------------------------------------
-    // FReflectedStruct lifecycle
-    //-------------------------------------------------------------------------
-
     FReflectedStruct::~FReflectedStruct() = default;
 
     void FReflectedStruct::PushProperty(eastl::unique_ptr<FReflectedProperty>&& NewProperty)
@@ -46,10 +42,6 @@ namespace Lumina::Reflection
         NewFunction->Outer = Namespace.empty() ? DisplayName : (Namespace + "::" + DisplayName);
         Functions.push_back(eastl::move(NewFunction));
     }
-
-    //-------------------------------------------------------------------------
-    // Shared helpers (also consumed by FReflectedClass)
-    //-------------------------------------------------------------------------
 
     void FReflectedStruct::EmitMetadataArrays(FCodeWriter& Writer) const
     {
@@ -102,10 +94,6 @@ namespace Lumina::Reflection
         Writer.Line();
     }
 
-    //-------------------------------------------------------------------------
-    // Header emission
-    //-------------------------------------------------------------------------
-
     void FReflectedStruct::DefineInitialHeader(FCodeWriter& Writer, const eastl::string& /*FileID*/)
     {
         const eastl::string Api = Names::ProjectApiMacro(Header->Project->Name);
@@ -126,8 +114,7 @@ namespace Lumina::Reflection
     void FReflectedStruct::DefineSecondaryHeader(FCodeWriter& Writer, const eastl::string& FileID)
     {
         // ManualStub types are template-alias shims (e.g. FVector3 = TVec<float,3>);
-        // there is no struct body to inject GENERATED_BODY content into, so emit
-        // nothing for them.
+        // no struct body to inject GENERATED_BODY into, so emit nothing.
         if (HasMetadata("ManualStub"))
         {
             Writer.BlankLines(2);
@@ -141,7 +128,17 @@ namespace Lumina::Reflection
         {
             Writer.Macrof("%s_%u_ACCESSORS", FileID.c_str(), GeneratedBodyLineNumber);
         }
-        Writer.Macro("static class Lumina::CStruct* StaticStruct();");
+        // MinimalAPI: export StaticStruct() so the type is reflection-referenceable
+        // across module boundaries without force-exporting every member.
+        if (HasMetadata("MinimalAPI"))
+        {
+            const eastl::string Api = Names::ProjectApiMacro(Header->Project->Name);
+            Writer.Macrof("static %s class Lumina::CStruct* StaticStruct();", Api.c_str());
+        }
+        else
+        {
+            Writer.Macro("static class Lumina::CStruct* StaticStruct();");
+        }
 
         if (!Parent.empty())
         {
@@ -158,10 +155,6 @@ namespace Lumina::Reflection
         Writer.FinalizeMacro();
         Writer.BlankLines(2);
     }
-
-    //-------------------------------------------------------------------------
-    // Implementation (.generated.cpp) emission
-    //-------------------------------------------------------------------------
 
     namespace
     {
@@ -286,9 +279,8 @@ namespace Lumina::Reflection
         Writer.EndBlock();
         Writer.Line();
 
-        // Outer singleton: Lumina::QualifiedName::StaticStruct(). Skipped for
-        // ManualStub types since the runtime type is a template alias and has no
-        // such member.
+        // Outer singleton: QualifiedName::StaticStruct(). Skipped for ManualStub
+        // types since the runtime alias has no such member.
         if (!HasMetadata("ManualStub"))
         {
             Writer.Linef("class Lumina::CStruct* %s::StaticStruct()", QualifiedName.c_str());

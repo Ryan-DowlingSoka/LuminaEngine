@@ -37,8 +37,6 @@ namespace Lumina::Reflection
     };
 
 
-    //-------------------------------------------------------------------------------------
-
     template <typename T>
     requires(eastl::is_base_of_v<FReflectedType, T>)
     T* FReflectionDatabase::GetOrCreateReflectedType(const FStringHash& TypeName)

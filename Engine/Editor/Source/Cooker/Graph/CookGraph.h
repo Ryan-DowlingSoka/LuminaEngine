@@ -21,45 +21,28 @@ namespace Lumina
         EAssetFlags                 EffectiveFlags = EAssetFlags::None;
     };
 
-    // Reasons a particular asset failed to enter the graph. Surfaces in
-    // the cook log so devs can fix dangling root paths and missing-dep
-    // warnings before shipping.
+    // Why an asset failed to enter the graph; surfaces in the cook log to fix dangling roots / missing deps before shipping.
     struct FCookGraphIssue
     {
         FString    Source;          // path or "<root>" of the failing entry
         FString    Detail;
     };
 
-    // Build via:
-    //   1. AddRoot(...) for every entry in FEngine::GetCookRoots()
-    //   2. Traverse() once
-    //   3. Query IsReachable / GetChunkFor / GetReachableNodes
-    //
-    // The graph walks FAssetData::Dependencies from the registry; it
-    // never loads packages itself. Discovery + dep extraction is the
-    // AssetRegistry's job, so the cook pass is cheap.
+    // Usage: AddRoot() per FEngine::GetCookRoots() entry, Traverse() once, then query IsReachable / GetChunkFor / GetReachableNodes.
+    // Walks FAssetData::Dependencies from the registry; never loads packages (discovery/dep extraction is the AssetRegistry's job).
     class FCookGraph
     {
     public:
         explicit FCookGraph(const FAssetRegistry& Registry)
             : Registry(&Registry) {}
 
-        // Add a seed. If the path resolves to a registered asset, the
-        // node is added with the supplied chunk; otherwise an issue is
-        // recorded and the root is skipped.
+        // Add a seed; resolved paths get a node with the supplied chunk, otherwise an issue is recorded and the root skipped.
         void AddRoot(const FCookRoot& Root);
 
         // Convenience: bulk add.
         void AddRoots(const TVector<FCookRoot>& Roots);
 
-        // BFS the registry's Dependencies edges. Honors EDependencyType:
-        //  - Hard:       always traversed; chunk inherited from referrer
-        //  - Soft:       traversed; chunk decided by the target's own roots
-        //                (if also reached via Hard from another root)
-        //  - Script:     same as Soft (cook-time discovery only)
-        //  - Owned:      forced into referrer's chunk
-        //  - EditorOnly: skipped
-        //  - Generated:  skipped (runtime-only)
+        // BFS the registry's Dependencies edges by EDependencyType: Hard/Owned inherit referrer's chunk, Soft/Script use the target's own roots, EditorOnly/Generated skipped.
         void Traverse();
 
         // Post-Traverse queries.

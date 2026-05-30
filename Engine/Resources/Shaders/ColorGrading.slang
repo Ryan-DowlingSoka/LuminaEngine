@@ -1,21 +1,8 @@
 #pragma once
 #include "Includes/Common.slang"
 
-// =============================================================================
-//  Color Grading + Tone Mapping
-// =============================================================================
-//
-//  Single fused post-process pass. Reads the linear HDR scene color, runs
-//  parametric color grading (white balance, CDL, contrast, saturation,
-//  color filter), tone maps via the selected operator (AGX by default),
-//  applies an optional tinted vignette in display space, then gamma-encodes
-//  for the SRGBA8_UNORM swapchain.
-//
-//  Constants block lives in a UBO at (set 2, binding 2) -- mirrors
-//  Lumina::FColorGradingConstants exactly (144 bytes, std140 packing).
-//  Must be a buffer rather than push constants because AMD RDNA's
-//  maxPushConstantsSize is 128 B.
-// =============================================================================
+// Fused post-process pass: linear HDR -> color grading -> tone map -> vignette -> gamma encode.
+// Constants live in a UBO (set 2, binding 2) not push constants: AMD RDNA caps push at 128 B.
 
 [[vk::binding(0, 2)]] Sampler2D uHDRSceneColor;
 [[vk::binding(1, 2)]] Sampler2D uBloom;
@@ -73,14 +60,9 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
 };
 
-// -----------------------------------------------------------------------------
-//  White balance via LMS chromatic adaptation. Maps the user [-1, 1] knobs
-//  onto a CIECAM02-style scale so neutrals stay neutral after the shift.
-// -----------------------------------------------------------------------------
+// White balance via LMS chromatic adaptation; maps [-1, 1] knobs onto a CIECAM02-style scale.
 float3 WhiteBalance(float3 X, float Temperature, float Tint)
 {
-    // Range scaling -- matches the feel of the corresponding HDRP / Unreal
-    // sliders: 0.05 is "subtle", 1.0 is "obvious but not destructive".
     float t1 = Temperature * 0.05;
     float t2 = Tint        * 0.05;
 
@@ -115,11 +97,7 @@ float3 WhiteBalance(float3 X, float Temperature, float Tint)
     return mul(LMS_2_LIN, lms);
 }
 
-// -----------------------------------------------------------------------------
-//  Contrast / saturation around perceptual midpoints. Contrast pivots on
-//  18% grey (the standard photographer's reference). Saturation pivots on
-//  Rec.709 luma so neutrals don't drift.
-// -----------------------------------------------------------------------------
+// Contrast pivots on 18% grey; saturation pivots on Rec.709 luma so neutrals don't drift.
 float3 ApplyContrast(float3 X, float Contrast)
 {
     static const float3 MidGrey = float3(0.18);
@@ -132,15 +110,8 @@ float3 ApplySaturation(float3 X, float Saturation)
     return lerp(float3(Luma), X, Saturation);
 }
 
-// -----------------------------------------------------------------------------
-//  Lift / Gamma / Gain (CDL-ish). Operates per channel:
-//    Lift  -- additive offset weighted by (1 - X), so it pulls shadows.
-//    Gamma -- power curve, weights midtones the most.
-//    Gain  -- multiplier weighted by X, so it lifts highlights.
-//
-//  Each color knob is centered on 1.0 (identity). Subtracting 1 gives the
-//  signed offset; we then weight by where on the curve the channel sits.
-// -----------------------------------------------------------------------------
+// Lift/Gamma/Gain (CDL-ish): Lift pulls shadows (weighted 1-X), Gamma the midtones, Gain the
+// highlights (weighted X). Each color knob is centered on 1.0 (identity).
 float3 LiftGammaGain(float3 X, float3 Shadows, float3 Midtones, float3 Highlights)
 {
     float3 Lift = Shadows  - 1.0;     // signed
@@ -153,10 +124,6 @@ float3 LiftGammaGain(float3 X, float3 Shadows, float3 Midtones, float3 Highlight
     return X;
 }
 
-// -----------------------------------------------------------------------------
-//  Tone mappers
-// -----------------------------------------------------------------------------
-
 float3 Tonemap_ACES(float3 X)
 {
     static const float A = 2.51;
@@ -167,12 +134,8 @@ float3 Tonemap_ACES(float3 X)
     return saturate((X * (A * X + B)) / (X * (C * X + D) + E));
 }
 
-// AGX -- bwrensch's polynomial fit of Troy Sobotka's AGX. Operates on
-// linear scene-referred values, returns display-referred [0, 1].
-//
-// References:
-//   https://github.com/sobotka/AgX
-//   https://iolite-engine.com/blog_posts/minimal_agx_implementation
+// AGX -- bwrensch's polynomial fit of Troy Sobotka's AGX (linear -> display-referred [0, 1]).
+// https://github.com/sobotka/AgX  https://iolite-engine.com/blog_posts/minimal_agx_implementation
 float3 AGX_Polynomial(float3 X)
 {
     float3 X2 = X  * X;
@@ -242,10 +205,7 @@ float3 ApplyTonemap(float3 X, uint Mode)
     }
 }
 
-// -----------------------------------------------------------------------------
-//  Vignette (display space). Roundness = 0 follows the viewport aspect,
-//  Roundness = 1 is a circle. Smoothness controls the falloff width.
-// -----------------------------------------------------------------------------
+// Vignette (display space). Roundness 0 = viewport aspect, 1 = circle; Smoothness = falloff width.
 float3 ApplyVignette(float3 X, float2 UV, float Intensity, float Roundness, float Smoothness, float3 Tint)
 {
     if (Intensity <= 0.0) return X;
@@ -263,14 +223,8 @@ float3 ApplyVignette(float3 X, float2 UV, float Intensity, float Roundness, floa
     return lerp(Tint, X, V);
 }
 
-// -----------------------------------------------------------------------------
-//  Film grain. Animated per-pixel hash decorrelated by Time so the grain
-//  shimmers between frames like real film silver halide. `Size` quantises
-//  pixel coords into cells so the grain reads as a coarser stock at higher
-//  values. `Response` biases the effect toward shadows (1 == grain only in
-//  dark regions, 0 == uniform across luminance). Applied multiplicatively
-//  in display space after tone mapping but before sRGB encode.
-// -----------------------------------------------------------------------------
+// Film grain: time-decorrelated per-pixel hash. Size quantizes coords into cells (coarser stock),
+// Response biases toward shadows. Applied multiplicatively in display space, pre-sRGB.
 float FilmGrainHash(float2 P, float Time)
 {
     P += Time * float2(47.0, 17.0);
@@ -286,25 +240,18 @@ float3 ApplyFilmGrain(float3 X, float2 PixelPos, float Time, float Intensity, fl
     float2 Cell  = floor(PixelPos / max(Size, 1.0));
     float  Noise = FilmGrainHash(Cell, Time) - 0.5;        // signed [-0.5, 0.5]
 
-    // Brighter pixels get less grain when Response > 0 (matches the
-    // shoulder behaviour of real film stocks).
+    // Brighter pixels get less grain when Response > 0 (film-stock shoulder behavior).
     float Luma   = dot(X, float3(0.2126, 0.7152, 0.0722));
     float Falloff = lerp(1.0, 1.0 - smoothstep(0.0, 0.85, Luma), saturate(Response));
 
     return X * (1.0 + Noise * Intensity * Falloff);
 }
 
-// =============================================================================
-//  Main
-// =============================================================================
-
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
-    // Radial chromatic aberration. Offset scales with distance from the
-    // screen center so the middle of the image stays clean. Applied to the
-    // HDR fetch so the lens artefact is correctly graded and tone-mapped
-    // alongside everything else, not stamped on top in display space.
+    // Radial chromatic aberration, applied to the HDR fetch so the lens artifact is graded and
+    // tone-mapped with everything else rather than stamped on in display space.
     float3 Color;
     float  CA = PC.BloomTint.a;
     if (CA > 0.0)
@@ -320,17 +267,15 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
         Color = uHDRSceneColor.Sample(Input.UV).rgb;
     }
 
-    // ---- Bloom composite (linear HDR space, before grading) ----
+    // Bloom composite (linear HDR space, before grading).
     if (PC.BloomIntensity > 0.0)
     {
         float3 Bloom = uBloom.Sample(Input.UV).rgb;
         Color += Bloom * PC.BloomTint.rgb * PC.BloomIntensity;
     }
 
-    // ---- Linear HDR grading ----
-    // Auto-exposure: scale toward the middle-grey key based on the adapted
-    // scene luminance, clamped to the user EV range. Key <= 0 means the
-    // feature is off and the manual PC.Exposure stands alone.
+    // Auto-exposure: scale toward the middle-grey key from adapted luminance, clamped to the EV range.
+    // Key <= 0 disables it and manual PC.Exposure stands alone.
     float AEScale = 1.0;
     if (PC.AutoExposureKey > 0.0)
     {
@@ -347,8 +292,7 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
 
     Color = LiftGammaGain(Color, PC.Shadows.rgb, PC.Midtones.rgb, PC.Highlights.rgb);
 
-    // Color filter, lerp by intensity so users can crank picker
-    // saturation independently of strength.
+    // Color filter, lerp by intensity so saturation is independent of strength.
     float3 Filtered = Color * PC.ColorFilter.rgb;
     Color = lerp(Color, Filtered, saturate(PC.ColorFilter.a));
     if (PC.ColorFilter.a > 1.0)
@@ -362,30 +306,22 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
     Color = ApplySaturation(Color, PC.Saturation);
     Color = max(Color, 0.0);
 
-    // ---- Tone map ----
     Color = ApplyTonemap(Color, PC.TonemapMode);
 
-    // ---- Display-space ----
     Color = ApplyVignette(Color, Input.UV, PC.VignetteIntensity, PC.VignetteRoundness, PC.VignetteSmoothness, PC.VignetteColor.rgb);
 
-    // Display gamma (post-tonemap). Gamma == 1 is identity for the
-    // operators above (which already output display-referred), so this
-    // is purely a designer knob -- the 1/2.2 sRGB encode is applied
-    // separately below to match the legacy ToneMapping.slang behaviour.
+    // Display gamma (post-tonemap), a designer knob; the 1/2.2 sRGB encode is applied separately below.
     if (PC.Gamma != 1.0)
     {
         Color = pow(max(Color, 0.0), float3(1.0 / PC.Gamma));
     }
 
-    // ---- Film grain (display space, pre-OETF) ----
-    // Knobs are packed into the .a slots of the LGG triplet to keep the
-    // push-constant block at 144 B. See FColorGradingPushConstants.
+    // Film grain (display space, pre-OETF). Knobs packed into the LGG triplet's .a slots to keep the block at 144 B.
     Color = ApplyFilmGrain(Color, Input.Position.xy, PC.Time,
                            PC.Shadows.a, PC.Midtones.a, PC.Highlights.a);
     Color = max(Color, 0.0);
 
-    // sRGB encode (the swapchain target is _UNORM, not _SRGB, so we
-    // bake the OETF here -- same as the legacy pass).
+    // sRGB encode: the swapchain target is _UNORM not _SRGB, so bake the OETF here.
     static const float INV_GAMMA = 1.0 / 2.2;
     Color = pow(max(Color, 0.0), float3(INV_GAMMA));
 

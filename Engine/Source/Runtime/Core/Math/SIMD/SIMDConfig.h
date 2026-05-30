@@ -2,10 +2,8 @@
 #include "Platform/Platform.h"
 #include <immintrin.h>
 
-// Shared config for Lumina::SIMD. The engine baseline is /arch:AVX, so 256-bit
-// float (VFloat8) and all SSE/AVX float ops are always available. 256-bit integer
-// ops and FMA are AVX2 -- guarded below so nothing here ever emits an instruction
-// that would #UD on an AVX-only CPU.
+// Shared config for Lumina::SIMD. Baseline is /arch:AVX (VFloat8 + SSE/AVX float always
+// available); 256-bit integer ops and FMA are AVX2, guarded below to avoid #UD on AVX-only.
 
 // MSVC defines __AVX2__ with /arch:AVX2 (which implies FMA3); clang/gcc define
 // __FMA__ directly. Under the AVX baseline neither is set.

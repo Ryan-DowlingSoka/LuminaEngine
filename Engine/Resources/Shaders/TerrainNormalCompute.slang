@@ -1,8 +1,5 @@
-// Standalone compute shader: does NOT include SceneGlobals.slang.
-// Including scene bindings forces scene + texture-manager sets into the
-// compute layout, causing uHDRSceneColor to transition to SHADER_READ each
-// dispatch and collide with later LoadOp::Load color-attachment uses.
-// Keeping standalone lets NormalLayout live alone at set 0.
+// Standalone (no SceneGlobals): including scene bindings would transition uHDRSceneColor to
+// SHADER_READ each dispatch and collide with later LoadOp::Load color uses. NormalLayout owns set 0.
 
 // Matches FTerrainNormalParams in TerrainRenderTypes.h.
 struct FTerrainNormalParams

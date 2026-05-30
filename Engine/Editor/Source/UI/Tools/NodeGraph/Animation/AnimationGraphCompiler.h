@@ -14,9 +14,8 @@ namespace Lumina
     class CEdGraphNode;
     struct FSkeletonResource;
 
-    // Debug breadcrumb: maps an editor State node to the runtime state-machine
-    // slot + state index it compiled to, so the editor can highlight whichever
-    // state the VM is currently in. Populated by the State Machine node.
+    // Debug breadcrumb: maps an editor State node to its runtime slot + state index so the editor can
+    // highlight the VM's current state. Populated by the State Machine node.
     struct FAnimGraphDebugStateNode
     {
         CEdGraphNode* Node = nullptr;
@@ -24,48 +23,33 @@ namespace Lumina
         int32         StateIndex = 0;
     };
 
-    // Bytecode-emission backend for the animation node graph. Nodes call the
-    // Emit* / Alloc* / Add* API during CAnimationGraphNodeGraph::CompileGraph;
-    // BuildGraph then stamps the accumulated program, resource tables, and
-    // register-file sizing into the runtime CAnimationGraph asset.
-    //
-    // Mirrors FMaterialCompiler in spirit: the graph walk / topo-sort lives in
-    // the node graph, this class only knows how to emit a valid instruction
-    // stream and hand back the register indices that wire instructions together.
+    // Bytecode-emission backend: nodes call Emit*/Alloc*/Add* during CompileGraph, BuildGraph then
+    // stamps the program, resource tables, and register sizing into the runtime CAnimationGraph asset.
     class FAnimationGraphCompiler
     {
     public:
 
         FAnimationGraphCompiler() = default;
 
-        // -- Resource registration ------------------------------------------
-
         // Registers a clip and returns its index; dedups identical clips.
         uint16 AddClip(CAnimation* Clip);
 
         // Registers an exposed parameter and returns its index; dedups by name.
-        // A name collision with a different type reports an error and returns
-        // the existing index.
+        // A name collision with a different type reports an error and returns the existing index.
         int32 AddParameter(const FName& Name, EAnimGraphParamType Type, float DefaultValue);
-
-        // -- Register / persistent-state allocation -------------------------
 
         uint16 AllocScalarReg() { return NextScalarReg++; }
         uint16 AllocPoseReg()   { return NextPoseReg++; }
         uint16 AllocStateSlot() { return NextStateSlot++; }
 
-        // -- Bytecode emission ----------------------------------------------
-        // Emitters that produce a value return the destination register they
-        // allocated; callers thread that index into downstream emitters.
-
+        // Value-producing emitters return the destination register they allocated; callers thread that
+        // index into downstream emitters.
         uint16 EmitLoadConst(float Value);
         uint16 EmitLoadParam(uint16 ParameterIndex);
         uint16 EmitScalarOp(EAnimScalarOp Op, uint16 RegA, uint16 RegB);
 
-        // Advances a persistent playback clock and emits two scalar outputs:
-        // the clock (returned) and a "finished" flag (written to OutFinishedReg).
-        // For Loop mode the finished flag stays at 0; PlayOnce sets it to 1 once
-        // the clip's duration is reached.
+        // Advances a persistent playback clock; returns the clock and writes a "finished" flag to
+        // OutFinishedReg (stays 0 in Loop mode; PlayOnce sets it once the clip's duration is reached).
         uint16 EmitAdvanceClock(uint16 StateSlot, uint16 SpeedReg, uint16 ClipIndex, uint16 LoopModeReg, uint16& OutFinishedReg);
 
         uint16 EmitSampleAnim(uint16 ClipIndex, uint16 TimeReg);
@@ -78,27 +62,20 @@ namespace Lumina
         uint16 EmitMakeAdditive(uint16 SrcPoseReg);
         uint16 EmitApplyAdditive(uint16 BasePoseReg, uint16 DeltaPoseReg, uint16 AlphaReg);
 
-        // Registers a compiled state machine and emits the opcode that evaluates
-        // it. The machine's StatePoseRegisters / *Slot fields must already be
-        // filled in by the caller (the StateMachine node). Returns the pose
-        // register the machine's resolved pose is written to.
+        // Registers a compiled state machine and emits its eval opcode. The machine's
+        // StatePoseRegisters / *Slot fields must be filled by the caller. Returns the resolved-pose register.
         uint16 EmitEvalStateMachine(FAnimGraphStateMachine&& StateMachine);
 
         void   EmitOutput(uint16 PoseReg);
         void   EmitHalt();
 
-        // -- Pin -> register wiring -----------------------------------------
-        // Nodes record the register their output pin resolved to; downstream
-        // nodes look it up to thread the value through. Keyed on the pin
-        // pointer, valid for the duration of one CompileGraph pass.
-
+        // Nodes record the register their output pin resolved to; downstream nodes look it up to thread
+        // the value through. Keyed on the pin pointer, valid for one CompileGraph pass.
         void SetPinRegister(const CEdNodeGraphPin* Pin, uint16 Register);
         bool TryGetPinRegister(const CEdNodeGraphPin* Pin, uint16& OutRegister) const;
 
-        // -- Debug introspection --------------------------------------------
-        // The editor tool captures these after a compile to drive the live
-        // debug overlay (pin values, active-state highlight).
-
+        // Captured by the editor tool after compile to drive the live debug overlay
+        // (pin values, active-state highlight).
         const THashMap<const CEdNodeGraphPin*, uint16>& GetPinRegisters() const { return PinRegisters; }
 
         void AddDebugStateNode(CEdGraphNode* Node, uint16 CurrentStateSlot, int32 StateIndex)
@@ -120,23 +97,17 @@ namespace Lumina
                              uint16 RootIndex, uint16 MidIndex, uint16 EndIndex,
                              const FVector3& Pole);
 
-        // -- Bone masks / skeleton -------------------------------------------
-        // The editor tool calls SetSkeleton + ResolveBoneMasks once, up front,
-        // so individual nodes can look up bones / masks by name in their
-        // GenerateBytecode without re-fetching the asset.
-
+        // Tool calls SetSkeleton + ResolveBoneMasks once up front so nodes can look up bones / masks
+        // by name in GenerateBytecode without re-fetching the asset.
         void SetSkeleton(const FSkeletonResource* InSkeleton) { Skeleton = InSkeleton; }
         const FSkeletonResource* GetSkeleton() const { return Skeleton; }
 
-        // -- Blackboard validation ------------------------------------------
-        // The tool sets the graph's blackboard schema before compiling so nodes
-        // can verify the keys they reference still exist and are scalar-typed.
-
+        // Tool sets the blackboard schema before compiling so nodes can verify referenced keys
+        // still exist and are scalar-typed.
         void SetBlackboard(const CBlackboard* InBlackboard) { Blackboard = InBlackboard; }
         const CBlackboard* GetBlackboard() const { return Blackboard; }
 
-        // Records a non-fatal warning if Name doesn't exist on the assigned
-        // blackboard, or exists but isn't a scalar (Float/Int/Bool/Enum) type.
+        // Warns if Name is missing on the assigned blackboard or isn't a scalar (Float/Int/Bool/Enum).
         // No-op when no blackboard is assigned or Name is None.
         void ValidateParameterKey(const FName& Name, CEdGraphNode* Node);
 
@@ -145,13 +116,9 @@ namespace Lumina
         void ResolveBoneMasks(const TVector<FAnimGraphBoneMaskDef>& Defs, const FSkeletonResource* InSkeleton);
         int32 FindBoneMaskIndex(const FName& Name) const;
 
-        // Builds an ad-hoc bone mask from a bone's subtree: weight 1.0 for the
-        // root bone (when bInclusive) and every descendant, 0 elsewhere. Appended
-        // to the mask table; returns its index. Lets Layered Blend Per Bone mask
-        // by picking a bone instead of authoring a named mask.
+        // Ad-hoc bone mask from a bone's subtree (weight 1.0 for the root when bInclusive + descendants);
+        // appended to the mask table, returns its index. Lets Layered Blend Per Bone mask by bone choice.
         uint16 AddBoneSubtreeMask(int32 RootBoneIndex, bool bInclusive);
-
-        // -- Errors ----------------------------------------------------------
 
         FORCEINLINE bool HasErrors() const { return !Errors.empty(); }
         FORCEINLINE void AddError(const EdNodeGraph::FError& Error) { Errors.push_back(Error); }
@@ -162,11 +129,8 @@ namespace Lumina
         FORCEINLINE void AddWarning(const EdNodeGraph::FError& Warning) { Warnings.push_back(Warning); }
         FORCEINLINE const TVector<EdNodeGraph::FError>& GetWarnings() const { return Warnings; }
 
-        // -- Finalize --------------------------------------------------------
-
-        // Writes the compiled program, clip / parameter tables, and register
-        // sizing into OutGraph. Appends a Halt if the program did not end in
-        // an Output. Safe to call once per compile.
+        // Writes the compiled program, clip / parameter tables, and register sizing into OutGraph.
+        // Appends a Halt if the program did not end in an Output. Call once per compile.
         void BuildGraph(CAnimationGraph* OutGraph);
 
     private:

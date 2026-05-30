@@ -25,15 +25,12 @@ namespace Lumina
 
         void ValidateGraph() override;
 
-        // Hold-and-click quick-place: 1..4 -> ConstantFloat..ConstantFloat4,
-        // 5 -> Time, 6 -> WorldPos, 7 -> TexCoords, 8 -> VertexNormal,
-        // 9 -> Multiply, 0 -> Add. Future digits / chord support can layer on
-        // top by extending the dispatch table in HandleQuickPlace.
+        // Hold-and-click quick-place: 1..4 -> ConstantFloat..Float4, 5 Time, 6 WorldPos, 7 TexCoords,
+        // 8 VertexNormal, 9 Multiply, 0 Add. Extend the dispatch table in HandleQuickPlace for more.
         void HandleQuickPlace(int Digit, ImVec2 CanvasPos) override;
 
-        // Reroute support: enables the double-click-on-wire UX in the editor and tells the graph
-        // which class to spawn. Material reroutes carry typed CMaterialInput / CMaterialOutput
-        // pins so the existing compiler casts keep working.
+        // Reroute class to spawn (enables the double-click-on-wire UX); material reroutes carry
+        // typed CMaterialInput / CMaterialOutput pins so the existing compiler casts keep working.
         CClass* GetRerouteNodeClass() const override;
 
         void SetMaterial(CMaterial* InMaterial);
@@ -45,9 +42,8 @@ namespace Lumina
         // function-call node, reroute, ...). Shared by material and material-function graphs.
         void RegisterCommonMaterialNodes();
 
-        // Creates any always-present nodes for this graph kind. The material graph ensures a single
-        // CMaterialOutputNode; the function graph overrides this to create nothing (the author adds
-        // FunctionInput / FunctionOutput nodes themselves).
+        // Creates always-present nodes for this graph kind: the material graph ensures one
+        // CMaterialOutputNode; the function graph overrides to create nothing.
         virtual void EnsureRootNodes();
 
         // Hook for a graph kind to register its own extra node types after the common set. The

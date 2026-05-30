@@ -275,9 +275,8 @@ namespace Lumina
             });
         }
 
-        // Convex-hull supporting planes (outward normal N, offset D; interior is dot(N,x) <= D).
-        // A triangle's plane is a hull face iff every vertex sits on one side -- true for convex
-        // meshes (all faces) and concave ones (only the hull faces qualify).
+        // Convex-hull supporting planes (normal N, offset D; interior is dot(N,x) <= D). A triangle's
+        // plane is a hull face iff every vertex sits on one side.
         void ComputeHullPlanes(const TVector<FVector3>& Positions, const TVector<FUIntVector3>& Triangles, float Tol, TVector<FVector4>& OutPlanes)
         {
             auto AddUnique = [&](const FVector3& N, float D)
@@ -436,9 +435,8 @@ namespace Lumina
         Resource->ReserveVertices(Piece.Vertices.size());
         for (const FVertex& V : Piece.Vertices)
         {
-            // Pieces are stored in source-local space; recenter to the piece centroid so the
-            // built mesh's origin (and the convex collider's center of mass) sits on the chunk.
-            // Callers place the entity at Piece.Center to reconstruct the original position.
+            // Recenter to the piece centroid so the mesh origin (and convex CoM) sits on the chunk;
+            // callers place the entity at Piece.Center to reconstruct the original position.
             FVertex Centered = V;
             Centered.Position -= Piece.Center;
             Resource->AppendVertex(Centered);

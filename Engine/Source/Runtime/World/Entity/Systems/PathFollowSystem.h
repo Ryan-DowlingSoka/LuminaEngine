@@ -6,16 +6,8 @@
 
 namespace Lumina
 {
-    /**
-     * Ticks every SPathFollowComponent: keeps the cached path fresh by
-     * calling Nav::FindPath when stale, advances the corner cursor when
-     * within AcceptanceRadius, and writes a movement direction into the
-     * paired SCharacterControllerComponent (when present) so existing
-     * physics-driven motion handles the actual locomotion.
-     *
-     * Lives in PrePhysics so movement input is consumed by the same
-     * frame's physics step.
-     */
+    // Ticks every SPathFollowComponent: refreshes the cached path (Nav::FindPath), advances the corner cursor,
+    // and writes a move direction into the paired controller. In PrePhysics so input lands the same step.
     REFLECT(System)
     struct RUNTIME_API SPathFollowSystem
     {

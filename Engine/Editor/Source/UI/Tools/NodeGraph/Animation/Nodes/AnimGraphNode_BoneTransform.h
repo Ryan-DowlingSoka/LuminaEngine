@@ -6,10 +6,8 @@
 
 namespace Lumina
 {
-    // Procedural per-bone transform. Drops a (Translation, Rotation, Scale) onto
-    // a named bone of the input pose, either in the bone's local frame or in
-    // component space. Useful for hand-IK style overrides (place the hand on a
-    // weapon grip), aim offsets, lean, look-at, and similar.
+    // Procedural per-bone transform: drops a (Translation, Rotation, Scale) onto a named bone in its
+    // local or component frame. For hand-IK style overrides, aim offsets, lean, look-at, etc.
     REFLECT()
     class CAnimGraphNode_BoneTransform : public CAnimGraphNode
     {
@@ -28,16 +26,12 @@ namespace Lumina
         PROPERTY(Editable, Category = "Bone", BonePicker)
         FName BoneName;
 
-        /** Frame the offset is interpreted in.
-         *  - Local Bone: the bone's local frame (relative to its parent). Cheap.
-         *  - Component: the entity-root frame. The offset is applied to the bone's
-         *    global transform via FK and converted back to local. */
+        /** Frame the offset is interpreted in: Local Bone (parent-relative, cheap) or Component
+         *  (entity-root; applied to the global transform via FK and converted back to local). */
         PROPERTY(Editable, Category = "Bone")
         EBoneTransformSpace Space = EBoneTransformSpace::LocalBone;
 
-        /** How the offset is applied.
-         *  - Add: layered on top of the existing bone transform (additive).
-         *  - Replace: lerps the bone toward the configured target by Alpha. */
+        /** How the offset is applied: Add (layered additive) or Replace (lerps toward the target by Alpha). */
         PROPERTY(Editable, Category = "Bone")
         EBoneTransformMode Mode = EBoneTransformMode::Add;
 

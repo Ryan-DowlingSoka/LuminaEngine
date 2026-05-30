@@ -1,9 +1,8 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Stamps a soft radial brush into a render-target texture's bindless UAV. One dispatch per
-// paint op; the CPU dispatches only over the brush's pixel bounding rect [RectMin, RectMax).
-// An optional grayscale brush mask (white = full coverage) modulates the falloff.
+// Stamps a soft radial brush into a bindless UAV; the CPU dispatches only over the brush's pixel
+// rect [RectMin, RectMax). An optional grayscale brush mask (white = full coverage) modulates falloff.
 
 struct FPushConstants
 {

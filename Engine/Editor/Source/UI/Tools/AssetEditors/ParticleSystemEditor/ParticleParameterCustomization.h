@@ -5,10 +5,8 @@
 
 namespace Lumina
 {
-    /**
-     * Inline editor for a single FParticleParameter row inside the asset's UserParameters
-     * array. Lays out [Name] [Type] [typed value editor] on one line, Niagara-style.
-     */
+    // Inline editor for one FParticleParameter row in UserParameters; lays out
+    // [Name] [Type] [typed value editor] on a line, Niagara-style.
     class FParticleParameterCustomization : public IPropertyTypeCustomization
     {
     public:

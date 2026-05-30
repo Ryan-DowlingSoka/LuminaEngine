@@ -2,11 +2,8 @@
 #include "Includes/Common.slang"
 #include "Includes/SceneGlobals.slang"
 
-// Single-pass downsampler for the reverse-Z HZB. Up to 12 mips in one dispatch.
-// Resources: source SRV is a bindless texture index, per-mip UAVs are bindless
-// RW indices, the cross-WG atomic counter is a buffer-device-address. No
-// pass-local binding set — everything rides on push constants and the global
-// bindless table.
+// Single-pass downsampler for the reverse-Z HZB (up to 12 mips per dispatch). Bindless source SRV +
+// per-mip UAVs, BDA atomic counter for the cross-WG hand-off; no pass-local binding set.
 
 #define TILE_THREAD_WIDTH 16
 #define TILE_THREAD_COUNT (TILE_THREAD_WIDTH * TILE_THREAD_WIDTH)
@@ -25,10 +22,8 @@ struct FPushConstants
     uint   MipUAV[SPD_MAX_MIPS];
 };
 
-// Module-scope push constant. Passing PC as a uniform entry-point parameter makes
-// Slang copy the struct into Function storage, which trips spirv-val on the
-// PhysicalStorageBuffer pointer field (needs AliasedPointer/RestrictPointer on
-// the lowered OpVariable). PushConstant storage avoids the copy entirely.
+// Module-scope (not entry-point uniform): a uniform param copies the struct into Function storage,
+// which trips spirv-val on the PhysicalStorageBuffer pointer field. PushConstant storage avoids the copy.
 [[vk::push_constant]] FPushConstants PC;
 
 // Ping-pong LDS: alternating reduction passes write to disjoint halves so no

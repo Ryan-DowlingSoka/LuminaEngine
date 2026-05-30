@@ -7,10 +7,8 @@
 
 namespace Lumina
 {
-    /** Stable key for a cooked artifact. Derived from inputs that affect
-     *  the cooker's output for one asset: source content hash + cooker
-     *  version stamp + cook-mode flags. Bump `FCookDDC::kCookStamp` when
-     *  cook logic changes in a way that should invalidate cached bytes. */
+    // Stable key for a cooked artifact: source content hash + cooker version stamp + cook-mode flags.
+    // Bump FCookDDC::kCookStamp when cook logic changes in a way that should invalidate cached bytes.
     struct FCookInputHash
     {
         uint64 Hash = 0;
@@ -20,27 +18,12 @@ namespace Lumina
         bool operator!=(const FCookInputHash& O) const { return Hash != O.Hash; }
     };
 
-    /** Disk-backed derived data cache for the cooker. Lives under
-     *  `<EngineInstall>/Intermediates/DDC/<XX>/<full-hash>.ddc`. Two-byte
-     *  hex prefix splits the cache into 256 buckets so directory sizes
-     *  stay manageable as content grows.
-     *
-     *  Hit means: identical source content + identical cook logic, so the
-     *  cached bytes are exactly what BundleAssetCooked would produce
-     *  fresh. On miss the cooker does the full load + cook-mode resave
-     *  and `Put`s the result for next time. */
+    // Disk-backed derived data cache under <EngineInstall>/Intermediates/DDC/<XX>/<full-hash>.ddc (two-byte hex prefix = 256 buckets).
+    // Hit = identical source + cook logic, so cached bytes equal a fresh BundleAssetCooked; miss does the full load + cook-mode resave then Puts.
     class FCookDDC
     {
     public:
-        // Bump to invalidate every cached entry the next cook reads.
-        // Suitable triggers: changes to CStruct::SerializeTaggedProperties
-        // cook-mode behavior, FPackageSaver layout changes, FObjectImport
-        // wire format, EditorOnly strip rules, etc.
-        //
-        // 1: initial DDC implementation
-        // 2: Phase 4A EditorOnly strip via SavePackageForCook (cook-mode
-        //    saver drops EditorOnly properties + thumbnails), Phase 3C
-        //    sorted soft-import emission, Phase 5 PAK v3 layout
+        // Bump to invalidate every cached entry; triggers: cook-mode serialize/saver layout, import wire format, EditorOnly strip rules.
         static constexpr uint32 kCookStamp = 2;
 
         static FCookInputHash ComputeKey(uint64 SourceContentHash);

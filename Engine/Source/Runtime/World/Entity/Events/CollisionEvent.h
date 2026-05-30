@@ -5,11 +5,8 @@
 
 namespace Lumina
 {
-    // Payload handed to a script's OnContactBegin/End and OnOverlapBegin/End. Pushed
-    // to Lua as a tagged userdata (one allocation, lazy field reads via the metatable)
-    // instead of a hand-built table, so dispatching many contacts a frame stays cheap.
-    // Fields are oriented per receiving side: Entity/Velocity are self, Other* is the
-    // other body, and Normal points away from self toward the other.
+    // Payload for OnContact/OnOverlap; pushed to Lua as tagged userdata (one alloc, lazy metatable reads)
+    // so many contacts/frame stay cheap. Fields are self-oriented: Entity/Velocity = self, Normal away from self.
     REFLECT(Event)
     struct SCollisionEvent
     {

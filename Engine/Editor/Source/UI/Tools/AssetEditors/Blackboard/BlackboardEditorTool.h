@@ -9,10 +9,8 @@ namespace Lumina
 {
     class CEnum;
 
-    // Editor for CBlackboard assets: a polished list editor for the blackboard's
-    // typed keys (name / type / default), including reflected-enum keys whose
-    // type is picked from the engine's CEnum registry. No 3D preview -- it is
-    // pure schema authoring, so the tool runs without a world.
+    // Editor for CBlackboard assets: a list editor for typed keys (name/type/default),
+    // including reflected-enum keys from the CEnum registry. Pure schema authoring, no world.
     class FBlackboardEditorTool : public FAssetEditorTool
     {
     public:

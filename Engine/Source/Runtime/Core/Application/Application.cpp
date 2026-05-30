@@ -119,11 +119,8 @@ namespace Lumina
 
         Paths::InitializePaths();
 
-        // The --Project= load used to live here but it triggers the game DLL
-        // load, whose reflected types call ConstructCEnum/Class/Struct — those
-        // dereference the Lua VM, which isn't initialized until GEngine->Init().
-        // Loading the project there instead avoids a null-deref crash. See
-        // FEngine::Init().
+        // --Project= load deferred to FEngine::Init(): the game DLL's reflected types
+        // touch the Lua VM, which isn't initialized until GEngine->Init() (null-deref).
     }
 
     bool FApplication::CreateApplicationWindow()

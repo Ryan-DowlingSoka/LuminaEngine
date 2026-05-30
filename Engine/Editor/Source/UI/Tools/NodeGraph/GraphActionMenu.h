@@ -25,9 +25,8 @@ namespace Lumina
         TVector<uint16>     MatchIndices;
     };
 
-    // Incremental fuzzy search over the graph's registered
-    // node classes with keyboard navigation, match highlighting, and relevance ordering.
-    // State (query buffer, selection) persists between frames; call Reset() when the popup opens.
+    // Incremental fuzzy search over the graph's registered node classes (keyboard nav, highlighting,
+    // relevance order). State persists between frames; call Reset() when the popup opens.
     class FGraphActionMenu
     {
     public:
@@ -56,8 +55,7 @@ namespace Lumina
         bool                    bPendingScrollToSelected = false;
     };
 
-    // Fuzzy subsequence match. Returns whether every query character was found in Target (in order,
-    // case-insensitive); OutScore is meaningful only on match and higher is better. OutMatchIndices
-    // receives the Target positions of each matched character, suitable for highlighting.
+    // Case-insensitive fuzzy subsequence match; OutScore valid only on match (higher is better),
+    // OutMatchIndices receives the matched Target positions for highlighting.
     bool FuzzyMatch(const char* Query, const char* Target, int32& OutScore, TVector<uint16>& OutMatchIndices);
 }

@@ -1,12 +1,9 @@
 #pragma once
 
-// Shared froxel-volume math for the volumetric fog passes. Pure functions only --
-// deliberately does NOT include SceneGlobals so the integrate pass can use it
-// without pulling set-0 bindings it doesn't bind.
+// Shared froxel-volume math for the volumetric fog passes. Pure functions only, no SceneGlobals.
 
-// Positive linear view distance (view-space Z magnitude) at froxel slice boundary
-// `SliceF` (may be fractional) for an exponential near..range distribution. Mirrors
-// the cluster Z slicing so froxels align with the clustered light grid.
+// View distance at (possibly fractional) froxel slice boundary SliceF, exponential near..range.
+// Mirrors the cluster Z slicing so froxels align with the clustered light grid.
 float Froxel_SliceDistance(float SliceF, float GridZ, float NearP, float Range)
 {
     return NearP * pow(Range / NearP, SliceF / GridZ);

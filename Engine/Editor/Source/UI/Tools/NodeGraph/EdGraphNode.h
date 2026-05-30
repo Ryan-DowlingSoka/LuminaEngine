@@ -50,9 +50,8 @@ namespace Lumina
         
         FString GetNodeFullName() { return FullName; }
 
-        // The variable name a node emits derives from FullName. The material-function inliner
-        // temporarily prefixes a function's interior node names so repeated/nested call sites don't
-        // collide in the generated shader, then restores them. Not for general use.
+        // FullName drives the emitted variable name. The material-function inliner temporarily prefixes
+        // a function's interior node names so nested calls don't collide, then restores them. Not general-use.
         void SetNodeFullName(const FString& In) { FullName = In; }
 
         virtual bool WantsTitlebar() const { return true; }
@@ -66,14 +65,12 @@ namespace Lumina
 
         virtual bool IsDeletable() const { return true; }
 
-        // A node graph this node "contains" and the editor can descend into on
-        // double-click (e.g. a state machine node's canvas, or a state's blend
-        // tree). Null for ordinary leaf nodes. May lazily allocate the graph.
+        // A sub-graph this node contains, descended into on double-click (e.g. a state machine canvas).
+        // Null for ordinary leaf nodes. May lazily allocate the graph.
         virtual CEdNodeGraph* GetEnterableSubGraph() { return nullptr; }
 
-        // True for "wire passthrough" nodes (e.g. CEdNode_Reroute). The graph drawer renders these
-        // as a single compact dot instead of a normal node body, and graph-walking code (compilers,
-        // closure walks) is expected to skip them and resolve through to the real source/target.
+        // True for wire-passthrough nodes (e.g. CEdNode_Reroute): drawn as a single dot; graph walks
+        // skip them and resolve through to the real source/target.
         virtual bool IsRerouteNode() const { return false; }
 
         void SetDebugExecutionOrder(uint32 Order) { DebugExecutionOrder = Order; }
@@ -104,9 +101,8 @@ namespace Lumina
 
         CEdNodeGraphPin* CreatePin(CClass* InClass, const FString& Name, ENodePinDirection Direction);
 
-        // Owning graph; populated by CEdNodeGraph::AddNode. Lets nodes
-        // reach up for graph-wide context (e.g. material domain on
-        // CMaterialOutputNode) without an extra lookup pass.
+        // Owning graph; populated by CEdNodeGraph::AddNode. Lets nodes reach up for graph-wide
+        // context (e.g. material domain on CMaterialOutputNode).
         CEdNodeGraph* GetOwningGraph() const { return OwningGraph; }
 
         /** Horizontal position of the node in the graph canvas. */

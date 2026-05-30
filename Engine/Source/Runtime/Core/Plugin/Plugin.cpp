@@ -28,16 +28,8 @@ namespace Lumina
 
     FString FPlugin::ResolveModuleBinaryPath(FStringView ModuleName) const
     {
-        // Same layout the engine uses (see Engine.cpp::Engine_LoadGameDLL):
-        //   <plugin>/Binaries/<Platform>/<Module>-<Cfg>.dll
-        //
-        // LUMINA_PLATFORM_NAME ("Windows64") includes the architecture
-        // suffix because the binary folder is keyed by full platform.
-        // LUMINA_SYSTEM_NAME ("Windows") drops the arch and is used to
-        // match against .lplugin SupportedPlatforms strings; the two are
-        // intentionally distinct, don't unify them.
-        // LUMINA_SHAREDLIB_EXT_NAME already includes the leading dot
-        // (".dll" / ".so" / ".dylib") so no separator is added below.
+        // Layout: <plugin>/Binaries/<Platform>/<Module>-<Cfg>.dll. PLATFORM_NAME keys the folder
+        // (has arch); SYSTEM_NAME matches SupportedPlatforms (no arch) — distinct, don't unify.
         FString Result = PluginDirectory;
         Result += "/Binaries/";
         Result += LUMINA_PLATFORM_NAME;

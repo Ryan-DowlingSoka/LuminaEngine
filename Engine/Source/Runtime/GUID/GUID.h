@@ -30,8 +30,7 @@ namespace Lumina
         FGuid(FGuid&&) noexcept = default;
         FGuid& operator=(FGuid&&) noexcept = default;
         ~FGuid() = default;
-    
-        // Comparison operators
+
         bool operator==(const FGuid& other) const noexcept;
         bool operator!=(const FGuid& other) const noexcept;
         bool operator<(const FGuid& other) const noexcept;
@@ -54,8 +53,7 @@ namespace Lumina
         void Swap(FGuid& other) noexcept;
         
         size_t Hash() const noexcept;
-        
-        // Serialization
+
         friend FArchive& operator<<(FArchive& Ar, FGuid& Guid)
         {
             Ar.Serialize(Guid.Bytes.data(), Guid.Bytes.size());
@@ -67,8 +65,7 @@ namespace Lumina
     
     private:
         ByteArray Bytes{};
-        
-        // Helper for parsing
+
         static bool TryParseInternal(FStringView str, ByteArray& outBytes);
     };
 }
@@ -90,17 +87,14 @@ namespace eastl
 template <>
 struct RUNTIME_API std::formatter<Lumina::FGuid>
 {
-    // Parses the format specifier (not used here, so we ignore it)
     constexpr auto parse(std::format_parse_context& ctx)
     {
         return ctx.begin();
     }
 
-    // Formats the FGuid instance
     template <typename FormatContext>
     auto format(const Lumina::FGuid& guid, FormatContext& ctx) const
     {
-        // Use FGuid's ToString method to get a string representation
         return std::format_to(ctx.out(), "{}", guid.ToString());
     }
 };

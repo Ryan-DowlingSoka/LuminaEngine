@@ -139,9 +139,8 @@ namespace Lumina
                     ImGui::SliderInt("##MipLevel", &CurrentMipLevel, 0, ImageDesc.NumMips - 1);
                 }
 
-                // HDR preview exposure: only meaningful for float-format
-                // textures (Environment-cooked HDRIs). Hidden for LDR
-                // textures so the toolbar doesn't gain unused controls.
+                // HDR preview exposure: only for float-format textures (cooked HDRIs);
+                // hidden for LDR so the toolbar has no unused controls.
                 const EFormat Fmt = ImageDesc.Format;
                 const bool bIsHDRPreview =
                     Fmt == EFormat::RGBA16_FLOAT || Fmt == EFormat::RGBA32_FLOAT ||
@@ -535,11 +534,8 @@ namespace Lumina
 
             ImGui::Spacing();
 
-            // Color-space combo + recook. Changing ColorSpace alone doesn't
-            // re-encode the bits (the BC stream is baked at import time);
-            // the user has to click Recook for the new format/encoder mode
-            // to take effect. The active stored format is shown so the user
-            // can tell at a glance whether the asset is up-to-date.
+            // Color-space combo + recook. ColorSpace alone doesn't re-encode (BC baked at import);
+            // Recook applies the new format. Stored format shown so staleness is visible.
             {
                 static const char* ColorSpaceLabels[] =
                 {

@@ -1,56 +1,12 @@
---[[
-    Lumina Game Project Build System
-
-    Declares an EXTERNAL game project that links against a pre-built Lumina
-    engine install. Unlike LuminaModule() (engine-internal modules), this also
-    creates the whole premake workspace, since a game project ships its own
-    .sln separate from the engine's.
-
-    The workspace settings come from the SAME LuminaWorkspaceSettings() the
-    engine uses, and third-party includes are resolved from the SAME registry,
-    so a game compiles engine/third-party headers with identical preprocessor
-    state. There is no copy of the engine's defines/filters here to drift.
-
-    Usage (in an external project's premake5.lua):
-
-        local LuminaDir = os.getenv("LUMINA_DIR")
-        include(path.join(LuminaDir, "BuildScripts/Dependencies"))
-        include(path.join(LuminaDir, "BuildScripts/Actions/Reflection"))
-        include(path.join(LuminaDir, "BuildScripts/GameProject"))
-
-        LuminaGameProject({
-            Name = "MyGame",
-            -- Third-party libs whose SYMBOLS this project links directly.
-            -- Engine-exposed headers (glm, eastl, ...) are made available
-            -- automatically; you only list what you actually link.
-            Dependencies = { "ImGui", "EA", "Tracy", "RPMalloc", "EnkiTS", "Luau" },
-        })
-
-    Required:
-        Name                     - Project / workspace name
-
-    Optional:
-        Dependencies             - Third-party libs to link (defaults to the
-                                   standard game set below).
-        ModuleDependencies       - Extra engine modules to link (Runtime always).
-        EditorModuleDependencies - Engine modules linked only on Editor (Editor
-                                   always added on the Editor platform).
-        Reflection               - Enable reflection generation (default true).
-        PrivateDefines           - Extra defines for this project only.
-        ExtraFiles               - Extra file patterns to include.
-        ExtraLibDirs             - Extra library search paths.
-        ExtraLinks               - Extra raw library names (verbatim).
-]]
+-- LuminaGameProject() declares an external game project (plus its own workspace) that links a pre-built engine install.
+-- Reuses the engine's LuminaWorkspaceSettings() and third-party registry so a game compiles with identical preprocessor state.
 
 assert(LuminaConfig, "GameProject.lua: include BuildScripts/Dependencies first")
 include(path.join(_SCRIPT_DIR, "Workspace.lua"))
 include(path.join(_SCRIPT_DIR, "PluginDiscovery.lua"))
 
 
--- Standard third-party dependencies every Lumina game project links. Engine
--- headers transitively expose far more (glm, eastl, ...), but those are
--- header-only / already absorbed into the engine DLLs; this is the minimum a
--- game TU links to satisfy engine template instantiations.
+-- Minimum third-party set a game TU links to satisfy engine template instantiations; engine headers expose more (header-only / absorbed into the DLLs).
 local DefaultGameDependencies =
 {
     "ImGui",
@@ -69,25 +25,15 @@ local function SetupProject(Def)
         staticruntime "Off"
         vectorextensions "AVX" -- See Workspace.lua: AVX2 #UD-crashes on CPUs without it.
 
-        -- Force-include the project's API header, which includes ModuleAPI.h to
-        -- pull in RUNTIME_API / EDITOR_API / etc.
+        -- Force-include the project's API header (pulls in ModuleAPI.h → RUNTIME_API/EDITOR_API/etc.).
         forceincludes { Def.Name .. "API.h" }
 
-        -- Ensure the matching-config engine libraries exist before building
-        -- this game project. First-time builds against an unbuilt engine
-        -- config (e.g. game Debug against an engine that's only been built
-        -- Development) used to fail with "Runtime-Debug.lib not found"; the
-        -- script transparently invokes msbuild on Lumina.sln and is a no-op
-        -- once the libs exist. See BuildScripts/EnsureEngineBuilt.bat.
+        -- Build the matching-config engine libs first (no-op once they exist); avoids "Runtime-Debug.lib not found" on a first build against an unbuilt config. See EnsureEngineBuilt.bat.
         local LuminaDirForBat = os.getenv("LUMINA_DIR")
         if LuminaDirForBat then
             local EnsureBat = '"' .. path.translate(path.join(LuminaDirForBat, "BuildScripts", "EnsureEngineBuilt.bat"), "\\") .. '"'
 
-            -- Pass $(Platform) through so an Editor-platform game build
-            -- triggers the Editor-platform engine build, and likewise for
-            -- Game. Without the platform arg, packaged-game builds (Game
-            -- platform) would silently fall back to building Editor libs
-            -- they can't link against.
+            -- Pass $(Platform) so an Editor/Game game build triggers the matching-platform engine build; without it, packaged Game builds fall back to unlinkable Editor libs.
             filter "configurations:Debug"
                 prebuildcommands { EnsureBat .. ' Debug "$(Platform)"' }
             filter "configurations:Development"
@@ -97,9 +43,7 @@ local function SetupProject(Def)
             filter {}
         end
 
-        -- Reflection: run the project-local ReflectionRunner.bat so premake
-        -- processes THIS project's premake5.lua and generates its own
-        -- ReflectionUnity.gen.cpp scoped to this project's headers.
+        -- Run the project-local ReflectionRunner.bat so premake generates this project's own ReflectionUnity.gen.cpp scoped to its headers.
         if Def.Reflection then
             enablereflection "true"
             prebuildcommands
@@ -125,16 +69,12 @@ local function SetupProject(Def)
             table.insert(FilePatterns, Pattern)
         end
 
-        -- Single canonical EASTL allocator binding from the engine install;
-        -- the game DLL needs its own compiled copy so eastl::allocator has the
-        -- right `dllimport` decoration in this image.
+        -- Game DLL compiles its own EASTLImpl.cpp copy so eastl::allocator gets the right dllimport decoration in this image.
         table.insert(FilePatterns, LuminaConfig.GetEASTLImplFile())
 
         files(FilePatterns)
 
-        -- Includes: project source + this project's generated reflection +
-        -- engine Runtime headers/reflection + every third-party header the
-        -- engine's public API exposes + this project's own third-party deps.
+        -- Includes: project source + generated reflection + engine Runtime headers + engine-exposed third-party + this project's deps.
         local AllIncludes = { "Source" }
         table.insert(AllIncludes, path.join("%{wks.location}", "Intermediates/Reflection", Def.Name))
         for _, Dir in ipairs(LuminaConfig.GetEngineRuntimeIncludes()) do
@@ -152,8 +92,7 @@ local function SetupProject(Def)
             defines(Def.PrivateDefines)
         end
 
-        -- Library search paths: the engine's Binaries folder holds Runtime.lib,
-        -- Editor.lib and all third-party static libs.
+        -- The engine's Binaries folder holds Runtime.lib, Editor.lib, and all third-party static libs.
         local AllLibDirs =
         {
             LuminaConfig.GetTargetDirectory(),
@@ -164,13 +103,7 @@ local function SetupProject(Def)
         end
         libdirs(AllLibDirs)
 
-        -- Links: engine Runtime + the linkable closure of the project's
-        -- third-party deps + any user extras.
-        --
-        -- The engine appends a configuration-specific suffix ("-Debug", etc.)
-        -- to every .lib it produces, so we emit suffixed names per config.
-        -- Inside the engine workspace premake resolves these automatically;
-        -- external workspaces have no such knowledge.
+        -- Engine Runtime + the linkable closure of the project's deps + user extras; the engine suffixes every .lib per-config ("-Debug" etc.), so we emit suffixed names.
         local _, _, ThirdPartyLinks = LuminaThirdParty.Resolve(Def.Dependencies)
 
         local BaseLinks = { "Runtime" }
@@ -189,8 +122,7 @@ local function SetupProject(Def)
             return Out
         end
 
-        -- Tracy links only where profiling is active (LuminaOptions). Strip it
-        -- from the link set for every other configuration.
+        -- Link Tracy only where profiling is active (LuminaOptions); strip it elsewhere.
         local function StripTracy(Libs)
             local Out = {}
             for _, Lib in ipairs(Libs) do
@@ -215,12 +147,7 @@ local function SetupProject(Def)
             links(Def.ExtraLinks)
         end
 
-        -- Visual Studio debugger wiring: F5 in the game's .sln launches the
-        -- editor with this project pre-loaded, so breakpoints in the game DLL
-        -- are hit as soon as IMPLEMENT_MODULE runs. Mirrors the UE workflow.
-        --
-        -- Engine binaries are resolved at generate time via LUMINA_DIR; the
-        -- project's own premake5.lua already asserts that variable is set.
+        -- F5 in the game's .sln launches the editor with this project pre-loaded; engine binaries resolved at generate time via LUMINA_DIR.
         local LuminaDir = os.getenv("LUMINA_DIR")
         if LuminaDir then
             local EngineBin = path.join(LuminaDir, "Binaries", "Windows64")
@@ -287,10 +214,7 @@ function LuminaGameProject(Def)
 
     SetupProject(Def)
 
-    -- Engine plugins ship pre-built with the engine; we don't re-include
-    -- them here (they already live in Lumina.sln's "Plugins" group). Only
-    -- project-local plugins under <Project>/Plugins/ get added to the
-    -- game's .sln. The runtime side loads both kinds at startup.
+    -- Only project-local plugins under <Project>/Plugins/ get added here; engine plugins ship pre-built in Lumina.sln. Runtime loads both at startup.
     group "Plugins"
         LuminaDiscoverPlugins(path.join(_MAIN_SCRIPT_DIR, "Plugins"))
     group ""

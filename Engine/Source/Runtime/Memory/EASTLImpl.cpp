@@ -1,18 +1,5 @@
-// Single canonical EASTL allocator binding for the engine.
-//
-// EASTL's `allocator` class is non-template, non-inline. Its method bodies
-// and the `eastl::GDefaultAllocator` global must be defined exactly once per
-// linked image (DLL / EXE). Every consumer (Runtime, Editor, Lumina.exe,
-// game DLLs) used to ship its own boilerplate `Lumina_eastl.cpp` next to
-// its own source. Now this single file is auto-added to every consumer's
-// compile set by the build system ([BuildScripts/Module.lua] for engine
-// modules, [BuildScripts/GameProject.lua] for game projects), so each
-// image still gets its own correctly-decorated copy without the user
-// having to ship boilerplate.
-//
-// Both Malloc and Free route through Runtime-DLL-exported Lumina::Memory
-// functions, so allocations are pool-coherent across DLL boundaries — a
-// pointer Malloc'd in one DLL can be Free'd in another safely.
+// Single canonical EASTL allocator binding; auto-added to every linked image (one definition
+// per DLL/EXE). Malloc/Free route through Runtime-exported Memory fns, so pointers are poolable across DLLs.
 
 #include <EASTL/internal/config.h>
 #include <EASTL/allocator.h>
@@ -26,8 +13,6 @@ namespace eastl
 {
     allocator GDefaultAllocator;
 
-    //-------------------------------------------------------------------------
-
     allocator* GetDefaultAllocator()
     {
         return &GDefaultAllocator;
@@ -37,8 +22,6 @@ namespace eastl
     {
         return &GDefaultAllocator;
     }
-
-    //-------------------------------------------------------------------------
 
     allocator::allocator(const char* EASTL_NAME(pName))
     {

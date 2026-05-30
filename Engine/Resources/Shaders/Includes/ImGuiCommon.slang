@@ -1,10 +1,7 @@
 #pragma once
 
-// Shared push block for the bindless ImGui backend. ImGui issues one draw per
-// ImDrawCmd; only TextureID changes between draws in a list, so the cheap path
-// is a 24 B push constant rather than a per-draw device-address buffer. The
-// vertex shader maps framebuffer pixels -> NDC via Scale/Translate (classic
-// ImGui ortho), the pixel shader samples the bindless table by TextureID.
+// Shared push block for the bindless ImGui backend; only TextureID changes between draws, so a 24 B
+// push constant beats a per-draw buffer. VS maps pixels -> NDC via Scale/Translate, PS samples by TextureID.
 
 struct FImGuiPushConstants
 {

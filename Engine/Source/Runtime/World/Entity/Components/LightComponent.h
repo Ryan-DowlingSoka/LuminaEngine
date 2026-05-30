@@ -15,11 +15,11 @@ namespace Lumina
         FVector3 LightColor = FVector3(1.0f);
 
         /** Brightness of the light in lux. */
-        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, Units = "lux")
         float Intensity = 10.0f;
 
         /** Radius in meters within which the light affects objects. */
-        PROPERTY(Editable, Category = "Light")
+        PROPERTY(Editable, Category = "Light", Units = "m")
         float Attenuation = 10.0f;
 
         /** Controls the steepness of the intensity falloff curve toward the attenuation radius. */
@@ -49,19 +49,19 @@ namespace Lumina
         FVector3 LightColor = FVector3(1.0f);
 
         /** Brightness of the light in lux. */
-        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, ClampMax = 1000.0f)
+        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, ClampMax = 1000.0f, Units = "lux")
         float Intensity = 10.0f;
 
         /** Angle (degrees) of the fully-lit inner cone, no falloff inside this region. */
-        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, Units = "deg")
         float InnerConeAngle = 20.0f;
 
         /** Angle (degrees) of the outer cone edge, light fades from inner to outer. */
-        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, Units = "deg")
         float OuterConeAngle = 30.0f;
 
         /** Radius in meters within which the spotlight affects objects. */
-        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, Units = "m")
         float Attenuation = 10.0f;
 
         /** Controls the steepness of the intensity falloff curve toward the attenuation radius. */
@@ -115,26 +115,25 @@ namespace Lumina
         bool bUseTemperature = false;
 
         /** Correlated color temperature in Kelvin (≈6500 = neutral daylight, lower = warmer, higher = cooler/blue). */
-        PROPERTY(Editable, Category = "Light|Temperature", ClampMin = 1000.0f, ClampMax = 15000.0f)
+        PROPERTY(Editable, Category = "Light|Temperature", ClampMin = 1000.0f, ClampMax = 15000.0f, Units = "K")
         float Temperature = 6500.0f;
 
         /** When true, this light contributes to the shadow pass. */
         PROPERTY(Editable, Category = "Cascaded Shadows")
         bool bCastShadows = true;
 
-        /** Blend between uniform (0) and logarithmic (1) cascade split distribution. Higher packs detail
-        near the camera but shrinks cascade 0, so the sharp range ends close and the jump to the lower-res
-        outer cascade is abrupt. ~0.85 pushes the first split outward for a longer high-quality range. */
+        // Blend uniform (0) to logarithmic (1) cascade split distribution. Higher packs near-camera detail
+        // but shrinks cascade 0; ~0.85 pushes the first split outward for a longer high-quality range.
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
         float CascadeSplitLambda = 0.85f;
 
         /** Maximum view distance that receives cascaded shadows; shadows fade out before this. */
-        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
+        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f, Units = "m")
         float ShadowMaxDistance = 1000.0f;
 
         /** Distance the light eye is pushed behind each cascade so off-screen occluders still cast.
         Low sun angles need larger values or tall casters clip at the ortho near plane and shadows go hollow. */
-        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
+        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f, Units = "m")
         float CascadeBackDistance = 100.0f;
 
         /** Normal-offset bias scale; raise to kill shadow acne, lower if contact shadows detach (peter-panning). */

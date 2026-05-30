@@ -18,10 +18,8 @@ namespace Lumina::Reflection
                 [](const FMetadataPair& Pair) { return Pair.Key == "NoLua"; });
         }
 
-        // Emits the chained TClass builder calls (SetSuperClass, EnableTypeId,
-        // AddFunction*, AddProperty*) up to but not including .Register(). The
-        // caller closes the chain with .Register() and any constructor/loader
-        // binding so everything happens in a single stack-balanced expression.
+        // Emits the chained TClass builder calls up to but not including .Register();
+        // the caller closes the chain so it stays a single stack-balanced expression.
         void EmitTypeBindings(FCodeWriter& Writer, const FReflectedStruct& Struct)
         {
             Writer.Line(".EnableTypeId()");
@@ -48,10 +46,8 @@ namespace Lumina::Reflection
             }
         }
 
-        // Reflected class: chain a `Foo.Load(path)` helper that resolves a
-        // CObject by package path. Push uses PushCObjectAsActualType so the
-        // result wears its actual subclass's metatable, not the static type
-        // we templated LoadObject on.
+        // Chains a `Foo.Load(path)` helper; PushCObjectAsActualType gives the result
+        // its actual subclass's metatable, not the static type LoadObject was templated on.
         void EmitClassLoader(FCodeWriter& Writer, const FReflectedStruct& Class)
         {
             Writer.Line(".AddStaticRawFunction(\"Load\", +[](lua_State* State) -> int");
@@ -77,9 +73,8 @@ namespace Lumina::Reflection
 
             Writer.Line("int BindingTop = lua_gettop(L);");
 
-            // Single chained expression: construct, register methods + props,
-            // call Register() to commit the metatable, then attach the
-            // public-facing constructor or loader to the global table.
+            // Single chained expression: construct, register methods + props, Register()
+            // to commit the metatable, then attach the constructor/loader to the global table.
             Writer.Linef("Lumina::Lua::TClass<%s>(L, \"%s\")",
                 Struct.QualifiedName.c_str(), Struct.DisplayName.c_str());
             Writer.PushIndent();
@@ -103,10 +98,6 @@ namespace Lumina::Reflection
         }
 
     }
-
-    //-------------------------------------------------------------------------
-    // LuaBindingEmitter
-    //-------------------------------------------------------------------------
 
     void LuaBindingEmitter::EmitForEnum(FCodeWriter& Writer, const FReflectedEnum& Enum)
     {

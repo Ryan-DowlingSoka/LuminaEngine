@@ -10,8 +10,7 @@
 
 namespace Lumina
 {
-    // Value type for a material function's input/output pins. Mirrors the editor-side
-    // EMaterialInputType ordering (Float..Float4) so the editor can map 1:1 without a table.
+    // Material function pin value type; mirrors editor EMaterialInputType ordering (Float..Float4) for 1:1 mapping.
     // Texture-typed function I/O is intentionally not supported yet.
     REFLECT()
     enum class EMaterialValueType : uint8
@@ -22,9 +21,8 @@ namespace Lumina
         Float4,
     };
 
-    // One declared input of a material function. Authored in the function editor as a
-    // FunctionInput node; the editor mirrors the node set into these on save so a call
-    // node can build its pins without loading the function's editor graph.
+    // One declared function input; mirrored from the editor's FunctionInput nodes on save so a call
+    // node can build pins without loading the function's editor graph.
     REFLECT()
     struct RUNTIME_API FMaterialFunctionInput
     {
@@ -60,11 +58,8 @@ namespace Lumina
         FString Description;
     };
 
-    // A reusable material subgraph (like Unreal's Material Functions). It owns no compiled
-    // shader of its own: at material-compile time the editor inlines the function's graph into
-    // the host material's generated shader. Only the input/output signature is needed at
-    // runtime, so this asset is little more than that signature plus a description; the editable
-    // node graph lives as a child object in this asset's package (see the editor tool).
+    // Reusable material subgraph, inlined into the host material's shader at compile time. Runtime only
+    // needs the I/O signature + description; the editable node graph is a child object in this package.
     REFLECT()
     class RUNTIME_API CMaterialFunction : public CObject
     {

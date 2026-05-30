@@ -1,26 +1,9 @@
---[[
-    Lumina Module Build System
+-- LuminaModule() declares an engine module with API-macro handling, include propagation, and dependency resolution.
 
-    Provides LuminaModule() for declaring engine modules with automatic
-    API macro handling, include propagation, and dependency resolution.
-
-    Usage:
-        LuminaModule({
-            Name = "MyModule",
-            Kind = "SharedLib",
-            ModuleDependencies = { "Runtime" },
-            Dependencies = { "ImGui", "EA" },
-            PublicIncludeDirs = { "." },
-            ...
-        })
-]]
-
--- Global registry of declared modules for dependency resolution
 LuminaModules = LuminaModules or {}
 
 
--- Resolve the absolute path for a module's public include directory.
--- If the path is "." it resolves to the module's base directory.
+-- Resolve a public include dir to an absolute path; "." means the module's base directory.
 local function ResolveIncludePath(BasePath, IncDir)
     if IncDir == "." then
         return BasePath
@@ -29,10 +12,7 @@ local function ResolveIncludePath(BasePath, IncDir)
 end
 
 
--- Collect all public include directories a module exposes to its dependents:
--- the module's own public includes, the public includes of the third-party
--- libraries its headers expose (PUBLIC dependency semantics), and the same
--- recursively for its module dependencies.
+-- Collect public include dirs a module exposes to dependents: its own, its third-party deps', and the same recursively for module deps.
 local function CollectPublicIncludes(ModuleName, Visited)
     Visited = Visited or {}
     if Visited[ModuleName] then
@@ -70,9 +50,7 @@ local function CollectPublicIncludes(ModuleName, Visited)
 end
 
 
--- Collect all public defines a module exposes to its dependents: its own
--- PublicDefines, the public defines of its third-party dependencies, and the
--- same recursively for its module dependencies.
+-- Collect public defines a module exposes to dependents: its own, its third-party deps', and the same recursively for module deps.
 local function CollectPublicDefines(ModuleName, Visited)
     Visited = Visited or {}
     if Visited[ModuleName] then
@@ -140,17 +118,13 @@ function LuminaModule(Def)
         table.insert(Def.ResolvedPublicIncludes, path.join(BasePath, "Source"))
     end
 
-    -- A reflected module's generated headers must be visible to its dependents.
-    -- Use an absolute engine path (not the per-project %{prj.name} token) so it
-    -- still points at THIS module's reflection output when a dependent resolves
-    -- it. Doubles as this module's own generated-header include.
+    -- Reflected module's generated headers must be visible to dependents; use an absolute engine path (not %{prj.name}) so dependents still resolve THIS module's output.
     if Def.Reflection then
         table.insert(Def.ResolvedPublicIncludes,
             LuminaConfig.EnginePath(path.join("Intermediates/Reflection", Def.Name)))
     end
 
-    -- Register in the global module table before project() call
-    -- so that modules included later can reference this one
+    -- Register before project() so later-included modules can reference this one.
     LuminaModules[Def.Name] = Def
 
     project(Def.Name)
@@ -159,10 +133,7 @@ function LuminaModule(Def)
         staticruntime "Off"
         vectorextensions "AVX" -- See Workspace.lua: AVX2 #UD-crashes on CPUs without it.
 
-    -- Monolithic Shipping: every SharedLib gets re-kinded to StaticLib so
-    -- the final exe (Lumina) can WHOLEARCHIVE-link them. WindowedApp /
-    -- ConsoleApp / Utility / StaticLib are unaffected; the exe stays
-    -- an exe, build tools stay tools. See LUMINA_MONOLITHIC.
+    -- Monolithic Shipping: re-kind SharedLibs to StaticLib so the exe can WHOLEARCHIVE-link them; apps/tools/StaticLibs unaffected. See LUMINA_MONOLITHIC.
     if Def.Kind == "SharedLib" then
         filter "configurations:Shipping"
             kind "StaticLib"
@@ -174,11 +145,7 @@ function LuminaModule(Def)
         removeplatforms(Def.RemovePlatforms)
     end
 
-    -- Precompiled header. When present, the PCH header is force-included
-    -- ahead of ModuleAPI.h so /Yu finds it as the first include in every TU
-    -- even when the .cpp doesn't write `#include "pch.h"` itself (Editor's
-    -- existing TUs don't). #pragma once makes the explicit-include case
-    -- already-present-in-Runtime idempotent.
+    -- PCH header is force-included ahead of ModuleAPI.h so /Yu finds it first in every TU even when the .cpp doesn't write `#include "pch.h"`.
     if Def.PCH then
         pchheader(Def.PCH.Header)
         pchsource(Def.PCH.Source)
@@ -187,14 +154,7 @@ function LuminaModule(Def)
         forceincludes { "ModuleAPI.h" }
     end
 
-    -- Reflection setup
-    --
-    -- ReflectionGen is a workspace-shared Utility project that fires the
-    -- Reflector prebuild exactly once per build. Depending on it (rather
-    -- than wiring our own prebuildcommands) avoids paying premake's
-    -- workspace-walk startup cost for every reflected module. The lua
-    -- Reflection action processes every project with enablereflection=true
-    -- in a single pass, so one invocation covers all reflected modules.
+    -- Depend on ReflectionGen (workspace-shared Utility) so the Reflector prebuild fires once per build instead of per reflected module.
     if Def.Reflection then
         dependson { "Reflector", "ReflectionGen" }
         enablereflection "true"
@@ -229,13 +189,7 @@ function LuminaModule(Def)
 
     files(FilePatterns)
 
-    -- EASTL allocator binding: every image (SharedLib/WindowedApp/ConsoleApp)
-    -- that uses EASTL containers must compile its own copy of EASTLImpl.cpp
-    -- so eastl::allocator gets defined with the right per-DLL decoration.
-    -- Runtime picks the file up via its **.cpp glob; everyone else needs an
-    -- explicit `files {}` add. In monolithic Shipping the SharedLibs above
-    -- become StaticLibs and the final exe (Lumina, WindowedApp) owns the
-    -- single definition -- strip the file from every other Shipping target.
+    -- Every image must compile its own EASTLImpl.cpp for per-DLL eastl::allocator decoration; Runtime globs it, others add explicitly. Monolithic Shipping strips it (the exe owns the single definition).
     if (Def.Kind == "SharedLib" or Def.Kind == "WindowedApp" or Def.Kind == "ConsoleApp")
         and not Def.RootFiles then
         files { LuminaConfig.GetEASTLImplFile() }
@@ -244,9 +198,7 @@ function LuminaModule(Def)
     if Def.Kind == "SharedLib" then
         filter "configurations:Shipping"
             removefiles { LuminaConfig.GetEASTLImplFile() }
-            -- Runtime (RootFiles=true) globbed the file in via its relative
-            -- path; the absolute removefiles above doesn't always catch that
-            -- so list the relative variant too.
+            -- Runtime globbed the file via its relative path, which the absolute removefiles above misses; list the relative variant too.
             removefiles { "Memory/EASTLImpl.cpp" }
         filter {}
     end
@@ -263,8 +215,7 @@ function LuminaModule(Def)
         filter {}
     end
 
-    -- Resolve this module's third-party dependencies once into (includes,
-    -- defines, links). Transitive and deduplicated via the registry.
+    -- Resolve third-party deps once into (includes, defines, links); transitive and deduplicated via the registry.
     local ThirdPartyIncludes, ThirdPartyDefines, ThirdPartyLinks =
         LuminaThirdParty.Resolve(Def.Dependencies)
 
@@ -355,9 +306,7 @@ function LuminaModule(Def)
         links(AllLinks)
     end
 
-    -- Tracy links only in the configurations where profiling is active
-    -- (LuminaOptions). Remove it everywhere else so a "Tracy off" or
-    -- Shipping-only-disabled build doesn't pull in the profiler library.
+    -- Link Tracy only in configs where profiling is active (LuminaOptions); strip it elsewhere.
     for _, Cfg in ipairs({ "Debug", "Development", "Shipping" }) do
         if not LuminaOptions.IsActive("Tracy", Cfg) then
             filter("configurations:" .. Cfg)
@@ -366,15 +315,8 @@ function LuminaModule(Def)
         end
     end
 
-    -- Monolithic Shipping: SharedLib modules become StaticLib and the
-    -- final exe (Lumina) WHOLEARCHIVE-links them. With MSBuild's
-    -- LinkLibraryDependencies=True (the default for VS C++ projects),
-    -- the LIB tool bakes referenced libs' .objs into the resulting .lib
-    -- when archiving. WHOLEARCHIVE then pulls those baked-in .objs into
-    -- the exe N times -> LNK2005 duplicate symbols. Strip BOTH the
-    -- third-party links AND the cross-module links from SharedLib
-    -- modules in Shipping; the Lumina exe links each engine module once
-    -- and the union of third-party deps once, end of duplicates.
+    -- Monolithic Shipping: MSBuild's LinkLibraryDependencies bakes referenced libs' .objs into each .lib, so WHOLEARCHIVE would duplicate them (LNK2005).
+    -- Strip third-party AND cross-module links from SharedLibs; the exe links each module and the union of third-party deps exactly once.
     if Def.Kind == "SharedLib" then
         local StripInShipping = {}
         for _, Lib in ipairs(ThirdPartyLinks) do
@@ -403,7 +345,7 @@ function LuminaModule(Def)
             links(EditorLinks)
         filter {}
     end
----------------------
+
     if #Def.LibDirs > 0 then
         libdirs(Def.LibDirs)
     end

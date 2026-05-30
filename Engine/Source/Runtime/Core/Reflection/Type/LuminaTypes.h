@@ -358,9 +358,7 @@ namespace Lumina
     {
         return static_cast<uint64>(TTypeInfo::GetPropertyValue(Container));
     }
-    
-    //-------------------------------------------------------------------------------
-    
+
     class FBoolProperty : public TProperty_Numeric<bool>
     {
     public:

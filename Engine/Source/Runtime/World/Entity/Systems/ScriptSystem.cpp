@@ -42,7 +42,7 @@ namespace Lumina
         Steps = Math::Min(Steps, MaxSteps);
         State.Accumulator -= (float)Steps * FixedDt;
 
-        auto View = Context.CreateView<SScriptComponent, FScriptHasFixedUpdateFn>(entt::exclude<SDisabledTag>);
+        auto View = Context.CreateView<SScriptComponent, FScriptHasFixedUpdateFn>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
         for (int32 Step = 0; Step < Steps; ++Step)
         {
             View.each([&](entt::entity, SScriptComponent& ScriptComponent)
@@ -67,7 +67,7 @@ namespace Lumina
 
         const float DeltaSeconds = (float)Context.GetDeltaTime();
 
-        auto View = Context.CreateView<SScriptComponent, FScriptHasEditorUpdateFn>(entt::exclude<SDisabledTag>);
+        auto View = Context.CreateView<SScriptComponent, FScriptHasEditorUpdateFn>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
         View.each([&](entt::entity, SScriptComponent& ScriptComponent)
         {
             const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
@@ -114,38 +114,38 @@ namespace Lumina
         {
         case EUpdateStage::FrameStart:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_FrameStart>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_FrameStart>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
             }
             break;
         case EUpdateStage::PrePhysics:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_PrePhysics>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_PrePhysics>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
                 RunFixedUpdate(Context);
             }
             break;
         case EUpdateStage::DuringPhysics:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_DuringPhysics>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_DuringPhysics>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
             }
             break;
         case EUpdateStage::PostPhysics:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_PostPhysics>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_PostPhysics>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
             }
             break;
         case EUpdateStage::FrameEnd:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_FrameEnd>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_FrameEnd>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
             }
             break;
         case EUpdateStage::Paused:
             {
-                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_Paused>(entt::exclude<SDisabledTag>);
+                auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_Paused>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
                 RunEditorUpdate(Context);
             }

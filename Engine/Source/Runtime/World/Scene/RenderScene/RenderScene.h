@@ -24,15 +24,12 @@ namespace Lumina
         virtual void BeginFrame() = 0;
         virtual void EndFrame() = 0;
 
-        // Set the chain of post-process materials to apply this frame.
-        // Resolved by the world from the active camera + any post-process
-        // volumes the camera is inside. The renderer does not retain the
-        // pointers across frames -- the world rebuilds the list each tick.
+        // Post-process material chain for this frame, resolved by the world from the active camera +
+        // volumes. Not retained across frames -- the world rebuilds the list each tick.
         virtual void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) {}
 
-        // Game thread: populate the frame slot's snapshot. Scenes N-buffer
-        // per-frame state so Extract and RenderView can run concurrently;
-        // Extract back-pressures on the slot's consumed fence.
+        // Game thread: populate the frame slot's snapshot. N-buffered so Extract and RenderView run
+        // concurrently; Extract back-pressures on the slot's consumed fence.
         virtual void Extract(const FViewVolume&, const SPostProcessSettings* PostProcess) = 0;
 
         // Render thread: record this view's draws from the slot's snapshot.
@@ -43,26 +40,20 @@ namespace Lumina
         
         virtual entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const = 0;
 
-        // Editor only: report the current pick-cursor position (in picker-RT texels)
-        // so the per-frame picker readback can copy just a small region around it.
-        // bOverViewport=false skips the readback entirely that frame.
+        // Editor only: pick-cursor position (picker-RT texels) so readback copies just a region around it.
+        // bOverViewport=false skips the readback that frame.
         virtual void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) {}
 
         virtual FRHIImage* GetRenderTarget() const = 0;
 
-        // Scene-capture views: render the same world from an additional camera into a
-        // dedicated render target (e.g. an editor camera-preview overlay). The scene
-        // gathers geometry once and shades each registered+enabled view into its own RT.
-        // RegisterCaptureView returns an opaque handle (-1 on failure); the renderer owns
-        // the RT. SetCaptureView updates the view's camera + enabled flag each frame
-        // (game thread, before Extract). GetCaptureRenderTarget returns the RT to display.
+        // Scene-capture views: render the world from an extra camera into its own RT (gather once, shade each).
+        // Register returns an opaque handle (-1 on fail); SetCaptureView/GetCaptureRenderTarget drive + display it.
         virtual int32 RegisterCaptureView(const FUIntVector2& Size) { return -1; }
         virtual void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) {}
         virtual FRHIImage* GetCaptureRenderTarget(int32 Handle) const { return nullptr; }
 
-        // Re-create the scene's render target at a new size. Used by transient
-        // render paths (e.g. thumbnail capture) that need a fixed RT independent
-        // of the swapchain.
+        // Re-create the scene's render target at a new size. Used by transient render paths
+        // (e.g. thumbnail capture) needing a fixed RT independent of the swapchain.
         virtual void Resize(const FUIntVector2& NewSize) = 0;
 
         virtual const FSceneRenderStats&  GetRenderStats() const = 0;

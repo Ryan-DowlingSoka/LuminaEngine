@@ -55,9 +55,8 @@ namespace Lumina::Reflection
         eastl::string FileNameChar = clang_getCString(FileName);
         clang_disposeString(FileName);
 
-        // Both sides must agree on the canonical form. HeaderID is already
-        // normalized; route the cursor's raw clang file name through the same
-        // pipeline so case-sensitive filesystems stop dropping legitimate hits.
+        // Normalize the cursor's raw clang file name the same way HeaderID was,
+        // so case-sensitive filesystems don't drop legitimate hits.
         FileNameChar = ClangUtils::NormalizeHeaderPath(eastl::move(FileNameChar));
 
         if (FileNameChar != HeaderID)
@@ -67,11 +66,8 @@ namespace Lumina::Reflection
 
         eastl::vector<FReflectionMacro>& MacrosForHeader = HeaderIter->second;
 
-        // Prefer the closest macro that lexically precedes the cursor:
-        // 1) Same line, macro before cursor in source order  (`FUNCTION(Script) float Foo()`)
-        // 2) Exactly one line above                          (`FUNCTION(Script)\n float Foo()`)
-        // Without (1), inline-form macros silently bind to the cursor below them and the
-        // first function in a block of inline macros gets no binding at all.
+        // Prefer the closest macro preceding the cursor: same-line-before, then one line above.
+        // Without the same-line case, inline-form macros mis-bind to the cursor below them.
         auto SameLineMatch = MacrosForHeader.end();
         auto LineAboveMatch = MacrosForHeader.end();
 
@@ -106,9 +102,8 @@ namespace Lumina::Reflection
 
     bool FClangParserContext::TryFindGeneratedBodyMacro(const eastl::string& HeaderID, const CXCursor& Cursor, FReflectionMacro& Macro)
     {
-        // The "this type has no GENERATED_BODY()" case is owned by the struct
-        // visitor now -- it inspects the REFLECT macro for a ManualStub tag
-        // and skips the requirement there. This function stays a pure lookup.
+        // The missing-GENERATED_BODY case is handled by the struct visitor (ManualStub check);
+        // this function stays a pure lookup.
         uint64_t Hash = XXH64(HeaderID.c_str(), strlen(HeaderID.c_str()), 0);
         auto headerIter = GeneratedBodyMacros.find(Hash);
         if (headerIter == GeneratedBodyMacros.end())

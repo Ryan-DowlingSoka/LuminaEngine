@@ -32,9 +32,8 @@ namespace Lumina
         FTaskGraph(FTaskGraph&&) = delete;
         FTaskGraph& operator=(FTaskGraph&&) = delete;
 
-        // The callable is placement-constructed in the graph's arena (reused via Reset),
-        // so adding a node never heap-allocates -- even for large lambda captures that would
-        // blow std::move_only_function's small-buffer optimization.
+        // Callable is placement-constructed in the graph's arena, so adding a node never heap-allocates
+        // even for large captures.
         template<typename F>
         FNodeHandle Add(F&& Func, ETaskPriority Priority = ETaskPriority::Medium)
         {

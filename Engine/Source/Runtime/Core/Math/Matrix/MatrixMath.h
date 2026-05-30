@@ -4,13 +4,11 @@
 #include "Core/Math/Quat/Quat.h"
 #include <cmath>
 
-// Matrix free functions + quaternion<->matrix conversions, in Lumina::Math.
-// Conventions: COLUMN-MAJOR storage, LEFT-HANDED, and ZERO-TO-ONE clip depth for
-// the projection builders. Do not "fix" the handedness/depth here.
+// Matrix free fns + quat<->matrix conversions in Lumina::Math.
+// Conventions: COLUMN-MAJOR, LEFT-HANDED, ZERO-TO-ONE clip depth. Do not "fix" these.
 
 namespace Lumina::Math
 {
-    // ---- Transpose ----------------------------------------------------------
     template<typename T, int C, int R>
     [[nodiscard]] constexpr TMat<T, R, C> Transpose(const TMat<T, C, R>& M)
     {
@@ -25,7 +23,6 @@ namespace Lumina::Math
         return Result;
     }
 
-    // ---- Determinant --------------------------------------------------------
     template<typename T>
     [[nodiscard]] constexpr T Determinant(const TMat<T, 3, 3>& M)
     {
@@ -52,7 +49,6 @@ namespace Lumina::Math
         return M[0][0] * C0 - M[0][1] * C1 + M[0][2] * C2 - M[0][3] * C3;
     }
 
-    // ---- Inverse ------------------------------------------------------------
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 3, 3> Inverse(const TMat<T, 3, 3>& M)
     {
@@ -134,11 +130,8 @@ namespace Lumina::Math
         return Inv * OneOverDet;
     }
 
-    // SIMD fast path for the 4x4 float inverse (the GLM SSE cofactor/adjugate
-    // algorithm). Same math as the template above -- the cofactor sub-factors are
-    // built with shuffles instead of 18 scalar 2x2 determinants. Exact-type
-    // non-template overload, so it transparently replaces the scalar path for
-    // FMatrix4 (inverse view-projection, shadow cascades, bone inverse-bind, ...).
+    // SIMD fast path for 4x4 float inverse (SSE cofactor/adjugate); same math as the
+    // template above, exact-type overload replacing the scalar path for FMatrix4.
     [[nodiscard]] inline TMat<float, 4, 4> Inverse(const TMat<float, 4, 4>& M)
     {
         using namespace SIMD;
@@ -187,7 +180,6 @@ namespace Lumina::Math
         return Out;
     }
 
-    // ---- Affine builders (Translate / Scale / Rotate a matrix) ------
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 4, 4> Translate(const TMat<T, 4, 4>& M, const TVec<T, 3>& V)
     {
@@ -234,7 +226,6 @@ namespace Lumina::Math
         return Result;
     }
 
-    // ---- Projections (left-handed, zero-to-one depth) -----------------------
     template<typename T>
     [[nodiscard]] TMat<T, 4, 4> Perspective(T FovYRadians, T Aspect, T Near, T Far)
     {
@@ -305,7 +296,6 @@ namespace Lumina::Math
         return Result;
     }
 
-    // ---- Quaternion <-> matrix ---------------------------------------------
     // Quaternion -> rotation matrix.
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 3, 3> ToMatrix3(const TQuat<T>& Q)

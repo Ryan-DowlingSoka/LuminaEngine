@@ -1,25 +1,4 @@
---[[
-    Lumina Build Options
-
-    Resolves the optional-feature toggles (Tracy, Vulkan validation, NVIDIA
-    Aftermath) from three layered sources, lowest priority first:
-
-        1. The "auto" per-configuration policy baked in below.
-        2. BuildScripts/BuildConfig.lua  (the user-editable defaults file).
-        3. premake command-line flags     (--tracy=, --validation=, --aftermath=).
-
-    The result is LuminaOptions, a small API the rest of the build system queries
-    instead of hardcoding feature defines:
-
-        LuminaOptions.IsActive("Tracy", "Shipping")  -> bool (single config)
-        LuminaOptions.IsActiveAny("Tracy")           -> bool (any config)
-        LuminaOptions.Configs("Tracy")               -> { "Debug", "Development" }
-        LuminaOptions.FilterFor("Tracy")             -> "configurations:Debug or Development" | nil
-        LuminaOptions.LinkAftermath({ Copy = true }) -> wires links/libdirs/copy on the current project
-
-    Loaded by BuildScripts/Dependencies so it is available to both the engine
-    workspace and external game workspaces.
-]]
+-- LuminaOptions resolves feature toggles (Tracy/Validation/Aftermath/VerboseLogging) from auto-policy, then BuildConfig.lua, then CLI flags (highest priority).
 
 assert(LuminaConfig, "Options.lua must be included after BuildScripts/Dependencies")
 
@@ -28,13 +7,7 @@ LuminaOptions = LuminaOptions or {}
 local ALL_CONFIGS = { "Debug", "Development", "Shipping" }
 
 
--- ============================================================================
--- NVIDIA GPU detection (Windows only)
---
--- Used by the Aftermath "auto" policy: Aftermath is an NVIDIA-only tool, so
--- there is no point compiling it on AMD/Intel machines. Cached on LuminaConfig
--- so repeated queries (one per consuming project) don't re-shell out.
--- ============================================================================
+-- NVIDIA GPU detection (Windows) for the Aftermath auto policy; cached on LuminaConfig so per-project queries don't re-shell out.
 function LuminaConfig.HasNvidiaGPU()
     if LuminaConfig._HasNvidiaGPU ~= nil then
         return LuminaConfig._HasNvidiaGPU
@@ -42,8 +15,7 @@ function LuminaConfig.HasNvidiaGPU()
 
     local found = false
     if os.host() == "windows" then
-        -- Prefer CIM (wmic is deprecated/removed on recent Windows 11). Fall
-        -- back to wmic if PowerShell isn't usable for some reason.
+        -- Prefer CIM (wmic is deprecated on recent Windows 11); fall back to wmic if PowerShell isn't usable.
         local out = os.outputof('powershell -NoProfile -Command "(Get-CimInstance Win32_VideoController).Name -join \',\'"')
         if not out or out == "" then
             out = os.outputof("wmic path win32_VideoController get name")
@@ -58,9 +30,6 @@ function LuminaConfig.HasNvidiaGPU()
 end
 
 
--- ============================================================================
--- Command-line flags
--- ============================================================================
 local MODE_VALUES =
 {
     { "auto", "Engine decides per-configuration (default)" },
@@ -78,12 +47,7 @@ newoption { trigger = "verbose-logging", value = "MODE", allowed = MODE_VALUES,
             description = "Verbose logging (TRACE/DEBUG/INFO): auto|on|off" }
 
 
--- ============================================================================
--- Resolution
--- ============================================================================
-
--- Per-configuration "auto" policy. A function so Aftermath can consult the GPU
--- probe lazily (only when something actually resolves the Aftermath feature).
+-- Per-config "auto" policy; functions so Aftermath consults the GPU probe lazily.
 local AUTO_POLICY =
 {
     Tracy          = function(cfg) return cfg == "Debug" or cfg == "Development" end,
@@ -107,9 +71,7 @@ end
 
 local UserDefaults = LoadUserDefaults()
 
--- Final mode for a feature: CLI flag wins, then BuildConfig.lua, then "auto".
--- FlagTrigger is the premake --option name (defaults to the lowercased feature
--- when the names match; VerboseLogging uses the hyphenated --verbose-logging).
+-- Final mode: CLI flag wins, then BuildConfig.lua, then "auto". FlagTrigger overrides the default lowercased --option name.
 local function ResolveMode(feature, FlagTrigger)
     local flag = _OPTIONS[FlagTrigger or feature:lower()]
     if flag and flag ~= "" then
@@ -127,10 +89,6 @@ LuminaOptions.Validation     = ResolveMode("Validation")
 LuminaOptions.Aftermath      = ResolveMode("Aftermath")
 LuminaOptions.VerboseLogging = ResolveMode("VerboseLogging", "verbose-logging")
 
-
--- ============================================================================
--- Query API
--- ============================================================================
 
 function LuminaOptions.IsActive(feature, cfg)
     local mode = LuminaOptions[feature]
@@ -155,9 +113,7 @@ function LuminaOptions.IsActiveAny(feature)
     return #LuminaOptions.Configs(feature) > 0
 end
 
--- premake filter string scoping to the configs where the feature is active, or
--- nil when it is active nowhere. (Listing all three configs is equivalent to no
--- filter, which is fine.)
+-- premake filter string for the configs where the feature is active, or nil when active nowhere.
 function LuminaOptions.FilterFor(feature)
     local cfgs = LuminaOptions.Configs(feature)
     if #cfgs == 0 then return nil end
@@ -165,20 +121,8 @@ function LuminaOptions.FilterFor(feature)
 end
 
 
--- ============================================================================
--- Aftermath linkage helper
---
--- Wires the import lib, search path and (optionally) the runtime DLL copy onto
--- whatever project is currently open, scoped to the configs where Aftermath is
--- active. Call it right after LuminaModule() in the Runtime (Copy=true) and
--- Editor (Copy=false) modules.
---
--- The DLL copy lives in a POSTBUILD step on purpose: prebuild runs before the
--- linker has created the target Binaries directory on a clean build, so the old
--- prebuild copy silently failed and the DLL had to be moved by hand. Postbuild
--- runs after the module's own .dll lands in the target dir, so the dir is
--- guaranteed to exist.
--- ============================================================================
+-- Wires Aftermath import lib + optional DLL copy onto the current project, scoped to active configs. Call after LuminaModule().
+-- DLL copy is POSTBUILD on purpose: prebuild runs before the linker creates the Binaries dir on a clean build, so the copy silently failed.
 function LuminaOptions.LinkAftermath(Opts)
     local fstr = LuminaOptions.FilterFor("Aftermath")
     if not fstr then return end
@@ -200,12 +144,7 @@ function LuminaOptions.LinkAftermath(Opts)
 end
 
 
--- ============================================================================
--- Generation-time summary
---
--- Print the resolved feature set once so it's obvious what got baked into the
--- solution. "auto" shows what it resolved to in parentheses.
--- ============================================================================
+-- Print the resolved feature set once; "auto" shows what it resolved to in parentheses.
 local function DescribeFeature(name)
     local mode = LuminaOptions[name]
     if mode ~= "auto" then

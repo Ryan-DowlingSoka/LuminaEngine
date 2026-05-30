@@ -30,10 +30,8 @@ namespace Lumina::Physics
 		Removed,
 	};
 
-	// Snapshot of a single Jolt contact recorded on the physics thread and drained
-	// on the game thread after JoltSystem->Update returns. Pre-resolves entity ids
-	// and contact-time velocities so the game-thread dispatch never touches a
-	// (possibly destroyed) Jolt body.
+	// Contact snapshot recorded on the physics thread, drained game-thread; pre-resolves entity ids and
+	// velocities so dispatch never touches a (possibly destroyed) Jolt body.
 	struct FContactRecord
 	{
 		EContactEventType	Type;
@@ -59,35 +57,16 @@ namespace Lumina::Physics
 			, BodyLockInterface(InBodyLockInterface)
 		{ }
 
-		/// Called after detecting a collision between a body pair, but before calling OnContactAdded and before adding the contact constraint.
-		/// If the function returns false, the contact will not be added and any other contacts between this body pair will not be processed.
-		/// This function will only be called once per PhysicsSystem::Update per body pair and may not be called again the next update
-		/// if a contact persists and no new contact pairs between sub shapes are found.
-		/// This is a rather expensive time to reject a contact point since a lot of the collision detection has happened already, make sure you
-		/// filter out the majority of undesired body pairs through the ObjectLayerPairFilter that is registered on the PhysicsSystem.
-		/// Note that this callback is called when all bodies are locked, so don't use any locking functions!
-		/// The order of body 1 and 2 is undefined, but when one of the two bodies is dynamic it will be body 1
+		// Jolt: reject a contact pair before it's added; called with all bodies locked, so no locking.
 		virtual JPH::ValidateResult	OnContactValidate(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::CollideShapeResult& inCollisionResult) { return JPH::ValidateResult::AcceptAllContactsForThisBodyPair; }
 
-		/// Called whenever a new contact point is detected.
-		/// Note that this callback is called when all bodies are locked, so don't use any locking functions!
-		/// Body 1 and 2 will be sorted such that body 1 ID < body 2 ID, so body 1 may not be dynamic.
-		/// Note that only active bodies will report contacts, as soon as a body goes to sleep the contacts between that body and all other
-		/// bodies will receive an OnContactRemoved callback, if this is the case then Body::IsActive() will return false during the callback.
-		/// When contacts are added, the constraint solver has not run yet, so the collision impulse is unknown at that point.
-		/// The velocities of inBody1 and inBody2 are the velocities before the contact has been resolved, so you can use this to
-		/// estimate the collision impulse to e.g. determine the volume of the impact sound to play.
+		// Jolt: new contact point; called with all bodies locked, so no locking. Velocities are pre-solve.
 		virtual void OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings);
 
-		/// Called whenever a contact is detected that was also detected last update.
-		/// Note that this callback is called when all bodies are locked, so don't use any locking functions!
-		/// Body 1 and 2 will be sorted such that body 1 ID < body 2 ID, so body 1 may not be dynamic.
+		// Jolt: contact also present last update; called with all bodies locked, so no locking.
 		virtual void OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings);
 
-		/// Called whenever a contact was detected last update but is not detected anymore.
-		/// Note that this callback is called when all bodies are locked, so don't use any locking functions!
-		/// Note that we're using BodyID's since the bodies may have been removed at the time of callback.
-		/// Body 1 and 2 will be sorted such that body 1 ID < body 2 ID, so body 1 may not be dynamic.
+		// Jolt: contact gone since last update; uses BodyIDs (bodies may be removed). Called locked, so no locking.
 		virtual void OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair);
     	
 	private:
@@ -131,19 +110,14 @@ namespace Lumina::Physics
     	// Jolt rigid-body update.
     	void UpdateCharacters(float FixedDt);
 
-    	// Pull per-frame controller input into SCharacterMovementComponent's
-    	// pending fields. Runs once per Update() so every substep in the frame
-    	// observes the same input.
+    	// Latch controller input into SCharacterMovementComponent once per Update() so all substeps see it.
     	void LatchCharacterInput();
     	
-    	// Physics thread: compute each dynamic body's interpolated transform and
-    	// stage it in InterpolatedTransforms. Does NOT touch the registry's
-    	// transforms -- the game thread applies them in ApplyInterpolatedTransforms.
+    	// Physics thread: stage interpolated transforms in InterpolatedTransforms; does NOT touch the registry.
     	void BuildInterpolatedTransforms(float Alpha);
 
-    	// Game thread: write the staged transforms into the ECS, resolve the
-    	// transform hierarchy, and process deferred kill-height destroys. Only
-    	// writer of physics-driven transforms, so it must run on the game thread.
+    	// Game thread: write staged transforms into the ECS, resolve hierarchy, process kill-height destroys.
+    	// Sole writer of physics-driven transforms, so it must run on the game thread.
     	void ApplyInterpolatedTransforms();
     	
     	uint32 GetEntityBodyID(entt::entity Entity) override;
@@ -190,17 +164,15 @@ namespace Lumina::Physics
     	
     	void EnqueueContactRecord(const FContactRecord& Record);
 
-    	// Return a shared collision shape for the given parameters, building it on
-    	// first request. Lets N identical bodies reference one JPH::Shape instead of
-    	// each allocating its own. Thread-safe: called from the parallel body build.
+    	// Shared collision shape, built on first request so N identical bodies share one JPH::Shape.
+    	// Thread-safe: called from the parallel body build.
     	JPH::ShapeRefC GetOrCreateSphereShape(float Radius);
     	JPH::ShapeRefC GetOrCreateBoxShape(const FVector3& HalfExtent);
     	JPH::ShapeRefC GetOrCreateCapsuleShape(float Radius, float HalfHeight);
     	JPH::ShapeRefC GetOrCreateCylinderShape(float Radius, float HalfHeight, float CapRadius);
 
-    	// Mesh-collider (convex hull / triangle mesh) shape, cached by mesh + scale + convexity so
-    	// fracture shards built from the same shared piece meshes reuse one hull instead of each
-    	// re-running QuickHull. Builds outside the lock so parallel distinct-mesh builds don't serialize.
+    	// Mesh-collider shape cached by mesh+scale+convexity so shards reuse one hull instead of re-running
+    	// QuickHull; builds outside the lock so parallel distinct-mesh builds don't serialize.
     	JPH::ShapeRefC GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex);
 
     	// Per-body material data consumed by the contact listener's OverrideFrictionAndRestitution.
@@ -231,9 +203,7 @@ namespace Lumina::Physics
     	// AddBodiesPrepare/Finalize. Game-thread only (outside JoltSystem->Update()).
     	void CreateRigidBodiesBatched(const TVector<entt::entity>& Entities);
 
-    	// Build + add a single body to Jolt. Must run on the physics thread,
-    	// outside JoltSystem->Update(). The on_construct hook only enqueues;
-    	// the drain at the top of Update() calls this.
+    	// Build + add a single body; physics thread, outside Update(). on_construct enqueues, the drain calls this.
     	void CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity);
 
 
@@ -302,9 +272,7 @@ namespace Lumina::Physics
     	// constructions are collected here and created together instead of one at a time.
     	bool										bBatchingBodies = false;
     	TVector<entt::entity>						BatchedBodyCreations;
-    	// Malloc-fallback variant: a modest base buffer covers typical steps with no per-frame
-    	// allocation; a heavy frame that exceeds it falls back to malloc (correct, just slower)
-    	// instead of forcing a giant always-reserved buffer per scene.
+    	// Base buffer covers typical steps with no per-frame alloc; heavy frames fall back to malloc.
     	JPH::TempAllocatorImplWithMallocFallback	Allocator;
     	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;
     	TUniquePtr<FJoltContactListener>			ContactListener;
@@ -314,25 +282,15 @@ namespace Lumina::Physics
     	FMutex										ContactQueueMutex;
     	TVector<FContactRecord>						PendingContacts;
 
-    	// Per-body material side table. Indexed by JPH::BodyID::GetIndex() and sized once at scene
-    	// init to MaxPhysicsBodies, so the contact listener reads it without locking. Writes are
-    	// game-thread-only (between physics steps).
+    	// Material side table indexed by BodyID, sized once to MaxPhysicsBodies so the listener reads lock-free;
+    	// writes are game-thread-only between steps.
     	TVector<FBodyMaterialEntry>					BodyMaterials;
 
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;
 
-    	// Per-body interpolated transforms staged by the physics thread
-    	// (BuildInterpolatedTransforms) and consumed by the game thread
-    	// (ApplyInterpolatedTransforms). The FrameStart join guarantees the
-    	// physics worker finished writing before the game thread reads.
-    	//
-    	// Struct-of-arrays, index-aligned. Positions are flat float3 streams (lerp
-    	// is componentwise); rotations are deinterleaved to x/y/z/w so the nlerp
-    	// dot/normalize vectorize vertically. Buffers are grow-only -- capacity is
-    	// retained across frames, so steady state does zero allocation at 10k+
-    	// bodies. Gather + the SIMD interp write into Curr* in place; Apply reads
-    	// Curr*.
+    	// Interp transforms staged by the physics thread, read game-thread (FrameStart join orders them).
+    	// SoA, grow-only: positions are flat float3, rotations deinterleaved to x/y/z/w so nlerp vectorizes.
     	enum class EInterpFlag : uint8 { Interpolate = 0, Skip = 1, BelowKill = 2 };
     	struct FInterpStaging
     	{

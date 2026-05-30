@@ -29,9 +29,7 @@ namespace Lumina
 
             if (Arg.starts_with("--"))
             {
-                // Skip the leading "--"; split on '=' so we can lowercase the
-                // KEY but preserve the VALUE's original case (matters for
-                // paths, identifiers and any other case-sensitive payload).
+                // Lowercase the key but preserve the value's case (paths/identifiers).
                 const FStringView Raw = Arg.substr(2);
                 FFixedString Key;
                 FFixedString Value;

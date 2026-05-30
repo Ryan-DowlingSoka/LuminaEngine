@@ -157,11 +157,8 @@ namespace Lumina
         bool bAffectsNavigation = true;
     };
 
-    /**
-     * Capsule collider: a cylinder of length 2*HalfHeight capped by hemispheres of radius Radius,
-     * aligned along the local Y axis. Use RotationOffset to lay it on its side. Total height is
-     * 2*(HalfHeight + Radius).
-     */
+    // Capsule collider: cylinder of length 2*HalfHeight capped by radius-Radius hemispheres, along local Y
+    // (RotationOffset lays it on its side). Total height 2*(HalfHeight + Radius).
     REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SCapsuleColliderComponent
     {
@@ -196,11 +193,8 @@ namespace Lumina
         bool bAffectsNavigation = true;
     };
 
-    /**
-     * Cylinder collider: a flat-ended cylinder aligned along the local Y axis. Cheaper than a
-     * convex hull but rolls realistically. Total height is 2*HalfHeight; CapRadius rounds the
-     * top/bottom rim edges (0 = sharp edges).
-     */
+    // Cylinder collider: flat-ended, along local Y; cheaper than a convex hull but rolls realistically.
+    // Total height 2*HalfHeight; CapRadius rounds the rim edges (0 = sharp).
     REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SCylinderColliderComponent
     {

@@ -1,10 +1,6 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// ============================================================================
-//  Quad geometry
-// ============================================================================
-
 static const float2 Positions[6] =
 {
     float2(-1.0, -1.0),  // Triangle 1

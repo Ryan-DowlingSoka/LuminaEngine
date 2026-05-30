@@ -5,10 +5,8 @@
 
 namespace Lumina
 {
-    // Remaps a scalar value from an input range to an output range. Built
-    // purely from existing scalar opcodes, so it needs no dedicated VM
-    // instruction. Useful for turning a raw parameter (speed, distance) into a
-    // normalized blend alpha.
+    // Remaps a scalar from an input range to an output range, built from existing scalar opcodes (no
+    // dedicated VM instruction). Turns a raw parameter (speed, distance) into a normalized blend alpha.
     REFLECT()
     class CAnimGraphNode_Remap : public CAnimGraphNode
     {

@@ -40,11 +40,8 @@ namespace Lumina
         }
     }
     
-    // In modular builds Runtime.dll's DllMain calls InitializeThreadHeap on
-    // DLL_PROCESS_ATTACH / DLL_THREAD_ATTACH; monolithic Shipping has no
-    // DllMain for the main exe, so global ctors and foreign threads can hit
-    // an uninitialized rpmalloc. The call is idempotent so paying it on
-    // every malloc primitive is cheap.
+    // Monolithic Shipping has no main-exe DllMain, so global ctors / foreign threads can hit an
+    // uninitialized rpmalloc; idempotent, so paying it on every malloc primitive is cheap.
     FORCEINLINE static void EnsureThisThreadInitialized()
     {
         rpmalloc_thread_initialize();
@@ -94,9 +91,7 @@ namespace Lumina
         rpmalloc_thread_initialize();
     }
 
-    // Per-thread rpmalloc init happens inside FMalloc's three primitives;
-    // the public wrappers don't need to repeat it. rpmalloc_thread_initialize
-    // is idempotent so the double-call was correct but redundant.
+    // Per-thread rpmalloc init happens inside FMalloc's primitives; the public wrappers needn't repeat it.
     void* Memory::Malloc(size_t Size, size_t Alignment)
     {
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();

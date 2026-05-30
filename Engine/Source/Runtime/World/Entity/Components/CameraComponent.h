@@ -11,11 +11,8 @@ namespace Lumina
 {
     class CMaterialInterface;
 
-    /**
-     * Interpolation curve used when blending the active camera from one view to
-     * another (see FCameraManager::SetActiveCamera). Evaluated by
-     * EvaluateCameraBlend, which maps a normalized [0..1] time onto [0..1].
-     */
+    // Interpolation curve for blending the active camera (FCameraManager::SetActiveCamera);
+    // EvaluateCameraBlend maps normalized [0..1] time onto [0..1].
     REFLECT()
     enum class ECameraBlendFunction : uint8
     {
@@ -42,10 +39,8 @@ namespace Lumina
             ViewVolume.SetView(Position, ViewDirection, UpDirection);
         }
 
-        // Bake the resolved (possibly blended) view into the view volume without
-        // writing the authored FOV property. Consumers that read the component's
-        // matrices directly (editor gizmo, CPU picking) then match the rendered
-        // view, while FOV stays the blend target. Called by SCameraSystem.
+        // Bake the resolved (possibly blended) view into the view volume without writing authored FOV, so
+        // direct matrix consumers (editor gizmo, CPU picking) match the rendered view. Called by SCameraSystem.
         void SetResolvedView(const FVector3& Position, const FVector3& ViewDirection, const FVector3& UpDirection, float InFOV)
         {
             ViewVolume.SetFOV(InFOV);
@@ -87,25 +82,20 @@ namespace Lumina
         FVector3 GetRightVector() const { return ViewVolume.GetRightVector(); }
 
         /** Vertical field of view in degrees. */
-        PROPERTY(Editable, Category = "Camera")
+        PROPERTY(Editable, Category = "Camera", Units = "deg")
         float FOV = 90.0f;
 
         /** When true, this camera activates automatically when the entity is spawned. */
         PROPERTY(Editable, Category = "Camera")
         bool bAutoActivate = false;
 
-        /** Per-camera color grading + tone mapping. The render scene reads
-         *  this from the active camera each frame and applies it during the
-         *  final composite pass. Defaults give an identity grade with AGX
-         *  tone mapping. */
+        // Per-camera color grading + tone mapping; the render scene reads it from the active camera and
+        // applies it in the composite pass. Defaults to an identity grade with AGX.
         PROPERTY(Editable, Category = "Camera", DefaultCollapsed)
         SPostProcessSettings PostProcess;
 
-        /** Post-process materials applied in order after tone mapping.
-         *  Each entry runs as a fullscreen pass over the previous output;
-         *  the material's Emissive output replaces the scene color. Order
-         *  matters -- earlier entries are read by later entries via
-         *  SceneColor. Materials must have MaterialType = PostProcess. */
+        // Post-process materials run in order after tone mapping; each is a fullscreen pass whose Emissive
+        // replaces scene color (later entries read earlier via SceneColor). Must be MaterialType = PostProcess.
         PROPERTY(Editable, Category = "Camera|Post Process")
         TVector<TObjectPtr<CMaterialInterface>> PostProcessMaterials;
 

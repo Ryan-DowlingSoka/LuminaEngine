@@ -72,9 +72,8 @@ namespace Lumina
         uint32 NumTransientAllocs = 0;
     };
 
-    // One-shot scratch allocation from the command list's per-frame ring.
-    // Memory is host-visible: write directly to Cpu, read on the GPU via the
-    // BDA in Gpu. Lifetime is the current command-list submission.
+    // One-shot host-visible scratch from the command list's per-frame ring; write Cpu, read on
+    // GPU via the BDA in Gpu. Lifetime is the current command-list submission.
     struct FTransientAlloc
     {
         void*       Cpu     = nullptr;
@@ -103,9 +102,8 @@ namespace Lumina
         virtual void Close() = 0;
         virtual void Executed(FQueue* Queue, uint64 SubmissionID) = 0;
 
-        // Keep Resource alive until this cmd list's submission retires. Use
-        // when a third-party backend records native API draws that bypass our
-        // Bind*/Copy* tracking (e.g. ImGui_ImplVulkan_RenderDrawData).
+        // Keep Resource alive until this cmd list's submission retires; for native API draws that
+        // bypass our Bind*/Copy* tracking (e.g. ImGui_ImplVulkan_RenderDrawData).
         virtual void KeepAlive(IRHIResource* Resource) = 0;
 
         virtual void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice) = 0;
@@ -114,9 +112,8 @@ namespace Lumina
 
         virtual void WriteImage(FRHIImage* Dst, uint32 ArraySlice, uint32 MipLevel, const void* Data, uint32 RowPitch, uint32 DepthPitch) = 0;
 
-        // Upload a sub-rectangle of a mip. Data points at the region's top-left texel;
-        // RowPitch is the source stride in bytes (may span a wider backing buffer, so a
-        // dirty rect can be uploaded straight out of a full-resolution CPU array).
+        // Upload a sub-rectangle of a mip; Data is the region's top-left texel and RowPitch the
+        // source stride (may span a wider backing buffer, so a dirty rect uploads from a full CPU array).
         virtual void WriteImageRegion(FRHIImage* Dst, uint32 ArraySlice, uint32 MipLevel, uint32 OffsetX, uint32 OffsetY, uint32 Width, uint32 Height, const void* Data, uint32 RowPitch) = 0;
 
         virtual void ResolveImage(FRHIImage* Src, const FTextureSubresourceSet& SrcSubresources, FRHIImage* Dst, const FTextureSubresourceSet& DstSubresources) = 0;
@@ -128,10 +125,8 @@ namespace Lumina
         virtual void FillBuffer(FRHIBuffer* Buffer, uint32 Value) = 0;
         virtual void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) = 0;
 
-        // Suballocate Size bytes from the command list's per-frame ring buffer.
-        // Returns a CPU pointer to write to and a GPU device address for the shader.
-        // The allocation is alive for this submission only, never persist Cpu/Gpu
-        // beyond the same command-list scope.
+        // Suballocate Size bytes from the per-frame ring; returns a CPU write pointer + GPU device address.
+        // Alive for this submission only -- never persist Cpu/Gpu beyond the command-list scope.
         virtual FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) = 0;
 
         // Copy a single value into a transient allocation. Returned Gpu is the BDA
@@ -207,8 +202,7 @@ namespace Lumina
 
         virtual void SetGraphicsState(const FGraphicsState& State) = 0;
 
-        // Dynamic scissor (vkCmdSetScissor) without rebuilding the graphics state.
-        // Valid after SetGraphicsState; all pipelines use dynamic scissor. Lets a
+        // Dynamic scissor without rebuilding graphics state (valid after SetGraphicsState); lets a
         // batched pass (e.g. UI) change clip rects per draw without a full state set.
         virtual void SetScissor(const FRect& Rect) = 0;
 

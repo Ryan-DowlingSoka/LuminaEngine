@@ -528,9 +528,8 @@ namespace Lumina
             const uint32 IBytes = uint32(BatchIndices.size()  * sizeof(uint32));
             EnsureBatchBuffers(Batch, VBytes, IBytes);
 
-            // Upload the bulk geometry into the resident buffers. Mirrors the scene's non-dynamic
-            // vertex upload: stage CopyDest with barriers off across the writes, then let automatic
-            // barriers move them to the vertex/index read state when they're bound below.
+            // Upload bulk geometry into the resident buffers: stage CopyDest barriers-off, let auto barriers
+            // move them to the vertex/index read state when bound below.
             CmdList.SetBufferState(Batch.VertexBuffer, EResourceStates::CopyDest);
             CmdList.SetBufferState(Batch.IndexBuffer,  EResourceStates::CopyDest);
             CmdList.CommitBarriers();
@@ -653,9 +652,7 @@ namespace Lumina
             ReadParam("h", Height);
         }
 
-        // RmlUi joins the src against the document directory, stripping the
-        // leading '/'. Engine virtual paths are absolute, so restore it before
-        // the registry's exact-path lookup.
+        // RmlUi strips the leading '/' when joining src to the document dir; restore it for the absolute VFS lookup.
         if (!Path.empty() && Path[0] != '/')
         {
             Path = "/" + Path;
@@ -918,11 +915,8 @@ namespace Lumina
 
     void FRmlUiRenderer::RevalidateBrushes(ICommandList& CmdList)
     {
-        // Toggle each brush's stale state from whether its source path still
-        // resolves to the material it cached. The material stays rooted either
-        // way, so a rename-back (or an asset reappearing) just resumes rendering
-        // without a render-thread reload. Driven by the asset-registry broadcast,
-        // so this runs only on asset changes -- never per frame.
+        // Mark each brush stale by whether its source path still resolves to the cached material (stays rooted,
+        // so a rename-back resumes without a reload). Driven by the asset-registry broadcast, not per frame.
         for (auto& KV : Textures)
         {
             FTexture& Tex = KV.second;

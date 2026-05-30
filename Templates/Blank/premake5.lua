@@ -10,9 +10,7 @@ include (path.join(LuminaDir, "BuildScripts/GameProject"))
 LuminaGameProject({
     Name = "$PROJECTNAME",
 
-    -- Third-party libs this project links directly. Engine headers
-    -- transitively include these, so they must be link-compatible with
-    -- the Runtime DLL build. Add more libs here as needed.
+    -- Third-party libs this project links directly; must stay link-compatible with the Runtime DLL build.
     Dependencies =
     {
         "ImGui",

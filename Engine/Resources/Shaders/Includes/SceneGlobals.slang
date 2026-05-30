@@ -1,10 +1,6 @@
 #pragma once
 #include "Common.slang"
 
-// ---------------------------------------------------------------------------------
-//  Binding Set 0
-// ---------------------------------------------------------------------------------
-
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
 [[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstance;
@@ -13,49 +9,32 @@
 [[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
 [[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
 
-// Cascade and shadow atlas live in the dedicated shadow-sampling set (set=3,
-// see ShadowSampling.slang). They are NOT declared in this set so that shadow
-// rendering passes (Point/Spot/Cascaded) can bind set 0 without triggering a
-// shader-read state transition on images they're about to write as depth.
-// Slot 9 (uDepthPyramid) freed: Hi-Z is sampled bindless via
-// uSceneData.CullData.DepthPyramidIndex + SAMPLER_MIN_REDUCTION.
-
+// Cascade/shadow atlas live in the shadow-sampling set (set=3), kept out of set 0 so shadow passes
+// bind set 0 without a shader-read transition on depth targets they write. Slot 9 freed (Hi-Z is bindless).
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
 
-// Bindings 12/14/15 (uIndirectArgs, uMeshletDeferList, uDeferCount) are NOT in
-// this set: they're cull-pass-private and accessed via device buffer address
-// (push-constant pointers in CullMeshlets), so draw/post passes that include
-// this header never bind them and never pay a state transition for them.
-// Binding 13 (uShadowCascadePoint) moved to ShadowSampling.slang at set 3.
+// Bindings 12/14/15 are cull-pass-private (accessed via device buffer address), and 13 lives in
+// ShadowSampling.slang at set 3, so draw/post passes never bind them or pay a state transition.
 
-// Inclusive per-instance meshlet prefix sum, sized [InstanceNum + 1].
-// Entry [i] is the running total of meshlets across instances [0..i). The
-// cull pass binary-searches this to recover (InstanceID, MeshletLocalIdx)
-// from a flat thread index, sidestepping the old per-instance over-dispatch
-// and the thread-bounds early-outs that wasted lanes on it.
+// Inclusive per-instance meshlet prefix sum, sized [InstanceNum + 1]; entry [i] is the running
+// meshlet total across instances [0..i). Cull binary-searches it to recover (InstanceID, LocalIdx).
 [[vk::binding(16, 0)]] StructuredBuffer<uint>                        uInstanceMeshletPrefix;
 
-// Pre-integrated BRDF LUT (Karis 2013 split-sum). Indexed by (NdotV, Roughness),
-// returns (scale, bias) for F0. Sampled by the IBL ambient term in
-// BasePixelPass; consumers pass the result through SampleBRDFLUT() in
-// IBL.slang for clarity. Baked once at scene init.
+// Pre-integrated BRDF LUT (Karis 2013 split-sum), indexed by (NdotV, Roughness) -> (scale, bias).
+// Sample via SampleBRDFLUT() in IBL.slang. Baked once at scene init.
 [[vk::binding(17, 0)]] Sampler2D                                     uBRDFLut;
 
-// IBL diffuse irradiance cube. Cosine-weighted convolution of the sky cube,
-// indexed by surface normal. Stored as Irradiance / pi -- the consumer
-// multiplies by Albedo without an extra /pi.
+// IBL diffuse irradiance cube, indexed by surface normal. Stored as Irradiance / pi --
+// the consumer multiplies by Albedo without an extra /pi.
 [[vk::binding(18, 0)]] SamplerCube                                   uSkyIrradiance;
 
-// IBL pre-filtered specular cube. Each mip carries a different GGX roughness
-// (mip 0 = mirror, last mip = fully rough). Sampled by the reflection vector
-// at mip = Roughness * (NumMips - 1) and combined with the BRDF LUT for
-// the specular ambient term.
+// IBL pre-filtered specular cube; each mip carries a different GGX roughness (0 = mirror).
+// Sampled at mip = Roughness * (NumMips - 1) and combined with the BRDF LUT.
 [[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
 
-// Skinning compute writes one entry per skinned meshlet-vertex; every draw VS reads
-// from here (indexed by Inst.SkinnedVertexBase + M.VertexOffset + localIdx) instead of
-// re-skinning per pass. uSkinDescriptors drives the skinning dispatch (one per entity).
+// Skinning compute writes one entry per skinned meshlet-vertex; every draw VS reads from here
+// (indexed by Inst.SkinnedVertexBase + M.VertexOffset + localIdx). uSkinDescriptors drives the dispatch.
 [[vk::binding(20, 0)]] RWStructuredBuffer<FPreSkinnedVertex>          uPreSkinnedVertices;
 [[vk::binding(21, 0)]] StructuredBuffer<FSkinDescriptor>             uSkinDescriptors;
 
@@ -68,10 +47,8 @@
 [[vk::binding(0, 1)]] Texture3D                                 uBindlessTex3D[];
 [[vk::binding(0, 1)]] Texture2DArray                            uBindlessTex2DArray[];
 [[vk::binding(0, 1)]] RWTexture2D<float4>                       uBindlessRWTex2D[];
-// Same descriptor array, coherent alias. Use this for cross-workgroup hand-offs
-// (SPD mip-5 / mip-11). The SPIR-V Coherent decoration is per-OpVariable, so
-// declaring a second variable at the same binding lets per-access coherency
-// ride on the indexing expression.
+// Coherent alias of the same descriptor array for cross-workgroup hand-offs (SPD mip-5 / mip-11).
+// SPIR-V Coherent is per-OpVariable, so a second variable at this binding rides coherency per-access.
 [[vk::binding(0, 1)]] globallycoherent RWTexture2D<float4>      uBindlessRWTex2DCoherent[];
 [[vk::binding(1, 1)]] SamplerState                              uBindlessSamplers[];
 
@@ -132,9 +109,8 @@ FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     return Data;
 }
 
-// Skinned reads come ENTIRELY from the pre-skinned buffer (Skinning.slang did the bone blend
-// and carried UV/Color through once this frame) -- a single structured load, like the static
-// path, with no source-vertex fetch and no per-pass skinning work.
+// Skinned reads come entirely from the pre-skinned buffer (Skinning.slang did the blend this frame)
+// -- a single structured load like the static path, no per-pass skinning.
 FVertexData LoadSkinnedVertex(FMeshlet M, uint VertexLocalIdx, uint SkinnedVertexBase)
 {
     FPreSkinnedVertex S = uPreSkinnedVertices[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
@@ -178,9 +154,8 @@ FPreSkinnedVertex SkinVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     FBoneTransform B2 = uBoneMatrices[BoneOffset + JointIndices.z];
     FBoneTransform B3 = uBoneMatrices[BoneOffset + JointIndices.w];
 
-    // Linear blend of the (row-stored) skinning matrices, then transform by explicit row dots
-    // -- p'[r] = dot(Row_r, p4), normal'[r] = dot(Row_r.xyz, n). Skinning is rigid per bone, so
-    // the same 3x3 rows rotate Tangent; the handedness sign (Tangent.w) is preserved.
+    // Linear blend of the row-stored skinning matrices, then transform by explicit row dots.
+    // Rigid per bone, so the same 3x3 rows rotate Tangent and its handedness sign is preserved.
     float4 R0 = B0.Row0 * Weights.x + B1.Row0 * Weights.y + B2.Row0 * Weights.z + B3.Row0 * Weights.w;
     float4 R1 = B0.Row1 * Weights.x + B1.Row1 * Weights.y + B2.Row1 * Weights.z + B3.Row1 * Weights.w;
     float4 R2 = B0.Row2 * Weights.x + B1.Row2 * Weights.y + B2.Row2 * Weights.z + B3.Row2 * Weights.w;
@@ -201,23 +176,11 @@ FPreSkinnedVertex SkinVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     return Out;
 }
 
-// ---------------------------------------------------------------------------------
-//  Material Accessors
-// ---------------------------------------------------------------------------------
-
 float  GetMaterialScalar (uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Scalars[Index];  }
 float4 GetMaterialVec4   (uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Vectors[Index];  }
 uint   GetMaterialTexture(uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Textures[Index]; }
 
-// ---------------------------------------------------------------------------------
-//  Instance Accessors
-// ---------------------------------------------------------------------------------
-
 FGPUInstance GetInstance(uint InstanceID) { return uInstance[InstanceID]; }
-
-// ---------------------------------------------------------------------------------
-//  Light Accessors
-// ---------------------------------------------------------------------------------
 
 FLight GetLightAt(uint Index)       { return uLightData[0].Lights[Index]; }
 uint   GetNumLights()               { return uLightData[0].NumLights;     }
@@ -236,10 +199,6 @@ FLightShadow GetShadowTile(int ShadowDataIndex, uint Face)
     return uLightData[0].Shadows[ShadowDataIndex].Shadow[Face];
 }
 
-// ---------------------------------------------------------------------------------
-//  Scene / Camera Accessors
-// ---------------------------------------------------------------------------------
-
 float    GetTime()                  { return uSceneData.Time;       }
 float    GetDeltaTime()             { return uSceneData.DeltaTime;  }
 float    GetNearPlane()             { return uSceneData.NearPlane;  }
@@ -253,10 +212,6 @@ float4x4 GetCameraView()            { return uSceneData.CameraView.CameraView;  
 float4x4 GetInverseCameraView()     { return uSceneData.CameraView.InverseCameraView;  }
 float4x4 GetCameraProjection()      { return uSceneData.CameraView.CameraProjection;   }
 float4x4 GetInverseCameraProjection(){ return uSceneData.CameraView.InverseCameraProjection; }
-
-// ---------------------------------------------------------------------------------
-//  Transform Helpers
-// ---------------------------------------------------------------------------------
 
 float3 WorldToView(float3 WorldPos)
 {
@@ -299,14 +254,8 @@ float3 ReconstructViewPos(float2 UV, float Depth, float4x4 InvProj)
     return View.xyz / View.w;
 }
 
-// ---------------------------------------------------------------------------------
-//  Clustered-lighting debug helpers
-// ---------------------------------------------------------------------------------
-
-// Froxel index for a fragment, recomputed from view-space depth + screen
-// position. Mirrors the tile math in ClusterBuild/LightCull and the lit path;
-// the clamps stop edge fragments below ZNear from wrapping into a huge index
-// that would read past uClusters.
+// Froxel index for a fragment from view-space depth + screen position. Mirrors the tile math in
+// ClusterBuild/LightCull; clamps stop edge fragments below ZNear from indexing past uClusters.
 uint ComputeClusterIndex(float ViewZ, float2 ScreenPos)
 {
     uint3  Grid       = uSceneData.GridSize.xyz;
@@ -334,10 +283,8 @@ float3 LightComplexityColor(uint Count)
     return float3(1.0, 0.0, 0.0);
 }
 
-// Per-froxel hue for the "Light Clusters" view: each cluster gets a stable
-// hashed color so the 16x9x24 grid (and its exponential Z slicing) is directly
-// visible. Empty froxels are dimmed; froxels that hit the LIGHTS_PER_CLUSTER
-// write cap turn white so light-list saturation is obvious.
+// Per-froxel hashed hue for the "Light Clusters" view. Empty froxels are dimmed; froxels at the
+// LIGHTS_PER_CLUSTER write cap turn white so light-list saturation is obvious.
 float3 ClusterDebugColor(uint ClusterIndex, uint LightCount)
 {
     if (LightCount >= (uint)LIGHTS_PER_CLUSTER)

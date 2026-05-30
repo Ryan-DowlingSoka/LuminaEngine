@@ -21,22 +21,14 @@ ArchBits =
     ["ARM64"]   = "ARM64"
 }
 
--- External game projects set LUMINA_DIR env var; use it when present so that
--- all EnginePath() calls resolve to the actual engine install rather than the
--- game project's workspace location. The %{wks.location}` fallback is the
--- correct answer for an engine build (where the workspace IS the engine), but
--- for a game-project build it silently points at the wrong root -- the rest of
--- the build then fails with cryptic "cannot find Runtime-Development.lib"
--- errors. Detect that mismatch explicitly so the diagnostic is actionable.
+-- Prefer LUMINA_DIR so EnginePath() resolves to the engine install; the %{wks.location} fallback is correct for engine builds but wrong for game projects.
 local _LuminaEnvDir = os.getenv("LUMINA_DIR")
 LuminaConfig.EngineDirectory        = _LuminaEnvDir or "%{wks.location}"
 LuminaConfig.OutputDirectory        = "%{capitalize(cfg.system)}%{ArchBits[cfg.architecture]}"
 LuminaConfig.ProjectFilesDirectory  = "%{wks.location}/Intermediates/ProjectFiles/%{prj.name}"
 LuminaConfig.ReflectionDirectory    = "%{wks.location}/Intermediates/Reflection/%{prj.name}"
 
--- `_MAIN_SCRIPT_DIR` is the workspace's premake5.lua directory. For an engine
--- build it's the engine root and contains "Engine/Source/Runtime"; for a game
--- project it's the game root and does not. Use that to tell the two apart.
+-- An engine root contains "Engine/Source/Runtime"; a game project's _MAIN_SCRIPT_DIR does not. Used to tell the two apart.
 local function LooksLikeEngineRoot(Dir)
     if not Dir or Dir == "" then return false end
     return os.isdir(path.join(Dir, "Engine/Source/Runtime"))
@@ -44,9 +36,7 @@ end
 
 if not _LuminaEnvDir then
     if LooksLikeEngineRoot(_MAIN_SCRIPT_DIR) then
-        -- Engine build with no env var set -- harmless, the wks.location
-        -- fallback resolves correctly. Setup.bat persists LUMINA_DIR for
-        -- consistency but the engine build itself doesn't need it.
+        -- Engine build with no env var set: harmless, the wks.location fallback resolves correctly.
     else
         error(table.concat({
             "",
@@ -141,19 +131,12 @@ function LuminaConfig.GetReflectionFiles()
     return path.join(LuminaConfig.ReflectionDirectory, "ReflectionUnity.gen.cpp")
 end
 
--- Absolute path to the single canonical EASTL allocator binding. Every linked
--- image that uses EASTL containers needs its own compiled copy of this file
--- (eastl::allocator is non-template / non-inline; one definition per image).
--- Module.lua and GameProject.lua auto-add it to consumer compile sets so the
--- user never has to ship boilerplate next to their own source.
+-- Canonical EASTL allocator binding; every EASTL-using image needs its own compiled copy (one eastl::allocator definition per image). Module.lua/GameProject.lua auto-add it.
 function LuminaConfig.GetEASTLImplFile()
     return LuminaConfig.EnginePath("Engine/Source/Runtime/Memory/EASTLImpl.cpp")
 end
 
--- Engine module headers a consumer always needs regardless of which
--- third-party libs it pulls in: the Runtime tree (ModuleAPI.h + public
--- headers) and Runtime's generated reflection headers. External game projects
--- resolve these against the engine install via EnginePath().
+-- Engine headers every consumer needs: the Runtime tree and Runtime's generated reflection headers, resolved against the engine install via EnginePath().
 function LuminaConfig.GetEngineRuntimeIncludes()
     return
     {
@@ -180,11 +163,7 @@ function LuminaConfig.CopyFile(Source, Destination)
     return "{COPYFILE} " .. Quote(Source) .. " " .. Quote(Destination)
 end
 
--- Same as CopyFile but suppresses failure (returns success even if the copy
--- bombed). Use this for stable third-party DLLs (slang, aftermath) that may
--- be locked by an already-running editor when packaging triggers a Game
--- build. The locked DLL is the same version we'd be copying anyway, so
--- silently succeeding is the right behavior.
+-- Like CopyFile but never fails; for stable third-party DLLs (slang, aftermath) that a running editor may lock during a Game build (same version anyway).
 function LuminaConfig.CopyFileIgnoreErrors(Source, Destination)
     if not Source or not Destination then
         error("CopyFileIgnoreErrors requires source and Destination")
@@ -210,7 +189,5 @@ end
 -- by naming it in Dependencies; there is no global include dump.
 include(path.join(_SCRIPT_DIR, "ThirdParty.lua"))
 
--- Optional-feature toggles (Tracy / Vulkan validation / NVIDIA Aftermath).
--- Resolves BuildConfig.lua + CLI flags into the LuminaOptions query API used by
--- Workspace.lua and the module build to gate defines, links and DLL copies.
+-- Optional-feature toggles; resolves BuildConfig.lua + CLI flags into the LuminaOptions query API used to gate defines, links, and DLL copies.
 include(path.join(_SCRIPT_DIR, "Options.lua"))

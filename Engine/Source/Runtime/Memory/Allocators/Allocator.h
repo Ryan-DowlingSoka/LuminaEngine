@@ -334,9 +334,7 @@ namespace Lumina
         const char*            Name;
     };
 
-    // Containers backed by a frame arena. The arena must outlive the container, and
-    // is bulk-reset, so element storage needs no per-item free. Construct with an
-    // explicit FFrameArenaAllocator(&Arena), or set_allocator() on an empty container.
+    // Frame-arena-backed containers. Arena must outlive the container and is bulk-reset (no per-item free).
     template <typename T>
     using TFrameVector = TVector<T, FFrameArenaAllocator>;
 
@@ -344,21 +342,12 @@ namespace Lumina
     using TFrameHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
 
 
-    // Per-thread scratch stack for short-lived allocations. Grows to its high-water mark
-    // and is reclaimed only by FMemMark scopes (or thread exit) -- never per-allocation.
-    // Use it through FMemMark, not directly, so allocations are always scoped.
+    // Per-thread scratch stack; reclaimed only by FMemMark scopes (or thread exit), never per-allocation.
+    // Use it through FMemMark, not directly.
     RUNTIME_API FBlockLinearAllocator& GetThreadScratchAllocator();
 
-    // RAII scope over a bump allocator: captures a mark on construction, restores it on
-    // destruction, freeing everything allocated within the scope in one O(1) step.
-    // Defaults to this thread's scratch stack; pass an explicit arena to scope that instead.
-    //
-    //   FMemMark Mark;                                   // grab a scope on the thread scratch
-    //   TScratchVector<uint32> Indices(Mark.Eastl());    // arena-backed, freed at scope end
-    //   void* Raw = Mark.Allocate(Bytes, 16);            // or raw bump allocation
-    //
-    // No destructors run on scope exit, so only store trivially destructible data (or types
-    // whose heap-owning members you tear down yourself). Nested marks compose (LIFO).
+    // RAII bump-allocator scope: mark on construction, restore on destruction (O(1) bulk free).
+    // No destructors run on exit, so store only trivially destructible data. Nested marks compose (LIFO).
     class FMemMark
     {
     public:

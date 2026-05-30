@@ -25,9 +25,8 @@ namespace Lumina::Lua
     // registered/unregistered). Editors re-harvest their autocomplete symbol index in response.
     DECLARE_MULTICAST_DELEGATE(FLuaGlobalsChangedDelegate);
 
-    // Result of a single luau_compile attempt. Line is 1-based as Luau
-    // reports it (begin.line + 1); -1 means the message had no parsable
-    // location prefix.
+    // Result of one luau_compile attempt; Line is 1-based (begin.line + 1), or -1 when the
+    // message had no parsable location prefix.
     struct FCompileDiagnostic
     {
         FString Path;
@@ -46,9 +45,8 @@ namespace Lumina::Lua
         TVector<FScriptPropertyEntry>   ExportDefaults;
     };
 
-    // require() result cache. Bytecode is held C++-side so reload re-reads VFS;
-    // the module value is pinned via lua_ref so it survives GC for the lifetime
-    // of the cache entry. RegistryRef==LUA_NOREF means "compiled but not yet executed".
+    // require() result cache; bytecode held C++-side (reload re-reads VFS), module value pinned via
+    // lua_ref so it survives GC. RegistryRef==LUA_NOREF means "compiled but not yet executed".
     struct FModuleCacheEntry
     {
         TVector<uint8>  Bytecode;
@@ -59,6 +57,9 @@ namespace Lumina::Lua
     struct FLuaScriptMetadata;
     void Initialize();
     void Shutdown();
+
+    // Every .luau script virtual path discoverable across content mounts.
+    RUNTIME_API TVector<FFixedString> GatherScriptPaths();
 
     // Symbol harvest from live VM globals for editor autocomplete.
     enum class ELuaSymbolKind : uint8
@@ -143,16 +144,12 @@ namespace Lumina::Lua
         // Drops cached bytecode/schema; next load re-reads + recompiles.
         RUNTIME_API void InvalidateScriptCache(FStringView Path);
 
-        // require("Foo/Bar") resolution + load. Internal entry point for the C `require`
-        // function bound onto every lua_State. Caller is responsible for handling stack.
+        // Internal entry point for the C `require`; resolves + loads the module. Caller handles stack.
         // Returns true on success and leaves the module result on top of `Thread`.
         bool RequireModule(lua_State* Thread, FStringView ModuleName);
 
-        // Drops a require() module's cached bytecode AND its pinned result so the next
-        // require() re-reads + re-runs the file. If the module returned a table and was
-        // already cached, the table identity is preserved (new keys are copied into the
-        // existing table) so any script that captured the module reference sees the
-        // updated functions on its next call.
+        // Drops a module's cached bytecode + pinned result so next require() re-reads/re-runs it.
+        // A cached table's identity is preserved (keys copied in) so captured references stay valid.
         RUNTIME_API void ReloadModule(FStringView ModuleName);
 
         // Walks LUA_GLOBALSINDEX one level deep for editor autocomplete.
@@ -169,9 +166,8 @@ namespace Lumina::Lua
         FScriptTransactionDelegate    OnScriptLoaded;
         FScriptTransactionDelegate    OnScriptDeleted;
 
-        // Fires whenever a compile attempt for a known path either succeeds
-        // or fails. The editor uses these to clear/set inline error markers
-        // without having to poll the bytecode cache.
+        // Fires on every compile attempt (success or fail); the editor sets/clears inline error
+        // markers from these instead of polling the bytecode cache.
         FScriptCompileErrorDelegate   OnScriptCompileError;
         FScriptCompileSuccessDelegate OnScriptCompileSuccess;
 
@@ -188,10 +184,8 @@ namespace Lumina::Lua
         // Returns true and writes the resolved virtual path on success.
         bool ResolveModulePath(FStringView ModuleName, FString& OutPath) const;
 
-        // Compile + run module on the given thread, write the returned value into the
-        // module cache as a Lua registry ref, and leave the value on top of the stack.
-        // If `ExistingTable` is non-zero, copies new module keys into that table (kept
-        // for hot-reload identity preservation) and returns that table instead.
+        // Compile + run the module on Thread, cache the returned value as a registry ref, leave it on
+        // the stack. If ExistingTable is non-zero, copies new keys into it (hot-reload identity) instead.
         bool LoadModuleOntoThread(lua_State* Thread, const FString& ResolvedPath, int ExistingTableRegistryRef);
 
         void LoadStdlibFiles();

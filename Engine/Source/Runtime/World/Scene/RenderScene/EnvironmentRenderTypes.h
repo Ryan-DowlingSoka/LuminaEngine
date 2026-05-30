@@ -14,18 +14,12 @@ namespace Lumina
     constexpr uint32 GSkyMode_SolidColor = 0u;
     constexpr uint32 GSkyMode_Gradient   = 1u;
     constexpr uint32 GSkyMode_Dynamic    = 2u;
-    // Visible sky reads from the SkyCube (which itself was filled by the
-    // imported HDRI in the Equirect->Cube pass). When SkyMode is HDRI but
-    // no EnvironmentMap is bound, the env shader falls back to a black
-    // sky -- documented as such in SEnvironmentComponent.
+    // Visible sky reads the SkyCube (filled by the HDRI in the Equirect->Cube pass). HDRI mode with
+    // no EnvironmentMap bound falls back to a black sky (documented in SEnvironmentComponent).
     constexpr uint32 GSkyMode_HDRI       = 3u;
 
-    /**
-     * CPU mirror of the per-frame environment constant buffer. Layout must
-     * match FEnvironmentParams in Environment.slang exactly. The
-     * EnvironmentPass uploads one of these per frame; the shader switches on
-     * Misc.x (the sky mode) and reads the subset of fields each path needs.
-     */
+    // CPU mirror of the per-frame environment CB; layout must match FEnvironmentParams in Environment.slang.
+    // EnvironmentPass uploads one per frame; the shader switches on Misc.x (sky mode).
     struct alignas(16) FEnvironmentParams
     {
         FVector4   SolidSkyColor    = FVector4(0.45f, 0.65f, 1.0f, 0.0f); // rgb=color, w unused
@@ -36,7 +30,7 @@ namespace Lumina
         // x=skyMode (uint cast to float), y=sunDiscScale, z=skyExposure, w=mieAnisotropy
         FVector4   Misc             = FVector4(2.0f, 1.0f, 1.5f, 0.76f);
 
-        // -- Procedural night additions (Dynamic mode only) --
+        // Procedural night additions (Dynamic mode only)
         // rgb = night zenith tint (deep blue/purple), w = brightness scalar
         FVector4   NightSkyColor    = FVector4(0.012f, 0.018f, 0.04f, 0.4f);
         // x=density, y=brightness, z=twinkleSpeed, w=size
@@ -50,12 +44,8 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FEnvironmentParams);
 
-    /**
-     * CPU mirror of the per-frame exponential-height-fog constant buffer. Layout
-     * must match FExponentialHeightFogParams in Includes/Fog.slang exactly. Read by
-     * the froxel volumetric fog passes (inject builds density + scattering from it;
-     * apply reads FogMaxOpacity).
-     */
+    // CPU mirror of the per-frame exponential-height-fog CB; layout must match Includes/Fog.slang. Read by
+    // the froxel passes (inject builds density + scattering; apply reads FogMaxOpacity).
     struct alignas(16) FExponentialHeightFogParams
     {
         // rgb = fog inscattering color, w = fog density at base height

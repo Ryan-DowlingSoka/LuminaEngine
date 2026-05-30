@@ -12,7 +12,51 @@ namespace Lumina
     {
         return dt == ImGuiDataType_Float || dt == ImGuiDataType_Double;
     }
-    
+
+    // Default printf format ImGui uses for each scalar type, so we can append a
+    // unit suffix without losing the type's natural precision.
+    inline const char* DefaultScalarFormat(ImGuiDataType dt)
+    {
+        switch (dt)
+        {
+        case ImGuiDataType_Float:
+        case ImGuiDataType_Double: return "%.3f";
+        case ImGuiDataType_S64:    return "%lld";
+        case ImGuiDataType_U64:    return "%llu";
+        case ImGuiDataType_U8:
+        case ImGuiDataType_U16:
+        case ImGuiDataType_U32:    return "%u";
+        default:                   return "%d";
+        }
+    }
+
+    // If the property carries a "Units" metadata, returns a printf format that
+    // renders the value followed by the unit (e.g. "%.3f m"); otherwise returns
+    // an empty string, signaling the caller to pass nullptr (ImGui default).
+    // The unit's '%' chars are escaped so a "%" unit can't corrupt the format.
+    inline FString BuildUnitFormat(const FProperty* Prop, const char* BaseFormat)
+    {
+        if (!Prop->HasMetadata("Units"))
+        {
+            return FString();
+        }
+
+        FString Unit = Prop->GetMetadata("Units").c_str();
+        if (Unit.empty())
+        {
+            return FString();
+        }
+
+        FString Format = BaseFormat;
+        Format.append(" ");
+        for (char c : Unit)
+        {
+            if (c == '%') Format.append("%%");
+            else          Format.push_back(c);
+        }
+        return Format;
+    }
+
     template<typename T, ImGuiDataType_ DT>
     class FNumericPropertyCustomization : public IPropertyTypeCustomization
     {
@@ -45,18 +89,21 @@ namespace Lumina
             const ValueType* Min = MinOpt ? &MinOpt.value() : nullptr;
             const ValueType* Max = MaxOpt ? &MaxOpt.value() : nullptr;
 
+            const FString UnitFormat = BuildUnitFormat(Prop, DefaultScalarFormat(DT));
+            const char* Format = UnitFormat.empty() ? nullptr : UnitFormat.c_str();
+
             ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
             if (Prop->HasMetadata("NoDrag"))
             {
                 // Type-only entry; +/- buttons step by Delta, no click-drag scrubbing.
                 ValueType Step = static_cast<ValueType>(Speed);
-                ImGui::InputScalar("##Value", DT, &DisplayValue, &Step, nullptr, nullptr);
+                ImGui::InputScalar("##Value", DT, &DisplayValue, &Step, nullptr, Format);
                 if (Min && DisplayValue < *Min) DisplayValue = *Min;
                 if (Max && DisplayValue > *Max) DisplayValue = *Max;
             }
             else
             {
-                ImGui::DragScalar("##Value", DT, &DisplayValue, Speed, Min, Max);
+                ImGui::DragScalar("##Value", DT, &DisplayValue, Speed, Min, Max, Format);
             }
             ImGui::PopItemWidth();
 
@@ -164,9 +211,8 @@ namespace Lumina
         TWeakObjectPtr<CObject> Object;
         ImGuiTextFilter SearchFilter;
 
-        // Object edits (clear / pick / drop) are discrete one-frame events. We emit Started
-        // on the change frame and Finished the next so the change is wrapped in a proper
-        // undo transaction instead of a bare Updated that never opens or commits one.
+        // Object edits (clear/pick/drop) are one-frame events: emit Started on the change
+        // frame, Finished the next, so they form a proper undo transaction.
         bool bFinishPending = false;
     };
 

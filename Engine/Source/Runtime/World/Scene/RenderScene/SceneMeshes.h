@@ -325,10 +325,8 @@ namespace Lumina::PrimitiveMeshes
         OutVertices.clear();
         OutIndices.clear();
 
-        // Default radius/halfHeight gives a 2-unit-tall capsule that is
-        // 1 unit wide - the cylinder section is 1 unit long. With the
-        // previous (1, 1) defaults cylinderHalf collapsed to zero and the
-        // two hemispheres met at the equator, rendering as a sphere.
+        // Default radius/halfHeight gives a 2-unit-tall, 1-unit-wide capsule (1-unit cylinder section).
+        // The old (1, 1) defaults collapsed the cylinder to zero, rendering as a sphere.
         const float radius = Radius;
         const float halfHeight = HalfHeight;
 

@@ -10,7 +10,7 @@ struct VSInput
 struct VSOutput
 {
     float4 Position : SV_Position;
-    float3 Color    : COLOR;
+    float4 Color    : COLOR;
 };
 
 [shader("vertex")]
@@ -18,6 +18,6 @@ VSOutput VertexMain(VSInput Input)
 {
     VSOutput Output;
     Output.Position = mul(GetCameraProjection(), mul(GetCameraView(), float4(Input.Position, 1.0f)));
-    Output.Color    = UnpackColor(Input.Color).rgb;
+    Output.Color    = UnpackColor(Input.Color);
     return Output;
 }

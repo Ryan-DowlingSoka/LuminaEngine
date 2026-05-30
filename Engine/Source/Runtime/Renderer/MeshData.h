@@ -22,8 +22,7 @@ namespace Lumina
     // shadow casters to topology-preserving LODs.
     constexpr uint32 MAX_SHADOW_LOD             = 3;
 
-    // LoInt: meshlet's quantization origin in grid units of its LOD's grid.
-    // LODIndex: selects the per-LOD grid (MeshOrigin[LODIndex]/MeshGridStep[LODIndex]).
+    // LoInt: quant origin in its LOD's grid units; LODIndex selects MeshOrigin/MeshGridStep[LODIndex].
     // TriangleOffset is in dwords (3 micro-indices per dword).
     struct alignas(16) FMeshlet
     {
@@ -77,11 +76,8 @@ namespace Lumina
         TVector<uint32>                 MeshletTriangles;
         TVector<FMeshletBounds>         MeshletBounds;
 
-        // Per-LOD integer-grid basis, indexed by FMeshlet::LODIndex. GridStep is sized so the
-        // LARGEST meshlet IN THAT LOD fits in <=1023 cells per axis. Per-LOD (not one global
-        // grid) so a coarse sloppy LOD can't inflate the cell size and degrade LOD 0's
-        // quantization; the grid is still shared across every meshlet WITHIN a LOD, which keeps
-        // each LOD seam-free (adjacent meshlets snap a shared boundary vertex to the same cell).
+        // Per-LOD integer-grid basis (indexed by FMeshlet::LODIndex); GridStep fits that LOD's largest
+        // meshlet in <=1023 cells/axis. Per-LOD (not global) keeps LOD 0 sharp; shared within a LOD keeps seams snapped.
         FVector3                       MeshOrigin[MAX_MESH_LODS]   = {};
         FVector3                       MeshGridStep[MAX_MESH_LODS] = {};
 
@@ -171,9 +167,8 @@ namespace Lumina
 
         FName                       Name;
 
-        // Import-time scratch vertex streams (structure-of-arrays); not serialized,
-        // dropped after GenerateMeshlets. All active streams stay parallel and equal
-        // length. Joint streams are populated only when bSkinnedMesh, else empty.
+        // Import-time scratch SoA streams; dropped after GenerateMeshlets. Active streams stay
+        // parallel and equal length; joint streams populated only when bSkinnedMesh.
         TVector<FVector3>          Positions;
         TVector<uint32>             Normals;        // octahedral pack (PackNormal)
         TVector<uint32>             Tangents;       // octahedral + handedness (PackTangent)
@@ -214,7 +209,6 @@ namespace Lumina
             return bSkinnedMesh ? sizeof(FSkinnedVertex) : sizeof(FVertex);
         }
 
-        // --- stream sizing -------------------------------------------------
         void ResizeVertices(size_t N)
         {
             Positions.resize(N);
@@ -271,7 +265,6 @@ namespace Lumina
             JointWeights.push_back(V.JointWeights);
         }
 
-        // --- per-vertex accessors (thin; direct stream indexing) -----------
         FORCEINLINE FVector3 GetPositionAt(size_t Index) const { return Positions[Index]; }
         FORCEINLINE void SetPositionAt(size_t Index, FVector3 Position) { Positions[Index] = Position; }
 

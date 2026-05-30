@@ -39,9 +39,8 @@ namespace Lumina
 
     void CDataAsset::OnSchemaDeleted()
     {
-        // Only null the (now-dangling) reference. Don't Reset the bag: this can run mid-teardown
-        // where allocating a fresh layout is unwise, and the editor already gates its grid on a
-        // valid Schema, so the orphaned values stay harmlessly until the asset is re-saved/freed.
+        // Only null the dangling reference; don't Reset the bag (can run mid-teardown, and the editor
+        // gates its grid on a valid Schema, so orphaned values stay harmless until re-save/free).
         Schema = nullptr;
         if (GetPackage() != nullptr)
         {

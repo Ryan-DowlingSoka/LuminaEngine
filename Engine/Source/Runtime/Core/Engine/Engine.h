@@ -92,11 +92,8 @@ namespace Lumina
         RUNTIME_API NODISCARD FStringView GetProjectPath() const { return ProjectPath; }
         RUNTIME_API NODISCARD FFixedString GetProjectContentDirectory() const;
 
-        // Union of all cook roots in effect for the loaded project:
-        // the .lproject's `CookRoots` array + every enabled plugin's
-        // `CookRoots`. Legacy `Project.GameStartupMap` (if set and no
-        // explicit roots exist) gets auto-converted to a single root
-        // for backward compatibility. Cooker iterates this for BFS seeds.
+        // Union of project + enabled-plugin cook roots; legacy GameStartupMap auto-converts
+        // to a single root when no explicit roots exist. Cooker iterates this for BFS seeds.
         RUNTIME_API TVector<FCookRoot> GetCookRoots() const;
 
         RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }

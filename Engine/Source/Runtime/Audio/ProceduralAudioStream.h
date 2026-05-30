@@ -7,9 +7,8 @@ namespace Lumina
 {
     struct FProceduralAudioStreamImpl;
 
-    // Lock-free SPSC ring buffer for streaming PCM float samples to the audio thread.
-    // Producer is whoever calls Write (game/Lua thread). Consumer is the audio thread.
-    // The miniaudio ring buffer lives behind a Pimpl so miniaudio.h stays out of this header.
+    // Lock-free SPSC ring of PCM float samples: producer = Write caller (game/Lua), consumer = audio thread.
+    // The miniaudio ring lives behind a Pimpl to keep miniaudio.h out of this header.
     class RUNTIME_API FProceduralAudioStream
     {
     public:

@@ -248,9 +248,8 @@ namespace Lumina::Physics
 
     void FJoltContactListener::OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
-        // Persisted contacts fire every step and would drown the bus; Enter/Exit cover the script use case.
-        // Material combine still has to run each step or the resting-contact response would silently
-        // revert to Jolt's default combiner.
+        // Don't dispatch to the bus (Enter/Exit cover scripts), but material combine must still run each
+        // step or resting contacts revert to Jolt's default combiner.
         OverrideFrictionAndRestitution(inBody1, inBody2, inManifold, ioSettings);
     }
 
@@ -295,9 +294,7 @@ namespace Lumina::Physics
 
     namespace
     {
-        // Orient a contact record for one receiving side. Filling a POD struct is just
-        // a few assignments; the Lua cost is a single tagged-userdata push downstream,
-        // so dispatching a frame full of contacts no longer builds a table per event.
+        // Orient a contact record for one receiving side; POD fill, no per-event table built downstream.
         SCollisionEvent BuildCollisionEvent(entt::entity SelfEntity,
                                             entt::entity OtherEntity,
                                             uint32 SelfBodyID,
@@ -347,9 +344,7 @@ namespace Lumina::Physics
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
-        // Invoke the cached FRef on SScriptComponent if the script defined one. Contact
-        // = solid (response) impacts; Overlap = at least one side was a sensor/trigger.
-        // Avoids any subscribe/dispatch boilerplate -- scripts just write a method.
+        // Invoke the script's cached FRef if defined; Contact = solid impact, Overlap = a sensor/trigger side.
         auto Deliver = [&](entt::entity Self, entt::entity Other, uint32 SelfBody, uint32 OtherBody,
                            const FContactRecord& Record, bool bFlipNormal, bool bIsAdded, bool bIsOverlap)
         {
@@ -373,9 +368,7 @@ namespace Lumina::Physics
 
             const SCollisionEvent Event = BuildCollisionEvent(Self, Other, SelfBody, OtherBody, Record, bFlipNormal);
 
-            // Pass the script's `self` table as the first argument so the user can write
-            // `function MyScript:OnContactBegin(Event)` and access self.Entity etc. The
-            // event is pushed as a tagged userdata (one allocation, no per-field setfield).
+            // Pass `self` first so scripts use `function MyScript:OnContactBegin(Event)`; event is tagged userdata.
             Func.Call(Comp->Script->Reference, Event);
         };
 
@@ -857,10 +850,8 @@ namespace Lumina::Physics
         {
             entt::entity Entity = (*RigidHandle)[Index];
 
-            // Reflected components are in_place_delete (pointer stability for Lua/reflection),
-            // so the packed array carries tombstone holes. Raw [Index] hits them; get() on a
-            // tombstone indexes out of bounds. Range-for/each() skip these for us, manual
-            // indexing must too. Do NOT remove.
+            // Reflected components are in_place_delete: the packed array has tombstone holes that raw
+            // indexing/get() walks out of bounds. each() skips them, manual indexing must too. Do NOT remove.
             if (Entity == entt::tombstone)
             {
                 return;
@@ -891,11 +882,8 @@ namespace Lumina::Physics
         });
     }
 
-    // In-place SoA quaternion nlerp toward Prev along the shortest arc, 8 quats
-    // per iteration. Curr* hold the current rotation on entry and the normalized
-    // blended result on exit. nlerp (not slerp): the per-frame alpha is a tiny
-    // fraction of one fixed step, so the constant-angular-velocity difference is
-    // invisible -- and it drops the per-body acos/sin that slerp pays at 10k+.
+    // In-place SoA quaternion nlerp toward Prev along the shortest arc, 8 quats per iteration (Curr* in/out).
+    // nlerp not slerp: per-frame alpha is tiny so the difference is invisible, and it drops the per-body acos/sin.
     static void NlerpQuatsSoA(float* Qx, float* Qy, float* Qz, float* Qw,
                               const float* Px, const float* Py, const float* Pz, const float* Pw,
                               uint32 Count, float Alpha)
@@ -980,9 +968,7 @@ namespace Lumina::Physics
             InterpStaging.CurrQx[i] = CurrR.x; InterpStaging.CurrQy[i] = CurrR.y; InterpStaging.CurrQz[i] = CurrR.z; InterpStaging.CurrQw[i] = CurrR.w;
         };
 
-        // Gather: pull prev (pre-step snapshot on the component) + curr (Jolt) into
-        // the SoA buffers. No interpolation math here -- this pass is latency-bound
-        // on the body lookups, so we keep it branchy/scalar and parallel.
+        // Gather prev (component snapshot) + curr (Jolt) into SoA; no interp math, this pass is body-lookup bound.
         Task::ParallelFor(RigidCount, [&](uint32 i)
         {
             const entt::entity Entity = (*RigidHandle)[i];
@@ -1201,8 +1187,7 @@ namespace Lumina::Physics
                 return;
             }
 
-            // Teleport before any integration: move the authoritative capsule,
-            // zero velocity, and reseed the interpolation snapshot so the render
+            // Teleport before integration: move capsule, zero velocity, reseed interp snapshot so the render
             // transform doesn't streak across the jump.
             if (Movement.bPendingTeleport)
             {
@@ -2271,9 +2256,8 @@ namespace Lumina::Physics
             }
         }
 
-        // Build outside the lock: a fracture builds N distinct meshes in parallel, so holding the
-        // lock across QuickHull would serialize them. Distinct keys never collide; the try_emplace
-        // below only guards the rare same-key race.
+        // Build outside the lock so parallel QuickHull on distinct meshes isn't serialized; the
+        // try_emplace below only guards the rare same-key race.
         JPH::ShapeRefC Shape = BuildMeshColliderShape(Mesh, Scale, bConvex);
         if (Shape == nullptr)
         {

@@ -41,9 +41,8 @@ namespace Lumina
 
 		static void RequestExit();
 
-		// Abort a pending exit (the dirty-packages prompt's Cancel button
-		// drives this). Clears bExitRequested AND the window's close flag
-		// so an X-button-triggered exit can be cancelled the same way.
+		// Abort a pending exit; clears bExitRequested AND the window close flag
+		// so an X-button-triggered exit can be cancelled too.
 		static void CancelExit();
 
 		FEventProcessor& GetEventProcessor()	{ return EventProcessor; }

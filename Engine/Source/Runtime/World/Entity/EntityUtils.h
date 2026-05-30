@@ -58,8 +58,7 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API bool HasComponent(FEntityRegistry& Registry, entt::entity Entity, entt::meta_type Type);
 	RUNTIME_API void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity);
 
-	// --- Runtime (data-authored) components -------------------------------------------------
-	// Instances of a CEntityComponentType, stored contiguously per type in FRuntimeComponentStorage.
+	// Runtime (data-authored) components: instances of a CEntityComponentType, stored contiguously per type in FRuntimeComponentStorage.
 
 	// Returns the storage for Type, creating + binding it (or migrating it to the current schema)
 	// as needed. The returned reference is stable for the registry's lifetime.
@@ -101,47 +100,16 @@ namespace Lumina::ECS::Utils
 		}
 	}
 
-	/**
-	 * Bulk-resolve every entity carrying FNeedsTransformUpdate, propagate
-	 * to descendants, and clear the dirty pool. Cost is O(dirty), so a
-	 * call when nothing is dirty is cheap.
-	 *
-	 * Intended use: a system that is about to do many parallel
-	 * GetWorldTransform reads can call this once at the top of its
-	 * Update on the main thread, then read STransformComponent::WorldTransform
-	 * directly inside its ParallelFor body and skip the per-read mutex
-	 * in ResolveTransformChain. The caller is responsible for guaranteeing
-	 * that nothing in the parallel section mutates transforms; outside
-	 * such a section the lazy GetWorldTransform()/ResolveIfDirty contract
-	 * still applies and remains the right call for generic readers.
-	 *
-	 * Must be called on the main thread (or any single thread with no
-	 * concurrent writers) - it walks/clears the FNeedsTransformUpdate
-	 * pool without taking GetTransformResolveMutex.
-	 */
+	// Bulk-resolve every FNeedsTransformUpdate entity + descendants, then clear the pool (O(dirty)). Lets a
+	// system read WorldTransform lock-free in a ParallelFor after one main-thread call. Main thread only.
 	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
 
-	/**
-	 * Single mutex shared by every code path that mutates the
-	 * FNeedsTransformUpdate pool or the cached transform/world matrices
-	 * inside a chain resolve. Acquired by ResolveTransformChain (around
-	 * its full body) and STransformComponent::MarkDirty so workers and
-	 * the main thread can race-freely call setters/getters that touch
-	 * the dirty flag. Held only across the resolve itself - typical
-	 * uncontended cost is a single atomic CAS.
-	 *
-	 * Direct emplace<FNeedsTransformUpdate> elsewhere should also take
-	 * this lock if it can run off the main thread.
-	 */
+	// Single mutex guarding the FNeedsTransformUpdate pool + cached matrices during a chain resolve;
+	// taken by ResolveTransformChain and MarkDirty. Off-main emplace<FNeedsTransformUpdate> must take it too.
 	RUNTIME_API FRecursiveMutex& GetTransformResolveMutex();
 
-	/**
-	 * Tag a transform as dirty. Always sets FNeedsTransformUpdate so the
-	 * cached world matrix gets refreshed; only sets FNeedsPhysicsBodyUpdate
-	 * if the entity actually owns a physics body, so non-physics entities
-	 * (cameras, lights, billboards, post-process volumes) don't churn the
-	 * physics-sync pool every frame they move.
-	 */
+	// Tag a transform dirty: always sets FNeedsTransformUpdate; sets FNeedsPhysicsBodyUpdate only when the
+	// entity owns a body, so non-physics entities (cameras, lights) don't churn the physics-sync pool.
 	RUNTIME_API void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity);
 	
 	RUNTIME_API FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
@@ -158,28 +126,12 @@ namespace Lumina::ECS::Utils
 	
 	RUNTIME_API entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity);
 
-	/**
-	 * Remap every reflected entity-handle field on Entity's components through Map.
-	 * An entity handle is a uint32 property tagged with the "Entity" metadata - the
-	 * same fields the editor draws with FEntityPropertyCustomization - storing an
-	 * entt::entity's integral id. Nested struct fields are walked too. The typed
-	 * entt::entity links inside FRelationshipComponent are NOT touched here; the
-	 * hierarchy-aware caller remaps those.
-	 *
-	 * Ids absent from Map are left untouched when bClearUnmapped is false (a duplicate
-	 * keeps references to entities outside the copied set), or reset to entt::null when
-	 * true (self-contained copies such as prefab instantiation, where a dangling id
-	 * would otherwise alias an unrelated entity in the target world).
-	 */
+	// Remap every reflected "Entity"-tagged uint32 field (nested structs too) through Map. FRelationshipComponent
+	// links are NOT touched here. Unmapped ids stay put when bClearUnmapped is false, else reset to null.
 	RUNTIME_API void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped);
 
-	/**
-	 * Set an entity's world-space transform by converting it into the parent-relative
-	 * local transform that resolves back to it. Writing WorldTransform directly is wrong:
-	 * the next ResolveIfDirty recomputes world = parentWorld * local and discards it. This
-	 * is the single source of truth for world->local conversion (reparent, detach, the
-	 * STransformComponent::SetWorldTransform script call).
-	 */
+	// Set an entity's world transform by converting to the parent-relative local that resolves back to it.
+	// The single source of truth for world->local conversion; writing WorldTransform directly is discarded next resolve.
 	RUNTIME_API void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform);
 
 	RUNTIME_API FVector3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From);

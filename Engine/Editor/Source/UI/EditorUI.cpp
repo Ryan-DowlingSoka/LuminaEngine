@@ -41,6 +41,7 @@
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/DataAsset/DataAsset.h"
+#include "Assets/AssetTypes/Font/Font.h"
 #include "Assets/AssetTypes/PhysicsMaterial/PhysicsMaterial.h"
 #include "Assets/AssetTypes/DataAsset/DataAssetSchema.h"
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
@@ -121,6 +122,7 @@
 #include "Tools/AssetEditors/LuaEditor/LuaEditorTool.h"
 #include "Tools/AssetEditors/RmlUiEditor/RmlUiEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
+#include "Tools/AssetEditors/FontEditor/FontEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiAllocator.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
@@ -130,13 +132,8 @@
 
 namespace Lumina
 {
-    // =================================================================================
-    // Project dialog styling
-    //
-    // Local palette + row primitives used by OpenProjectDialog/NewProjectDialog.
-    // Mirrors the convention in ContentBrowserEditorTool.cpp (constexpr ImVec4 set +
-    // ImDrawList-painted rows) so the project dialogs feel like the rest of the editor.
-    // =================================================================================
+    // Project dialog palette + row primitives, mirroring ContentBrowserEditorTool's
+    // constexpr ImVec4 + ImDrawList-painted rows so the dialogs match the editor.
     namespace
     {
         constexpr ImVec4 kProjDialogPanelBg     = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
@@ -165,10 +162,8 @@ namespace Lumina
             ImGui::Spacing();
         }
 
-        // Two-line row with an optional left accent bar and a hover/active background.
-        // Returns true on left-click. RowHeight 44 fits Small + Tiny stacked with padding.
-        // If bCompact is true, the row is single-line and shorter (used for de-emphasized rows).
-        // OutCloseClicked is set when the user clicks the trailing × button (if bShowClose).
+        // Two-line accent row (bCompact = single-line, de-emphasized); returns true on
+        // left-click. OutCloseClicked set when the trailing close button is hit (if bShowClose).
         bool DrawProjectRow(
             const char*     Icon,
             const char*     Title,
@@ -277,9 +272,8 @@ namespace Lumina
             return bRowClicked;
         }
 
-        // Recent-projects storage. Stores absolute .lproject paths; most recent
-        // first; deduplicates; capped at kMaxRecents. Backed by the existing
-        // "Editor.RecentProjects" StringArray config key.
+        // Recent .lproject paths: absolute, most-recent-first, deduped, capped at
+        // kMaxRecents. Backed by the "Editor.RecentProjects" StringArray config key.
         constexpr size_t kMaxRecents = 10;
 
         void PushRecentProject(FStringView LprojPath)
@@ -317,10 +311,8 @@ namespace Lumina
             GConfig->Set("Editor.RecentProjects", Recents);
         }
 
-        // Drop entries whose .lproject file no longer exists on disk. Returns
-        // the cleaned list AND writes it back if anything was pruned, so the
-        // File→Recent menu and the dialog stay in sync after the user deletes
-        // a project folder out from under us.
+        // Drop entries whose .lproject no longer exists; returns the cleaned list and
+        // writes it back if anything was pruned, keeping the menu and dialog in sync.
         std::vector<std::string> PruneMissingRecents()
         {
             auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
@@ -462,9 +454,8 @@ namespace Lumina
         
         if (GEditorEngine->GetProjectName().empty())
         {
-            // No --Project arg loaded a project at startup. Try the
-            // last-opened project we stashed in Editor.StartupProject;
-            // fall through to the Open dialog if that's also missing/stale.
+            // No --Project at startup: try the last-opened Editor.StartupProject,
+            // falling through to the Open dialog if that's also missing/stale.
             const std::string StartupPath = GConfig->Get<std::string>("Editor.StartupProject");
             if (!StartupPath.empty() && StartupPath != "NULL")
             {
@@ -517,9 +508,8 @@ namespace Lumina
         // Reserve the bottom status bar before the dockspace reads the viewport work area.
         DrawStatusBar(UpdateContext);
 
-        // "V2": renamed from "EditorDockSpace" so saved layouts from before the footer
-        // drawers (which had a permanent bottom split for Content/Console) are orphaned
-        // and rebuilt fresh with the world editor filling the dockspace.
+        // "V2": renamed from "EditorDockSpace" so pre-footer-drawer layouts (with a
+        // permanent bottom split) are orphaned and rebuilt with the world editor filling it.
         const ImGuiID DockspaceID = ImGui::GetID("EditorDockSpaceV2");
         MainDockspaceID = DockspaceID;
 
@@ -625,9 +615,8 @@ namespace Lumina
                 VerifyDirtyPackages();
             }
 
-            // Keep the engine alive while the prompt is up. If the user
-            // Cancels, VerifyDirtyPackages's callback flips bExitRequested
-            // back off via FApplication::CancelExit and re-arms our guard.
+            // Keep the engine alive while the prompt is up; Cancel re-arms the guard
+            // via FApplication::CancelExit in VerifyDirtyPackages's callback.
             if (ModalManager.HasModal())
             {
                 GEngine->SetEngineReadyToClose(false);
@@ -704,9 +693,8 @@ namespace Lumina
 
         ModalManager.DrawDialogue();
 
-        // Run any dialog queued by the previous frame's modal (e.g. Open →
-        // New). The FEditorModalManager rejects CreateDialogue while a modal
-        // is active, so chained dialogs have to defer to the next frame.
+        // Run any dialog queued last frame (e.g. Open -> New); FEditorModalManager
+        // rejects CreateDialogue while a modal is active, so chains defer a frame.
         if (PendingDialogAction && !ModalManager.HasModal())
         {
             TFunction<void()> Action = std::move(PendingDialogAction);
@@ -850,6 +838,7 @@ namespace Lumina
         Registry.RegisterAssetEditor<CEntityComponentType, FEntityComponentTypeEditorTool>();
         Registry.RegisterAssetEditor<CGeometryCollection, FGeometryCollectionEditorTool>();
         Registry.RegisterAssetEditor<CTexture,            FTextureEditorTool>();
+        Registry.RegisterAssetEditor<CFont,               FFontEditorTool>();
         Registry.RegisterAssetEditor<CStaticMesh,         FStaticMeshEditorTool>();
         Registry.RegisterAssetEditor<CSkeleton,           FSkeletonEditorTool>();
         Registry.RegisterAssetEditor<CAnimation,          FAnimationEditorTool>();
@@ -1009,7 +998,6 @@ namespace Lumina
             namePairsBuilder.AddEntry( destinationToolWindowName.c_str(), destinationToolWindowName.length() + 1 );
         }
 
-        // Perform the cloning
         if (ImGui::DockContextFindNodeByID( ImGui::GetCurrentContext(), sourceToolID))
         {
             // Build the same array with char* pointers at it is the input of DockBuilderCopyDockspace() (may change its signature?)
@@ -1114,6 +1102,7 @@ namespace Lumina
         if (OpenDrawer == nullptr)
         {
             DrawerOpenAmount = 0.0f;
+            ImGuiX::Notifications::SetBottomInset(0.0f);
             return;
         }
 
@@ -1129,6 +1118,9 @@ namespace Lumina
         // the work area sits just above the status bar — exactly where the drawer anchors.
         const float MaxHeight = Viewport->WorkSize.y * (Drawer ? Drawer->HeightFrac : 0.4f);
         const float Height    = MaxHeight * Eased;
+
+        // Lift notification toasts above the drawer as it slides open.
+        ImGuiX::Notifications::SetBottomInset(Height);
         const ImVec2 DrawerPos(Viewport->WorkPos.x, Viewport->WorkPos.y + Viewport->WorkSize.y - Height);
         const ImVec2 DrawerSize(Viewport->WorkSize.x, Height);
 
@@ -1176,9 +1168,8 @@ namespace Lumina
             ImGui::GetWindowDrawList()->AddLine(WinMin, ImVec2(WinMin.x + ImGui::GetWindowWidth(), WinMin.y), HandleCol, 2.0f);
         }
 
-        // Toolbar: a child with a menu bar so the tool's own settings (DrawMainToolbar /
-        // DrawToolMenu — e.g. the Output Log's Filter/Settings) show exactly as when docked,
-        // plus Dock-in-Layout + close on the right.
+        // Toolbar child with a menu bar so the tool's own settings (DrawMainToolbar/
+        // DrawToolMenu) show as when docked, plus Dock-in-Layout + close on the right.
         const ImGuiStyle& Style = ImGui::GetStyle();
         const float ToolbarHeight = ImGui::GetFrameHeight() + Style.FramePadding.y * 2.0f;
         if (ImGui::BeginChild("##DrawerToolbar", ImVec2(0.0f, ToolbarHeight), false, ImGuiWindowFlags_MenuBar))
@@ -1200,8 +1191,12 @@ namespace Lumina
                 const float DockWidth  = ImGui::CalcTextSize(DockLabel).x + Style.FramePadding.x * 2.0f;
                 const float CloseWidth = ImGui::CalcTextSize(LE_ICON_CLOSE).x + Style.FramePadding.x * 2.0f;
                 ImGui::SameLine();
-                const float RightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-                ImGui::SetCursorPosX(RightEdgeX - DockWidth - CloseWidth - Style.ItemSpacing.x);
+                // GetContentRegionAvail() is unreliable inside a menu bar, so pin the buttons
+                // to the right using the window width; clamp so a wide tool toolbar can't push
+                // the cursor backward and draw the toolbar items on top of Dock/Close.
+                const float RightEdgeX = ImGui::GetWindowWidth() - Style.FramePadding.x;
+                const float ButtonsX   = RightEdgeX - DockWidth - CloseWidth - Style.ItemSpacing.x;
+                ImGui::SetCursorPosX(eastl::max(ImGui::GetCursorPosX(), ButtonsX));
 
                 if (ImGui::MenuItem(DockLabel) && Drawer != nullptr)
                 {
@@ -1230,9 +1225,8 @@ namespace Lumina
         ImGui::End();
         ImGui::PopStyleVar();
 
-        // Auto-dismiss on focus loss (click outside), unless a footer button / shortcut
-        // toggled it this frame, or one of the drawer's own menus/context popups is open
-        // (those read as a separate focused window).
+        // Auto-dismiss on click-outside, unless a footer button/shortcut toggled it this
+        // frame or one of the drawer's own popups is open (those read as a separate window).
         const bool bPopupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
         if (!bFocused && !bPopupOpen && !bDrawerActivatedThisFrame && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
@@ -1320,9 +1314,8 @@ namespace Lumina
         EditorTool->PrevLocationID = EditorTool->CurrLocationID;
         EditorTool->CurrLocationID = EditorTool->CurrDockID != 0 ? EditorTool->CurrDockID : EditorTool->GetID();
 
-        // Dockspace ID ~~ Hash of LocationID + DocType
-        // So all editors of a same type inside a same tab-bar will share the same layout.
-        // We will also use this value as a suffix to create window titles, but we could perfectly have an indirection to allocate and use nicer names for window names (e.g. 0001, 0002).
+        // Dockspace ID ~~ Hash of LocationID + DocType, so same-type editors in a tab bar
+        // share a layout; also used as a window-title suffix.
         EditorTool->PrevDockspaceID = EditorTool->CurrDockspaceID;
         EditorTool->CurrDockspaceID = EditorTool->CalculateDockspaceID();
         ASSERT(EditorTool->CurrDockspaceID != 0);
@@ -1362,9 +1355,8 @@ namespace Lumina
                 }
             }
 
-            // Fork or overwrite settings
-            // FIXME: should be able to do a "move window but keep layout" if CurrDockspaceRefCount > 1.
-            // FIXME: when moving, delete settings of old windows
+            // FIXME: should be able to "move window but keep layout" if CurrDockspaceRefCount > 1;
+            // FIXME: when moving, delete settings of old windows.
             EditorToolLayoutCopy(Tool);
 
             if (PrevDockspaceRefCount == 0)
@@ -1682,10 +1674,8 @@ namespace Lumina
 
             ImGui::Spacing();
 
-            // Package list. Each row mimics DrawProjectRow visually (left
-            // accent bar + hover background) but with a checkbox up front
-            // and a status badge on the right; sharing kProjDialog colors
-            // keeps it visually tied to the rest of the editor's modals.
+            // Package list: rows mimic DrawProjectRow (accent bar + hover) plus a
+            // leading checkbox and trailing status badge, sharing kProjDialog colors.
             ImGui::PushStyleColor(ImGuiCol_ChildBg, kProjDialogPanelBg);
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
             if (ImGui::BeginChild("##PackagesBody", ImVec2(0, -68), true,
@@ -1792,9 +1782,8 @@ namespace Lumina
             ImGui::PopStyleVar();
             ImGui::PopStyleColor();
 
-            // Footer: primary (blue) Save & Exit, secondary (gold) Discard
-            // & Exit, dismiss (soft) Cancel. Right-aligned so the primary
-            // action lands at the natural F-pattern target.
+            // Footer: Save & Exit (blue), Discard & Exit (gold), Cancel (soft),
+            // right-aligned so the primary action lands at the F-pattern target.
             const float ButtonH    = 32.0f;
             const float SaveW      = 150.0f;
             const float DiscardW   = 150.0f;
@@ -1815,9 +1804,8 @@ namespace Lumina
             if (!bAnySelected) ImGui::BeginDisabled();
             if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save && Exit", ImVec2(SaveW, ButtonH)))
             {
-                // Synchronous save loop — the dialog stays open this frame
-                // so failed entries get a visible "Failed" badge instead of
-                // disappearing silently.
+                // Synchronous save loop; the dialog stays open this frame so failed
+                // entries show a "Failed" badge instead of disappearing silently.
                 bool bAllOK = true;
                 for (size_t i = 0; i < Packages.size(); ++i)
                 {
@@ -1827,9 +1815,8 @@ namespace Lumina
                     States[i] = bOK ? ESaveState::Success : ESaveState::Failed;
                     if (!bOK) bAllOK = false;
                 }
-                // Only close (and let exit proceed) if every selected save
-                // succeeded. A failed save keeps the dialog up so the user
-                // can see what went wrong and pick another action.
+                // Close (and proceed with exit) only if every selected save succeeded;
+                // a failure keeps the dialog up so the user can pick another action.
                 bShouldClose = bAllOK;
             }
             if (!bAnySelected) ImGui::EndDisabled();
@@ -1872,7 +1859,6 @@ namespace Lumina
         ImGui::Image(ImGuiX::ToImTextureRef(LuminaIcon), ImVec2(24.0f, 24.0f));
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2.0f);
     
-        // Styled menu bar
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
@@ -2018,7 +2004,6 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.4f, 0.4f, 1.0f));
         if (ImGui::MenuItem(LE_ICON_DOOR_OPEN " Exit", "Alt+F4"))
         {
-            // ...
 			FApplication::RequestExit();
         }
         ImGui::PopStyleColor();
@@ -2041,12 +2026,7 @@ namespace Lumina
                 GEngine->LoadProjectScript(ModuleFile);
             }
         }
-        
-        //if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open Project...", "Ctrl+O"))
-        //{
-        //    OpenProjectDialog();
-        //}
-    
+
         if (ImGui::MenuItem(LE_ICON_FOLDER_PLUS " New Project...", "Ctrl+N"))
         {
             NewProjectDialog();
@@ -2136,7 +2116,6 @@ namespace Lumina
 
         ImGui::Spacing();
         
-        // Settings
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "Settings");
         ImGui::Separator();
         
@@ -2227,7 +2206,6 @@ namespace Lumina
         {
             bool bShouldClose = false;
 
-            // ── Title bar ──────────────────────────────────────────────────
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
             ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
             ImGui::TextUnformatted(LE_ICON_FOLDER_OPEN " Open Project");
@@ -2237,7 +2215,7 @@ namespace Lumina
             ImGui::Separator();
             ImGui::Spacing();
 
-            // ── Hero: Create New Project (primary action) ─────────────────
+            // Hero: Create New Project (primary action).
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.50f, 0.95f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 1.00f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.45f, 0.90f, 1.00f));
@@ -2251,11 +2229,10 @@ namespace Lumina
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(3);
 
-            // ── Scrollable list body ──────────────────────────────────────
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
             ImGui::BeginChild("##ProjectListBody", ImVec2(0, -52), false);
             {
-                // ── Recent projects ────────────────────────────────────
+                // Recent projects.
                 DrawSectionHeader("RECENT PROJECTS");
 
                 // Prune entries whose .lproject is gone (project folder
@@ -2313,7 +2290,7 @@ namespace Lumina
                     bShouldClose = true;
                 }
 
-                // ── Examples (de-emphasized) ──────────────────────────
+                // Examples (de-emphasized).
                 DrawSectionHeader("EXAMPLES");
                 if (DrawProjectRow(
                         LE_ICON_CUBE_OUTLINE,
@@ -2331,7 +2308,7 @@ namespace Lumina
             ImGui::EndChild();
             ImGui::PopStyleColor();
 
-            // ── Footer: Browse + Cancel ───────────────────────────────────
+            // Footer: Browse + Cancel.
             ImGui::Separator();
             ImGui::Spacing();
 
@@ -2377,7 +2354,6 @@ namespace Lumina
             static char NewProjectPath[512] = "";
             static FString LastError;
 
-            // ── Title bar ──────────────────────────────────────────────────
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
             ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
             ImGui::TextUnformatted(LE_ICON_FOLDER_PLUS " Create New Project");
@@ -2386,10 +2362,9 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Separator();
 
-            // ── Scrollable body so the footer stays pinned ────────────────
+            // Scrollable body so the footer stays pinned.
             ImGui::BeginChild("##NewProjBody", ImVec2(0, -52), false);
 
-            // Template section ────────────────────────────────────────────
             DrawSectionHeader("TEMPLATE");
             DrawProjectRow(
                 LE_ICON_CUBE,
@@ -2398,7 +2373,6 @@ namespace Lumina
                 kProjDialogAccentBlue,
                 /*bCompact=*/false);
 
-            // Name ────────────────────────────────────────────────────────
             DrawSectionHeader("PROJECT NAME");
             ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.20f, 0.20f, 0.25f, 1.0f));
@@ -2410,7 +2384,6 @@ namespace Lumina
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(3);
 
-            // Location ────────────────────────────────────────────────────
             DrawSectionHeader("LOCATION");
             ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.20f, 0.20f, 0.25f, 1.0f));
@@ -2434,7 +2407,7 @@ namespace Lumina
             }
             ImGui::PopStyleVar();
 
-            // Inline error box (red bordered child, matching rename modal) ─
+            // Inline error box (red bordered child, matching rename modal).
             if (!LastError.empty())
             {
                 ImGui::Spacing();
@@ -2456,14 +2429,14 @@ namespace Lumina
 
             ImGui::EndChild();
 
-            // ── Footer: Back + Create ─────────────────────────────────────
+            // Footer: Back + Create.
             ImGui::Separator();
             ImGui::Spacing();
 
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
 
-            // Back returns to the Open Project dialog. Defer so the modal can
-            // close cleanly before the next CreateDialogue.
+            // Back returns to the Open Project dialog; defer so the modal closes
+            // cleanly before the next CreateDialogue.
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.22f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.26f, 0.29f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.16f, 0.16f, 0.18f, 1.00f));
@@ -2536,7 +2509,6 @@ namespace Lumina
             std::error_code Ec;
             const bool bSlnReady = std::filesystem::exists(SlnPath.c_str(), Ec);
 
-            // ── Title ──────────────────────────────────────────────────────
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
             ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
             ImGui::TextUnformatted(LE_ICON_CHECK_CIRCLE " Project Created");
@@ -2546,7 +2518,6 @@ namespace Lumina
             ImGui::Separator();
             ImGui::Spacing();
 
-            // ── Body ───────────────────────────────────────────────────────
             ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
             ImGui::TextWrapped(
                 "Your project was created. premake is generating its Visual Studio "
@@ -2597,7 +2568,6 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
 
-            // ── Action buttons ─────────────────────────────────────────────
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
 
             const float Avail = ImGui::GetContentRegionAvail().x;
@@ -2677,17 +2647,8 @@ namespace Lumina
             OpenAssetEditor(Data->AssetGUID);
         }
         
-        // Push the project's .lproject path (move-to-front, deduped, capped).
-        // GEngine stores the project's parent directory + name, so we reconstruct
-        // the descriptor file path here. Also stash the path as
-        // Editor.StartupProject so the next bare launch (no --Project) auto-loads
-        // it instead of popping the Open Project dialog.
-        //
-        // Re-normalize after the join — VFS::Parent returns the dir WITH a
-        // trailing slash, and naively appending "/" before the name yields
-        // ".../Sandbox//Sandbox.lproject". Paths::Normalize collapses that
-        // back to a single slash and also self-heals any prior dirty value
-        // ("Sandbox/////////Sandbox.lproject") loaded from the old config.
+        // Reconstruct the .lproject path and record it as a recent + Editor.StartupProject
+        // (auto-loaded on the next bare launch). Normalize: the join can double the slash.
         const FStringView ProjectDir  = GEngine->GetProjectPath();
         const FStringView ProjectName = GEngine->GetProjectName();
         if (!ProjectDir.empty() && !ProjectName.empty())

@@ -19,32 +19,26 @@ namespace Lumina
         /** Returns root entity of new instance (entt::null on failure). OffsetTransform applied to root. */
         entt::entity Instantiate(CWorld* TargetWorld, const FTransform& OffsetTransform = FTransform(), entt::entity Parent = entt::null);
 
-        /** Re-applies prefab data to one instance, matched by SPrefabInstanceComponent::StableID.
-         *  Diff semantics: entities/components present in the prefab but missing on the instance are
-         *  added, and entities/components present on the instance but missing from the prefab are
-         *  destroyed/removed. The root's world transform is preserved (placed location wins). */
+        /** Diff-applies prefab data to one instance (matched by StableID): adds missing, removes
+         *  extra. Root's world transform is preserved (placed location wins). */
         void RefreshInstance(CWorld* World, entt::entity InstanceRoot);
 
-        /** Refreshes every prefab instance in World; called from CWorld::InitializeWorld
-         *  immediately after the loaded registry is swapped in. */
+        /** Refreshes every prefab instance in World; called from CWorld::InitializeWorld after registry swap. */
         static void RefreshAllInstancesInWorld(CWorld* World);
 
-        /** Strip SPrefabInstanceComponent from the instance subtree so the entities become plain,
-         *  user-editable entities no longer paired with this prefab. Returns false if InstanceRoot
-         *  is not a prefab instance root sourced from this prefab. */
+        /** Re-syncs every live instance of THIS prefab across all loaded worlds (GWorldManager contexts).
+         *  Call after the prefab's data changes (e.g. on save) so open levels reflect the edit immediately. */
+        void RefreshInstancesInLoadedWorlds();
+
+        /** Strips SPrefabInstanceComponent from the subtree, unpairing it from this prefab.
+         *  Returns false if InstanceRoot is not an instance root sourced from this prefab. */
         static bool DetachInstance(CWorld* World, entt::entity InstanceRoot);
 
         /** Replaces this prefab with a deep copy of RootEntity and descendants from SourceWorld. */
         void CaptureFromWorld(CWorld* SourceWorld, entt::entity RootEntity);
 
-        /**
-         * Deep-copies entities from Source into Dest; OutMap holds src->dest ids. Non-reflected
-         * storages are skipped; FRelationshipComponent links and reflected entity-handle properties
-         * (PROPERTY meta "Entity") are remapped, with references escaping the copied set cleared to
-         * null. When SourceEntities is non-null only those entities are copied (otherwise the whole
-         * registry). ExtraSkipStorage skips additional component types by id - e.g. the editor-only
-         * set when copying out of a live editor world.
-         */
+        /** Deep-copies entities Source->Dest (OutMap = src->dest ids); remaps relationships + entity-handle
+         *  props (escaping refs cleared). SourceEntities limits the set; ExtraSkipStorage skips more types by id. */
         static void CopyRegistry(entt::registry& Source, entt::registry& Dest, THashMap<entt::entity, entt::entity>& OutMap,
             const TVector<entt::entity>* SourceEntities = nullptr,
             bool(*ExtraSkipStorage)(entt::id_type) = nullptr);

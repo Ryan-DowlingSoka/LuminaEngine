@@ -52,8 +52,6 @@ namespace Lumina
         }
     }
 
-    // ---- FunctionInput ----
-
     void CMaterialExpression_FunctionInput::BuildNode()
     {
         Super::BuildNode();
@@ -96,8 +94,6 @@ namespace Lumina
         Compiler.AddRaw(FMaterialCompiler::GetHLSLTypeName(T) + " " + GetNodeFullName() + " = " + VecLiteral(InputType, DefaultValue) + ";\n");
     }
 
-    // ---- FunctionOutput ----
-
     void CMaterialFunctionOutput::BuildNode()
     {
         Input = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Value", ENodePinDirection::Input));
@@ -127,8 +123,6 @@ namespace Lumina
         FMaterialCompiler::FInputValue Val = Compiler.GetTypedInputValue(Input, VecLiteral(OutputType, FVector4(0.0f)));
         Compiler.AddRaw(FMaterialCompiler::GetHLSLTypeName(Val.Type) + " " + GetNodeFullName() + " = " + Val.Value + GetSwizzleForMask(Val.Mask) + ";\n");
     }
-
-    // ---- MaterialFunctionCall ----
 
     void CMaterialExpression_MaterialFunctionCall::BuildNode()
     {

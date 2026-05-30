@@ -1,9 +1,8 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Picker-only companion to WidgetPixel: runs pre-tone-map (before the picker readback) and
-// writes the widget's entity id into the Picker buffer wherever the widget is opaque, so
-// world-space widgets are click-selectable even though their color is drawn post-tone-map.
+// Picker-only companion to WidgetPixel: runs pre-tone-map and writes the widget's entity id where opaque,
+// so world-space widgets stay click-selectable even though their color is drawn post-tone-map.
 
 struct FragmentInput
 {

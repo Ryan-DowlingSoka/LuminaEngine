@@ -54,9 +54,8 @@ namespace Lumina
 		RUNTIME_API void Maximize();
 		RUNTIME_API void Close();
 
-		// Inverse of the close flag: usually set when the OS asks the window
-		// to close (X button, Alt+F4) and we want to keep the editor alive —
-		// e.g. user cancels the dirty-packages prompt.
+		// Clears the close flag set by the OS (X button, Alt+F4) to keep the editor alive,
+		// e.g. when the user cancels the dirty-packages prompt.
 		RUNTIME_API void CancelClose();
 
 		RUNTIME_API static FWindowResizeDelegate OnWindowResized;

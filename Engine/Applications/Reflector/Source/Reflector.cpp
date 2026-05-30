@@ -92,10 +92,8 @@ int main(int argc, char* argv[])
         Workspace.AddReflectedProject(eastl::move(ReflectedProject));
     }
 
-    // Static include-graph pass. We run this BEFORE handing the workspace to
-    // libclang because cycles can produce confusing downstream parse errors
-    // (forward declarations resolving in the wrong order, ambiguous names),
-    // and surfacing them up front gives the user a clean LRT error to act on.
+    // Static include-graph pass before libclang: cycles otherwise produce confusing
+    // downstream parse errors; surfacing them up front gives a clean LRT error.
     {
         FHeaderIncludeGraph Graph;
         Graph.BuildFromWorkspace(&Workspace);
@@ -114,9 +112,7 @@ int main(int argc, char* argv[])
                 Arrow += Cycle[i];
             }
 
-            // Anchor the diagnostic at the first include edge of the cycle so
-            // double-clicking the error in the build log opens the source line
-            // that triggers the loop.
+            // Anchor at the cycle's first include edge so the build-log error opens the offending line.
             FDiagLocation Loc;
             Loc.File = Cycle.front();
             if (Cycle.size() >= 2)
@@ -146,15 +142,8 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // Per-header include validation: any header that contained a reflection
-    // macro must end its include block with `<stem>.generated.h`. Catches
-    // the three classic misconfigurations:
-    //   - forgot to include the generated header at all
-    //   - included it but tucked another #include after it (which usually
-    //     hides definitions emitted by the generated header from later
-    //     includes — consistent ordering matters)
-    //   - copy-pasted a different file's `.generated.h` (Bar.h includes
-    //     Foo.generated.h)
+    // Per-header include validation: any header with a reflection macro must end its
+    // include block with `<stem>.generated.h` (catches missing/misordered/wrong-file includes).
     for (const auto& Project : Workspace.ReflectedProjects)
     {
         for (auto& [_, Header] : Project->Headers)
@@ -164,19 +153,8 @@ int main(int argc, char* argv[])
                 continue;
             }
 
-            // Headers whose REFLECT'd types are all tagged `ManualStub` describe
-            // hand-written runtime shims (FVector3 -> TVec<float,3>, etc.) where
-            // the real type is a template-alias the parser can't reflect, and
-            // a sibling stub struct gives the parser something to bite into.
-            // Those headers can't include their companion .generated.h because
-            // it would forward-declare `struct FVector3;` and clash with the
-            // `using FVector3 = ...;` everyone else sees -- runtime registration
-            // is pulled in through the unity .gen.cpp instead.
-            //
-            // Use find(): operator[] would create an empty vector entry for
-            // every header iterated here, which the codegen then walks and
-            // emits empty .generated.{h,cpp} for, dropping the actual struct's
-            // generated content along the way.
+            // ManualStub-only headers can't include their .generated.h (forward-decl clashes with the `using` alias).
+            // find() not operator[]: the latter inserts empty entries the codegen would emit empty files for.
             auto TypeIt = Parser.ParsingContext.ReflectionDatabase.ReflectedTypes.find(Header.get());
             if (TypeIt != Parser.ParsingContext.ReflectionDatabase.ReflectedTypes.end() && !TypeIt->second.empty())
             {

@@ -135,15 +135,12 @@ namespace Lumina::Import
         RUNTIME_API void GenerateMeshlets(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr, float StepPerSurface = 0.0f);
         RUNTIME_API void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
 
-        /**
-         * Apply user transforms and run the heavy finalize passes on a previously parsed FMeshImportData.
-         * When Progress is set, advances a total of ProgressBudget across the whole finalize pass.
-         */
+        /** Apply user transforms and run the heavy finalize passes on a parsed FMeshImportData.
+         *  When Progress is set, advances a total of ProgressBudget across the finalize pass. */
         RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options, FScopedSlowTask* Progress = nullptr, float ProgressBudget = 1.0f);
 
-        // Model-format parsers (ImportOBJ/FBX/GLTF) are editor-only and declared in
-        // Editor's Tools/Import/MeshFormatImport.h -- they pull tinyobjloader/OpenFBX/
-        // fastgltf, which don't ship in the Game runtime.
+        // Model-format parsers (ImportOBJ/FBX/GLTF) are editor-only (Editor's MeshFormatImport.h);
+        // they pull tinyobjloader/OpenFBX/fastgltf, which don't ship in the Game runtime.
     }
 
 }

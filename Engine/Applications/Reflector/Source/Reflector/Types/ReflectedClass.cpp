@@ -30,8 +30,11 @@ namespace Lumina::Reflection
         Writer.Macro("private:");
         Writer.Macro("");
         Writer.Macro("public:");
-        Writer.Macrof("\tDECLARE_CLASS(%s, %s, %s, \"%s\", NO_API)",
-            Namespace.c_str(), DisplayName.c_str(), Parent.c_str(), Package.c_str());
+        // MinimalAPI exports only GetPrivateStaticClass() so the type is reflection-referenceable
+        // cross-module without force-exporting every member.
+        const char* ClassApi = HasMetadata("MinimalAPI") ? Api.c_str() : "NO_API";
+        Writer.Macrof("\tDECLARE_CLASS(%s, %s, %s, \"%s\", %s)",
+            Namespace.c_str(), DisplayName.c_str(), Parent.c_str(), Package.c_str(), ClassApi);
         Writer.Macrof("\tDEFINE_CLASS_FACTORY(%s::%s)", Namespace.c_str(), DisplayName.c_str());
         Writer.Macrof("\tDECLARE_SERIALIZER(%s, %s)", Namespace.c_str(), DisplayName.c_str());
         Writer.FinalizeMacro();

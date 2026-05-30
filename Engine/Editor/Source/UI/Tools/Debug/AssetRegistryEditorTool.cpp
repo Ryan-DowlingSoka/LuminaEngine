@@ -21,9 +21,8 @@ namespace Lumina
 {
     namespace
     {
-        // Read-only archive: runs an object's Serialize to harvest the CObjects it references,
-        // without writing anything (base Serialize(void*,len) is a no-op). Mirrors the package
-        // save reference builder, minus the same-package restriction.
+        // Read-only archive: runs Serialize to harvest referenced CObjects without writing
+        // (Serialize(void*,len) is a no-op). Like the package save ref builder, no same-package limit.
         class FReferenceCollectorArchive final : public FArchive
         {
         public:
@@ -476,9 +475,8 @@ namespace Lumina
 
     void FAssetRegistryEditorTool::DrawAssetTable(const TVector<FAssetRow>& Rows)
     {
-        // Base flags shared by both layouts. ScrollY is added only to the flat table; the
-        // grouped per-category tables auto-size to their rows and let the outer pane scroll,
-        // otherwise the first table greedily fills the region and shoves the rest down.
+        // Base flags for both layouts. ScrollY only on the flat table; grouped tables auto-size
+        // and let the outer pane scroll, else the first table fills the region and shoves the rest.
         constexpr ImGuiTableFlags TableFlags =
             ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
             ImGuiTableFlags_SizingStretchProp;

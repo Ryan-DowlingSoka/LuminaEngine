@@ -15,14 +15,8 @@ namespace Lumina
         RGBA16F,
     };
 
-    /**
-     * A writable Texture2D. Unlike an imported CTexture it allocates an empty image with
-     * Storage (UAV) + ShaderResource flags from its Width/Height/Format properties instead
-     * of cooking pixels from a file. Compute can paint into it (CWorld::PaintRenderTarget),
-     * and because it is a CTexture it can be assigned to any material slot and sampled --
-     * e.g. a persistent blood map a script splatters onto. Contents are runtime-only and
-     * are not serialized; the image is rebuilt (cleared) on load.
-     */
+    /** Writable Texture2D (UAV + SRV) sized from Width/Height/Format instead of cooked pixels; compute
+     *  paints into it and it samples like any CTexture. Contents are runtime-only, rebuilt (cleared) on load. */
     REFLECT()
     class RUNTIME_API CTextureRenderTarget : public CTexture
     {

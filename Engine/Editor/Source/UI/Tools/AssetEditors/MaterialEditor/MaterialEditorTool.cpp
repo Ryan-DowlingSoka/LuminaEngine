@@ -696,9 +696,8 @@ namespace Lumina
             }
             else
             {
-                // Drop any stale per-material depth/shadow shaders left over
-                // from a previous WPO-using compile so the renderer falls
-                // back to the global library.
+                // Drop stale per-material depth/shadow shaders from a prior WPO compile
+                // so the renderer falls back to the global library.
                 Material->DepthPrepassVertexShader = nullptr;
                 Material->ShadowVertexShader = nullptr;
                 Material->DepthPrepassVertexShaderBinaries.clear();

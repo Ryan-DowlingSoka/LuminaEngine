@@ -87,11 +87,8 @@ namespace Lumina
         TVector<FAnimationNotify> Notifies;
         TVector<FAnimationNotifyState> NotifyStates;
 
-        /**
-         * Authored notify lanes, in display order. Persisted independently of the
-         * notifies/states so an empty track survives a save/reload, and so track
-         * ordering is stable. A notify references its lane by name (NotifyTrack).
-         */
+        // Notify lanes in display order; persisted separately so empty tracks and ordering survive
+        // save/reload. A notify references its lane by name (NotifyTrack).
         TVector<FName> NotifyTracks;
 
 

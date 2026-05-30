@@ -5,22 +5,14 @@
 
 namespace Lumina
 {
-    // One declared entry point into the cook reachability graph. The
-    // cooker BFS's outward from every CookRoot; any asset NOT reachable
-    // from at least one root is not shipped. Sourced from:
-    //  - The loaded .lproject's "CookRoots" array
-    //  - Each enabled plugin's .lplugin "CookRoots" array
-    //  - Legacy: a single auto-generated root for Project.GameStartupMap
-    //    (kept as migration shim; new projects should use CookRoots[]).
+    // A cook reachability entry point; the cooker BFS's from every root and drops anything unreachable.
+    // Sourced from .lproject + plugin "CookRoots" arrays (+ a legacy GameStartupMap shim).
     struct FCookRoot
     {
-        // VFS path to the asset (e.g. "/Game/Maps/MainMenu.lasset" or
-        // bare "/Game/Maps/MainMenu" -- resolver handles either form).
+        // VFS path; ".lasset" suffix optional (resolver handles either).
         FString Asset;
 
-        // Chunk name the asset (and its hard-reachable children) land in.
-        // Phase 1 ships one PAK so this is recorded but not yet routed;
-        // Phase 3 uses it for per-chunk .lpak emission.
+        // Chunk the asset + hard-reachable children land in (recorded now, routed for per-chunk emission later).
         FName   Chunk;
     };
 }

@@ -4,10 +4,8 @@
 #include "Platform/Platform.h"
 #include "Core/LuminaMacros.h"
 
-// Category-attributed allocation tracking. Used by the Memory Profiler tool to
-// localize leaks to a subsystem. Tracking is fully compiled out in Shipping;
-// in Debug/Development it is gated behind a runtime atomic (off by default) so
-// it costs a single predicted branch per allocation until explicitly enabled.
+// Category-attributed allocation tracking for the Memory Profiler. Compiled out in Shipping; in
+// Debug/Dev gated behind a runtime atomic (off by default) = one predicted branch per alloc until enabled.
 #if defined(LE_SHIPPING)
     #define LUMINA_MEMORY_TRACKING 0
 #else
@@ -16,9 +14,8 @@
 
 namespace Lumina::Memory
 {
-    // Categories are plain names (e.g. "Render Scene"). They are interned to a
-    // stable id on first use, so adding one is just writing a new string at a
-    // LUMINA_MEMORY_SCOPE -- no central enum to maintain.
+    // Categories are plain names (e.g. "Render Scene"), interned to a stable id on first use;
+    // adding one is just a new string at a LUMINA_MEMORY_SCOPE, no central enum.
     struct FMemoryCategoryStats
     {
         const char* Name        = "";
@@ -52,8 +49,7 @@ namespace Lumina::Memory
 
 #if LUMINA_MEMORY_TRACKING
 
-    // Interns a category name (by content) and returns a stable id. Idempotent and
-    // thread-safe; meant to be cached per call site -- LUMINA_MEMORY_SCOPE does that.
+    // Interns a category name and returns a stable id (idempotent, thread-safe, cached per call site).
     // Name must outlive the process (a string literal); it is copied into the registry.
     RUNTIME_API uint32 RegisterCategory(const char* Name);
 
@@ -75,9 +71,8 @@ namespace Lumina::Memory
     // Non-zero means reported live bytes under-count.
     RUNTIME_API uint64 GetTrackingOverflowCount();
 
-    // Per-allocation call-stack capture. Heavier than plain tracking (walks the
-    // stack on every alloc), so it's a separate opt-in toggle. With it on, the
-    // profiler can attribute live bytes to the exact call site that leaked.
+    // Per-allocation call-stack capture; heavier (walks the stack each alloc), so a separate opt-in.
+    // Lets the profiler attribute live bytes to the exact leaking call site.
     RUNTIME_API void SetCaptureCallstacks(bool bEnabled);
     RUNTIME_API bool IsCapturingCallstacks();
 

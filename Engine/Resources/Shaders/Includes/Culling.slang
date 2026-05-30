@@ -1,9 +1,8 @@
 #pragma once
 #include "SceneGlobals.slang"
 
-// Helpers shared by the GPU culling compute passes. Kept in one place so the
-// passes can't drift on the Hi-Z math that has to agree with how the depth
-// pyramid is generated (MIN-reduction sampler, reverse-Z).
+// Helpers shared by the GPU culling passes, centralized so the Hi-Z math stays in sync
+// with how the depth pyramid is generated (MIN-reduction sampler, reverse-Z).
 
 bool FrustumContainsSphere(FFrustum F, float3 Center, float Radius)
 {
@@ -35,13 +34,9 @@ bool FrustumContainsSphere(float4 Planes[6], float3 Center, float Radius)
     return true;
 }
 
-// 2D polyhedral bounds of a clipped perspective-projected sphere.
-// Michael Mara, Morgan McGuire (2013), adapted for left-handed view space
-// where the camera looks down +Z (visible points have C.z > 0).
-//
-// On success, ClipAABB = (minClipX, minClipY, maxClipX, maxClipY) with each
-// component already divided by clip.w. Returns false if the sphere clips the
-// near plane, in which case the caller should treat the object as visible.
+// 2D polyhedral bounds of a clipped perspective-projected sphere (Mara/McGuire 2013), for
+// left-handed view space (camera down +Z). ClipAABB = (minX, minY, maxX, maxY), each /clip.w.
+// Returns false if the sphere clips the near plane (caller treats the object as visible).
 bool ProjectSphereClip(float3 C, float R, float ZNear, float P00, float P11, out float4 ClipAABB)
 {
     ClipAABB = float4(-1.0, -1.0, 1.0, 1.0);

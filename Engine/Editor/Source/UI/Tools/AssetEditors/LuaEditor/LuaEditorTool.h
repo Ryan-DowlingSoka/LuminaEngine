@@ -11,9 +11,8 @@
 
 namespace Lumina
 {
-    // Editor for raw .lua / .luau files. Doesn't go through the CObject asset
-    // pipeline: scripts stay as plain text on disk so the runtime VM can load
-    // them directly and external tools (Luau LSP, git diff) work as-is.
+    // Editor for raw .lua / .luau files. Not in the CObject asset pipeline: scripts stay as
+    // plain text so the runtime VM and external tools (Luau LSP, git diff) work as-is.
     class FLuaEditorTool : public FAssetEditorTool
     {
     public:
@@ -45,32 +44,24 @@ namespace Lumina
         void OnAutoCompleteRequest(TextEditor::AutoCompleteState& State);
         void OnHoverIdentifier(const std::string& Word, const std::string& DottedPath);
 
-        // Walks the buffer to populate DocumentOutline with function/local
-        // declarations the user can click to navigate. Cheap regex-style scan
-        // so it can re-run on every delayed change callback.
+        // Populates DocumentOutline with clickable function/local declarations.
+        // Cheap regex-style scan, fine to re-run on every delayed change callback.
         void RebuildDocumentOutline();
 
-        // Re-evaluates every watch expression in the current paused frame and
-        // caches the result so the UI doesn't pay for evaluation per draw.
-        // No-op when the debugger isn't paused.
+        // Re-evaluates every watch expression in the paused frame and caches the result
+        // so the UI doesn't evaluate per draw. No-op when not paused.
         void RefreshWatchValues();
 
-        // Draws a context popup for a single breakpoint allowing the user to
-        // set a Lua condition, log message, hit-count ignore, and enable flag.
-        // Uses Lua::FBreakpointSettings on FLuaDebugger as the data source.
+        // Context popup to set a breakpoint's condition, log message, hit-count ignore, and
+        // enable flag. Backed by Lua::FBreakpointSettings on FLuaDebugger.
         void DrawBreakpointSettingsPopup();
 
-        // Buffer-driven local-symbol harvest: parses the editor buffer for
-        // `local Name: Type = ...` / `local Name = ...` / `local function Name`
-        // declarations so hover tooltips can show "local Name: Type" without
-        // a full Luau type checker. Cheap and runs after each delayed change
-        // callback fires.
+        // Harvests `local` declarations from the buffer so hover can show "local Name: Type"
+        // without a full Luau type checker. Cheap; runs after each delayed change callback.
         void RebuildLocalIndex();
 
-        // Free-text hover. computes the (line, col) under the mouse from the
-        // editor's screen-coord helpers and pops a tooltip when over a
-        // string / number / keyword / type annotation. Identifier hovers
-        // still go through the editor's built-in hover callback.
+        // Free-text hover: tooltip when over a string/number/keyword/type annotation.
+        // Identifier hovers still go through the editor's built-in hover callback.
         void DrawFreeFormHoverTooltip();
 
         // Map of dotted path -> full symbol record. Built alongside the other
@@ -88,9 +79,8 @@ namespace Lumina
         void HandleEditorShortcuts();
         void InsertSnippet(const char* Snippet);
 
-        // Inline debugger overlay shown below the editor when FLuaDebugger
-        // is paused at this file. Avoids spawning a separate top-level tool
-        // that would steal layout space from the user's docking config.
+        // Inline debugger overlay below the editor when paused here; avoids a separate
+        // top-level tool that would steal layout space from the user's docking config.
         void DrawDebuggerPanel();
         void DrawDebuggerWatchSection();
         void DrawDebuggerBreakHistorySection();
@@ -109,9 +99,8 @@ namespace Lumina
         // Toggled from the toolbar; persists between draws via bShowOutline.
         void DrawOutlinePanel();
 
-        // Inline value annotations after each visible line during pause:
-        // walks the current frame's locals and draws "name = value"
-        // ghost-text at end-of-line where the local is referenced.
+        // During pause, draws "name = value" ghost-text at end-of-line for each frame
+        // local where it's referenced.
         void DrawInlineValueOverlay();
 
         void ToggleBreakpoint(int Line);
@@ -125,19 +114,16 @@ namespace Lumina
         TextEditor          CodeEditor;
         std::string         LastSyncedText;
         size_t              LastSyncedUndoIndex = 0;
-        // Cached document size used by the status bar so we don't pay a full
-        // GetText() copy every render frame. Recomputed in OnSave / LoadFromDisk
-        // and in the (debounced) change callback.
+        // Cached doc size for the status bar (avoids a GetText() copy per frame);
+        // recomputed in OnSave/LoadFromDisk and the debounced change callback.
         size_t              CachedBodySize = 0;
-        // Per-line text cache for overlays (inlay hints, hover tooltip) that would
-        // otherwise rebuild a std::string per visible line every frame. Refreshed
-        // only when the undo index moves.
+        // Per-line text cache for overlays, avoiding a std::string rebuild per line per
+        // frame. Refreshed only when the undo index moves.
         std::vector<std::string> CachedLines;
         size_t              CachedLinesUndoIndex = ~size_t(0);
         bool                bBufferDirty = false;
-        // Set in OnSave so the OnScriptLoaded broadcast we just emitted from
-        // FScriptingContext::ScriptReloaded doesn't bounce back as an external
-        // change. Cleared on the first matching broadcast.
+        // Set in OnSave so our own OnScriptLoaded broadcast doesn't bounce back as an
+        // external change. Cleared on the first matching broadcast.
         bool                bIgnoreNextReload = false;
 
         THashSet<int>       Breakpoints;
@@ -162,41 +148,29 @@ namespace Lumina
         int                 GotoLineBuffer = 1;
         bool                bRequestOpenGoto = false;
 
-        // Deferred-open flags for popups invoked from the toolbar overflow menu.
-        // OpenPopup can't fire from inside the menu (wrong ID-stack scope), so
-        // the menu sets these and DrawToolbar opens the popup at root scope next
-        // frame -- same pattern as bRequestOpenGoto.
+        // Deferred-open flags for overflow-menu popups: OpenPopup can't fire from inside the
+        // menu (wrong ID-stack scope), so DrawToolbar opens them at root scope next frame.
         bool                bRequestOpenSnippets    = false;
         bool                bRequestOpenBookmarks   = false;
         bool                bRequestOpenBreakpoints = false;
         bool                bRequestOpenHelp        = false;
         bool                bRequestOpenSettings    = false;
 
-        // External-change flag: flipped on by the OnScriptLoaded broadcast
-        // (fired from FScriptingContext after either our own save or the
-        // central content-browser file watcher detects a disk modification).
-        // Update() consumes it on the main thread.
+        // External-change flag set by the OnScriptLoaded broadcast (our save or the file
+        // watcher detecting a disk change). Update() consumes it on the main thread.
         bool                bExternalChangePending = false;
         FDelegateHandle     ScriptLoadedHandle;
 
-        // Selected stack frame for the inline debugger panel. Re-clamped each
-        // pause so a deeper call stack from a previous break doesn't index
-        // out-of-range when the new call stack is shorter.
+        // Selected stack frame for the debugger panel; re-clamped each pause so a deeper
+        // prior call stack doesn't index out of range when the new one is shorter.
         int                 DebuggerSelectedFrame = 0;
 
         // Tracks the last line number we marked as the program-counter line
         // so we can clear it cheaply when the debugger advances past it.
         int                 PCMarkerLine = -1;
 
-        // Autocomplete index, harvested from the live Lua VM at OnInitialize
-        // and refreshable on demand. Three flat structures:
-        //   TopLevelSymbols . full symbol records visible at global scope
-        //   SymbolsByPath   . for "Foo.Bar" -> [child symbol records]; lets
-        //                      us offer table-member completions after `.`/`:`
-        //                      and surface kind/type/value-preview metadata.
-        //   TableNames      . set of dotted paths that are tables, used for
-        //                      cheap "is this a table?" checks during prefix
-        //                      resolution.
+        // Autocomplete index harvested from the live Lua VM (refreshable): TopLevelSymbols
+        // (global scope), SymbolsByPath ("Foo.Bar" members), TableNames (is-a-table checks).
         TVector<Lua::FLuaSymbol>                                          AllSymbols;
         TVector<Lua::FLuaSymbol>                                          TopLevelSymbols;
         THashMap<FString, TVector<Lua::FLuaSymbol>>                             SymbolsByPath;
@@ -213,17 +187,15 @@ namespace Lumina
 
         TextEditor::AutoCompleteConfig                                  AutoCompleteCfg;
 
-        // Bookmarks live in editor state alone. they're not source-of-truth
-        // anywhere else and aren't persisted across editor sessions. F2 toggles,
-        // Shift+F2 cycles through them.
+        // Bookmarks live in editor state alone, not persisted across sessions.
+        // F2 toggles, Shift+F2 cycles.
         THashSet<int>       Bookmarks;
 
         bool                bShowOutline = false;
         bool                bShowInlineValuesWhilePaused = true;
 
-        // Watch expressions evaluated against the paused frame's environment.
-        // Cleared between sessions; not persisted because an expression that
-        // worked yesterday probably won't fit today's call site.
+        // Watch expressions evaluated against the paused frame's environment;
+        // cleared between sessions, not persisted (won't fit a different call site).
         struct FWatchEntry
         {
             FString Expression;
@@ -246,18 +218,16 @@ namespace Lumina
         TVector<FOutlineItem>           DocumentOutline;
         char                            OutlineFilterBuffer[64] = {0};
 
-        // Breakpoint settings popup state. RequestedBreakpointSettingsLine is
-        // set by the gutter context menu's "Configure..." entry; the popup
-        // opens on the next frame and binds against the line in question.
+        // Breakpoint settings popup state; RequestedBreakpointSettingsLine is set by the
+        // gutter "Configure..." entry, opening next frame bound to that line.
         int                             RequestedBreakpointSettingsLine = -1;
         char                            BpConditionBuffer[256] = {0};
         char                            BpLogMessageBuffer[256] = {0};
         int                             BpIgnoreCount = 0;
         bool                            bBpEnabled = true;
 
-        // Compile-error overlay. The most recent compile diagnostic for this
-        // script (line + message); rendered as a red gutter marker plus a
-        // status-bar line. Cleared on a successful recompile.
+        // Compile-error overlay: the latest diagnostic (line + message), shown as a red
+        // gutter marker and status-bar line. Cleared on a successful recompile.
         FDelegateHandle                     CompileErrorHandle;
         FDelegateHandle                     CompileSuccessHandle;
 

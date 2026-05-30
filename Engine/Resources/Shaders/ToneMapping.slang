@@ -36,10 +36,6 @@ float3 Uncharted2Tonemap(float3 X)
     return ((X * (A * X + C * B) + D * E) / (X * (A * X + B) + D * F)) - E / F;
 }
 
-// ============================================================================
-//  Main
-// ============================================================================
-
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input, uniform FPushConstants PC) : SV_Target0
 {
@@ -49,11 +45,9 @@ float4 FragmentMain(VSOutput Input, uniform FPushConstants PC) : SV_Target0
 
     float3 Tonemapped = ACESFilm(HDRColor);
 
-    // Gamma correction
     static const float INV_GAMMA = 1.0 / 2.2;
     Tonemapped = pow(Tonemapped, float3(INV_GAMMA));
 
-    // Dither
     Tonemapped += ScreenSpaceDither(Input.Position.xy, PC.Time);
 
     return float4(Tonemapped, 1.0);

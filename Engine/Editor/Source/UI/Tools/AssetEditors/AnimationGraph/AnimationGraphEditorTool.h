@@ -18,9 +18,8 @@ namespace Lumina
     class CEnum;
     class CWorld;
 
-    // Asset editor for CAnimationGraph. Hosts the node graph canvas, a 3D
-    // preview viewport that runs the compiled graph on the skeleton's preview
-    // mesh, and a properties panel; compiles the graph into bytecode on save.
+    // Asset editor for CAnimationGraph: node graph canvas, a 3D preview running the compiled
+    // graph on the skeleton's preview mesh, and a properties panel. Compiles to bytecode on save.
     class FAnimationGraphEditorTool : public FAssetEditorTool
     {
     public:
@@ -38,9 +37,8 @@ namespace Lumina
         void SetupWorldForTool() override;
         void Update(const FUpdateContext& UpdateContext) override;
 
-        // Lazily creates / updates / removes the preview mesh entity to track the
-        // graph asset's skeleton. The skeleton is often assigned after the tool is
-        // already open, so this runs every frame rather than only at world setup.
+        // Lazily creates/updates/removes the preview mesh to track the graph's skeleton.
+        // Runs every frame since the skeleton is often assigned after the tool opens.
         void SyncPreviewMesh();
 
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
@@ -53,9 +51,8 @@ namespace Lumina
         void DrawPropertiesWindow();
         void DrawPreviewControls();
 
-        // Lists the compiled graph's parameters with editable live values, and
-        // pushes those values into the preview mesh so state-machine transition
-        // conditions (and Get Parameter nodes) can be exercised in the viewport.
+        // Lists the compiled graph's parameters with editable live values, pushed into the
+        // preview mesh so transition conditions and Get Parameter nodes can be exercised.
         void DrawParametersWindow();
         void PushParameterOverrides();
 
@@ -63,28 +60,24 @@ namespace Lumina
         // Parameters panel's enum-key value combos.
         CEnum* ResolveReflectedEnum(const FName& Name);
 
-        // When a State node is selected, lists its outgoing transitions inline
-        // so the user can edit each condition without having to click the
-        // (often hard to hit) transition wire itself.
+        // When a State node is selected, lists its outgoing transitions inline so conditions
+        // can be edited without clicking the (often hard to hit) transition wire.
         void DrawOutgoingTransitionsForState(class CAnimGraphNode_State* State);
 
         // Draws the navigation breadcrumb (Animation Graph > State Machine >
         // State ...) above the canvas; clicking a crumb pops back to that level.
         void DrawBreadcrumbBar();
 
-        // Topologically compiles the node graph into the runtime asset's bytecode.
-        // bMarkPackageDirty is skipped for the per-frame live-preview recompile so
-        // the asset is not perpetually marked unsaved.
+        // Topologically compiles the node graph into the asset's bytecode. bMarkPackageDirty
+        // is skipped for the per-frame preview recompile so the asset isn't always unsaved.
         void Compile(bool bMarkPackageDirty = true);
 
-        // Builds the live debug overlay (pin values, active state highlight) from
-        // the selected target's VM state and pushes it onto the displayed graph.
-        // No-op when the Debug toggle is off.
+        // Builds the live debug overlay (pin values, active state) from the target's VM state
+        // and pushes it onto the displayed graph. No-op when the Debug toggle is off.
         void UpdateDebugOverlay();
 
-        // Dropdown to choose which instance the debug overlay reads from: the
-        // editor preview, or any live entity (across worlds) whose anim component
-        // uses this graph asset.
+        // Dropdown choosing the debug overlay's source: the editor preview, or any live
+        // entity (across worlds) whose anim component uses this graph asset.
         void DrawDebugTargetCombo();
 
     private:
@@ -115,25 +108,21 @@ namespace Lumina
         FString                                 CompilationLog;
         bool                                    bHasCompilationErrors = false;
 
-        // Graph navigation: GraphStack[0] is the top-level graph, back() is the
-        // canvas currently drawn. InitializedGraphs tracks every graph whose
-        // context this tool created, so they can be shut down on close.
+        // Graph navigation: GraphStack[0] is top-level, back() is the drawn canvas.
+        // InitializedGraphs tracks graphs this tool created so they shut down on close.
         TVector<FGraphStackEntry>               GraphStack;
         THashSet<CEdNodeGraph*>                 InitializedGraphs;
 
-        // Editor-driven live values for the graph's parameters. Pushed into the
-        // preview mesh every frame so transition conditions can be tested; keyed
-        // by parameter name so they survive recompiles / parameter reordering.
+        // Editor-driven live parameter values, pushed into the preview mesh each frame; keyed
+        // by name so they survive recompiles/reordering.
         THashMap<FName, float>                  ParameterOverrides;
 
         // Lazily-built name -> reflected enum lookup for enum-key value combos.
         THashMap<FName, CEnum*>                 ReflectedEnumCache;
         bool                                    bEnumCacheBuilt = false;
 
-        // Cached inline property tables for outgoing transitions of the selected
-        // State node, keyed by transition pointer. Built lazily; we never let
-        // them outlive their CAnimStateTransition (cleared whenever the state
-        // machine canvas's transition list changes underneath us).
+        // Lazily-built inline property tables for the selected State's outgoing transitions,
+        // keyed by transition ptr; cleared when the canvas's transition list changes.
         THashMap<CAnimStateTransition*, TUniquePtr<FPropertyTable>> TransitionTables;
 
         // Live preview: recompile the graph every frame so node edits show up
@@ -149,9 +138,8 @@ namespace Lumina
         TWeakObjectPtr<CWorld>                  DebugTargetWorld;
         entt::entity                            DebugTargetEntity = entt::null;
 
-        // Captured from the compiler after each compile: maps editor pins to VM
-        // registers and editor State nodes to their runtime state slot/index.
-        // Refreshed every frame by the auto-compile, so pin pointers stay valid.
+        // Captured per compile: maps editor pins to VM registers and State nodes to runtime
+        // slots. Refreshed every frame by auto-compile, so pin pointers stay valid.
         THashMap<const CEdNodeGraphPin*, uint16> DebugPinRegisters;
         TVector<FAnimGraphDebugStateNode>        DebugStateNodes;
 

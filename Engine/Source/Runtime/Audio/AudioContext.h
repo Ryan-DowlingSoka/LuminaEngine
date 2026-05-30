@@ -41,8 +41,6 @@ namespace Lumina
 
 		virtual void StopAllSounds() = 0;
 
-		// --- Procedural / streaming audio ---
-
 		// Allocates a streaming PCM buffer (float32). Caller pushes samples via the returned stream;
 		// playback is started by passing the stream to PlayProceduralStream.
 		NODISCARD virtual TSharedPtr<FProceduralAudioStream> CreateProceduralStream(

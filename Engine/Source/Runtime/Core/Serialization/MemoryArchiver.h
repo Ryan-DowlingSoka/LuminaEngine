@@ -51,9 +51,7 @@ namespace Lumina
     
     };
 
-    /**
-     * Similar to FMemoryReader but owns the data.
-     */
+    /** Like FMemoryReader but owns the data. */
     class RUNTIME_API FBufferReader : public FArchive
     {
     public:

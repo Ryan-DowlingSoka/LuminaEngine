@@ -15,10 +15,7 @@ namespace Lumina
         float           Fraction = 0.0f;
     };
 
-    /**
-     * RAII progress reporter. Construct on any thread to make a long operation visible;
-     * the editor renders a modal for every live instance. Destruction removes it.
-     */
+    /** RAII progress reporter; the editor renders a modal per live instance. */
     class RUNTIME_API FScopedSlowTask
     {
     public:

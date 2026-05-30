@@ -15,9 +15,8 @@ namespace Rml
 
 namespace Lumina
 {
-    // Editor for raw .rml files. Doesn't go through the CObject asset pipeline:
-    // RmlUI documents stay as plain text on disk so Lua / RmlUI can include
-    // each other directly without a binary package layer.
+    // Editor for raw .rml files. Not in the CObject asset pipeline: documents stay as
+    // plain text so Lua/RmlUi can include each other without a binary package layer.
     class FRmlUiEditorTool : public FAssetEditorTool
     {
     public:
@@ -62,11 +61,8 @@ namespace Lumina
         void InsertSnippet(const char* Snippet);
         void PersistSettings() const;
 
-        // Inline color-swatch overlay. Walks visible lines, scans for
-        // #RRGGBB / #RRGGBBAA hex literals, draws a clickable square at the
-        // start of each one, and on click opens an ImGui color picker that
-        // commits edits back into the editor as a normal text replacement
-        // (so undo/redo, dirty tracking, and live reload all work).
+        // Inline color-swatch overlay: a clickable square before each #RRGGBB[AA] literal that
+        // opens a picker; edits commit as a normal text replacement (so undo/dirty/reload work).
         void DrawInlineColorSwatches();
 
         FString                     VirtualPath;
@@ -80,9 +76,8 @@ namespace Lumina
         bool                        bBufferDirty = false;
         bool                        bAutoReload = true;
 
-        // Per-frame churn guards. The status bar and inline color swatches used to
-        // rebuild whole-document / per-line strings every frame; these caches are
-        // refreshed only when the editor's undo index changes (i.e. on an edit).
+        // Per-frame churn guards: status bar + color swatches once rebuilt strings every
+        // frame; these caches refresh only when the undo index changes.
         std::vector<std::string>    CachedLines;                    // backing for color-swatch parse
         size_t                      CachedLinesUndoIndex = ~size_t(0);
         size_t                      CachedDocBytes = 0;             // status-bar byte count

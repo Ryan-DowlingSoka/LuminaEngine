@@ -10,11 +10,8 @@ namespace Lumina
     class CObject;
     class FArchive;
 
-    /** Stable, gameplay-facing identity for an asset that's been marked
-     *  EAssetFlags::Primary in FAssetData. Uses the asset's FAssetName as
-     *  the primary key, so e.g. /Game/Characters/Hero.lasset is reachable
-     *  as FPrimaryAssetId(FName("Hero")). One Name → at most one Primary
-     *  asset; multiple Primaries sharing a Name is a registry error. */
+    /** Gameplay-facing identity for an EAssetFlags::Primary asset, keyed by FAssetName (e.g. "Hero").
+     *  One Name maps to at most one Primary asset; duplicates are a registry error. */
     struct RUNTIME_API FPrimaryAssetId
     {
         FPrimaryAssetId() = default;
@@ -47,9 +44,7 @@ namespace Lumina
     };
 }
 
-// TPrimaryAssetId::LoadSynchronous/LoadAsync impls live in AssetManager.h
-// (template definitions need the full FAssetManager type, which would create
-// a circular include if defined here).
+// LoadSynchronous/LoadAsync impls live in AssetManager.h (need full FAssetManager; avoids circular include).
 
 namespace eastl
 {

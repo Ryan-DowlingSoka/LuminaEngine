@@ -194,9 +194,6 @@ namespace Lumina
 
     };
 
-    
-    //----------------------------------------------------------------------------------------------
-
 
     class FVulkanSampler : public FRHISampler,  public IDeviceChild
     {
@@ -648,9 +645,8 @@ namespace Lumina
 
     };
     
-    // Vulkan-ready values for the states the device made dynamic, precomputed at pipeline
-    // creation (where the EConvert helpers live) so SetGraphicsState just feeds them to
-    // vkCmdSet* without re-converting per draw. Per-attachment arrays cover blend states.
+    // Vulkan-ready dynamic-state values, precomputed at pipeline creation so SetGraphicsState
+    // feeds vkCmdSet* without re-converting per draw. Per-attachment arrays cover blend states.
     struct FGraphicsDynamicStateValues
     {
         VkCullModeFlags         CullMode            = VK_CULL_MODE_NONE;

@@ -9,19 +9,8 @@ namespace Lumina
 {
     class FAssetRegistry;
 
-    /** Scans .rml / .rcss content under the given VFS roots for asset
-     *  references (attribute src/href/sprite, CSS url(), the `material:`
-     *  URI scheme) and returns the set of discovered virtual paths that
-     *  resolve to a registered FAssetData.
-     *
-     *  Walks `.rml`/`.rcss` chains transitively: a UI doc discovered via
-     *  a `<link href=…>`, `@import url(…)`, or sub-template reference is
-     *  itself analyzed, so a stylesheet three `@import`s deep still has
-     *  its font + texture references picked up.
-     *
-     *  These are folded into the cook graph as implicit Soft cook roots so
-     *  assets referenced ONLY by UI files (no inbound .lasset import) are
-     *  still pulled into the PAK. */
+    // Scans .rml/.rcss for asset references (src/href/sprite, CSS url(), material: URIs), resolving to registered FAssetData; follows link/@import chains transitively.
+    // Folded into the cook graph as implicit Soft cook roots so UI-only assets (no inbound .lasset import) still reach the PAK.
     class FRmlUiAssetScan
     {
     public:

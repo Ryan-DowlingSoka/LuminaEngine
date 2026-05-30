@@ -19,10 +19,8 @@ namespace Lumina
 
         void BuildNode() override;
 
-        // Refresh pin enable/disable state from the current material domain
-        // before pins draw. Called by the node graph at the top of each
-        // node's per-frame draw, so the user sees the right pins lit up
-        // immediately after flipping MaterialType in the inspector.
+        // Refreshes pin enable/disable from the current material domain before pins draw, so the right
+        // pins light up immediately after flipping MaterialType in the inspector.
         void DrawNodeTitleBar() override;
 
         void GenerateDefinition(FMaterialCompiler& Compiler) override;

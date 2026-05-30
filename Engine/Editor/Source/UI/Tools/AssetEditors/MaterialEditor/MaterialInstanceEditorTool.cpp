@@ -321,9 +321,8 @@ namespace Lumina
 
     void FMaterialInstanceEditorTool::DrawTextureParameterColumn(CMaterialInstance* Instance, const FMaterialParameter& Param, bool bHasOverride)
     {
-        // Resolve the texture currently in effect for this slot:
-        //  1) explicit override on this instance, else
-        //  2) parent material's default texture for the slot.
+        // Texture in effect for this slot: this instance's override, else the
+        // parent material's default for the slot.
         CTexture* DisplayTexture = nullptr;
         for (FMaterialParameterOverride& O : Instance->Overrides)
         {

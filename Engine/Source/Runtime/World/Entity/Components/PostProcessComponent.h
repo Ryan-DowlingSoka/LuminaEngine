@@ -8,21 +8,8 @@
 namespace Lumina
 {
     class CMaterialInterface;
-    /**
-     * Volumetric post-process override. Add to any entity with a
-     * STransformComponent. The volume's box (BoxExtent in local space,
-     * transformed by the entity) is tested against the active camera each
-     * frame; while the camera is inside, the volume's Settings are blended
-     * onto whatever the camera's own SCameraComponent::PostProcess provides.
-     *
-     * Set bInfiniteExtent for a global override that's always active --
-     * useful for the level-default look without wrapping the playable area
-     * in a giant box.
-     *
-     * Multiple volumes stack: lowest Priority blends first, highest blends
-     * last (i.e. wins ties). Use BlendDistance to fade the contribution at
-     * the box boundary so designers don't get a hard pop on entry.
-     */
+    // Volumetric post-process override; its box (or bInfiniteExtent for global) is tested against the camera,
+    // blending Settings onto the camera's. Volumes stack by Priority (highest wins); BlendDistance softens entry.
     REFLECT(Component, Category = "Rendering")
     struct RUNTIME_API SPostProcessComponent
     {
@@ -37,27 +24,19 @@ namespace Lumina
         PROPERTY(Editable, Category = "Volume")
         bool bInfiniteExtent = false;
 
-        /** Half-extent of the box in local space (i.e. the box is 2 *
-         *  BoxExtent on each axis, centered on the entity). The world-
-         *  space box rotates and scales with the transform. */
+        // Local-space half-extent (box is 2*BoxExtent per axis, centered on the entity); rotates/scales with the transform.
         PROPERTY(Editable, Category = "Volume", ClampMin = 0.01f)
         FVector3 BoxExtent = FVector3(500.0f);
 
-        /** World-space distance over which the volume fades out at its
-         *  boundary. 0 == hard edge (instant pop on enter/exit). 100..500
-         *  is typical for outdoor mood transitions. */
+        // World-space fade distance at the boundary. 0 = hard edge (pop); 100..500 typical for outdoor transitions.
         PROPERTY(Editable, Category = "Volume", ClampMin = 0.0f, ClampMax = 5000.0f)
         float BlendDistance = 100.0f;
 
-        /** How strongly this volume's settings replace the camera/lower
-         *  priority volumes when fully inside. 1.0 == full override,
-         *  0.5 == 50% mix with what was there, 0.0 == do nothing. */
+        // How strongly Settings replace the camera/lower-priority volumes when fully inside (1.0 = full, 0.0 = none).
         PROPERTY(Editable, Category = "Volume", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
         float BlendWeight = 1.0f;
 
-        /** Higher priority volumes blend last and so override lower ones.
-         *  Ties resolve by entity iteration order (effectively unspecified
-         *  -- give your volumes distinct priorities if it matters). */
+        // Higher priority blends last (overrides lower). Ties resolve by iteration order -- use distinct priorities if it matters.
         PROPERTY(Editable, Category = "Volume")
         int32 Priority = 0;
 
@@ -66,11 +45,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Settings")
         SPostProcessSettings Settings;
 
-        /** Post-process materials this volume contributes. While the camera
-         *  is inside the volume (or always, if bInfiniteExtent) these
-         *  materials are appended to the active list and applied after the
-         *  camera's own materials. Order within the list is preserved.
-         *  Materials must have MaterialType = PostProcess. */
+        // Post-process materials this volume contributes; while the camera is inside (or always, if bInfiniteExtent)
+        // they're appended after the camera's own, order preserved. Must be MaterialType = PostProcess.
         PROPERTY(Editable, Category = "Settings")
         TVector<TObjectPtr<CMaterialInterface>> PostProcessMaterials;
     };

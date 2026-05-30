@@ -23,9 +23,8 @@ namespace Lumina
 {
     namespace
     {
-        // Unscaled reference style captured right after Initialize() configures it.
-        // UI scaling resets to this before re-applying, so repeated scale changes
-        // don't compound (ScaleAllSizes multiplies the values it sees).
+        // Unscaled reference style captured after Initialize(); scaling resets to this before
+        // re-applying so repeated changes don't compound (ScaleAllSizes multiplies what it sees).
         ImGuiStyle GBaseStyle;
         bool       GBaseStyleValid = false;
         float      GAppliedScale   = -1.0f;
@@ -34,9 +33,8 @@ namespace Lumina
         // editor feel cramped, so we trade a little crispness for more usable room.
         constexpr float kAutoScaleBias = 0.85f;
 
-        // The UI is tuned for high-res screens. Below the reference height we scale
-        // down further (the editor gets "chunky" on 1080p otherwise); at/above it we
-        // apply no extra reduction. Lerps MinFactor..1 across 0..ReferenceHeight.
+        // UI is tuned for high-res screens; below the reference height we scale down further
+        // (chunky on 1080p otherwise). Lerps MinFactor..1 across 0..ReferenceHeight.
         float ResolutionFactor(float ScreenHeight)
         {
             constexpr float ReferenceHeight = 2160.0f;  // 4K, where the UI looks right
@@ -98,9 +96,8 @@ namespace Lumina
     {
         IMGUI_CHECKVERSION();
 
-        // Route this (Runtime) ImGui copy through our allocator. Must also be done in every
-        // other module that links ImGui -- see ImGuiAllocator.h. Before CreateContext so even
-        // ImGui's first internal allocation is ours.
+        // Route this Runtime ImGui copy through our allocator (every module that links ImGui must;
+        // see ImGuiAllocator.h). Before CreateContext so even ImGui's first internal alloc is ours.
         ImGuiX::InstallImGuiAllocator();
 		
         Context = ImGui::CreateContext();
@@ -326,9 +323,7 @@ namespace Lumina
         Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
         if (!Snapshot.IsValid())
         {
-            // Still bump produced -- the render thread won't try to read this
-            // slot, but a Signal pair must follow every Wait for the counters
-            // to stay paired across slots.
+            // Still bump produced: a Signal must follow every Wait to keep counters paired across slots.
             SnapshotProduced[Slot].fetch_add(1, std::memory_order_release);
             SignalSnapshotSlotConsumed(FrameIndex);
             return nullptr;

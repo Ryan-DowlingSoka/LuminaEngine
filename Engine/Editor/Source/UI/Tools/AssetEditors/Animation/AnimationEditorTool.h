@@ -40,14 +40,14 @@ namespace Lumina
         // Active timeline drag interaction.
         enum class EDragMode : uint8 { None, Playhead, MoveItem, ResizeStart, ResizeEnd };
 
-        // ---- Panels --------------------------------------------------------------
+        // Panels
         void DrawSequencer();
         void DrawTransport(SSimpleAnimationComponent* AnimComp, float Duration);
         void DrawNotifyTimeline(CAnimation* Animation, SSimpleAnimationComponent* AnimComp, float Duration);
         void DrawNotifyInspector(CAnimation* Animation);
         void DrawCurveEditor(CAnimation* Animation, SSimpleAnimationComponent* AnimComp, float Duration);
 
-        // ---- Notify data helpers -------------------------------------------------
+        // Notify data helpers
         void  EnsureNotifyTracks(FAnimationResource* Resource);
         void  MarkAnimationDirty();
         float SnapTime(float Time, float Duration) const;
@@ -57,7 +57,7 @@ namespace Lumina
 
         SSimpleAnimationComponent* GetPreviewComponent() const;
 
-        // ---- Transport state -----------------------------------------------------
+        // Transport state
         bool  bIsPlaying = false;
         bool  bLooping   = true;
         float Playrate   = 1.0f;
@@ -65,13 +65,13 @@ namespace Lumina
         // world reports dt=0) and uses this to flash notifies the playhead crosses.
         float LastPlayheadTime = 0.0f;
 
-        // ---- Timeline view state -------------------------------------------------
+        // Timeline view state
         float TimelineZoom = 1.0f;       // 1 == fit clip to visible width
         float TimelinePanSeconds = 0.0f; // time at the left edge of the lane area
         bool  bSnapToFrame = true;
         int   FrameRate = 30;
 
-        // ---- Selection / drag ----------------------------------------------------
+        // Selection / drag
         ENotifyKind SelectedKind = ENotifyKind::None;
         int         SelectedIndex = -1;
         int         SelectedTrack = -1;
@@ -87,7 +87,7 @@ namespace Lumina
         // so authored events visibly fire while previewing. Maps notify index -> flash age.
         float       NotifyFlash[256] = {};
 
-        // ---- Curve view ----------------------------------------------------------
+        // Curve view
         int  SelectedChannel = -1;
 
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;

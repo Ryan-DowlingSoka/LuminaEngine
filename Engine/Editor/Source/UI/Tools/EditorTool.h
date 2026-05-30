@@ -212,9 +212,8 @@ namespace Lumina
         /** Screen-space bone-name labels for every skeletal mesh (CVar-gated); called from DrawViewport. */
         void DrawSkeletonNameLabels(const ImVec2& ViewportOrigin, const ImVec2& ViewportSize);
 
-        /** Renders the skeleton-debug toggles (Show Skeleton / Names / Axes / X-Ray / distance).
-         *  Call inside a menu or popup; backed by the Editor.Debug.Skeleton* console variables so
-         *  every surface (world view-mode popup, anim/skeleton editors, console) stays in sync. */
+        /** Skeleton-debug toggles; call inside a menu/popup. Backed by Editor.Debug.Skeleton*
+         *  CVars so every surface stays in sync. */
         void DrawSkeletonDebugMenuItems();
 
         bool BeginViewportToolbarGroup(char const* GroupID, ImVec2 GroupSize, const ImVec2& Padding);
@@ -263,6 +262,11 @@ namespace Lumina
         entt::entity HandleContentBrowserAssetDrop(FStringView VirtualPath, entt::entity DropTarget);
 
     protected:
+
+        /** Undo/redo is only meaningful for an editable (Editor-type) world. Play/Simulate run on a
+         *  transient PIE world that is discarded on stop, so transacting it is pointless and a full-registry
+         *  serialize there causes a frame hitch (e.g. dragging the gizmo while simulating). */
+        bool CanTransact() const { return World != nullptr && World->GetWorldType() == EWorldType::Editor; }
 
         /** Begin a transaction; captures before-state. */
         virtual void BeginTransaction();

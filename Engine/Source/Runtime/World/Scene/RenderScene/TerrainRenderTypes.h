@@ -105,12 +105,8 @@ namespace Lumina
     };
     static_assert(sizeof(FTerrainVisibleMeshlet) == 8);
 
-    /**
-     * Render-thread-owned GPU resources for one terrain. Lives in the render scene's
-     * per-entity map (FForwardRenderScene::TerrainGPUStates), NOT on the component, so
-     * the render thread never dereferences a component the game thread may have freed.
-     * Only ever touched by the render thread.
-     */
+    // Render-thread-owned GPU resources for one terrain. Lives in TerrainGPUStates keyed by entity, NOT
+    // on the component, so the render thread never dereferences a component the game thread may have freed.
     struct FTerrainGPUState
     {
         /** R32_FLOAT mirror of CPU Heightmap. */

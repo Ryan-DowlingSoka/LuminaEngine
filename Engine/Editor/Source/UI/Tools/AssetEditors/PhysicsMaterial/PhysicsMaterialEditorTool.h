@@ -5,11 +5,8 @@
 
 namespace Lumina
 {
-    /**
-     * Editor for CPhysicsMaterial. All fields (Friction / Restitution / Density / combine modes)
-     * are reflected, so this is just a thin wrapper that hosts FAssetEditorTool's PropertyTable
-     * in a docked window. No 3D preview -- physics-material authoring is pure scalar editing.
-     */
+    // Editor for CPhysicsMaterial: all fields are reflected, so this just hosts
+    // FAssetEditorTool's PropertyTable in a docked window. No 3D preview.
     class FPhysicsMaterialEditorTool : public FAssetEditorTool
     {
     public:

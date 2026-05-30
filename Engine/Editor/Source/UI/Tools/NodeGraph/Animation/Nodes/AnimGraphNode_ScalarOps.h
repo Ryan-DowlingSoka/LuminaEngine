@@ -50,8 +50,6 @@ namespace Lumina
         CAnimGraphPin* ResultPin = nullptr;
     };
 
-    // -- Binary ops ---------------------------------------------------------
-
     REFLECT()
     class CAnimGraphNode_Add : public CAnimGraphNode_ScalarBinaryOp
     {
@@ -114,8 +112,6 @@ namespace Lumina
         FString GetNodeTooltip() const override { return "Returns the greater of A and B."; }
         EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Max; }
     };
-
-    // -- Unary ops ----------------------------------------------------------
 
     REFLECT()
     class CAnimGraphNode_Clamp01 : public CAnimGraphNode_ScalarUnaryOp

@@ -47,13 +47,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Shadows")
         bool bReceiveShadow = true;
 
-        /**
-         * LOD override. -1 = automatic (distance/radius pick); 0 or higher
-         * pins the instance to that LOD regardless of camera distance. The
-         * renderer clamps to the surface's actual NumLODs, so values past
-         * the available LOD count are safe -- they degrade to the coarsest
-         * LOD the asset has.
-         */
+        // LOD override. -1 = automatic (distance/radius); >= 0 pins that LOD. Clamped to the surface's
+        // NumLODs, so out-of-range values safely degrade to the coarsest LOD.
         PROPERTY(Editable, Category = "Rendering")
         int32 ForcedLODIndex = -1;
     };

@@ -9,15 +9,8 @@ namespace Lumina
 {
     class CWorld;
 
-    /**
-     * Owns the active-camera selection and the cinematic blend between cameras.
-     *
-     * Switching with a non-zero blend time snapshots the currently displayed view
-     * (the "from" pose) and eases toward the new active camera over BlendTime.
-     * SCameraSystem drives the blend each frame: it ticks the timer, interpolates
-     * pose/FOV/post-process from the snapshot toward the live target, and stores
-     * the resolved result back here so the next switch can blend from it.
-     */
+    // Owns active-camera selection + cinematic blend. A non-zero blend snapshots the current view and eases
+    // to the new camera over BlendTime; SCameraSystem ticks it each frame and stores the result back here.
     class FCameraManager
     {
     public:

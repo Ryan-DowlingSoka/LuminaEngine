@@ -34,11 +34,8 @@ namespace Lumina
         int Length = 0; // identifier length in characters
     };
 
-    // Single Luau Analysis lint warning, mapped from Luau::LintWarning into
-    // engine types so callers don't pull in Luau::Lint headers. Produced by
-    // FLuaAstAnalyzer::RunLint using whatever AST the most recent Parse()
-    // produced - which means lint shares its parse with the outline / local
-    // / hover passes instead of re-parsing the buffer.
+    // A Luau lint warning mapped into engine types (no Luau::Lint headers for callers).
+    // Produced by RunLint against the last Parse()'s AST, shared with outline/local/hover.
     struct FLuaLintWarning
     {
         // 1-based source line. Matches Luau::Location::begin.line + 1.
@@ -53,13 +50,8 @@ namespace Lumina
         FString Message;
     };
 
-    // PIMPL'd front-end for Luau's AST. Keeps Luau headers out of public
-    // include surfaces (a lot of the editor includes Containers/, and we
-    // don't want to drag the entire Luau type system into every TU).
-    //
-    // One instance per editor; reused across parses. Parse() allocates a fresh
-    // backing arena and ParseResult under the hood; the AST is valid until the
-    // next Parse() or destruction.
+    // PIMPL'd front-end for Luau's AST, keeping Luau headers out of public includes. One per
+    // editor, reused across parses; the AST is valid until the next Parse() or destruction.
     class FLuaAstAnalyzer
     {
     public:
@@ -69,27 +61,23 @@ namespace Lumina
         FLuaAstAnalyzer(const FLuaAstAnalyzer&) = delete;
         FLuaAstAnalyzer& operator=(const FLuaAstAnalyzer&) = delete;
 
-        // (Re)parse source. Returns true if the parse produced a usable tree.
-        // Even on parse failure we keep partial AST when Luau recovers, so
-        // most queries continue to work; they just see the recovered shape.
+        // (Re)parse source; true if a usable tree resulted. On failure we keep the
+        // partial AST Luau recovers, so most queries still work on the recovered shape.
         bool Parse(FStringView Source);
 
         // True if Parse() has been called and the AST root is non-null.
         bool IsValid() const;
 
-        // Outline collection - depth-first walk over function/method/local
-        // declarations and exported fields. Cheap; fine to call on every
-        // outline-panel render or after each (debounced) edit.
+        // Outline: DFS over function/method/local declarations and exported fields.
+        // Cheap; fine to call per outline-panel render or after each debounced edit.
         void CollectOutline(TVector<FLuaAstOutlineEntry>& Out) const;
 
         // All buffer locals + their annotated type / inferred origin name.
         // Used by hover/autocomplete so they reflect lexical-scope locals.
         void CollectLocals(TVector<FLuaAstLocalEntry>& Out) const;
 
-        // Resolve the identifier at (Line1, Col1) (1-based) to the location
-        // of its declaration. Returns true on success and writes the local's
-        // name + declaration line/col. Globals and member-access expressions
-        // are intentionally not resolved here - those need the type checker.
+        // Resolve the local identifier at 1-based (Line1, Col1) to its declaration (writes
+        // name + line/col). Globals and member access need the type checker, not handled here.
         bool FindLocalDefinition(int Line1, int Col1, FString* OutName,
                                   int* OutDeclLine1, int* OutDeclCol1) const;
 
@@ -97,31 +85,20 @@ namespace Lumina
         // declaration itself. Empty if the cursor isn't on a local.
         void FindLocalReferences(int Line1, int Col1, TVector<FLuaSymbolRef>& Out) const;
 
-        // Smart-selection step: find the smallest enclosing AST range strictly
-        // larger than the given (Cur*) selection, around (Line1, Col1). Returns
-        // true and writes 1-based (start, end) bounds on success. If the input
-        // selection already matches the cursor's enclosing range, walks one
-        // level outward.
+        // Smart-selection: smallest enclosing AST range strictly larger than the (Cur*)
+        // selection around the cursor; writes 1-based bounds. Walks outward if already matching.
         bool FindEnclosingRange(int CursorLine1, int CursorCol1,
                                 int CurStartLine1, int CurStartCol1,
                                 int CurEndLine1, int CurEndCol1,
                                 int& OutStartLine1, int& OutStartCol1,
                                 int& OutEndLine1, int& OutEndCol1) const;
 
-        // Pretty-print the entire source via Luau::prettyPrint. Returns true
-        // on success; writes the formatted text to OutText. On parse failure,
-        // OutError carries Luau's diagnostic and OutText is left empty.
+        // Pretty-print source via Luau::prettyPrint into OutText; true on success.
+        // On parse failure OutError carries Luau's diagnostic and OutText is empty.
         static bool Format(FStringView Source, FString& OutText, FString& OutError);
 
-        // Run Luau Analysis's linter against the AST produced by the last
-        // Parse(). Returns true if a lint pass was attempted (warnings list
-        // is then populated; may be empty). Returns false when the buffer
-        // failed to parse - syntactic errors flow through the compile-error
-        // broadcast and lint against a broken tree would just be noise.
-        //
-        // Type-checker-dependent lint codes (UnknownGlobal/UnknownType/
-        // DeprecatedApi/DeprecatedGlobal) are left disabled. A future engine
-        // .d.luau registration step is what would let those flip on.
+        // Lint the last Parse()'s AST; true if a pass ran (Out may be empty), false on parse
+        // failure. Type-checker-dependent codes (UnknownGlobal/Type, Deprecated*) stay disabled.
         bool RunLint(TVector<FLuaLintWarning>& Out) const;
 
     private:

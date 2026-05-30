@@ -1,6 +1,11 @@
 #include "pch.h"
 #include "RmlUiFileInterface.h"
 
+#include "Assets/AssetRegistry/AssetData.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Font/Font.h"
+#include "Core/Object/Class.h"
+#include "Core/Object/ObjectCore.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 
@@ -16,6 +21,35 @@ namespace Lumina
             TVector<uint8> Bytes;
             size_t         Cursor = 0;
         };
+
+        // An RML/RCSS path naming a CFont asset is resolved through the asset system and its bytes returned,
+        // not read raw off the VFS. RmlUi copies them into its own face storage, so the asset needn't outlive this.
+        bool TryReadFontAsset(const Rml::String& RawPath, TVector<uint8>& OutBytes)
+        {
+            FString Path(RawPath.c_str(), RawPath.size());
+
+            // RmlUi strips the leading slash off absolute paths; asset paths keep it.
+            if (!Path.empty() && Path[0] != '/')
+            {
+                Path = "/" + Path;
+            }
+
+            const FStringView PathView(Path.c_str(), Path.size());
+            const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(PathView);
+            if (Data == nullptr || Data->AssetClass != CFont::StaticClass()->GetName())
+            {
+                return false;
+            }
+
+            CFont* Font = LoadObject<CFont>(PathView);
+            if (Font == nullptr || !Font->IsValid())
+            {
+                return false;
+            }
+
+            OutBytes = Font->GetFontData();
+            return true;
+        }
     }
 
     Rml::FileHandle FRmlUiFileInterface::Open(const Rml::String& Path)
@@ -23,7 +57,7 @@ namespace Lumina
         FStringView Source(Path.c_str(), Path.size());
 
         TVector<uint8> Bytes;
-        if (!VFS::ReadFile(Bytes, Source))
+        if (!TryReadFontAsset(Path, Bytes) && !VFS::ReadFile(Bytes, Source))
         {
             // Fall back to virtual-path resolver for absolute editor paths.
             const FFixedString Resolved = VFS::ResolveToVirtualPath(Source);
@@ -102,7 +136,7 @@ namespace Lumina
         // Routes through VFS so PAK mounts work.
         FStringView Source(Path.c_str(), Path.size());
         TVector<uint8> Bytes;
-        if (!VFS::ReadFile(Bytes, Source))
+        if (!TryReadFontAsset(Path, Bytes) && !VFS::ReadFile(Bytes, Source))
         {
             const FFixedString Resolved = VFS::ResolveToVirtualPath(Source);
             if (!VFS::ReadFile(Bytes, FStringView(Resolved.c_str(), Resolved.size())))

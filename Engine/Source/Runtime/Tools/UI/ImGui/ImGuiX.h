@@ -30,21 +30,12 @@ namespace Lumina::ImGuiX
         ImVec2          Size = ImVec2(0, 0);
     };
     
-    //--------------------------------------------------------------
-    // DPI / UI scaling
-    //--------------------------------------------------------------
-
-    // Current editor UI scale (monitor DPI * bias). 1.0 = no scaling. ImGui fonts
-    // and style track this automatically; multiply any hardcoded pixel dimension
-    // (fixed button/toolbar sizes) by this so custom layouts stay aligned.
+    // Editor UI scale (monitor DPI * bias); 1.0 = none. Fonts/style track it automatically;
+    // multiply hardcoded pixel sizes by this so custom layouts stay aligned.
     RUNTIME_API float GetUIScale();
 
     // Set by the ImGui renderer whenever the scale is (re)resolved.
     RUNTIME_API void SetUIScale(float Scale);
-
-    //--------------------------------------------------------------
-    // Generic draw helpers...
-    //--------------------------------------------------------------
 
     RUNTIME_API void TextTooltip_Internal(FStringView String);
     RUNTIME_API void TextColoredUnformatted(const ImVec4& Color, const FFixedString& String);
@@ -129,9 +120,8 @@ namespace Lumina::ImGuiX
     // A searchable single-select dropdown.
     RUNTIME_API int32 SearchableCombo(const char* StrId, const char* Preview, int32 ItemCount, int32 CurrentIndex, const TFunction<FFixedString(int32)>& GetItemLabel, const char* ItemIcon = nullptr);
 
-    // Searchable combo for picking an asset of (or deriving from) FilterClass from the asset
-    // registry. Shows the current selection, writes the chosen asset's GUID into InOutGUID and
-    // returns true when it changes. The one widget every "select an underlying asset" UI uses.
+    // Searchable combo for picking an asset of (or deriving from) FilterClass from the registry.
+    // Writes the chosen asset's GUID into InOutGUID and returns true when it changes.
     RUNTIME_API bool AssetReferenceCombo(const char* StrId, CClass* FilterClass, FGuid& InOutGUID, const char* ItemIcon = nullptr);
     
     RUNTIME_API ImTextureRef ToImTextureRef(FRHIImage* Image);
@@ -155,7 +145,11 @@ namespace Lumina::ImGuiX
 
 
         RUNTIME_API void NotifyInternal(EType Type, FStringView Msg);
-        
+
+        // Extra pixels to lift the notification stack above the work-area bottom edge.
+        // The editor sets this to the open footer drawer's height so toasts aren't covered.
+        RUNTIME_API void SetBottomInset(float Pixels);
+
         template <typename... TArgs>
         void NotifyInfo(std::format_string<TArgs...> fmt, TArgs&&... Args)
         {

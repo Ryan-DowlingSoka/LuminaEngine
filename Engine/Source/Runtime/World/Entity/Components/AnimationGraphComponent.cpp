@@ -7,9 +7,8 @@ namespace Lumina
 {
     void SAnimationGraphComponent::EnsureStateInitialized()
     {
-        // Also re-init when the parameter count drifts: an editor edit can add a
-        // transition condition referencing a brand-new parameter without changing
-        // the register layout, leaving VMState.Parameters too small to address it.
+        // Re-init when the parameter count drifts: an editor edit can add a transition condition
+        // referencing a new parameter, leaving VMState.Parameters too small to address it.
         if (!VMState.bInitialized ||
             VMState.SourceGraph != Graph.Get() ||
             (Graph.IsValid() && VMState.Parameters.size() != Graph->Parameters.size()))

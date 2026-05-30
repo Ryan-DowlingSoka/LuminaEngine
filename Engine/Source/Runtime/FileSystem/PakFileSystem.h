@@ -4,14 +4,8 @@
 
 namespace Lumina::VFS
 {
-    /**
-     * Read-only IFileSystem backed by an FPakArchive. The archive is shared
-     * by TSharedPtr so multiple aliases (/Engine, /Game, /Config) can mount
-     * the same .pak without duplicating the buffer.
-     *
-     * Mutators (WriteFile, CreateDir, Remove, RemoveAll, Rename) are no-ops
-     * that return false. IsReadOnly() returns true so callers can skip them.
-     */
+    // Read-only IFileSystem over a shared FPakArchive (multiple aliases can mount one .pak).
+    // Mutators are no-ops returning false; IsReadOnly() returns true.
     class RUNTIME_API FPakFileSystem : public IFileSystem
     {
     public:

@@ -22,9 +22,8 @@ namespace Lumina
         FString ToDisplayString() const;
     };
 
-    // A named editor command exposed in the Help > Keyboard Shortcuts window.
-    // Tools register these in OnInitialize(); the base FEditorTool dispatches
-    // them once per frame from FEditorTool::Update().
+    // A named editor command shown in Help > Keyboard Shortcuts. Tools register these in
+    // OnInitialize(); FEditorTool::Update() dispatches them once per frame.
     struct FEditorAction
     {
         // Short imperative name shown in UI. e.g. "Translate Mode".
@@ -36,9 +35,8 @@ namespace Lumina
         // One-line tooltip shown next to the binding.
         FString             Description;
 
-        // Default chord that fires the callback. Single source of truth for
-        // tool keybinds; remapping support can wrap this later without touching
-        // tool code.
+        // Default chord that fires the callback; single source of truth for tool
+        // keybinds (remapping can wrap this later without touching tool code).
         FInputChord         DefaultChord;
 
         // Invoked when the chord triggers and CanExecute (if set) returns true.

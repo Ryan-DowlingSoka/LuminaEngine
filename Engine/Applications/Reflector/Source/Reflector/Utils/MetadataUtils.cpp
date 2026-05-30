@@ -11,8 +11,6 @@ static inline void SanitizeKeyValueString(eastl::string& OutString)
     OutString.rtrim();
 
     // Strip pairs of quotes
-    //-------------------------------------------------------------------------
-
     auto StripQuotes = [&OutString] ( char quote )
     {
         if (OutString.front() == quote && OutString.back() == quote)
@@ -24,8 +22,6 @@ static inline void SanitizeKeyValueString(eastl::string& OutString)
     StripQuotes('"');
     StripQuotes('\'');
     StripQuotes('`');
-
-    //-------------------------------------------------------------------------
 
     OutString.ltrim();
     OutString.rtrim();
@@ -43,8 +39,6 @@ void FMetadataParser::Parse(const eastl::string& Raw)
     Metadata.clear();
 
     // Fancier split since we might have delimiter characters inside a string block
-    //-------------------------------------------------------------------------
-
     eastl::vector<eastl::string> results;
 
     eastl::string currentToken;
@@ -60,8 +54,6 @@ void FMetadataParser::Parse(const eastl::string& Raw)
             quoteCount = 0;
             continue;
         }
-
-        //-------------------------------------------------------------------------
 
         if (RawCopy[i] == '"')
         {
@@ -84,8 +76,6 @@ void FMetadataParser::Parse(const eastl::string& Raw)
     }
 
     // Split results using the '=' char
-    //-------------------------------------------------------------------------
-
     for (eastl::string& part : results)
     {
         int32_t separatorIdx = -1;
@@ -97,8 +87,6 @@ void FMetadataParser::Parse(const eastl::string& Raw)
                 separatorIdx = i;
                 break;
             }
-
-            //-------------------------------------------------------------------------
 
             if (part[i] == '"')
             {

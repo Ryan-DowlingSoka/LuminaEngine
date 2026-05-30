@@ -10,9 +10,8 @@
 
 namespace Lumina
 {
-    // Render-thread worker. Owns the queue of game-thread-enqueued commands.
-    // When the worker is down (boot CVar disabled, before Start, after Stop)
-    // Enqueue runs inline on the caller -- callers never need to special-case.
+    // Render-thread worker owning the queue of game-thread-enqueued commands. When the worker is
+    // down (CVar off, before Start, after Stop) Enqueue runs inline on the caller.
     class RUNTIME_API FRenderThread
     {
     public:

@@ -1,9 +1,7 @@
 #pragma once
 
-// Process-global RmlUi backend. The per-world Rml::Context lives on CWorld
-// (FWorldUIContext); this bridge owns only the shared interfaces/renderer/font/
-// debugger plus editor-only preview contexts. Input flows from FInputViewport
-// via FLockedWorldContext.
+// Process-global RmlUi backend (shared interfaces/renderer/font/debugger + editor previews);
+// the per-world Rml::Context lives on CWorld via FWorldUIContext.
 
 #include "Core/Math/Math.h"
 #include "Containers/String.h"
@@ -44,12 +42,8 @@ namespace Lumina::RmlUi
     // Render thread: composite one world's UI onto its render target (from CWorld::Render).
     RUNTIME_API void            RenderWorldUI(const CWorld* World, ICommandList& CmdList);
 
-    // World-space widgets (SWidgetComponent). Per-widget state lives on the component
-    // (SWidgetComponent::Runtime). TickWorldWidgets iterates the world's view, lays each
-    // document into its offscreen RT, and queues render jobs (game thread, from CWorld::Extract
-    // before the render gather). RenderWorldWidgets rasterizes those queued RTs (render thread,
-    // from CWorld::Render before the scene). ReleaseWidget tears down one widget's context + RT,
-    // called from the world's on_destroy<SWidgetComponent> hook.
+    // World-space widgets (SWidgetComponent): Tick lays each document into its RT (game thread, in Extract),
+    // Render rasterizes the queued RTs (render thread), Release tears one down from on_destroy.
     RUNTIME_API void            TickWorldWidgets(CWorld* World);
     RUNTIME_API void            RenderWorldWidgets(const CWorld* World, ICommandList& CmdList);
     RUNTIME_API void            ReleaseWidget(CWorld* World, SWidgetComponent& Component);
@@ -68,11 +62,8 @@ namespace Lumina::RmlUi
     // editor picking / marquee should yield to it. Reads RmlUi's current hover.
     RUNTIME_API bool            WorldUIWantsMouse(const CWorld* World);
 
-    // RAII handle: acquires the bridge state lock for its lifetime and resolves
-    // the Rml::Context for a world. Use this whenever you need to call into the
-    // context (input dispatch via ProcessMouseMove/ProcessKeyDown/etc.) — the
-    // lock blocks the render thread's RenderWorldUI from walking the DOM until you
-    // release, and keeps the context pointer valid against teardown.
+    // RAII: holds the bridge lock and resolves a world's Rml::Context for the call duration; the lock
+    // blocks RenderWorldUI from walking the DOM and keeps the context valid against teardown.
     class RUNTIME_API FLockedWorldContext
     {
     public:
@@ -94,9 +85,7 @@ namespace Lumina::RmlUi
     // Lay UI out at this size instead of the RT image size; {0,0} reverts. Used by the editor viewport.
     RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const FUIntVector2& Size);
 
-    // Replace a world context's documents with one parsed from an in-memory RML
-    // body (e.g. the material editor's UI-material preview). SourceUrl resolves
-    // relative includes. Returns false on parse failure.
+    // Replace a world context's documents with one parsed from in-memory RML; SourceUrl resolves relative includes.
     RUNTIME_API bool            SetWorldInlineDocument(CWorld* World, FStringView Body, FStringView SourceUrl);
 
     RUNTIME_API FRmlUiRenderer* GetRenderer();

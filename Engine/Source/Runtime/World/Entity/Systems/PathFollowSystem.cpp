@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "PathFollowSystem.h"
 
+#include "AI/Navigation/NavMesh.h"
 #include "TaskSystem/TaskSystem.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CharacterControllerComponent.h"
@@ -64,6 +65,9 @@ namespace Lumina
         // Bulk-resolve before the parallel body; body must NOT mutate any transform.
         ECS::Utils::ResolveAllDirtyTransforms(Context.GetRegistry());
 
+        // Resolve the navmesh once; the per-follower body queries it directly (no per-tick view build).
+        FNavMesh* const NavMesh = Nav::GetReadyNavMesh(Context);
+
         auto&& TransformStorage = Context.GetRegistry().storage<STransformComponent>();
         Task::ParallelFor((uint32)Handle->size(), [&](uint32 Index)
         {
@@ -93,13 +97,15 @@ namespace Lumina
 
             const bool bMovedTarget = Math::Length(Goal - Comp.PathSourceTarget) > Comp.RepathDistance;
             const bool bIntervalElapsed = Comp.TimeSinceLastPath > Comp.RepathInterval;
-            const bool bNeedRepath = Comp.bPathDirty || Comp.CornerCount == 0 || bMovedTarget || bIntervalElapsed;
+            // No CornerCount==0 trigger: an unreachable goal would otherwise re-query every tick. The
+            // first acquire is covered by bPathDirty; failed retries back off to the repath interval.
+            const bool bNeedRepath = Comp.bPathDirty || bMovedTarget || bIntervalElapsed;
 
             if (bNeedRepath)
             {
                 FNavPath Path;
                 FNavQueryFilter Filter;
-                if (Nav::FindPath(Context, AgentPos, Goal, Filter, Path) && Path.bValid)
+                if (NavMesh && NavMesh->FindPath(AgentPos, Goal, Filter, Path) && Path.bValid)
                 {
                     StorePath(Comp, Path);
                     Comp.PathSourceTarget = Goal;

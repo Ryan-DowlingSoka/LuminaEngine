@@ -1,11 +1,5 @@
-// Generic no-op fallbacks for OS-shell-integration helpers declared in
-// PlatformProcess.h. Compiled only on platforms that don't have a native
-// implementation — on Windows the real bodies live in WindowsPlatformProcess.cpp
-// and this file is empty.
-//
-// The contract documented in PlatformProcess.h is "no-op if no equivalent on
-// this OS", so platform-agnostic editor code can call these unconditionally
-// without #ifdef walls.
+// No-op fallbacks for the OS-shell helpers in PlatformProcess.h; compiled only where there's no native impl
+// (empty on Windows, where WindowsPlatformProcess.cpp has the real bodies).
 
 #include "pch.h"
 
@@ -16,9 +10,7 @@
 
 namespace Lumina::Platform
 {
-    // Per-callsite once-flag: each stub gets its own static. A single
-    // shared `static bool` would silently swallow every call after the
-    // first across the whole trio.
+    // Per-callsite once-flag; a single shared static would swallow every call after the first.
     #define LUMINA_WARN_ONCE(What) \
         do { \
             static bool bWarned_ = false; \

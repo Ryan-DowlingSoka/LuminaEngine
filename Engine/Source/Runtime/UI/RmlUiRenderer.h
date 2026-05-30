@@ -30,10 +30,8 @@ namespace Lumina
         void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const FUIntVector2& ViewportSize, const FUIntVector2& LogicalSize = FUIntVector2(0));
         void EndFrame();
 
-        // Content-change gating. After Context::Render fills the draw list, PeekFrameHash hashes it;
-        // IsTargetUpToDate is true when this target's persistent batch already holds that exact draw
-        // list (so a caller whose RT persists -- world-space widgets -- can skip the whole pass).
-        // AbortFrame discards the pending draws without recording (flushing any generated textures).
+        // Content-change gating: PeekFrameHash hashes the draw list; IsTargetUpToDate is true when the target's
+        // batch already holds it (persistent RTs skip the pass). AbortFrame discards pending draws without recording.
         uint64                      PeekFrameHash() const;
         bool                        IsTargetUpToDate(FRHIImage* Target, uint64 Hash) const;
         void                        AbortFrame();
@@ -41,9 +39,8 @@ namespace Lumina
         // Drop a target's cached batch buffers (called when a widget RT is destroyed).
         void                        ReleaseTargetBatch(FRHIImage* Target);
 
-        // Consecutive-stable-frame tracking for caller-side dormancy: bStable=true (draw list
-        // unchanged) increments, false (changed / deferred) resets. GetTargetStableFrames lets the
-        // game thread stop ticking a settled widget entirely. Returns 0 for unknown targets.
+        // Consecutive-stable-frame count (bStable increments, change resets) so the game thread can stop
+        // ticking a settled widget; 0 for unknown targets.
         void                        NoteTargetStable(FRHIImage* Target, bool bStable);
         uint32                      GetTargetStableFrames(FRHIImage* Target) const;
 
@@ -61,9 +58,8 @@ namespace Lumina
         void                        SetTransform(const Rml::Matrix4f* Transform) override;
 
     private:
-        // RmlUi compiles geometry once per element and keeps the handle across frames. We cache the
-        // CPU bytes here; at EndFrame the referenced geometry is concatenated into the target's
-        // resident VB/IB (rebuilt only when the draw list changes -- see FTargetBatch).
+        // RmlUi compiles geometry once per element; we cache the CPU bytes and concatenate them at EndFrame
+        // into the target's resident VB/IB (rebuilt only on draw-list change).
         struct FGeometry
         {
             TVector<uint8> VertexData;
@@ -100,9 +96,7 @@ namespace Lumina
             Rml::Rectanglei             Scissor;
         };
 
-        // GPU vertex for the batched path: RmlUi's pos/color/uv plus the index
-        // of this vertex's draw in the per-draw buffer. Matches RmlUiVert.slang's
-        // input layout (stride 24).
+        // GPU vertex for the batched path (pos/color/uv + per-draw index); matches RmlUiVert.slang (stride 24).
         struct FUiVertex
         {
             float  Position[2];
@@ -123,12 +117,8 @@ namespace Lumina
             uint32    Pad1;
         };
 
-        // Persistent per-target geometry. The concatenated vertex/index batch lives in grown
-        // device buffers (uploaded only when the draw list changes), not the transient ring --
-        // UI geometry can be large and per-frame transient churn thrashes the upload pool. The
-        // per-draw data is small and stays transient (read in-shader via device address). Keyed
-        // by render target; widget RTs are 1:1 with a context, the world UI and editor previews
-        // each map to their own RT.
+        // Persistent per-target geometry: the VB/IB batch lives in grown device buffers (not the transient ring,
+        // which UI churn thrashes), re-uploaded only on draw-list change. Keyed by render target.
         struct FTargetBatch
         {
             FRHIBufferRef     VertexBuffer;

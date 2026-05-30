@@ -30,8 +30,6 @@ namespace Lumina
         CPackage* CurrentPackage;
     };
 
-    //---------------------------------------------------------------------------------
-
     /** This archiver will traverse an object hierarchy and find any references and build a save context. */
     class FSaveReferenceBuilderArchive : public FArchive
     {
@@ -70,14 +68,12 @@ namespace Lumina
         virtual FArchive& operator<<(CObject*& Value) override;
         virtual FArchive& operator<<(FObjectHandle& Value) override;
 
-        /** FSoftObjectPath::operator<< calls this so we can fold the soft
-         *  target's GUID into the ImportTable as a Soft edge. Same GUID as
-         *  a hard import takes the hard slot (deduped). */
+        /** Folds the soft target's GUID into the ImportTable as a Soft edge;
+         *  a GUID already present as a hard import keeps the hard slot. */
         virtual void RegisterSoftAssetReference(const FGuid& AssetGUID) override;
 
-        /** Build the package's ImportTable. Hard imports first (allocation
-         *  order they were discovered while writing exports), then soft
-         *  imports that didn't already appear as hard. */
+        /** Build the ImportTable: hard imports first (discovery order),
+         *  then soft imports not already present as hard. */
         void PopulateImportTable(TVector<FObjectImport>& Out) const;
 
         uint32 GetImportCount() const { return CurrentImportIndex; }

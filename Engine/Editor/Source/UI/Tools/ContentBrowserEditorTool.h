@@ -19,6 +19,11 @@ namespace Lumina
 {
     class CObjectRedirector;
     struct FAssetData;
+
+    // Starter contents for a new Lua entity script (Templates/Scripts/EntityScript.luau,
+    // with an inline fallback). Shared by the content browser's "New Lua Script" and the
+    // world editor's "Attach New Script".
+    FString LoadNewEntityScriptTemplate();
 }
 
 
@@ -176,10 +181,8 @@ namespace Lumina
 
         FDeferredActionRegistry     ActionRegistry;
 
-        // One watcher per content root (Game project + every enabled plugin
-        // with a content mount). Each carries its own virtual-path prefix
-        // ("/Game", "/<PluginName>") so script reload + content broadcasts
-        // resolve correctly regardless of which root saw the change.
+        // One watcher per content root (Game + each enabled plugin mount), each carrying its
+        // own virtual-path prefix so reload/content broadcasts resolve to the right root.
         struct FContentWatcher
         {
             TUniquePtr<FDirectoryWatcher>   Watcher;

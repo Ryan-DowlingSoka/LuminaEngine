@@ -19,6 +19,7 @@ namespace Lumina
         Blackboard,
         Prefab,
         World,
+        Font,
         Max,
     };
 
@@ -41,6 +42,10 @@ namespace Lumina
         {
             return EAssetType::StaticMesh;
         }
+        if(Extension == ".ttf" || Extension == ".otf")
+        {
+            return EAssetType::Font;
+        }
         return EAssetType::Max;
     }
 
@@ -57,6 +62,7 @@ namespace Lumina
             case EAssetType::Blackboard:            return "Blackboard";
             case EAssetType::Prefab:                return "Prefab";
             case EAssetType::World:                 return "World";
+            case EAssetType::Font:                  return "Font";
             case EAssetType::Max:                   return "INVALID";
         }
 

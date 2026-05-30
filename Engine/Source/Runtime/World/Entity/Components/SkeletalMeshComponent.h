@@ -37,9 +37,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Animation")
         EAnimUpdateMode VisibilityBasedAnimTick = EAnimUpdateMode::TickWhenRendered;
 
-        // World time (seconds) the render scene last kept this mesh through culling. Set by the
-        // renderer's gather; read by the animation systems to gate off-screen pose evaluation.
-        // -1 until first rendered. Transient render bookkeeping, never serialized.
+        // World time the render gather last kept this mesh through culling; animation systems read it
+        // to gate off-screen pose evaluation. -1 until first rendered. Transient, never serialized.
         double LastRenderedTime = -1.0;
         
         /** The skeletal mesh asset to render and animate for this component. */
@@ -54,9 +53,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Shadow")
         bool bReceiveShadow = true;
 
-        // Sized to the skeleton's bone count by the animation system (or to 0 when unused).
-        // The render scene uploads exactly this many matrices into the shared bone buffer
-        // and FGPUInstance.BoneOffset references the start of this instance's slice.
+        // Sized to the skeleton's bone count by the animation system (0 when unused). The render scene
+        // uploads exactly this many matrices; FGPUInstance.BoneOffset references this instance's slice.
         TVector<FMatrix4> BoneTransforms;
     };
 }

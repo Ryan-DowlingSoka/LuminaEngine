@@ -87,10 +87,8 @@ namespace Lumina
         OpacityPin = CreatePin(CMaterialInput::StaticClass(), "Opacity", ENodePinDirection::Input);
         OpacityPin->SetPinName("Opacity");
 
-        // World Position Offset — vertex-stage displacement in world space.
-        // Routed through the compiler's vertex chunk; if connected, the
-        // material's vertex shader bakes in the graph emission and adds the
-        // result to WorldPos before the View/Projection transforms.
+        // World Position Offset: vertex-stage world-space displacement routed through the vertex chunk.
+        // If connected, the vertex shader adds the graph emission to WorldPos before View/Projection.
         WorldPositionOffsetPin = CreatePin(CMaterialInput::StaticClass(), "World Position Offset (WPO)", ENodePinDirection::Input);
         WorldPositionOffsetPin->SetPinName("World Position Offset (XYZ)");
     }
@@ -162,13 +160,8 @@ namespace Lumina
         PixelOut += EmitMaterialAssignment("Normal",           NormalPin,    "float3(0.0, 0.0, 1.0)", 3);
         PixelOut += EmitMaterialAssignment("Opacity",          OpacityPin,   "1.0",                    1);
 
-        // Normal decode. The Normal pin carries a [0,1]-encoded tangent-space
-        // normal; decode XY and reconstruct Z from them. A unit tangent normal
-        // always has Z = sqrt(1 - x^2 - y^2) >= 0, so this is correct for both
-        // 3-channel (BC7) and 2-channel (BC5) normal maps and no longer depends
-        // on detecting the source texture's format -- detection broke BC5 maps
-        // routed through intermediate nodes, fed from texture parameters, or
-        // compiled before the texture's color space was set to NormalMap.
+        // Always reconstruct Z from the decoded XY (Z = sqrt(1 - x^2 - y^2) >= 0 for a unit normal):
+        // correct for BC7 and BC5 and avoids format detection, which broke BC5 maps through intermediate nodes.
         if (NormalPin->HasConnection())
         {
             PixelOut += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";

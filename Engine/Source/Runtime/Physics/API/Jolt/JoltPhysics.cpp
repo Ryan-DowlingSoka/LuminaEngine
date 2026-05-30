@@ -123,10 +123,7 @@ namespace Lumina::Physics
     {
         LOG_CRITICAL("JOLT ASSERT FAILED: Message {}, File: {} - {}", expr, msg, file, line);
 
-        // The physics-update error assert (contact / body-pair / manifold cache overflow) is
-        // recoverable: Jolt drops the excess contacts and returns the error, which CheckJoltError
-        // logs. It is a content-driven condition, not an engine bug, so never break on it -- not
-        // even under a debugger.
+        // EPhysicsUpdateError (cache overflow) is recoverable and content-driven; never break on it.
         if (expr != nullptr && std::strstr(expr, "EPhysicsUpdateError") != nullptr)
         {
             return false;
@@ -139,9 +136,8 @@ namespace Lumina::Physics
 
     void FJoltPhysicsContext::Initialize()
     {
-        // NOTE: must be JPH_ENABLE_ASSERTS, not JPH_ASSERT. JPH_ASSERT is a function-like macro,
-        // so `#if JPH_ASSERT` evaluates to 0 and this block never compiled in -- the handler below
-        // was never installed and Jolt's default (always-break) handler ran instead.
+        // Must be JPH_ENABLE_ASSERTS, not JPH_ASSERT: the latter is function-like, so `#if JPH_ASSERT`
+        // is 0 and the handler never installs (Jolt's always-break default runs instead).
         #ifdef JPH_ENABLE_ASSERTS
         JPH::Trace              = JoltTraceCallback;
         JPH::AssertFailed       = JoltAssertionFailed;

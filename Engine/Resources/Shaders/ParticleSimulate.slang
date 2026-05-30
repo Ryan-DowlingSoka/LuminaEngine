@@ -1,14 +1,5 @@
-// -----------------------------------------------------------------------------
-//  ParticleSimulate.slang
-//  Default data-driven particle simulation compute shader. Every module is
-//  driven by the FParticleSimParams uniform buffer, so this single shader
-//  handles explosions, smoke, sparks, rain, etc. without recompilation.
-//
-//  Layout must stay in sync with:
-//    - CParticleSystem (asset)
-//    - FForwardRenderScene particle passes (ForwardRenderScene.cpp)
-//    - ParticleVertex.slang (consumes FGPUParticle)
-// -----------------------------------------------------------------------------
+// Data-driven particle simulation: one shader for all effects, driven by FParticleSimParams.
+// Layout must stay in sync with CParticleSystem, ForwardRenderScene particle passes, and ParticleVertex.slang.
 
 // Emitter shape enums (must match EParticleEmitterShape)
 static const uint EMITTER_SHAPE_POINT  = 0u;
@@ -25,10 +16,6 @@ static const uint VELOCITY_MODE_RADIAL   = 1u;
 // Sim flags (bitmask in Counts.w)
 static const uint SIM_FLAG_LOOP         = (1u << 0);
 static const uint SIM_FLAG_BURST_PENDING = (1u << 1);
-
-// -----------------------------------------------------------------------------
-//  Buffer layout
-// -----------------------------------------------------------------------------
 
 // 64-byte particle. Do not change stride without updating ForwardRenderScene.
 struct FGPUParticle
@@ -81,10 +68,6 @@ struct FParticleSimParams
 [[vk::binding(0, 0)]] RWStructuredBuffer<FGPUParticle>    Particles;
 [[vk::binding(1, 0)]] ConstantBuffer<FParticleSimParams>  SimParams;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint>            SpawnCounter;   // scratch counter, sized 4 bytes
-
-// -----------------------------------------------------------------------------
-//  PRNG / hashing helpers
-// -----------------------------------------------------------------------------
 
 uint WangHash(uint x)
 {
@@ -143,11 +126,7 @@ float3 RandOnUnitSphere(inout uint state)
     return float3(sinPhi * cos(theta), sinPhi * sin(theta), cos(phi));
 }
 
-// -----------------------------------------------------------------------------
-//  Cheap 3D value noise - adequate for particle turbulence without sampling
-//  a 3D texture. Output in [-1, 1].
-// -----------------------------------------------------------------------------
-
+// Cheap 3D value noise for particle turbulence (no 3D texture). Output in [-1, 1].
 float Hash31(float3 p)
 {
     p = frac(p * 0.3183099 + 0.1);
@@ -195,10 +174,6 @@ float3 CurlishNoise(float3 p, float time, float scale, float speed)
         - ValueNoise(q - float3(0.0, 0.0, 19.1));
     return d * (1.0 / (2.0 * e));
 }
-
-// -----------------------------------------------------------------------------
-//  Emitter shape sampling
-// -----------------------------------------------------------------------------
 
 float3 SampleEmitterShape(inout uint state, uint shape, float3 shapeSize, float coneAngle,
                           float3 forward, float3 right, float3 up)
@@ -279,10 +254,6 @@ float3 ComputeInitialVelocity(inout uint state, uint mode, uint shape, float3 sp
     return lerp(velMin.xyz, velMax.xyz, r);
 }
 
-// -----------------------------------------------------------------------------
-//  Spawn / Simulate
-// -----------------------------------------------------------------------------
-
 void SpawnParticle(uint Index, inout FGPUParticle P)
 {
     uint seed = WangHash(Index * 73856093u ^ SimParams.Counts.z);
@@ -332,10 +303,8 @@ void SpawnParticle(uint Index, inout FGPUParticle P)
 
 void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)
 {
-    // Gravity
     P.Velocity += SimParams.Gravity.xyz * DeltaTime;
 
-    // Noise acceleration
     float3 noiseStrength = SimParams.NoiseStrength.xyz;
     if (any(noiseStrength > 0.0))
     {
@@ -366,10 +335,7 @@ void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)
     P.Size = lerp(startSize, endSize, lifeT);
 }
 
-// -----------------------------------------------------------------------------
-//  Entry point. 64 threads per group matches wavefront widths on AMD/NVIDIA.
-// -----------------------------------------------------------------------------
-
+// 64 threads per group matches wavefront widths on AMD/NVIDIA.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)

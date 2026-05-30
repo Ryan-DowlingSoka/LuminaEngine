@@ -215,10 +215,8 @@ namespace Lumina
 
         RUNTIME_API static bool SavePackage(CPackage* Package, FStringView Path);
 
-        /** Save a fully-loaded package into a compressed byte buffer with
-         *  EArchiverFlags::Cooking set on the writer. EditorOnly properties
-         *  are stripped, thumbnails are skipped. Used by the cooker to
-         *  produce the bytes that land in the shipped PAK. */
+        /** Save a loaded package to compressed bytes for the cooker (Cooking flag set);
+         *  strips EditorOnly properties and thumbnails. */
         RUNTIME_API NODISCARD static bool SavePackageForCook(CPackage* Package, TVector<uint8>& OutCompressed);
 
         /** Reads a package file from disk and decompresses it into the raw uncompressed package binary. */

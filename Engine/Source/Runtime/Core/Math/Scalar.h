@@ -7,23 +7,18 @@
 #include <concepts>
 #include <type_traits>
 
-// Scalar math in Lumina::Math. The common scalar functions the
-// engine uses (radians, trig, mix, clamp, step, ...) so call sites are a direct
-// rename. Vector component-wise overloads live in Vector/VectorMath.h.
+// Scalar math in Lumina::Math; component-wise vector overloads live in Vector/VectorMath.h.
 
 namespace Lumina::Math
 {
-    // ---- Constants (Pi<T>() etc.) -------------------------------------------
     template<typename T> [[nodiscard]] constexpr T Pi()       { return T(3.141592653589793238462643383279502884L); }
     template<typename T> [[nodiscard]] constexpr T TwoPi()    { return T(2) * Pi<T>(); }
     template<typename T> [[nodiscard]] constexpr T HalfPi()   { return Pi<T>() / T(2); }
     template<typename T> [[nodiscard]] constexpr T Epsilon()  { return std::numeric_limits<T>::epsilon(); }
 
-    // ---- Angle conversion ---------------------------------------------------
     template<std::floating_point T> [[nodiscard]] constexpr T Radians(T Degrees) { return Degrees * (Pi<T>() / T(180)); }
     template<std::floating_point T> [[nodiscard]] constexpr T Degrees(T Radians) { return Radians * (T(180) / Pi<T>()); }
 
-    // ---- Trig / transcendental (scalar) -------------------------------------
     template<std::floating_point T> [[nodiscard]] T Sin(T V)        { return std::sin(V); }
     template<std::floating_point T> [[nodiscard]] T Cos(T V)        { return std::cos(V); }
     template<std::floating_point T> [[nodiscard]] T Tan(T V)        { return std::tan(V); }
@@ -40,7 +35,6 @@ namespace Lumina::Math
     template<typename T> [[nodiscard]] T InverseSqrt(T V) { return T(1) / static_cast<T>(std::sqrt(V)); }
     template<typename T> [[nodiscard]] T Pow(T Base, T Exp){ return static_cast<T>(std::pow(Base, Exp)); }
 
-    // ---- Rounding -----------------------------------------------------------
     template<std::floating_point T> [[nodiscard]] T Floor(T V) { return std::floor(V); }
     template<std::floating_point T> [[nodiscard]] T Ceil(T V)  { return std::ceil(V); }
     template<std::floating_point T> [[nodiscard]] T Round(T V) { return std::round(V); }
@@ -48,7 +42,6 @@ namespace Lumina::Math
     template<std::floating_point T> [[nodiscard]] T Fract(T V) { return V - std::floor(V); }
     template<std::floating_point T> [[nodiscard]] T Mod(T X, T Y) { return X - Y * std::floor(X / Y); }
 
-    // ---- Common -------------------------------------------------------------
     template<typename T> requires std::is_arithmetic_v<T>
     [[nodiscard]] constexpr T Max(T A, T B) { return A < B ? B : A; }
 

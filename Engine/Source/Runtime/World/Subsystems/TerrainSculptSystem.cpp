@@ -418,9 +418,8 @@ namespace Lumina
             return;
         }
 
-        // Endpoint heights are relative to the terrain origin, matching how the
-        // heightmap is sampled everywhere else; using absolute world Y would break
-        // ramps once the terrain entity is moved off Y=0.
+        // Endpoint heights are relative to the terrain origin (as sampled everywhere else); absolute
+        // world Y would break ramps once the terrain entity moves off Y=0.
         const float MaxH = std::max(Terrain.MaxHeight, 1e-3f);
         const float StartN = Dab.RampUseExplicitHeights
             ? Math::Clamp(Dab.RampStartHeight / MaxH, 0.0f, 1.0f)
@@ -454,9 +453,8 @@ namespace Lumina
                         continue;
                     }
 
-                    // Lateral feather: full strength in an inner core, smoothstepped to 0 at the
-                    // edge so the ramp blends into the surrounding terrain instead of leaving a
-                    // vertical wall. Falloff sets the width of the feathered band.
+                    // Lateral feather: full strength in an inner core, smoothstepped to 0 at the edge so
+                    // the ramp blends in instead of a vertical wall. Falloff sets the feathered band width.
                     const float Edge = Perp / HalfWidth;       // 0 center, 1 edge
                     float Lat = 1.0f;
                     if (Feather > 1e-4f)

@@ -5,11 +5,8 @@ namespace Lumina
 {
     class CWorld;
 
-    // Draw-scoped context for entity-reference property pickers (a uint32 property marked
-    // with the "Entity" metadata). Whoever draws a property table for a component that
-    // lives in a world sets this around the draw so the picker can enumerate and select
-    // entities in that world. Null outside such a scope (e.g. asset editors), in which
-    // case the picker falls back to a plain read-only id field.
+    // Draw-scoped world for PROPERTY(Entity) pickers, so they can enumerate/select
+    // entities. Null outside such a scope (e.g. asset editors): picker falls back to a read-only id.
     CWorld* GetEntityPropertyContextWorld();
 
     // RAII: makes World the active entity-property context for the scope's lifetime and
@@ -27,13 +24,8 @@ namespace Lumina
         CWorld* Previous = nullptr;
     };
 
-    // --- Eyedropper pick request ------------------------------------------------
-    // Bridges an entity-reference property picker (in the details panel) and the
-    // world viewport. The picker calls RequestEntityPick with a token identifying
-    // itself; while a request is active the viewport tool shows a pick cursor and,
-    // on the next entity click, calls FulfillEntityPick (or CancelEntityPick on
-    // Esc / right-click / miss). The picker polls ConsumeEntityPickResult each frame
-    // and writes the chosen id into its property. Only one pick is active at a time.
+    // Eyedropper: bridges an entity-ref property picker and the viewport. One pick
+    // active at a time; picker polls ConsumeEntityPickResult and writes the chosen id.
 
     // Begin a pick for the picker identified by Token (replaces any in-flight request).
     void RequestEntityPick(uint64 Token);

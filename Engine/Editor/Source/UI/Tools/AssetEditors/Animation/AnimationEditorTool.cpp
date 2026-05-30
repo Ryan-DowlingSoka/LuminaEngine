@@ -298,9 +298,7 @@ namespace Lumina
         ImGui::DockBuilderDockWindow(GetToolWindowName(SequencerName).c_str(), bottomDockID);
     }
 
-    //=============================================================================
     // Sequencer / Timeline
-    //=============================================================================
 
     void FAnimationEditorTool::DrawSequencer()
     {
@@ -493,7 +491,7 @@ namespace Lumina
 
         DrawList->PushClipRect(ImVec2(LaneX0, RulerY0), ImVec2(LaneX1, CanvasPos.y + CanvasSize.y), true);
 
-        // --- Ruler ticks ---
+        // Ruler ticks
         {
             // Choose a tick step that yields ~90px spacing, quantized to frames.
             float TargetSec = 90.0f / PPS;
@@ -515,7 +513,7 @@ namespace Lumina
 
         DrawList->PopClipRect();
 
-        // --- Track headers + lane rows ---
+        // Track headers + lane rows
         for (int t = 0; t < NumTracks; ++t)
         {
             const float RowY0 = TracksY0 + t * kTrackHeight;
@@ -627,7 +625,7 @@ namespace Lumina
         }
         LastPlayheadTime = AnimComp->CurrentTime;
 
-        // --- Notify states (draw bars first, behind point flags) ---
+        // Notify states (draw bars first, behind point flags)
         for (int i = 0; i < (int)Resource->NotifyStates.size(); ++i)
         {
             FAnimationNotifyState& State = Resource->NotifyStates[i];
@@ -670,7 +668,7 @@ namespace Lumina
             }
         }
 
-        // --- Point notifies (flags) ---
+        // Point notifies (flags)
         for (int i = 0; i < (int)Resource->Notifies.size(); ++i)
         {
             FAnimationNotify& Notify = Resource->Notifies[i];
@@ -716,7 +714,7 @@ namespace Lumina
 
         DrawList->PopClipRect();
 
-        // --- Playhead (drawn over everything) ---
+        // Playhead (drawn over everything)
         {
             const float PX = TimeToX(AnimComp->CurrentTime);
             if (PX >= LaneX0 - 1.0f && PX <= LaneX1 + 1.0f)
@@ -728,7 +726,7 @@ namespace Lumina
             }
         }
 
-        // --- Drag handling ---
+        // Drag handling
         const ImRect RulerRect(ImVec2(LaneX0, RulerY0), ImVec2(LaneX1, RulerY0 + kRulerHeight));
         if (DragMode == EDragMode::None && bCanvasHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && RulerRect.Contains(IO.MousePos))
         {
@@ -774,7 +772,7 @@ namespace Lumina
             }
         }
 
-        // --- Shared item context menu ---
+        // Shared item context menu
         if (ImGui::BeginPopup("notify_item_ctx"))
         {
             if (ImGui::MenuItem(LE_ICON_MAP_MARKER " Move to playhead"))

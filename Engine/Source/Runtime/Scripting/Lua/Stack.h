@@ -51,11 +51,8 @@ namespace Lumina::Lua
     template<> struct TLuaNativeType<FVector3>         : eastl::true_type {};
     template<> struct TLuaNativeType<FVector4>         : eastl::true_type {};
 
-    // Marks a function parameter as supplied by the Lua execution context (the lua_State* or
-    // something resolved from its thread data) rather than read positionally from the call's
-    // argument stack. The invoker fills these in automatically and does NOT advance the stack
-    // index for them, so a binding can declare e.g. `void Foo(CWorld*, float x)` and call it as
-    // `Foo(x)` from Lua. Specialize for a type and provide `static T Get(lua_State*)`.
+    // Marks a parameter as supplied by the execution context (lua_State* or thread data), not read
+    // positionally; the invoker fills it without advancing the stack index. Specialize with static T Get(lua_State*).
     template<typename T>
     struct TLuaContext : eastl::false_type {};
 
@@ -551,10 +548,8 @@ namespace Lumina::Lua
 
             if constexpr (eastl::is_base_of_v<CObject, RawT>)
             {
-                // CObjects are owned by an embedded TObjectPtr: its ctor takes a strong GC ref and
-                // the type's userdata destructor runs ~TObjectPtr to release it -- ordinary C++
-                // lifetime, no bespoke ref bookkeeping. TObjectPtr is a single RawT* at offset 0, so
-                // the raw-pointer readers (Get/invokers/properties) recover the pointee unchanged.
+                // CObjects are owned by an embedded TObjectPtr (ctor takes a strong GC ref, the userdata
+                // destructor releases it). It's a single RawT* at offset 0, so raw-pointer readers recover it.
                 static_assert(sizeof(TObjectPtr<RawT>) == sizeof(RawT*), "TObjectPtr must be pointer-sized for offset-0 recovery");
                 void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(TObjectPtr<RawT>), TClassTraits<RawT>::Tag());
                 new (Block) TObjectPtr<RawT>(Ptr);

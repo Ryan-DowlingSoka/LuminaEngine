@@ -79,9 +79,8 @@ namespace Lumina
         FDispatchScope Scope(this);
         TVector<FListener>& Listeners = It->second;
 
-        // Snapshot size before iteration so listeners added mid-dispatch don't fire on
-        // this pass. Index-based iteration is safe because mutations are deferred while
-        // DispatchDepth > 0.
+        // Snapshot size so listeners added mid-dispatch don't fire this pass. Index-based iteration is
+        // safe because mutations are deferred while DispatchDepth > 0.
         const size_t Count = Listeners.size();
         for (size_t i = 0; i < Count; ++i)
         {

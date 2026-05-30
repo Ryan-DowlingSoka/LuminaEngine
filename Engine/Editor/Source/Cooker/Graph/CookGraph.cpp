@@ -61,10 +61,7 @@ namespace Lumina
         FAssetData* Data = Registry->GetAssetByGUID(TargetGUID);
         if (!Data)
         {
-            // Reachable GUID with no asset record. Common for engine CDOs /
-            // CClass / CStruct objects — those aren't cookable assets and
-            // we silently ignore them (matches old cooker's behavior). Real
-            // dangling refs would still cook OK; runtime warns on load.
+            // Reachable GUID with no asset record (engine CDOs / CClass / CStruct): not cookable, silently ignored. Real dangling refs still cook; runtime warns on load.
             return false;
         }
 
@@ -137,9 +134,7 @@ namespace Lumina
 
     TVector<const FCookNode*> FCookGraph::GetReachableNodesSorted() const
     {
-        // Sort by GUID for deterministic cook output: identical inputs ->
-        // identical PAK entry order -> identical hash (Phase 3 will rely
-        // on this for reproducible builds).
+        // Sort by GUID for deterministic cook output: identical inputs -> identical PAK order -> identical hash (reproducible builds).
         TVector<const FCookNode*> Out;
         Out.reserve(Nodes.size());
         for (const auto& Pair : Nodes)

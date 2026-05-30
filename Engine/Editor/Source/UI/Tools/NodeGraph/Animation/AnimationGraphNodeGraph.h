@@ -9,9 +9,8 @@ namespace Lumina
     class CAnimationGraph;
     class FAnimationGraphCompiler;
 
-    // Editor-side node graph for animation graphs. Mirrors CMaterialNodeGraph:
-    // the editor authors nodes here and CompileGraph walks them in topological
-    // order, emitting bytecode into the runtime CAnimationGraph asset.
+    // Editor-side node graph for animation graphs (mirrors CMaterialNodeGraph): CompileGraph walks the
+    // authored nodes in topological order, emitting bytecode into the runtime CAnimationGraph asset.
     REFLECT()
     class CAnimationGraphNodeGraph : public CEdNodeGraph
     {
@@ -21,14 +20,12 @@ namespace Lumina
         void Initialize() override;
         void Shutdown() override;
 
-        // Context-free setup: ensures an Output node exists and registers the
-        // creatable node types. Safe to call without a node-editor context, so
-        // the compiler can ready a never-opened state blend tree. Idempotent.
+        // Context-free setup (no node-editor context needed): ensures an Output node and registers
+        // creatable types, so the compiler can ready a never-opened state blend tree. Idempotent.
         void EnsureSetup();
 
-        // Rebuilds the serialized Connections array from live pin state. The base
-        // graph calls this after every connection edit; without the override the
-        // array stays empty and links are lost on save (mirrors the material graph).
+        // Rebuilds Connections from live pin state after every connection edit; without the override
+        // the array stays empty and links are lost on save (mirrors the material graph).
         void ValidateGraph() override;
 
         const FEdGraphSchema& GetSchema() const override;
@@ -36,23 +33,16 @@ namespace Lumina
         // Animation nodes expose value/enum defaults inline on their input pins.
         bool ShouldDrawInlinePinEditors() const override { return true; }
 
-        // Topologically sorts from the Output node and emits bytecode for each
-        // contributing node into Compiler, finishing with an Output opcode.
-        // Errors are attached to their nodes. Used for the top-level graph.
+        // Topo-sorts from the Output node and emits bytecode for each contributing node, finishing with
+        // an Output opcode. Errors attach to their nodes. Top-level graph entry point.
         void CompileGraph(FAnimationGraphCompiler& Compiler);
 
-        // Compiles this graph's node network into the shared compiler register
-        // space WITHOUT emitting a final Output opcode, returning the pose
-        // register feeding the graph's Output node in OutPoseReg. Used to
-        // compile a state's blend tree as a sub-graph of a state machine.
-        // Returns false (and pushes a compiler error) on a cycle / missing Output.
+        // Compiles into the shared register space WITHOUT a final Output opcode, returning the Output node's
+        // feeding pose register in OutPoseReg (used for a state's blend tree). Returns false on cycle / missing Output.
         bool CompileNodes(FAnimationGraphCompiler& Compiler, uint16& OutPoseReg);
 
-        // Registers every parameter declared anywhere in this graph tree,
-        // including from nodes (Get Parameter, state machine transition
-        // conditions) that the topo-sort would skip because they aren't wired
-        // into the Output. Recurses into nested state machines and per-state
-        // blend trees. Run once from the top-level CompileGraph.
+        // Registers every parameter declared in this tree, including from nodes the topo-sort skips because
+        // they aren't wired into the Output. Recurses into nested state machines / per-state blend trees.
         void CollectAllParameters(FAnimationGraphCompiler& Compiler);
 
         void SetAnimationGraph(CAnimationGraph* InGraph) { AnimationGraph = InGraph; }
@@ -62,9 +52,8 @@ namespace Lumina
 
         TObjectPtr<CAnimationGraph> AnimationGraph;
 
-        // One-shot guards; not serialized. bSetupDone covers the context-free
-        // Output-node / node-registration setup; bInitialized covers the full
-        // Initialize() (which additionally creates the node-editor context).
+        // One-shot guards; not serialized. bSetupDone covers context-free setup; bInitialized covers
+        // full Initialize() (which additionally creates the node-editor context).
         bool bSetupDone = false;
         bool bInitialized = false;
     };

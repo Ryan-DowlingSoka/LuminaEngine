@@ -5,11 +5,8 @@
 
 namespace Lumina
 {
-    // Blends Base and Overlay per-bone using a bone mask. Each bone's effective
-    // alpha is the global Alpha multiplied by that bone's mask weight, so an
-    // upper-body mask leaves the lower body fully on the base while letting the
-    // overlay take over the spine / arms. The mask is defined on the graph
-    // asset's Bone Masks list and referenced here by name.
+    // Per-bone blend of Base and Overlay via a bone mask: each bone's alpha is the global Alpha times its
+    // mask weight (e.g. an upper-body mask keeps the lower body on the base). Mask referenced by name.
     REFLECT()
     class CAnimGraphNode_LayeredBlendPerBone : public CAnimGraphNode
     {
@@ -23,10 +20,8 @@ namespace Lumina
         void BuildNode() override;
         void GenerateBytecode(FAnimationGraphCompiler& Compiler) override;
 
-        /** Bone whose subtree the overlay affects. When set, the overlay is
-         *  blended onto this bone and all of its descendants (e.g. pick "neck"
-         *  to drive the neck + head), no authored mask required. Takes priority
-         *  over Mask Name; leave None to use a named mask instead. */
+        /** Bone whose subtree the overlay affects (this bone + descendants), no authored mask needed.
+         *  Takes priority over Mask Name; leave None to use a named mask instead. */
         PROPERTY(Editable, Category = "Bone Mask", BonePicker)
         FName BoneName;
 

@@ -59,9 +59,8 @@ namespace Lumina
             return Memory::New<FObjectProperty>(MakeOwner(Owner), &Params);
         }
 
-        // FStructPropertyParams::StructFunc / FEnumPropertyParams::EnumFunc are plain function
-        // pointers that can't carry the resolved type. The property ctor calls them synchronously,
-        // so stage the type in a thread-local the trampoline reads, then clear it.
+        // StructFunc/EnumFunc are plain fn pointers that can't carry the type; the ctor calls
+        // them synchronously, so stage the type in a thread-local the trampoline reads.
         thread_local CStruct* GPendingStruct = nullptr;
         thread_local CEnum*   GPendingEnum   = nullptr;
 
@@ -91,9 +90,8 @@ namespace Lumina
             FEnumProperty* EnumProperty = Memory::New<FEnumProperty>(MakeOwner(Owner), &Params);
             GPendingEnum = nullptr;
 
-            // FEnumProperty has no element size of its own; we store the enum as a fixed int64
-            // and give it a matching inner numeric. The inner attaches to the enum (not the
-            // layout chain) through FEnumProperty::AddProperty.
+            // FEnumProperty has no element size; store as int64 with a matching inner numeric
+            // attached via FEnumProperty::AddProperty (not the layout chain).
             EnumProperty->SetElementSize(sizeof(int64));
             FPropertyParams InnerParams{};
             FillBaseParams(InnerParams, EPropertyTypeFlags::Int64, Offset, NameStr.c_str());
@@ -110,10 +108,8 @@ namespace Lumina
         template<typename T>
         void DestructAt(void* Mem) { static_cast<T*>(Mem)->~T(); }
 
-        // Copies one field's value Dst<-Src with the right semantics. Object fields hold a
-        // ref-counted TObjectPtr; FObjectProperty::CopyCompleteValue would memcpy and skip the
-        // add/release, leaking/losing strong refs. Copy those by assignment; everything else
-        // (trivial / FString / struct) is correct through the property's CopyCompleteValue.
+        // Copy Object fields by assignment: CopyCompleteValue would memcpy the TObjectPtr and
+        // skip add/release, losing strong refs. Everything else goes through CopyCompleteValue.
         void CopyBagValue(EBagPropertyType Type, FProperty* Property, void* Dst, const void* Src)
         {
             if (Type == EBagPropertyType::Object)
@@ -126,9 +122,8 @@ namespace Lumina
             }
         }
 
-        // Resolved layout for one field: how it sits in the buffer and how to manage its
-        // lifetime. Construct/Destruct are null for trivially-relocatable types (the buffer is
-        // zeroed first); FString and heap-owning structs supply real ones.
+        // Resolved field layout + lifetime; Construct/Destruct null for trivially-relocatable
+        // types (buffer zeroed first), real for FString and heap-owning structs.
         using FValueLifecycleFn = void(*)(void*);
 
         struct FResolvedField
@@ -141,9 +136,8 @@ namespace Lumina
             CEnum*            EnumType   = nullptr;   // Enum fields
         };
 
-        // Fills Out for a field of the given type. Returns false when an Enum/Struct type
-        // can't be resolved (renamed or unloaded) -- the caller drops the field rather than
-        // guess a layout. (Takes primitives, not the private FPropertyBagField, so it can live here.)
+        // Fills Out; returns false when an Enum/Struct type can't be resolved (renamed/unloaded),
+        // so the caller drops the field rather than guess a layout.
         bool ResolveField(EBagPropertyType Type, const FName& TypeName, FResolvedField& Out)
         {
             switch (Type)
@@ -427,9 +421,8 @@ namespace Lumina
 
         Layout = static_cast<CStruct*>(StaticAllocateObject(ObjectParams));
         CObjectForceRegistration(Layout);
-        // Keep the layout alive with a strong ref rather than rooting it: RemoveFromRoot locks
-        // the global root mutex, which deadlock-throws if the bag is torn down from inside the
-        // GC drain (which already holds it). ReleaseStrongRef takes no such lock.
+        // Strong-ref rather than root: RemoveFromRoot locks the root mutex and would deadlock
+        // if torn down inside the GC drain; ReleaseStrongRef takes no such lock.
         GObjectArray.AddStrongRef(Layout);
 
         // Lay the fields out contiguously, respecting each type's alignment. Creating an

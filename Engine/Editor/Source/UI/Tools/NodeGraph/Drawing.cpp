@@ -457,18 +457,10 @@ bool Graph::GraphNodeBuilder::SetStage(Stage stage)
             ImGui::Spring(1, 0);
             ImGui::EndVertical();
 
-            // #debug
-            // ImGui::GetWindowDrawList()->AddRect(
-            //     ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 0, 0, 255));
-
             break;
 
         case Stage::Middle:
             ImGui::EndVertical();
-
-            // #debug
-            // ImGui::GetWindowDrawList()->AddRect(
-            //     ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 0, 0, 255));
 
             break;
 
@@ -477,10 +469,6 @@ bool Graph::GraphNodeBuilder::SetStage(Stage stage)
 
             ImGui::Spring(1, 0);
             ImGui::EndVertical();
-
-            // #debug
-            // ImGui::GetWindowDrawList()->AddRect(
-            //     ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 0, 0, 255));
 
             break;
 
@@ -583,10 +571,6 @@ void Graph::GraphNodeBuilder::Pin(ax::NodeEditor::PinId id, ed::PinKind kind)
 void Graph::GraphNodeBuilder::EndPin()
 {
     ed::EndPin();
-
-    // #debug
-    // ImGui::GetWindowDrawList()->AddRectFilled(
-    //     ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 0, 0, 64));
 }
     
 }

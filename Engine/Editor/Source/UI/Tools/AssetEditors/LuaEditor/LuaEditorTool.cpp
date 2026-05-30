@@ -1847,9 +1847,8 @@ namespace Lumina
 
     void FLuaEditorTool::DrawToolbar()
     {
-        // Frequent actions as compact icon buttons; everything else lives in
-        // the overflow menu on the right. The filename shows in the window tab,
-        // so it's no longer repeated here.
+        // Frequent actions as compact icon buttons; the rest in the overflow menu.
+        // The filename shows in the window tab, so it isn't repeated here.
 
         // Save tints amber while the buffer is dirty.
         if (bBufferDirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.2f, 1.0f));

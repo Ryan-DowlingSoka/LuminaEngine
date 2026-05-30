@@ -16,17 +16,15 @@ namespace Lumina
 
         constexpr const char* CACHE_DIR = "/Intermediates/ShaderCache";
 
-        // Hash of the main .slang source plus every transitively-imported/included
-        // .slang file we can resolve, plus the (sorted) define list.
-        // Returns 0 if the main source can't be read.
+        // Hash of the main .slang source, every resolvable transitive import/include, and the
+        // sorted define list. Returns 0 if the main source can't be read.
         uint64 ComputeSourceSetHash(FStringView ShaderVirtualPath, const TVector<FString>& Defines);
 
         // Stable cache filename for (shader path + defines), independent of disk layout.
         FString CachePathFor(FStringView ShaderVirtualPath, const TVector<FString>& Defines);
 
-        // Hit only if the file exists, magic/version match, and SourceHash equals
-        // the stored one. SourceHash == 0 disables the source-hash check (used in
-        // packaged builds where source files aren't shipped — trust the cache).
+        // Hit only if file exists, magic/version match, and SourceHash matches the stored one.
+        // SourceHash == 0 disables the check (packaged builds ship no source -- trust the cache).
         bool TryLoad(FStringView ShaderVirtualPath, const TVector<FString>& Defines, uint64 SourceHash, FShaderHeader& OutHeader);
 
         // Same as TryLoad but loads directly from a known cache file path.

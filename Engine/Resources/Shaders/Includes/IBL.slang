@@ -1,16 +1,10 @@
 #pragma once
 #include "Common.slang"
 
-// ============================================================================
-//  Image-Based Lighting helpers
-//
-//  Shared by the BRDF integration LUT bake (BRDFIntegration.slang) and by
-//  consumers that sample IBL at runtime (BasePixelPass.slang etc.). Follows
-//  Karis 2013 "Real Shading in Unreal Engine 4" split-sum approximation.
-// ============================================================================
+// IBL helpers shared by the BRDF LUT bake and runtime IBL sampling.
+// Karis 2013 "Real Shading in Unreal Engine 4" split-sum approximation.
 
-// Hammersley low-discrepancy sequence. Quasi-random points on the unit
-// square, used as the (u, v) seed for GGX importance sampling.
+// Hammersley low-discrepancy (u, v) seed for GGX importance sampling.
 float RadicalInverse_VdC(uint Bits)
 {
     Bits = (Bits << 16u) | (Bits >> 16u);
@@ -51,9 +45,8 @@ float3 ImportanceSampleGGX(float2 Xi, float3 N, float Roughness)
     return normalize(Tangent * H.x + Bitangent * H.y + N * H.z);
 }
 
-// Smith geometry term tuned for IBL. The remap from roughness to k differs
-// from the direct-lighting form -- IBL uses k = a^2 / 2, direct uses
-// k = (a + 1)^2 / 8. Mixing them produces dim or over-bright reflections.
+// Smith geometry for IBL: k = a^2 / 2 (direct lighting uses k = (a + 1)^2 / 8).
+// Mixing the two remaps produces dim or over-bright reflections.
 float GeometrySchlickGGX_IBL(float NdotV, float Roughness)
 {
     float A = Roughness;
@@ -68,10 +61,8 @@ float GeometrySmith_IBL(float3 N, float3 V, float3 L, float Roughness)
     return GeometrySchlickGGX_IBL(NdotV, Roughness) * GeometrySchlickGGX_IBL(NdotL, Roughness);
 }
 
-// Roughness-aware Fresnel for IBL ambient. Standard Schlick falls off too
-// sharply once the surface is rough; clamping the (1 - cos)^5 envelope
-// against `max(1 - R, F0)` keeps metals' colored grazing response while
-// suppressing unrealistic rim brightness on rough surfaces.
+// Roughness-aware Fresnel for IBL ambient: clamp the (1 - cos)^5 envelope against max(1 - R, F0)
+// to keep metals' colored grazing response without unrealistic rim brightness on rough surfaces.
 float3 FresnelSchlickRoughness(float CosTheta, float3 F0, float Roughness)
 {
     float3 OneMinusR = max(float3(1.0 - Roughness), F0);
@@ -80,9 +71,8 @@ float3 FresnelSchlickRoughness(float CosTheta, float3 F0, float Roughness)
     return F0 + (OneMinusR - F0) * (X2 * X2 * X);
 }
 
-// Karis 2013 split-sum BRDF integrand. The output (scale, bias) is what the
-// pre-integrated LUT stores per (NdotV, Roughness): the runtime IBL specular
-// reduces to `Prefiltered * (F0 * scale + bias)`.
+// Karis 2013 split-sum BRDF integrand -> (scale, bias) stored in the LUT per (NdotV, Roughness).
+// Runtime IBL specular reduces to Prefiltered * (F0 * scale + bias).
 float2 IntegrateBRDF(float NdotV, float Roughness)
 {
     // V is reconstructed in tangent space with N = +Z. Only NdotV matters
@@ -110,9 +100,7 @@ float2 IntegrateBRDF(float NdotV, float Roughness)
 
         if (NdotL > 0.0)
         {
-            // PDF of the GGX importance sample cancels D(H) inside the
-            // integrand, leaving G * VdotH / (NdotH * NdotV) as the
-            // visibility-weighted contribution per sample.
+            // The GGX sample PDF cancels D(H), leaving G * VdotH / (NdotH * NdotV) per sample.
             float G     = GeometrySmith_IBL(N, V, L, Roughness);
             float G_Vis = (G * VdotH) / (NdotH * NdotV);
             float Fc    = pow(1.0 - VdotH, 5.0);

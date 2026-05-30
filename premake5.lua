@@ -11,9 +11,7 @@ include "BuildScripts/PluginDiscovery"
 include "BuildScripts/Actions/Reflection"
 include "BuildScripts/Actions/Clean"
 
--- Tests (and its GoogleTest dependency) are off by default so a normal
--- `premake5 vs2022` solution doesn't pay GoogleTest's ~22s clean-build cost.
--- Run `premake5 vs2022 --with-tests` to include them.
+-- Tests + GoogleTest are off by default (~22s clean-build cost); use `premake5 vs2022 --with-tests` to include them.
 newoption {
     trigger     = "with-tests",
     description = "Include the Tests project and its GoogleTest dependency",
@@ -38,11 +36,7 @@ LuminaWorkspaceSettings({
         include "Engine/Sandbox"
 	group ""
 
-    -- Engine plugins drop in here automatically: anything under
-    -- Engine/Plugins/<Name>/<Name>.lua gets included as projects in the
-    -- "Plugins" group. The runtime side (FPluginManager) walks the same
-    -- folder at startup, parses .lplugin descriptors, and loads the
-    -- matching DLLs per phase.
+    -- Engine plugins drop in automatically: Engine/Plugins/<Name>/<Name>.lua becomes a project here, matching FPluginManager's startup walk.
     group "Plugins"
         LuminaDiscoverEnginePlugins()
     group ""

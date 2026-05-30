@@ -27,11 +27,8 @@ namespace Lumina::Paths
         FString LuminaDir = LuminaDirEnv ? FString(LuminaDirEnv) : FString();
         Normalize(LuminaDir);
 
-        // Fall back to an executable-relative root when LUMINA_DIR is unset (e.g. a
-        // machine where Setup.bat never ran, or the env var didn't propagate to the
-        // session). The editor exe lives at <root>/Binaries/Windows64/Lumina-*.exe,
-        // so the engine root is two directories up. Without this, every resource path
-        // is malformed and font loading hard-crashes.
+        // Fall back to exe-relative root when LUMINA_DIR is unset; exe lives at <root>/Binaries/Windows64,
+        // so root is two dirs up. Without this every resource path is malformed and font loading crashes.
         if (LuminaDir.empty() || !std::filesystem::exists((LuminaDir + "/Engine/Resources").c_str()))
         {
             FString ExePath = Platform::GetCurrentProcessPath();
@@ -232,11 +229,8 @@ namespace Lumina::Paths
 
     namespace
     {
-        // In-place: replace '\\' with '/', then collapse runs of '/' to a
-        // single '/'. Required by VFS::Parent (returns parent with trailing
-        // slash) + any path-join site that does dir + "/" + name — without
-        // collapse, every join adds one more slash and the config grows
-        // forever (`H:/Engine/Sandbox/////////Sandbox.lproject`).
+        // Backslashes → '/', then collapse runs of '/'; without the collapse, repeated dir + "/" + name joins
+        // accumulate slashes and the path grows forever.
         template<typename StringT>
         void NormalizeInPlace(StringT& Path)
         {

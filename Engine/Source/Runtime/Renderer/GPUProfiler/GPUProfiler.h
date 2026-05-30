@@ -49,9 +49,8 @@ namespace Lumina
         uint64                                  FrameNumber         = 0;
         float                                   TotalTimeMs         = 0.0f;
         FPipelineStats                          TotalStats;
-        // CPU-recorded barrier counts for the frame (vkCmdPipelineBarrier2
-        // memory barriers), split so the buffer-side UAV barriers can be
-        // watched independently from image layout transitions.
+        // CPU-recorded barrier counts for the frame, split so buffer UAV barriers
+        // can be watched independently from image layout transitions.
         uint32                                  NumBufferBarriers   = 0;
         uint32                                  NumImageBarriers    = 0;
         EGPUFrameState                          State               = EGPUFrameState::Idle;
@@ -87,9 +86,8 @@ namespace Lumina
         void BeginScope(ICommandList* CmdList, const char* Name, const FColor& Color = FColor::White);
         void EndScope(ICommandList* CmdList);
 
-        // Accumulate barriers emitted this frame. Called from the RHI barrier
-        // commit on whatever thread records the command list, so it's atomic.
-        // EndFrame snapshots + resets these into the recording frame.
+        // Accumulate barriers emitted this frame; called from RHI barrier commit on whatever thread
+        // records the list (atomic). EndFrame snapshots + resets these into the recording frame.
         void AddBarriers(uint32 NumBuffer, uint32 NumImage);
 
         const FGPUProfileFrame* GetLatestResolvedFrame() const;

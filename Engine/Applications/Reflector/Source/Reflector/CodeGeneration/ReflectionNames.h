@@ -11,11 +11,8 @@ namespace Lumina::Reflection
     class FReflectedHeader;
     class FReflectedProject;
 
-    /**
-     * Central source of truth for every generated symbol name the reflector emits.
-     * Everything that builds "Construct_CStruct_Lumina_FName" or its friends routes
-     * through these helpers so the mangling rules live in one place.
-     */
+    // Central source of truth for every generated symbol name; all "Construct_CStruct_Lumina_FName"-style
+    // mangling routes through these helpers so the rules live in one place.
     namespace Names
     {
         // "Lumina::CObject" -> "Lumina_CObject".
@@ -63,18 +60,8 @@ namespace Lumina::Reflection
             return Out;
         }
 
-        // Emit a forward decl for a cross-module Construct_C* function, guarded
-        // against re-declaration within the same translation unit.
-        //
-        // Why guarded: every .generated.cpp that references a type owned by
-        // another header repeats that type's `<API> Lumina::<Kind>* Construct_*();`
-        // forward decl in its own Cross-Module References block. That is correct
-        // -- each .generated.cpp must be compilable standalone -- but the unity
-        // build concatenates many such files into one TU, and the same decl then
-        // appears many times. Identical redundant decls are legal C++; clang-tidy
-        // (readability-redundant-declaration) and some IDE linters flag them
-        // anyway. Each function name is guaranteed unique by the codegen, so the
-        // function name itself doubles as the include-guard token.
+        // Emit a cross-module Construct_C* forward decl, guarded against re-declaration in the same TU.
+        // The unity build concatenates many standalone .generated.cpp files; the unique fn name is the guard token.
         inline void EmitGuardedCrossModuleDecl(
             FCodeWriter& Writer,
             eastl::string_view API,

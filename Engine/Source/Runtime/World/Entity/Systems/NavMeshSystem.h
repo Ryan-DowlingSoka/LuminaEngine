@@ -28,12 +28,16 @@ namespace Lumina
     };
 
     class CWorld;
+    class FNavMesh;
 
     namespace Lua { class FRef; }
 
     /** Navigation helpers; each function dispatches to the first ready SNavMeshComponent. */
     namespace Nav
     {
+        /** First ready navmesh in the world, or null. Resolve once and reuse across a batch of queries. */
+        RUNTIME_API FNavMesh* GetReadyNavMesh(const FSystemContext& Context);
+
         RUNTIME_API bool FindPath(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FNavPath& Out);
         RUNTIME_API bool ProjectPoint(const FSystemContext& Context, const FVector3& World, const FVector3& Extents, const FNavQueryFilter& Filter, FVector3& Out);
         RUNTIME_API bool Raycast(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FVector3& HitOut);

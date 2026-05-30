@@ -19,9 +19,8 @@ float Fog_DensityAt(FExponentialHeightFogParams Fog, float3 WorldPos)
     return Fog.InscatteringColor.w * exp(-Falloff * (WorldPos.y - BaseH));
 }
 
-// Closed-form optical depth of the exp-height medium along a ray segment of
-// length SegLen starting at StartPos in direction RayDir (unit). Integrates
-// density * exp(-falloff * (y - baseHeight)) analytically.
+// Closed-form optical depth of the exp-height medium along a ray segment (StartPos, unit RayDir,
+// length SegLen): analytic integral of density * exp(-falloff * (y - baseHeight)).
 float Fog_OpticalDepth(FExponentialHeightFogParams Fog, float3 StartPos, float3 RayDir, float SegLen)
 {
     float Falloff   = Fog.HeightParams.x;

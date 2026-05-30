@@ -79,11 +79,8 @@ namespace Lumina
         virtual bool HasImportDialogue() const { return false; }
         virtual bool HasCreationDialogue() const { return false; }
 
-        /**
-         * Asynchronously builds the import settings that drive DrawImportDialogue (e.g. parsing
-         * the source file off-thread). OnReady runs on the main thread once the settings are
-         * ready; it receives null if preparation failed. Default is synchronous.
-         */
+        // Builds import settings for DrawImportDialogue, possibly off-thread. OnReady
+        // runs on the main thread (null on failure). Default is synchronous.
         using FImportPrepareCallback = TMoveOnlyFunction<void(TUniquePtr<Import::FImportSettings>)>;
         virtual void PrepareImportAsync(const FFixedString& RawPath, const FFixedString& DestinationPath, FImportPrepareCallback OnReady);
 

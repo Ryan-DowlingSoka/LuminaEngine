@@ -10,6 +10,7 @@ namespace Lumina
 {
     enum class EWorldType : uint8;
     enum class EMoveMode : uint8;
+    struct FSimpleElementVertex;
 
     namespace Physics
     {
@@ -160,6 +161,7 @@ namespace Lumina
         RUNTIME_API void DrawDebugCone(const FVector3& Apex, const FVector3& Direction, float AngleRadians, float Length, const FVector4& Color, uint8 Segments = 16, uint8 Stacks = 4, float Thickness = 1.0f, float Duration = 1.0f) const;
         RUNTIME_API void DrawFrustum(const FMatrix4& Matrix, float zNear, float zFar, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
         RUNTIME_API void DrawDebugArrow(const FVector3& Start, const FVector3& Direction, float Length, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f, float HeadSize = 0.2f) const;
+        RUNTIME_API void DrawDebugSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest = true, float Duration = 1.0f) const;
         //~ End Debug Drawing
         
         RUNTIME_API entt::runtime_view CreateRuntimeView(const THashSet<entt::id_type>& Components) const;

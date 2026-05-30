@@ -15,8 +15,7 @@ struct PSInput
     float4 Position     : SV_Position;
 };
 
-// Hash-to-color used by the meshlet debug visualization. Good spread from a
-// few mix-and-shift rounds; produces stable per-meshlet hues across frames.
+// Hash-to-color for the meshlet debug view; stable per-meshlet hues across frames.
 float3 MeshletDebugColor(uint Index)
 {
     uint H = Index * 2654435761u;
@@ -86,19 +85,8 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
     return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
-// Vertex-tangent TBN. The tangent is generated at import time by
-// MikkTSpace (matches Substance / Marmoset / UE / Unity), interpolated
-// per-pixel by the rasterizer, then Gram-Schmidt'd against the
-// interpolated shading normal here so non-uniform model scale and
-// linear-interpolation-induced skew don't tilt the basis. The
-// handedness sign on TangentWS.w preserves the bitangent direction
-// across mirrored UV islands.
-//
-// Replaces a screen-space-derivative TBN: ddx/ddy of linearly
-// interpolated attributes are constant within a triangle, which made
-// every triangle's tangent frame piecewise-flat. With normal mapping
-// applied, that flatness traced visible faceting along triangle edges
-// and a hard line at every UV mirror seam.
+// Vertex-tangent TBN: MikkTSpace import tangent, Gram-Schmidt'd against the interpolated normal here;
+// TangentWS.w preserves the bitangent across UV mirrors. (A ddx/ddy TBN faceted normal maps per triangle.)
 float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
 {
     float3 N = normalize(FragNormal);
@@ -152,9 +140,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (HasFlag(LightFlags, ELightFlags::Directional))
     {
-        // Constant safety bias only; NormalOffsetWS() below removes most
-        // slope-driven acne, so a large slope term would only cause peter-panning.
-        // ShadowParams.y is the per-light constant depth bias.
+        // Constant safety bias only; NormalOffsetWS() handles slope acne. ShadowParams.y is the per-light constant bias.
         return 0.00015 + 0.0003 * SlopeFactor + uLightData[0].ShadowParams.y;
     }
 
@@ -163,28 +149,20 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     return 0.00005 + 0.0003 * SlopeFactor;
 }
 
-// Normal-offset bias (Daniel Holbert, GDC 2011). Push the receiver position
-// along its surface normal by ~one shadow texel before projecting into shadow
-// space, scaled by (1 - NdotL) so it only kicks in at grazing angles where
-// shadow acne lives.
-
-// Returns the offset in world space; caller adds it to the fragment position.
+// Normal-offset bias (Holbert, GDC 2011): push the receiver ~one shadow texel along its normal before
+// projecting, scaled by (1 - NdotL) so it only kicks in at grazing angles. Returns the world-space offset.
 float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
 {
     float NdotL       = saturate(dot(Normal, LightDir));
     float OffsetScale = saturate(1.0 - NdotL);
 
-    // World-space size of one shadow texel for this cascade. Cascade ortho
-    // width is 2 * Radius; resolution is per-cascade because the atlas
-    // packs progressive sizes.
+    // World-space size of one shadow texel: ortho width 2*Radius / per-cascade resolution.
     float Radius     = uLightData[0].CascadeRadii[CascadeIndex];
     float Resolution = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
     float TexelSize  = (2.0 * Radius) / Resolution;
 
-    // 1.4 ~= sqrt(2): push by one diagonal texel at maximum slope, the
-    // minimum that reliably clears self-intersection from depth-map
-    // quantization. Larger values cause visible peter-panning at contact.
-    // ShadowParams.x scales this per-light (1.0 = the tuned default).
+    // 1.4 ~= sqrt(2): one diagonal texel at max slope, the minimum that clears depth-quantization
+    // self-intersection without peter-panning. ShadowParams.x scales per-light (1.0 = default).
     return Normal * (TexelSize * 1.4 * OffsetScale * uLightData[0].ShadowParams.x);
 }
 
@@ -196,11 +174,8 @@ float2 CascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
     return CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
 }
 
-// PCSS (Percentage-Closer Soft Shadows) tuning. The contact gap is caused
-// by the fixed PCF footprint averaging in texels on the occluder; PCSS
-// scales the PCF radius by receiver-to-blocker depth so the kernel
-// collapses to a near-point sample at contact and opens to a soft penumbra
-// at distance.
+// PCSS tuning: scale the PCF radius by receiver-to-blocker depth so the kernel collapses to a
+// near-point sample at contact and opens to a soft penumbra at distance.
 #define PCSS_BLOCKER_SEARCH_TAPS   16
 static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search
 static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
@@ -208,15 +183,11 @@ static const float PCSS_MinFilterRadius     = 0.00001; // Near-point sample at c
 static const float PCSS_MaxFilterRadius     = 0.0018;  // Cap so far shadows don't over-blur
 static const float PCSS_BlockerDepthBias    = 0.0004;  // Bias for blocker classification
 
-// PCSS-filtered sample of a single directional cascade. Returns 1.0 if the
-// fragment falls outside the cascade's projected UV / depth range so the
-// caller can decide to fall back to another cascade (or to fully-lit).
+// PCSS-filtered sample of one directional cascade. Returns 1.0 (and Inside=false) when the fragment
+// is outside the cascade's projected range so the caller can fall back to another cascade or fully-lit.
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
 {
-    // Push receiver off the surface along its normal before projecting,
-    // sized to one cascade shadow texel. Removes harsh self-shadow banding
-    // on detailed meshes that depth bias alone cannot fix without
-    // trading acne for peter-panning.
+    // Normal-offset the receiver before projecting; removes self-shadow banding depth bias can't fix.
     float3 OffsetPos = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
 
     float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
@@ -237,32 +208,19 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float RefDepth = CurrentDepth - Bias;
 
-    // Outer cascades cover proportionally more world per shadow texel, so a
-    // fixed-UV kernel under-blurs them and texel-boundary blockiness shows
-    // through. Scale the search and the filter cap by the same factor so
-    // outer cascades blur to a wider, scene-proportional penumbra. The
-    // multiplier is a single tuning knob (smaller = sharper outer shadows
-    // but more blockiness, larger = softer but distant edges lose contact).
+    // Outer cascades cover more world per texel, so scale the search and filter cap to keep the
+    // penumbra scene-proportional (smaller = sharper but blockier, larger = softer but loses contact).
     float CascadeScale = 1.0 + 1.5 * float(CascadeIndex);
 
-    // --- Stage 1: blocker search -------------------------------------------------
-    //
-    // Tap the shadow map through the *point* sampler at binding 16 so each
-    // fetch is a raw texel depth (binding 7's comparison sampler would return
-    // a PCF-filtered result, useless for classifying individual texels).
-    // If no taps hit an occluder the fragment is fully lit; early-out skips
-    // the PCF pass entirely.
+    // Stage 1: blocker search through the point sampler for raw texel depths (the comparison sampler
+    // would return a PCF result, useless for classification). No occluder taps -> fully lit, early out.
     float BlockerDepthSum = 0.0;
     int   NumBlockers     = 0;
 
     float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
 
-    // Fixed (non per-pixel) rotation for the blocker search. Whether a pixel
-    // finds an occluder feeds a near-binary lit/shadow decision; rotating the
-    // sparse pattern per pixel turns that into a random gamble that stipples
-    // across thin-occluder penumbras (a capsule's whole soft shadow). A shared
-    // angle makes the estimate spatially coherent so the lit/shadow boundary
-    // follows the occluder smoothly. The final PCF keeps per-pixel rotation.
+    // Fixed (non per-pixel) rotation for the blocker search: per-pixel rotation of this sparse pattern
+    // stipples thin-occluder penumbras; a shared angle keeps the lit/shadow boundary coherent. PCF below still rotates.
     [unroll]
     for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
@@ -285,13 +243,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
 
-    // --- Stage 2: penumbra estimate ---------------------------------------------
-    //
-    // For an orthographic directional light the penumbra grows linearly with
-    // receiver-to-blocker distance. Depths are NDC-z [0,1] so the delta is
-    // already normalized; PCSS_LightSize absorbs the conversion to UV space
-    // and sun apparent size. At contact the delta collapses and the filter
-    // shrinks to PCSS_MinFilterRadius, keeping the edge glued to the mesh.
+    // Stage 2: penumbra estimate. For an ortho light it grows linearly with receiver-to-blocker depth
+    // (NDC-z delta); at contact the delta collapses and the filter shrinks to PCSS_MinFilterRadius.
     float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
     // Per-light penumbra softness (PCSS light size); PCSS_LightSize is the default value.
     float Penumbra     = DepthDelta * uLightData[0].ShadowParams.z;
@@ -303,14 +256,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
     FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
 
-    // --- Stage 3: PCF with contact-hardened radius ------------------------------
-    // ShadowParams2.y is the per-light base tap count. A fixed count
-    // undersamples wide penumbras: the same taps spread over a larger radius
-    // drop sample density and the per-pixel rotated disk shows through as
-    // grain (worst on stretched grazing-angle shadows, where the receiver-to-
-    // blocker gap opens the filter to its cap). Scale the count with penumbra
-    // width so density stays roughly constant -- contact shadows stay cheap,
-    // soft shadows ramp toward the cap and smooth out.
+    // Stage 3: PCF with contact-hardened radius. Scale the tap count (base = ShadowParams2.y) with
+    // penumbra width so density stays roughly constant -- a fixed count grains out on wide penumbras.
     int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
@@ -362,9 +309,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         bool  InsideA;
         float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Normal, LightDirToFrag, Bias, ScreenPos, InsideA);
 
-        // Blend into the next cascade near the split boundary so the
-        // transition between sharp/near and blurry/far cascades is smooth
-        // rather than a hard seam.
+        // Blend into the next cascade near the split boundary so the transition is smooth, not a seam.
         float CascadeNear = (CascadeIndex == 0)
             ? 0.0
             : uLightData[0].CascadeSplits[CascadeIndex - 1];
@@ -404,9 +349,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         return ShadowA;
     }
 
-    // ----- Spot / point lights (atlas-based) -----
-    // Atlas stores rasterized NDC z from the shadow VS. Sampling must project
-    // through the same face VP and use ProjCoords.xy/z, not cubemap UV.
+    // Spot / point lights (atlas-based). Atlas stores rasterized NDC z from the shadow VS, so sample
+    // by projecting through the same face VP and using ProjCoords.xy/z, not cubemap UV.
     float3 LightDirToFrag = normalize(Light.Position - FragmentPos);
 
     // Pick the cube face for point lights; spot lights always use face 0.
@@ -418,10 +362,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         Face = DirectionToCubemapCoord(Dir).Face;
     }
 
-    // Push the receiver a shadow-texel along its surface normal before
-    // projecting. Without this the wall self-shadows at grazing angles inside
-    // the face's visible cone, producing a dimmer square centred on the light
-    // where outside the cone the UV early-out returns fully-lit.
+    // Normal-offset the receiver before projecting; without it walls self-shadow at grazing angles
+    // inside the face cone, leaving a dimmer square centered on the light.
     FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Face);
 
     uint AtlasW, AtlasH;
@@ -433,10 +375,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float  OffsetScale      = saturate(1.0 - NdotL);
     float3 OffsetPos        = FragmentPos + Normal * (WorldTexel * 1.4 * OffsetScale);
 
-    // Receiver bias: constant + slope + tile-quantization term. NDC z at a
-    // pixel quantizes to ~2/AtlasTileTexels in depth, so a fixed 0.00005
-    // tuned for 4096 texels self-shadows against its own rasterized
-    // triangle at 512 and below, producing a dimmer face-shaped square.
+    // Receiver bias: constant + slope + tile-quantization term (NDC z quantizes to ~2/AtlasTileTexels),
+    // so a fixed bias tuned for 4096 texels self-shadows at 512 and below.
     float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
     float Bias        = 0.00005 + 0.0003 * SlopeFactor + 1.5 / max(AtlasTileTexels, 1.0);
 
@@ -445,10 +385,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
 
-    // Only early-out on z: fragments past the light's far plane aren't lit
-    // anyway. A UV early-out on [0,1] created a visible square where the
-    // picked face's cone met the receiver; the atlas sampler (AM_Clamp)
-    // already handles taps that stray beyond the tile.
+    // Only early-out on z (past the far plane). A UV early-out on [0,1] left a visible square at the
+    // face-cone boundary; the AM_Clamp atlas sampler already handles taps straying beyond the tile.
     if (ProjCoords.z < 0.0 || ProjCoords.z > 1.0)
         return 1.0;
 
@@ -456,9 +394,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
-    // Filter radius is in atlas UV; scale down for tiny tiles so the Vogel
-    // disk stays inside the face rect. Without the cap, small tiles see
-    // every tap fall outside [0,1]. Cap at 30% of the tile's atlas UV extent.
+    // Filter radius (atlas UV) capped at 30% of the tile extent so the Vogel disk stays in the face rect.
     float TileUVExtent  = min(ShadowTile.AtlasUVScale.x, ShadowTile.AtlasUVScale.y);
     float FilterRadius  = min(0.002, TileUVExtent * 0.3);
 
@@ -471,9 +407,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float2 Offset     = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
         float2 TapUV      = SafeUV + TileOffset;
-        // Skip taps that leave the face rect: those atlas texels belong to
-        // a different light's tile. The clamped center tap below guarantees
-        // at least one valid sample.
+        // Skip taps that leave the face rect (those texels belong to another light's tile);
+        // the clamped center tap below guarantees at least one valid sample.
         if (any(TapUV < 0.0) || any(TapUV > 1.0))
         {
             continue;
@@ -511,11 +446,8 @@ int FindSunShadowDataIndex()
     return INDEX_NONE;
 }
 
-// Per-cascade tint for the Shadow Cascades view mode. Mirrors the cascade
-// selection in ComputeShadowFactor so the colors match what the lit pass would
-// actually sample. Dark gray = no sun shadow data (caster missing or sun
-// disabled); muted tint = fragment outside the cascade's projected bounds, so
-// the cascade can't shadow it even though it was selected.
+// Per-cascade tint for the Shadow Cascades view, mirroring ComputeShadowFactor's selection.
+// Dark gray = no sun shadow data; muted tint = fragment outside the selected cascade's bounds.
 float3 CascadeDebugColor(float3 FragmentPos, float3 ViewPosition, float3 ShadedBase)
 {
     int SunShadowIdx = FindSunShadowDataIndex();
@@ -601,9 +533,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
     float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
     float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 1e-4) * max(dot(N, L), 1e-4));
-    // Multiple-scattering energy compensation (Turquin 2019). Adds back the
-    // energy the single-scatter GGX lobe loses to roughness so rough metals
-    // don't darken; EnergyComp is precomputed per-pixel from the BRDF LUT.
+    // Multi-scatter energy compensation (Turquin 2019); EnergyComp precomputed per-pixel from the BRDF LUT.
     Spec               *= EnergyComp;
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
     float  NdotL        = max(dot(N, L), 0.0);
@@ -655,16 +585,12 @@ PSOutput FragmentMain(PSInput Input)
     float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
-    // Dielectric F0 from the material's specular reflectance (UE4 convention:
-    // 0.08 * Specular, so the default Specular = 0.5 lands at the usual 0.04).
-    // Metals override F0 with their albedo.
+    // Dielectric F0 = 0.08 * Specular (UE4 convention; default 0.5 -> 0.04). Metals override F0 with albedo.
     float3 F0_DIELECTRIC = float3(0.08 * Material.Specular);
     float3 F0 = lerp(F0_DIELECTRIC, Albedo, Metallic);
 
-    // Multiple-scattering energy compensation factor (Turquin 2019), constant
-    // per pixel. Ess = single-scatter directional albedo (BRDF LUT scale+bias);
-    // scaling specular by this adds back the energy lost to roughness, tinted
-    // by F0 so colored metals get colored multi-bounce.
+    // Multi-scatter energy compensation factor (Turquin 2019), constant per pixel; tinted by F0
+    // so colored metals get colored multi-bounce. Ess = single-scatter albedo (BRDF LUT scale+bias).
     float  NdotV_EC    = saturate(dot(N, V));
     float2 DFG_EC      = SampleBRDFLUT(NdotV_EC, Roughness);
     float3 EnergyComp  = 1.0 + F0 * (1.0 / max(DFG_EC.x + DFG_EC.y, 1e-4) - 1.0);
@@ -674,10 +600,8 @@ PSOutput FragmentMain(PSInput Input)
     uint3  GridSize   = uSceneData.GridSize.xyz;
     uint2  ScreenSize = uSceneData.ScreenSize.xy;
 
-    // Edge fragments can land at |ViewPosition.z| < ZNear, making log() negative;
-    // casting that to uint wraps to a huge ZTile and TileIndex overflows uClusters,
-    // producing a garbage LightCount/LightIndices and an MMU fault inside the loop.
-    // Same hardening as TerrainBasePixelPass.
+    // Clamp to ZNear: edge fragments below it make log() negative, wrapping ZTile to a huge value
+    // that overflows uClusters -> garbage light list and an MMU fault. Same hardening as TerrainBasePixelPass.
     float  ZForTile     = max(abs(ViewPosition.z), ZNear);
     float  ZTileF       = (log(ZForTile / ZNear) * float(GridSize.z)) / log(ZFar / ZNear);
     uint   ZTile        = (uint)clamp(ZTileF, 0.0, float(GridSize.z) - 1.0);
@@ -695,9 +619,8 @@ PSOutput FragmentMain(PSInput Input)
     {
         FLight Light = GetLightAt(0);
 
-        // The sun's contribution is scaled by max(dot(N, L), 0), so a pixel facing
-        // away from the sun is fully self-shadowed regardless of the shadow map.
-        // Skip the 24-48 tap cascade PCSS for those pixels (~half a typical scene).
+        // Pixels facing away from the sun are fully self-shadowed (NdotL clamp), so skip the
+        // expensive cascade PCSS for them (~half a typical scene).
         float SunNdotL = dot(N, normalize(Light.Direction.xyz));
         if (SunNdotL > 0.0)
         {
@@ -712,10 +635,8 @@ PSOutput FragmentMain(PSInput Input)
     for (uint i = 0; i < SafeLightCount; ++i)
     {
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
-        // Cluster contents can be stale/uninitialized right after a scene switch
-        // (LightCull hasn't repopulated this froxel for the new light set yet).
-        // An index past the live count reads beyond Lights[MAX_LIGHTS] -> MMU
-        // fault in GetLightAt (SceneGlobals.slang). Skip out-of-range indices.
+        // Cluster contents can be stale after a scene switch; an index past the live count reads
+        // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
         if (LightIndex >= GetNumLights())
         {
             continue;
@@ -726,10 +647,8 @@ PSOutput FragmentMain(PSInput Input)
         float  DistToLight = length(LightToFrag);
         float3 L           = LightToFrag / max(DistToLight, 0.0001);
 
-        // Cluster membership is conservative: a froxel can list a light whose sphere
-        // overlaps it but doesn't reach this pixel, or that lights only its back face.
-        // Both make EvaluateLightContribution return zero (NdotL clamp / falloff hits
-        // 1.0 at the radius), so skip the 16-tap shadow + BRDF for them.
+        // Cluster membership is conservative: a listed light may not reach this pixel or lights only
+        // its back face. Both contribute zero, so skip the shadow + BRDF work for them.
         if (dot(N, L) <= 0.0 || DistToLight >= Light.Radius)
         {
             continue;
@@ -744,13 +663,8 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight, EnergyComp) * Shadow;
     }
 
-    // IBL ambient: split-sum convolutions of the captured sky cube. Diffuse
-    // term reads the cosine-convolved irradiance cube by N; specular reads
-    // the GGX-prefiltered cube by R at a roughness-driven mip and combines
-    // it with the BRDF integration LUT. Metals get colored reflections of
-    // the sky (F0 = Albedo) instead of going black in shadowed regions.
-    // GetAmbientLightIntensity() now scales the entire IBL ambient so the
-    // SkyLight's Intensity slider still drives sky strength.
+    // IBL ambient: split-sum convolutions of the sky cube (irradiance by N, GGX-prefiltered specular
+    // by R + BRDF LUT). GetAmbientLightIntensity() scales it so the SkyLight Intensity slider applies.
     float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic, AO);
     float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
     float3 Color      = Ambient + Lo + Material.Emissive;

@@ -110,8 +110,6 @@ namespace Lumina::ImGuiX
         ImU32 HoveredColor = ImGui::ColorConvertFloat4ToU32(backgroundColor.Value * 1.15f);
         ImU32 ActiveColor  = ImGui::ColorConvertFloat4ToU32(backgroundColor.Value * 1.25f);
 
-        //-------------------------------------------------------------------------
-
         if ( pIcon == nullptr || strlen( pIcon ) == 0 )
         {
             ImGui::PushStyleColor( ImGuiCol_Button, (ImVec4) backgroundColor );
@@ -133,9 +131,6 @@ namespace Lumina::ImGuiX
                 return false;
             }
 
-            // Calculate ID
-            //-------------------------------------------------------------------------
-
             char const* pID = nullptr;
             if ( pLabel == nullptr || strlen( pLabel ) == 0 )
             {
@@ -147,9 +142,6 @@ namespace Lumina::ImGuiX
             }
 
             ImGuiID const ID = pWindow->GetID( pID );
-
-            // Calculate sizes
-            //-------------------------------------------------------------------------
 
             ImGuiStyle const& style = ImGui::GetStyle();
             ImVec2 const iconSize = ImGui::CalcTextSize( pIcon, nullptr, true );
@@ -163,9 +155,6 @@ namespace Lumina::ImGuiX
             ImVec2 const pos = pWindow->DC.CursorPos;
             ImVec2 const finalButtonSize = ImGui::CalcItemSize( size, buttonWidthWithFramePadding, buttonHeight );
 
-            // Add item and handle input
-            //-------------------------------------------------------------------------
-
             ImGui::ItemSize( finalButtonSize, 0 );
             ImRect const bb( pos, pos + finalButtonSize );
             if ( !ImGui::ItemAdd( bb, ID ) )
@@ -175,9 +164,6 @@ namespace Lumina::ImGuiX
 
             bool hovered, held;
             wasPressed = ImGui::ButtonBehavior( bb, ID, &hovered, &held, 0 );
-
-            // Render Button
-            //-------------------------------------------------------------------------
 
             ImGui::PushStyleColor( ImGuiCol_Button, (ImVec4) backgroundColor );
             ImGui::PushStyleColor( ImGuiCol_ButtonHovered, HoveredColor );
@@ -224,8 +210,6 @@ namespace Lumina::ImGuiX
 
             ImGui::PopStyleColor( 4 );
         }
-
-        //-------------------------------------------------------------------------
 
         return wasPressed;
     }
@@ -309,6 +293,28 @@ namespace Lumina::ImGuiX
             PreviewStr += Preview;
         }
 
+        // Size the dropdown to its widest entry (clamped), so long labels like script paths aren't
+        // truncated to the combo button's width. Only measured while open; ImGui honors a
+        // caller-supplied size constraint instead of forcing the button width onto the popup.
+        const ImGuiID PopupId = ImHashStr("##ComboPopup", 0, ComboId);
+        if (ImGui::IsPopupOpen(PopupId, ImGuiPopupFlags_None))
+        {
+            float ContentWidth = 0.0f;
+            for (int32 i = 0; i < ItemCount; ++i)
+            {
+                ContentWidth = ImMax(ContentWidth, ImGui::CalcTextSize(GetItemLabel(i).c_str()).x);
+            }
+            if (ItemIcon != nullptr)
+            {
+                ContentWidth += ImGui::CalcTextSize(ItemIcon).x + Style.ItemInnerSpacing.x * 2.0f;
+            }
+
+            const float Decorations = Style.FramePadding.x * 2.0f + Style.WindowPadding.x * 2.0f + Style.ScrollbarSize;
+            const float MaxWidth    = ImGui::GetMainViewport()->WorkSize.x * 0.6f;
+            const float FitWidth    = ImClamp(ContentWidth + Decorations, ImGui::CalcItemWidth(), MaxWidth);
+            ImGui::SetNextWindowSizeConstraints(ImVec2(FitWidth, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+        }
+
         if (ImGui::BeginCombo(StrId, PreviewStr.c_str(), ImGuiComboFlags_HeightLargest))
         {
             const float PopupWidth = ImGui::GetContentRegionAvail().x;
@@ -338,8 +344,9 @@ namespace Lumina::ImGuiX
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Style.ItemSpacing.x, 2.0f));
 
             // Cap the visible rows; the child scrolls past that. The popup auto-fits this
-            // child exactly, so the combo window itself never grows a scrollbar.
-            const int32 VisibleRows = ItemCount < 12 ? ItemCount : 12;
+            // child exactly, so the combo window itself never grows a scrollbar. Reserve at
+            // least one row so the "No matches" / empty-list message isn't clipped.
+            const int32 VisibleRows = ImClamp(ItemCount, 1, 12);
             const float ListHeight = VisibleRows * ImGui::GetTextLineHeightWithSpacing() + Style.FramePadding.y * 2.0f;
 
             if (ImGui::BeginChild("##list", ImVec2(PopupWidth, ListHeight)))

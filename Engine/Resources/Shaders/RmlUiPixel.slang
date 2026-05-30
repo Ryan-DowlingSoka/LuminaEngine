@@ -1,11 +1,5 @@
-// RmlUi pixel shader (fully-bindless, single-draw path).
-//
-// Per-draw data (texture id, clip rect) comes from the device-address buffer
-// indexed by the flat draw index. Textures are sampled bindless. Scissor is
-// done here as an axis-aligned clip test in framebuffer pixels, which lets the
-// entire UI render in one draw regardless of how many distinct clip rects exist.
-//
-// RmlUi vertex colours are premultiplied; final pixel = vertexColour * texel.
+// RmlUi pixel shader (fully-bindless, single-draw path). Per-draw data comes from the device-address
+// buffer by flat draw index; scissor is an axis-aligned clip test here. Colors are premultiplied.
 #pragma once
 #include "Includes/RmlUiCommon.slang"
 

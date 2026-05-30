@@ -41,11 +41,7 @@ namespace Lumina
 
         int64 FileMTimeNanos(FStringView VirtualPath)
         {
-            // ResolveToVirtualPath round-trips an absolute path back to virtual;
-            // we want the inverse — resolve virtual to absolute for filesystem
-            // mtime. VFS doesn't expose that uniformly; fall back to reading
-            // the file (size 0) is wasteful. Use std::filesystem on the resolved
-            // path via VFS::ResolvePath.
+            // Resolve virtual -> absolute and stat via std::filesystem (VFS has no uniform mtime accessor).
             const FFixedString Resolved = VFS::ResolvePath(VirtualPath);
             if (Resolved.empty()) return 0;
             std::error_code Ec;
@@ -175,9 +171,7 @@ namespace Lumina
         ImGuiX::Notifications::NotifySuccess("Asset Registry Finished Initial Discovery: Num [{}]", Assets.size());
         LOG_INFO("Asset Registry Finished Initial Discovery: Num [{}]", Assets.size());
 
-        // Drop the cache to disk so the next launch only re-parses changed
-        // assets. Cheap (single binary write); skipped silently if the
-        // path can't be resolved (e.g. running tests with no install dir).
+        // Persist the cache so next launch only re-parses changed assets; skipped if the path won't resolve.
         SaveCache();
 
         // Reverse map gets built lazily on first GetReferencersOf().
@@ -266,9 +260,7 @@ namespace Lumina
             return;
         }
 
-        // Drop any stale entry already sitting at NewPath (different GUID).
-        // Without this, GetAssetByPath would non-deterministically return
-        // whichever find_if hit first.
+        // Drop any stale entry already at NewPath (different GUID), else GetAssetByPath is non-deterministic.
         const FGuid RenamedGuid = (*It)->AssetGUID;
         auto Colliding = eastl::find_if(Assets.begin(), Assets.end(), [&](const TUniquePtr<FAssetData>& Asset)
         {
@@ -458,9 +450,8 @@ namespace Lumina
 
     void FAssetRegistry::ProcessPackagePath(FStringView Path)
     {
-        // Cheap pre-check: mtime + content hash vs cached entry. The hash
-        // is over the raw on-disk bytes (compressed), so changes to either
-        // the source or the compression setting invalidate the cache.
+        // Pre-check mtime + content hash vs cache; hash is over raw compressed bytes, so source or
+        // compression-setting changes invalidate it.
         const int64 MTime = FileMTimeNanos(Path);
         TVector<uint8> RawBytes;
         const uint64 Hash = ContentHashOf(Path, &RawBytes);
@@ -477,9 +468,8 @@ namespace Lumina
             return;
         }
 
-        // Packages are deflate-compressed on disk with an FCompressedPackageHeader
-        // prefix. ReadPackageFile decompresses; the resulting Bytes buffer is
-        // what FPackageHeader and the import/export tables live inside.
+        // ReadPackageFile decompresses the deflate-with-FCompressedPackageHeader file into Bytes,
+        // which holds the FPackageHeader and import/export tables.
         TVector<uint8> Bytes;
         if (!CPackage::ReadPackageFile(Path, Bytes))
         {
@@ -541,9 +531,8 @@ namespace Lumina
             return;
         }
 
-        // Extract Dependencies from the package's ImportTable. Each import
-        // is one outbound edge with the type the saver recorded — Hard for
-        // direct CObject* refs, Soft for FSoftObjectPath.
+        // Each ImportTable entry is one outbound edge with the type the saver recorded (Hard for direct
+        // CObject* refs, Soft for FSoftObjectPath).
         TVector<FAssetDependency> Dependencies;
         if (Header.ImportTableOffset >= 0
             && static_cast<size_t>(Header.ImportTableOffset) <= Bytes.size())
@@ -572,10 +561,8 @@ namespace Lumina
         AssetData->OwningPlugin   = ExtractOwningPlugin(Path);
 
         FWriteScopeLock Lock(AssetsMutex);
-        // Drop any pre-existing entry with this GUID first — covers external
-        // moves/renames where the path changed but the GUID is stable. Without
-        // this, the dup-GUID hashset collision would reject the new entry and
-        // leave the registry pointing at the now-nonexistent old path.
+        // Drop any pre-existing entry with this GUID (external move/rename: path changed, GUID stable);
+        // else the dup-GUID collision rejects the new entry and leaves a dangling old path.
         auto ExistingByGuid = Assets.find_as(AssetData->AssetGUID, FGuidHash(), FAssetDataGuidEqual());
         if (ExistingByGuid != Assets.end())
         {
@@ -733,9 +720,7 @@ namespace Lumina
         const FString CachePath = AssetDbPath();
         if (CachePath.empty()) return false;
 
-        // First-launch / fresh-clone: no cache yet. Quiet exit — falling
-        // back to a full rescan is the correct behavior and the noisy
-        // "Failed to get the file size" from FileHelper isn't useful here.
+        // First-launch / fresh-clone: no cache yet. Quiet exit; full rescan is the correct fallback.
         std::error_code Ec;
         if (!std::filesystem::exists(std::filesystem::path(CachePath.c_str()), Ec))
         {

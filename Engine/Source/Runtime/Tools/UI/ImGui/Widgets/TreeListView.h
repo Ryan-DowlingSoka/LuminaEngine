@@ -26,7 +26,19 @@ namespace Lumina
         FString         TooltipText;
         ImVec4          DisplayColor = ImVec4(0.725f, 0.725f, 0.725f, 1.0f);
 
+        // Optional: tinted overdraw of DisplayName's leading glyph. Must match the icon DisplayName starts with.
+        FString         IconText;
+        ImVec4          IconColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        // Optional secondary right-aligned toggle button, drawn left of the visibility eye. The
+        // glyph shown depends on FTreeNodeState::bSecondaryToggled (On = active, Off = toggled).
+        // Used by the world outliner for the per-entity script enable/disable toggle.
+        FString         SecondaryIconOn;
+        FString         SecondaryIconOff;
+        FString         SecondaryTooltip;
+
         uint8           bShowDisabledIcon:1 = false;
+        uint8           bShowSecondaryIcon:1 = false;
 		uint8		    bAllowRenaming:1 = false;
     };
 
@@ -36,6 +48,7 @@ namespace Lumina
         uint8 bSelected:1       = false;
         uint8 bDisabled:1       = false;
         uint8 bEditingText:1    = false;
+        uint8 bSecondaryToggled:1 = false;
     };
 
     struct RUNTIME_API FTreeListViewContext
@@ -66,6 +79,9 @@ namespace Lumina
 
         /** Called when the visibility icon is toggled */
         TFunction<void(FTreeListView&, FTreeNodeID)>                    VisibilityToggleFunction;
+
+        /** Called when the optional secondary icon (e.g. script enable) is toggled */
+        TFunction<void(FTreeListView&, FTreeNodeID)>                    SecondaryToggleFunction;
         
         /** Called when a tree item is hovered */
         TFunction<void(FTreeListView&, FTreeNodeID)>                    HoveredFunction;
@@ -73,35 +89,13 @@ namespace Lumina
         /** Called when an item is being renamed */
         TFunction<void(FTreeListView&, FTreeNodeID, FStringView)>       RenameFunction;
 
-        /**
-         * Called once when a node flagged as having lazy children is expanded for the first time.
-         * The callback should add the node's children via CreateNode(). After it returns, the
-         * children remain in the tree across collapses; they are only rebuilt if the node is
-         * marked lazy again or the whole tree is dirtied.
-         *
-         * The callback should be idempotent: if some children were already added explicitly
-         * (e.g. via CreateNode from outside the callback), it should skip them rather than
-         * creating duplicates. Explicit CreateNode calls do NOT mark a parent as built.
-         */
+        // Called once when a lazy-children node is first expanded; add children via CreateNode().
+        // Must be idempotent (skip already-added children); explicit CreateNode doesn't mark built.
         TFunction<void(FTreeListView&, FTreeNodeID)>                    BuildChildrenFunction;
     };
 
-    /**
-     * Hierarchical list widget backed by a flat node pool.
-     *
-     * Designed for trees that can be very large (hundreds of thousands of nodes). Drawing iterates
-     * a cached flat list of currently-visible rows so the ImGui clipper actually skips off-screen
-     * work; the list is rebuilt lazily when nodes are added/removed or expansion state changes.
-     *
-     * Two construction modes are supported and can be mixed:
-     *   1. Eager full rebuild via Context.RebuildTreeFunction (triggered by MarkTreeDirty()).
-     *   2. Lazy per-subtree population: mark a node with MarkHasLazyChildren() and provide
-     *      Context.BuildChildrenFunction; children are created the first time the node is opened.
-     *
-     * Note on reference stability: Get<>() and EmplaceUserData<>() return references into a
-     * contiguous TVector. Calling CreateNode/RemoveNode/ClearTree may reallocate that storage
-     * and invalidate references. Use the references locally and re-fetch after any mutation.
-     */
+    // Hierarchical list over a flat node pool for very large trees; Draw iterates a cached visible-row
+    // list so the clipper skips off-screen work. Get<>/EmplaceUserData<> refs invalidate on mutation.
     class RUNTIME_API FTreeListView
     {
     public:
@@ -112,23 +106,20 @@ namespace Lumina
 
         void Draw(const FTreeListViewContext& Context);
 
-        // -- Tree mutation --
+        // Tree mutation
         FTreeNodeID CreateNode(FTreeNodeID Parent, FStringView Name, uint64 Hash = 0);
         void RemoveNode(FTreeNodeID Handle);
         void ClearTree();
 
-        // -- Dirty state --
+        // Dirty state
         void MarkTreeDirty() { bDirty = true; }
         NODISCARD bool IsDirty() const { return bDirty; }
 
         /** Force the visible-row cache to rebuild on next Draw. Call after batched mutations. */
         void InvalidateVisibleList() { bVisibleListDirty = true; }
 
-        /**
-         * Flag a node as having children that should be created on demand. The first time the
-         * node is expanded, BuildChildrenFunction is invoked. Calling CreateNode on the parent
-         * before that happens still works; the lazy callback will only fire on the first expand.
-         */
+        // Flag a node's children to be created on demand; BuildChildrenFunction fires the first time
+        // it's expanded. Eager CreateNode on the parent beforehand still works.
         void MarkHasLazyChildren(FTreeNodeID Handle, bool bHasLazy = true);
 
         NODISCARD bool IsValid(FTreeNodeID Handle) const;
@@ -137,7 +128,6 @@ namespace Lumina
         // Parent node of Handle, or InvalidTreeNode if it's a root or invalid.
         NODISCARD FTreeNodeID GetParentNode(FTreeNodeID Handle) const;
 
-        // -- Per-node component access --
         // Get<FTreeNodeState>, Get<FTreeNodeDisplay>, or Get<UserDataT> (the type previously
         // installed via EmplaceUserData on this node).
         template<typename T>

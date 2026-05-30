@@ -57,11 +57,8 @@ namespace Lumina
         uint32 Seed      = 1337u;
     };
 
-    /**
-     * Pre-fractured geometry asset. Holds the baked convex pieces of a source mesh so a
-     * destructible can shatter into real chunks at runtime. Pure data -- piece render/collision
-     * meshes are built on demand via Fracture::BuildPieceMesh, so the asset holds no GPU resources.
-     */
+    // Pre-fractured geometry asset: baked convex pieces of a source mesh, shattered into chunks at runtime.
+    // Pure data; piece meshes are built on demand (Fracture::BuildPieceMesh), so it holds no GPU resources.
     REFLECT()
     class RUNTIME_API CGeometryCollection : public CObject
     {
@@ -79,11 +76,8 @@ namespace Lumina
         FORCEINLINE const FFractureData& GetFractureData() const { return Data; }
         FORCEINLINE const FFracturePiece& GetPiece(int32 Index) const { return Data.Pieces[Index]; }
 
-        /**
-         * Render/collision-ready CStaticMesh for each piece, built once and shared across every
-         * fracture of this collection (built lazily here, or eagerly in PostLoad). Indices match
-         * GetFractureData().Pieces. Lets runtime fracture spawn fragments with zero mesh-build cost.
-         */
+        /** Per-piece CStaticMesh built once and shared across every fracture (indices match Pieces);
+         *  lets runtime fracture spawn fragments with zero mesh-build cost. */
         const TVector<TObjectPtr<CStaticMesh>>& GetPieceMeshes();
 
         /** Re-bake the pieces from SourceMesh using NumPieces/Seed and copy its materials. Returns the piece count. */
@@ -121,12 +115,8 @@ namespace Lumina
 
     namespace Fracture
     {
-        /**
-         * Convex Voronoi fracture of a mesh: clip the mesh's convex hull (its triangle
-         * supporting planes) by the perpendicular bisector against every other seed point.
-         * Cells are disjoint convex polyhedra that tile the hull, so pieces follow the mesh
-         * silhouette rather than its bounding box. Falls back to the AABB for degenerate/dense meshes.
-         */
+        // Convex Voronoi fracture: clip the mesh's convex hull by perpendicular bisectors between seed
+        // points, so pieces follow the silhouette. Falls back to the AABB for degenerate/dense meshes.
         RUNTIME_API void GenerateConvexFracture(const CMesh* SourceMesh, const FFractureSettings& Settings, TVector<FFracturePiece>& OutPieces);
 
         /** Build a transient, render- and collision-ready CStaticMesh from one piece. */

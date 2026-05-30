@@ -44,10 +44,7 @@ namespace Lumina::Physics
         virtual FVector3 GetAngularVelocity(uint32 BodyID) = 0;
         virtual FVector3 GetCenterOfMass(uint32 BodyID)= 0;
 
-        // Body's actual current pose, NOT the interpolated render transform.
-        // Use this when a script reads the body in PrePhysics and needs the
-        // position physics will integrate from this frame -- the cached
-        // STransformComponent is the lagged display value.
+        // Actual current body pose, NOT the interpolated render transform (STransformComponent is lagged).
         virtual FVector3 GetBodyPosition(uint32 BodyID) = 0;
         virtual FQuat GetBodyRotation(uint32 BodyID) = 0;
 
@@ -55,12 +52,8 @@ namespace Lumina::Physics
         virtual uint32 GetBodyCount() = 0;
         virtual uint32 GetMaxBodyCount() = 0;
 
-        /**
-         * Batch body creation. Between Begin/End, rigid-body constructions (e.g. collider
-         * on_construct during a fracture) are queued instead of created immediately; End builds
-         * them all and inserts them with one AddBodiesPrepare/Finalize instead of N individual
-         * AddBody calls. Game-thread only; must be balanced. BodyIDs are valid after EndBodyBatch.
-         */
+        // Between Begin/End, body constructions are queued and inserted by End in one AddBodiesPrepare/Finalize.
+        // Game-thread only, must be balanced; BodyIDs are valid after EndBodyBatch.
         virtual void BeginBodyBatch() = 0;
         virtual void EndBodyBatch() = 0;
     };

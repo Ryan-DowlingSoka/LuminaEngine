@@ -49,11 +49,8 @@ namespace Lumina
 
         FMatrix4 GetMatrix() const
         {
-            // Direct TRS compose: scale the rotation columns and drop in the
-            // translation. Bit-identical to Translate*Rotate*Scale (rotation
-            // columns have w=0, so the translate-multiply adds nothing to them),
-            // but avoids two full 4x4 multiplies -- this runs per dirty entity
-            // every frame (physics re-placement, scene-graph resolve).
+            // Direct TRS compose: scale rotation columns, drop in translation.
+            // Bit-identical to Translate*Rotate*Scale but avoids two 4x4 multiplies (hot path).
             using namespace SIMD;
             const FMatrix4 Rot = Math::ToMatrix4(Rotation);
 

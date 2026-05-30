@@ -35,6 +35,7 @@
 #include "Entity/Events/ImpulseEvent.h"
 #include "entity/components/entitytags.h"
 #include "Entity/Components/LineBatcherComponent.h"
+#include "Entity/Components/TriangleBatcherComponent.h"
 #include "Entity/Components/NameComponent.h"
 #include "Entity/Components/PhysicsComponent.h"
 #include "Entity/Components/PostProcessComponent.h"
@@ -62,9 +63,8 @@
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/entity/systems/EntitySystem.h"
 
-// Lets Lua bindings declare a leading CWorld* parameter that the invoker fills in from the
-// calling script's thread data, so World/Camera/etc. functions bind with SetFunction and need
-// no manual lua_State plumbing. Must precede RegisterLuaModule (its instantiation point).
+// Lets Lua bindings take a leading CWorld* the invoker fills from the calling script's thread data,
+// so they bind with SetFunction and need no lua_State plumbing. Must precede RegisterLuaModule.
 namespace Lumina::Lua
 {
     template<>
@@ -379,9 +379,8 @@ namespace Lumina
             return ScriptComp->Script->Reference;
         }
 
-        // The bindings below take a leading CWorld* that the invoker injects from the calling
-        // script's thread data (TLuaContext<CWorld*>), and trailing TOptional<> args that may be
-        // omitted at the call site. They bind directly via FRef::SetFunction -- no lua_State plumbing.
+        // Bindings below take a leading CWorld* (injected from thread data) and trailing optional args;
+        // they bind via FRef::SetFunction -- no lua_State plumbing.
 
         static void Camera_SetActive(CWorld* World, entt::entity Entity, TOptional<float> Blend, TOptional<int> Ease)
         {
@@ -404,25 +403,19 @@ namespace Lumina
         static entt::entity World_SpawnPrefab(CWorld* World, FName Path)                  { return World ? World->SpawnPrefab(Path) : entt::null; }
         static entt::entity World_SpawnPrefabAt(CWorld* World, FName Path, FVector3 Loc)  { return World ? World->SpawnPrefabAt(Path, FTransform(Loc)) : entt::null; }
 
-        // Bulk entity lifecycle / transform on an ARBITRARY entity id, with the registry
-        // injected from thread data. These mirror the ECS.* utilities but drop the leading
-        // registry arg, so scripts operating on ids they spawned (not `self`) never reach
-        // into self._Registry. Locations are WORLD-space, matching World.GetLocation.
+        // Lifecycle/transform on an ARBITRARY entity id; mirror the ECS.* utilities without the
+        // registry arg, so scripts touching spawned ids (not `self`) skip self._Registry. WORLD-space.
         static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)           { return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null; }
 
-        // Bulk-spawn helper: wrap a spawn/duplicate loop in BeginPhysicsBatch/EndPhysicsBatch so the
-        // N new rigid bodies are inserted into the broadphase in a single batched pass (parallel
-        // settings build + one AddBodiesPrepare/Finalize) instead of N individual AddBody calls.
-        // Must be balanced on the game thread; BodyIDs are only valid after EndPhysicsBatch.
+        // Bulk-spawn helper: wrap a spawn loop in Begin/EndPhysicsBatch so the N bodies enter the
+        // broadphase in one batched pass. Balance on the game thread; BodyIDs valid only after End.
         static void World_BeginPhysicsBatch(CWorld* World) { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->BeginBodyBatch(); }
         static void World_EndPhysicsBatch(CWorld* World)   { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->EndBodyBatch();   }
         static void         World_Destroy(CWorld* World, entt::entity Entity)             { if (World) ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity); }
         static bool         World_IsValid(CWorld* World, entt::entity Entity)             { return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity); }
 
-        // Removes the tombstone holes that destroyed entities leave in every component pool
-        // (reflected components are in_place_delete for pointer stability). Compaction reorders
-        // elements, so it invalidates any cached raw component pointer -- only call it at a quiet
-        // point (e.g. after a big batch of Destroy calls), never mid-iteration.
+        // Removes tombstone holes left in component pools. Reorders elements, invalidating cached
+        // component pointers -- call only at a quiet point (after a batch of Destroys), never mid-iteration.
         static void         World_Compact(CWorld* World)                                 { if (World) World->GetEntityRegistry().compact(); }
 
         static FVector3     World_GetLocation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityLocation(World->GetEntityRegistry(), Entity) : FVector3{}; }
@@ -447,12 +440,8 @@ namespace Lumina
         static void World_SetRotation(CWorld* World, entt::entity Entity, FQuat Rotation)   { if (World) ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, Rotation); }
         static void World_SetScale(CWorld* World, entt::entity Entity, FVector3 Scale)      { if (World) ECS::Utils::SetEntityScale(World->GetEntityRegistry(), Entity, Scale); }
 
-        // Batched homing: advance a whole list of entities toward Target by Step units (clamped so
-        // they don't overshoot). The point is to cross the Lua boundary ONCE and take the transform
-        // resolve mutex ONCE for the whole list, instead of paying two guarded, profiled
-        // ResolveTransformChain/MarkTransformDirty calls per entity (the cost that dominates a 10k
-        // per-frame Lua loop). Roots -- the common bulk-spawn case -- need no chain resolve at all
-        // (world == local), so the hot path is just a storage read + dirty flag under the held lock.
+        // Batched homing toward Target by Step (clamped): crosses the Lua boundary and takes the transform
+        // mutex ONCE for the whole list. Roots skip chain resolve (world == local), the 10k-loop hot path.
         static void World_MoveToward(CWorld* World, TVector<entt::entity> Entities, FVector3 Target, float Step)
         {
             if (World == nullptr || Step <= 0.0f)
@@ -509,9 +498,8 @@ namespace Lumina
             }
         }
 
-        // Cross-entity component access: forwards to the world's registry so scripts can
-        // read components off ANY entity id (e.g. one returned by World.FindByName), not
-        // just `self`. Same get/has semantics as self:GetComponent.
+        // Cross-entity component access: reads components off ANY entity id (not just `self`).
+        // Same get/has semantics as self:GetComponent.
         static Lua::FRef World_GetComponent(CWorld* World, entt::entity Entity, Lua::FRef Ref)
         {
             if (World == nullptr)
@@ -566,6 +554,7 @@ namespace Lumina
         : SingletonEntity(entt::null)
         , SystemContext(this)
         , LineBatcherComponent(nullptr)
+        , TriangleBatcherComponent(nullptr)
     {
     }
 
@@ -659,9 +648,8 @@ namespace Lumina
             .AddFunction<&CTextureRenderTarget::GetHeight>("GetHeight")
             .Register();
 
-        // Camera.* / World.* / RenderTarget.* bind through FRef::SetFunction: their leading CWorld*
-        // is injected from the calling script's thread data (TLuaContext<CWorld*>) and trailing
-        // TOptional<> args may be omitted at the call site -- no manual lua_State plumbing.
+        // Camera.* / World.* / RenderTarget.* bind via FRef::SetFunction; the leading CWorld* is
+        // injected from thread data and trailing optional args may be omitted -- no lua_State plumbing.
         Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
         CameraTable.SetFunction<&LuaBinds::Camera_SetActive>("SetActive");      // SetActive(entity [, blendTime [, easeFn]])
         CameraTable.SetFunction<&LuaBinds::Camera_SetActive>("BlendTo");        // alias that reads like the cinematic call
@@ -703,8 +691,7 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
 
         // RenderTarget.Paint(target, u, v, radius [, r, g, b, a [, strength [, hardness]]])
-        // target is a handle from Engine.LoadObject("/Game/X"). UV in 0..1; radius relative to the
-        // longer side; color defaults to opaque red (blood).
+        // target = LoadObject handle; UV 0..1, radius relative to longer side, color defaults to opaque red.
         Lua::FRef RenderTargetTable = GlobalRef.NewTable("RenderTarget");
         RenderTargetTable.SetFunction<&LuaBinds::RenderTarget_Paint>("Paint");
         RenderTargetTable.SetFunction<&LuaBinds::RenderTarget_Clear>("Clear");
@@ -756,10 +743,8 @@ namespace Lumina
         }
         else
         {
-            // A freshly-loaded asset holds its entities in RegistryPending until
-            // InitializeWorld swaps them into EntityRegistry. DuplicateWorld
-            // serializes source worlds before they're initialized, so write
-            // from whichever side currently holds the data.
+            // A freshly-loaded asset keeps entities in RegistryPending until InitializeWorld swaps them
+            // into EntityRegistry; DuplicateWorld serializes pre-init. Write from whichever holds the data.
             FEntityRegistry& Source = (EntityRegistry.storage<entt::entity>().size() > 0)
                 ? EntityRegistry
                 : RegistryPending;
@@ -788,9 +773,8 @@ namespace Lumina
         // Keeps placed instances in sync with their source prefab whenever the prefab is edited.
         CPrefab::RefreshAllInstancesInWorld(this);
 
-        // Compact once the load-time structural churn (deserialized tombstones + prefab refresh
-        // adds/removes) has settled, so the world starts dense. Done before any on_construct hook
-        // is connected; compaction reorders elements but nothing here holds a component pointer.
+        // Compact once load-time churn (tombstones + prefab refresh) settles, so the world starts dense.
+        // Before any on_construct hook; reorders elements but nothing here holds a component pointer.
         EntityRegistry.compact();
 
         EntityRegistry.ctx().emplace<entt::dispatcher&>(SingletonDispatcher);
@@ -815,6 +799,7 @@ namespace Lumina
         }
         
         LineBatcherComponent = &EntityRegistry.emplace<FLineBatcherComponent>(SingletonEntity);
+        TriangleBatcherComponent = &EntityRegistry.emplace<FTriangleBatcherComponent>(SingletonEntity);
         EntityRegistry.emplace<FSingletonEntityTag>(SingletonEntity);
         EntityRegistry.emplace<FHideInSceneOutliner>(SingletonEntity);
         
@@ -996,10 +981,8 @@ namespace Lumina
             TimeSinceCreation += DeltaTime;
 
 #if USING(WITH_EDITOR)
-            // Migrate any runtime-component storage whose type schema was edited (Case B fixup).
-            // Editor-only: component-type schemas are immutable at game runtime (no schema editor),
-            // so a packaged build never needs this sweep. Runs even while paused (incl. PIE) so
-            // editor worlds reflect live schema edits. Cost is a cheap per-pool revision compare.
+            // Migrate runtime-component storage whose schema was edited. Editor-only (schemas immutable
+            // at runtime); runs even while paused so editor worlds reflect live edits. Cheap revision compare.
             ECS::Utils::RefreshRuntimeComponentSchemas(EntityRegistry);
 #endif
         }
@@ -1364,16 +1347,14 @@ namespace Lumina
 
         const TVector<FFracturePiece>& Pieces = CollectionData ? CollectionData->Pieces : GeneratedPieces;
 
-        // Create every fragment body in one batch (AddBodiesPrepare/Finalize) rather than a separate
-        // AddBody per piece. BodyIDs are only valid after EndBodyBatch, so collect the launch impulses
-        // and apply them once the batch has been inserted.
+        // Create all fragment bodies in one batch (AddBodiesPrepare/Finalize). BodyIDs valid only after
+        // EndBodyBatch, so collect launch impulses and apply them once inserted.
         struct FPendingLaunch { entt::entity Fragment; FVector3 Center; uint32 Seed; };
         TVector<FPendingLaunch> PendingLaunches;
         PendingLaunches.reserve(Pieces.size());
 
-        // Cap fragments at the physics body headroom. Spawning past Jolt's body buffer (or piling so
-        // many shards that the contact/pair buffers overflow) trips a hard update assert, so clamp and
-        // warn instead of crashing. Raise World Settings > Physics > Max* for denser destruction.
+        // Cap fragments at physics body headroom; overflowing Jolt's body/contact buffers trips a hard
+        // assert, so clamp + warn instead. Raise World Settings > Physics > Max* for denser destruction.
         uint32 MaxFragments = 0xFFFFFFFFu;
         if (PhysicsScene)
         {
@@ -1404,9 +1385,8 @@ namespace Lumina
                     ? Destructible->Collection->Materials
                     : SourceMesh->Materials;
 
-            // Pre-baked collections cache their piece meshes (built at load), so gameplay fracture
-            // does no meshlet build or GPU upload per piece. The on-the-fly Voronoi path has no
-            // cache, so it builds each piece mesh inline.
+            // Pre-baked collections cache piece meshes (built at load), so fracture does no per-piece
+            // meshlet build / upload. The on-the-fly Voronoi path has no cache and builds each inline.
             const TVector<TObjectPtr<CStaticMesh>>* CachedMeshes =
                 CollectionData ? &Destructible->Collection->GetPieceMeshes() : nullptr;
 
@@ -1422,9 +1402,8 @@ namespace Lumina
                     continue;
                 }
 
-                // BuildPieceMesh recenters the geometry to the piece centroid, so each fragment's
-                // origin sits on its own chunk (natural pivot + physics center of mass). Place the
-                // entity at the centroid's world position so the pieces reconstruct the object at t=0.
+                // BuildPieceMesh recenters geometry to the piece centroid (natural pivot + CoM); place
+                // the entity at the centroid's world position so pieces reconstruct the object at t=0.
                 const FVector3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
                 FTransform PieceTransform;
                 PieceTransform.Location = WorldCenter;
@@ -1436,9 +1415,8 @@ namespace Lumina
 
                 EntityRegistry.emplace<SStaticMeshComponent>(Fragment).StaticMesh = PieceMesh;
 
-                // The collider's on_construct auto-adds the rigid body and builds the Jolt shape
-                // synchronously, so Mesh + bConvex must be set before insertion -- otherwise the
-                // body is built from the default (non-convex) settings and forced Static.
+                // The collider's on_construct builds the Jolt shape synchronously, so Mesh + bConvex must
+                // be set before insertion -- otherwise the body uses default (non-convex) settings, forced Static.
                 SMeshColliderComponent ColliderDesc;
                 ColliderDesc.Mesh    = PieceMesh;
                 ColliderDesc.bConvex = true;
@@ -1514,9 +1492,8 @@ namespace Lumina
 
         Destructible->bFractured = true;
 
-        // Retire the original. Strip render + physics now so it vanishes this frame, and
-        // let the lifetime system reap the entity at FrameEnd -- safe even when this was
-        // called from the entity's own script callback.
+        // Retire the original: strip render + physics now so it vanishes this frame; the lifetime system
+        // reaps it at FrameEnd -- safe even when called from the entity's own script callback.
         if (Destructible->bDestroyOriginal)
         {
             EntityRegistry.remove<SStaticMeshComponent>(Entity);
@@ -1894,9 +1871,8 @@ namespace Lumina
 
     void CWorld::OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
-        // Release every action callback this entity registered so its
-        // captured Lua FRefs don't keep the script env alive (and so the
-        // callback can't fire after the entity is gone).
+        // Release every action callback this entity registered so its captured Lua FRefs don't keep
+        // the script env alive (and can't fire after the entity is gone).
         SInputComponent& Input = Registry.get<SInputComponent>(Entity);
         if (Input.ActionCallbackIds.empty())
         {
@@ -2179,6 +2155,16 @@ namespace Lumina
         }
         
         LineBatcherComponent->EnqueueLine(Start, End, Color, Thickness, bDepthTest, Duration);
+    }
+
+    void CWorld::DrawSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest, float Duration)
+    {
+        if (IsSuspended())
+        {
+            return;
+        }
+
+        TriangleBatcherComponent->EnqueueTriangles(std::move(Vertices), bDepthTest, Duration);
     }
 
     TOptional<SRayResult> CWorld::CastRay(const SRayCastSettings& Settings)

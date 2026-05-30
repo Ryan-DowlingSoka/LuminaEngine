@@ -42,8 +42,6 @@ namespace eastl
 {
     allocator GDefaultAllocator;
 
-    //-------------------------------------------------------------------------
-
     allocator* GetDefaultAllocator()
     {
         return &GDefaultAllocator;
@@ -53,8 +51,6 @@ namespace eastl
     {
         return &GDefaultAllocator;
     }
-
-    //-------------------------------------------------------------------------
 
     allocator::allocator(const char* EASTL_NAME(pName))
     {

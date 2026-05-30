@@ -3,11 +3,8 @@
 #include "Includes/Fog.slang"
 #include "Includes/Froxel.slang"
 
-// Froxel volumetric fog -- inject pass. For each froxel in the camera-frustum-aligned
-// 3D volume: compute the exponential-height-fog density (extinction) and the in-scattered
-// radiance from the sun + opted-in point/spot lights (each shadow-sampled, Henyey-
-// Greenstein phase). Writes (in-scatter rgb, extinction) into uFroxelScatter; the
-// integrate pass then accumulates front-to-back.
+// Froxel volumetric fog inject pass: per froxel, write exp-height-fog extinction plus shadowed
+// in-scatter from the sun + opted-in local lights into uFroxelScatter; the integrate pass accumulates.
 
 #define FROXEL_MAX_LOCAL_LIGHTS 16
 
@@ -36,11 +33,8 @@ float PhaseCornetteShanks(float CosTheta, float G)
     return Num / Den;
 }
 
-// Two-lobe phase: a forward scattering lobe blended with an isotropic floor.
-// A single high-G lobe collapses to a needle that only flares when you look
-// straight at the light, so side-on light shafts read as nearly black. The
-// isotropic floor keeps shafts visible from any angle while the forward lobe
-// still gives the sun-facing glow.
+// Two-lobe phase: forward Cornette-Shanks lobe blended with an isotropic floor so side-on shafts
+// stay visible (a single high-G lobe goes near-black off-axis) while the sun-facing glow remains.
 float PhaseVolumetric(float CosTheta, float G)
 {
     const float Isotropic = 1.0 / (4.0 * PI);
@@ -61,10 +55,8 @@ float3 FroxelToWorld(uint3 Coord, float3 Jitter)
     return mul(GetInverseCameraView(), float4(ViewPos, 1.0)).xyz;
 }
 
-// Pick the first (smallest, highest-res) cascade whose ortho frustum actually
-// contains the froxel. Containment-based selection is independent of the view-Z
-// sign convention -- the split-distance test the lit pass uses assumes a positive
-// view distance the froxel path doesn't have.
+// Pick the first cascade whose ortho frustum contains the froxel. Containment is independent of the
+// view-Z sign convention, unlike the lit pass's split-distance test (which assumes positive view distance).
 float SampleSunShadow(FLight Light, float3 WorldPos)
 {
     if (Light.ShadowDataIndex == INDEX_NONE)
@@ -90,10 +82,8 @@ float SampleSunShadow(FLight Light, float3 WorldPos)
     return 1.0;
 }
 
-// Beam edges otherwise quantize to the froxel grid (one shadow tap per cell).
-// The shadow is the only high-frequency term across a froxel -- density and
-// phase vary slowly -- so supersample just it at four sub-froxel positions and
-// average. Cheap soft god-ray edges without temporal accumulation.
+// Shadow is the only high-frequency term across a froxel, so supersample just it at four sub-froxel
+// positions and average. Soft god-ray edges without temporal accumulation.
 float SampleSunShadowAA(FLight Sun, uint3 Coord)
 {
     const float2 Offs[4] = { float2(0.25, 0.25), float2(0.75, 0.25),
@@ -147,9 +137,8 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     float  G         = uFog.VolumetricParams.y;
     float  Intensity = uFog.VolumetricParams.x;
 
-    // Ambient (skylight) in-scatter -- UNSHADOWED, so fog inside a shadow still catches
-    // sky light and reads as dim hazy fog instead of a black void. Cheap stand-in for
-    // multiple scattering; raise the environment's AmbientIntensity for brighter shadows.
+    // Ambient (skylight) in-scatter, unshadowed, so shadowed fog reads as dim haze not a black void.
+    // Cheap multi-scatter stand-in; raise AmbientIntensity for brighter shadows.
     float3 InScatter = GetAmbientLightColor() * GetAmbientLightIntensity();
 
     // Sun.

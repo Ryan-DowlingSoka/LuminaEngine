@@ -2,10 +2,8 @@
 
 #include "Tools/Import/ImportHelpers.h"
 
-// Model-format parsers (OBJ/FBX/GLTF). Editor-only: they pull tinyobjloader,
-// OpenFBX and fastgltf, none of which ship in the Game runtime. The parsed
-// FMeshImportData and the heavy finalize/meshlet passes still live in Runtime
-// (ImportHelpers.h) so cooked meshes can be finalized without these parsers.
+// Editor-only model-format parsers (OBJ/FBX/GLTF) pulling tinyobjloader/OpenFBX/fastgltf, none of which ship in the Game runtime.
+// FMeshImportData + the heavy finalize/meshlet passes stay in Runtime (ImportHelpers.h) so cooked meshes finalize without these parsers.
 namespace Lumina::Import::Mesh
 {
     namespace OBJ

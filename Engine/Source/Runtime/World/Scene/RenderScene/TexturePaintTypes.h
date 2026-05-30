@@ -3,9 +3,8 @@
 
 namespace Lumina
 {
-    // A single paint/clear request against a render-target texture. Enqueued from the
-    // game thread (CWorld::PaintRenderTarget / ClearRenderTarget), drained into the
-    // frame snapshot during Extract, executed as a compute dispatch in TexturePaintPass.
+    // A single paint/clear request against a render-target texture. Enqueued game-side, drained into
+    // the frame snapshot during Extract, executed as a compute dispatch in TexturePaintPass.
     struct FTexturePaintOp
     {
         enum class EMode : uint8 { Paint, Clear };

@@ -181,9 +181,7 @@ namespace Lumina::RmlUi
             TUniquePtr<FRmlUiRenderer>          Renderer;
             TVector<TUniquePtr<FEditorEntry>>   EditorContexts;
 
-            // Editor hot-reload: a subscription to FCoreDelegates::OnContentFileModified raises
-            // this flag on any .rml/.rcss save; the game thread restyles every live document next
-            // TickWorldUI. No watcher here -- the editor's central watcher owns disk watching.
+            // Editor hot-reload: OnContentFileModified raises this on any .rml/.rcss save; next TickWorldUI restyles.
             TAtomic<bool>                       bUIReloadPending{false};
 
             CWorld*                             ActiveWorld = nullptr;

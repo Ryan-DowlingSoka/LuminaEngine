@@ -58,9 +58,8 @@ namespace Lumina::Lua
 
     namespace ArgResolve
     {
-        // Count of the parameters before index I that are read from the argument stack (i.e. not
-        // TLuaContext-injected). Used to map a parameter index to its absolute stack slot so that
-        // injected parameters don't shift the positional reads after them.
+        // Count of params before index I read from the arg stack (not TLuaContext-injected); maps a
+        // param index to its absolute slot so injected params don't shift positional reads after them.
         template<typename ArgsT, size_t... J>
         constexpr int CountStackArgsImpl(eastl::index_sequence<J...>)
         {
@@ -73,9 +72,8 @@ namespace Lumina::Lua
             return CountStackArgsImpl<ArgsT>(eastl::make_index_sequence<I>{});
         }
 
-        // Resolve parameter I: context parameters come from the execution context (no stack slot);
-        // the rest are read positionally from StackBase + (# stack parameters before I). Each call
-        // computes an absolute index, so the unspecified argument-evaluation order is irrelevant.
+        // Resolve param I: context params come from the execution context (no slot); the rest read
+        // positionally from StackBase + (# stack params before I), so eval order is irrelevant.
         template<typename ArgsT, size_t I>
         decltype(auto) ResolveArg(lua_State* L, int StackBase)
         {

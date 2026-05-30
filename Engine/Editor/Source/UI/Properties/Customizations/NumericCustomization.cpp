@@ -34,7 +34,7 @@ namespace Lumina
 
         // One labeled row: leading category icon + three color-tagged XYZ drag fields.
         // Clicking an axis tag zeroes that component and sets bResetClicked.
-        EPropertyChangeOp DrawAxisRow(const char* ID, const char* Icon, const ImVec4& IconColor, const char* Tooltip, float* Values, float Speed, bool& bResetClicked)
+        EPropertyChangeOp DrawAxisRow(const char* ID, const char* Icon, const ImVec4& IconColor, const char* Tooltip, float* Values, float Speed, bool& bResetClicked, float ResetValue = 0.0f, const char* Format = "%.3f")
         {
             EPropertyChangeOp Op = EPropertyChangeOp::None;
             const ImGuiStyle& Style = ImGui::GetStyle();
@@ -69,19 +69,19 @@ namespace Lumina
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
                 if (ImGui::Button(GAxisLabels[Axis], ImVec2(TagW, LineHeight)))
                 {
-                    Values[Axis] = 0.0f;
+                    Values[Axis] = ResetValue;
                     bResetClicked = true;
                 }
                 ImGui::PopStyleVar();
                 ImGui::PopStyleColor(3);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
                 {
-                    ImGui::SetTooltip("Reset to 0");
+                    ImGui::SetTooltip("Reset to: %f", ResetValue);
                 }
 
                 ImGui::SameLine(0.0f, 0.0f);
                 ImGui::SetNextItemWidth(FieldW);
-                if (ImGui::DragScalar("##V", ImGuiDataType_Float, &Values[Axis], Speed, nullptr, nullptr, "%.3f"))
+                if (ImGui::DragScalar("##V", ImGuiDataType_Float, &Values[Axis], Speed, nullptr, nullptr, Format))
                 {
                     Op = EPropertyChangeOp::Updated;
                 }
@@ -115,13 +115,15 @@ namespace Lumina
         float Max = MaxOpt ? MaxOpt.value() : 0.0f;
 
         float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+        const FString UnitFormat = BuildUnitFormat(Prop, "%.3f");
+        const char* Format = UnitFormat.empty() ? "%.3f" : UnitFormat.c_str();
         if (Prop->HasMetadata("NoDrag"))
         {
-            ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 2, &Speed, nullptr, nullptr);
+            ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 2, &Speed, nullptr, Format);
         }
         else
         {
-            ImGui::DragFloat2("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+            ImGui::DragFloat2("##", Math::ValuePtr(DisplayValue), Speed, Min, Max, Format);
         }
 
         ImGui::PopItemWidth();
@@ -188,13 +190,15 @@ namespace Lumina
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
 
             float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+            const FString UnitFormat = BuildUnitFormat(Prop, "%.3f");
+            const char* Format = UnitFormat.empty() ? "%.3f" : UnitFormat.c_str();
             if (Prop->HasMetadata("NoDrag"))
             {
-                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 3, &Speed, nullptr, nullptr);
+                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 3, &Speed, nullptr, Format);
             }
             else
             {
-                ImGui::DragFloat3("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+                ImGui::DragFloat3("##", Math::ValuePtr(DisplayValue), Speed, Min, Max, Format);
             }
         }
         
@@ -262,13 +266,15 @@ namespace Lumina
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
 
             float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+            const FString UnitFormat = BuildUnitFormat(Prop, "%.3f");
+            const char* Format = UnitFormat.empty() ? "%.3f" : UnitFormat.c_str();
             if (Prop->HasMetadata("NoDrag"))
             {
-                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 4, &Speed, nullptr, nullptr);
+                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 4, &Speed, nullptr, Format);
             }
             else
             {
-                ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+                ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), Speed, Min, Max, Format);
             }
         }
 
@@ -362,11 +368,12 @@ namespace Lumina
         };
 
         bool bReset = false;
-        Merge(DrawAxisRow("T", LE_ICON_AXIS_ARROW, ImVec4(0.40f, 0.70f, 1.0f, 1.0f), "Translation (Location)", Math::ValuePtr(DisplayValue.Location), 0.01f, bReset));
+        // Translation is always in meters; rotation (degrees) and scale stay unitless.
+        Merge(DrawAxisRow("T", LE_ICON_AXIS_ARROW, ImVec4(0.40f, 0.70f, 1.0f, 1.0f), "Translation (Location)", Math::ValuePtr(DisplayValue.Location), 0.01f, bReset, 0.0f, "%.3f m"));
 
         FVector3 EulerRotation = Math::Degrees(Math::EulerAngles(DisplayValue.Rotation));
         bool bRotationReset = false;
-        const EPropertyChangeOp RotationOp = DrawAxisRow("R", LE_ICON_ROTATE_360, ImVec4(0.40f, 1.0f, 0.70f, 1.0f), "Rotation (Euler Angles)", Math::ValuePtr(EulerRotation), 0.1f, bRotationReset);
+        const EPropertyChangeOp RotationOp = DrawAxisRow("R", LE_ICON_ROTATE_360, ImVec4(0.40f, 1.0f, 0.70f, 1.0f), "Rotation (Euler Angles)", Math::ValuePtr(EulerRotation), 0.1f, bRotationReset, 0.0f, "%.3f\xc2\xb0");
         if (RotationOp == EPropertyChangeOp::Updated || bRotationReset)
         {
             DisplayValue.SetRotationFromEuler(EulerRotation);
@@ -374,7 +381,7 @@ namespace Lumina
         Merge(RotationOp);
         bReset |= bRotationReset;
 
-        Merge(DrawAxisRow("S", LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT, ImVec4(1.0f, 0.70f, 0.40f, 1.0f), "Scale", Math::ValuePtr(DisplayValue.Scale), 0.01f, bReset));
+        Merge(DrawAxisRow("S", LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT, ImVec4(1.0f, 0.70f, 0.40f, 1.0f), "Scale (multiplier)", Math::ValuePtr(DisplayValue.Scale), 0.01f, bReset, 1.0f, "%.3f\xc3\x97"));
 
         // A reset writes the value this frame: open the undo transaction now (Started),
         // commit it next frame (Finished), like the discrete object/array edits.

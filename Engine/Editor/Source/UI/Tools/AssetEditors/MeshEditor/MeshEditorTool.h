@@ -37,15 +37,11 @@ namespace Lumina
         bool bShowNormals = false;
         bool bShowTangents = false;
 
-        // Selected surface in the Geometry Surfaces UI; -1 = none. Drawn as a
-        // colored AABB overlay in Update() so the user can see which part of
-        // the mesh a surface covers.
+        // Selected surface in the Geometry Surfaces UI (-1 = none); drawn as a colored
+        // AABB overlay in Update() to show which part of the mesh it covers.
         int32 SelectedSurfaceIndex = -1;
 
-        // Preview LOD override pushed onto the mesh component each frame:
         // -1 = automatic (distance-driven), 0..MAX_MESH_LODS-1 = forced.
-        // Lets the user inspect each LOD's geometry independent of camera
-        // distance.
         int32 PreviewLODIndex = -1;
 
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;

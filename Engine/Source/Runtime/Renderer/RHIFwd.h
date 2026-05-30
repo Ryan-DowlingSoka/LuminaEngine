@@ -23,7 +23,5 @@ namespace Lumina
     class FRHIVertexShader;
     class FRHIBuffer;
     class FRHIImage;
-    
-    //----------------------------------------------------------------------------
 
 }

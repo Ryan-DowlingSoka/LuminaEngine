@@ -29,10 +29,6 @@ namespace Lumina::Reflection
         }
     }
 
-    //-------------------------------------------------------------------------
-    // Header emission
-    //-------------------------------------------------------------------------
-
     void FReflectedEnum::DefineInitialHeader(FCodeWriter& Writer, const eastl::string& /*FileID*/)
     {
         const eastl::string Api = Names::ProjectApiMacro(Header->Project->Name);
@@ -49,10 +45,6 @@ namespace Lumina::Reflection
         // Enums don't have a GENERATED_BODY expansion - StaticEnum is a template
         // specialization declared in the initial header.
     }
-
-    //-------------------------------------------------------------------------
-    // Implementation emission (.generated.cpp)
-    //-------------------------------------------------------------------------
 
     void FReflectedEnum::DeclareImplementation(FCodeWriter& Writer)
     {

@@ -4,10 +4,8 @@ namespace Lumina
 {
     struct FSkeletonResource;
 
-    // Editor-only context for FName properties tagged BonePicker. Asset editors
-    // that author bone references (animation graph, etc.) push the skeleton they
-    // are editing here before drawing the property panel; the FName customization
-    // reads it back and renders a bone-tree popup instead of a plain text field.
+    // Context for FName properties tagged BonePicker: asset editors push the edited
+    // skeleton here so the FName customization renders a bone-tree popup.
     namespace BonePickerContext
     {
         // Pushes/pops the active skeleton on a small stack so re-entrant draws

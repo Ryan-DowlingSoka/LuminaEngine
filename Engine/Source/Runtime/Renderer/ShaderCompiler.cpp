@@ -201,9 +201,8 @@ namespace Lumina
                 SessionDesc.targets     = &TargetDesc;
                 SessionDesc.targetCount = 1;
 
-                // Engine first, then every enabled plugin's Shaders/ root. The
-                // resolved roots vector keeps the FString backing live across the
-                // Slang call; SearchPaths just holds pointers into it.
+                // Engine first, then every enabled plugin's Shaders/ root. SlangSearchRoots keeps the
+                // FString backing live across the Slang call; SearchPaths holds pointers into it.
                 TVector<FString>     SlangSearchRoots;
                 TVector<const char*> SearchPaths;
                 SlangSearchRoots.reserve(8);

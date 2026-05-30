@@ -69,10 +69,8 @@ namespace Lumina
         PROPERTY(Editable, Category = "Rendering")
         EMSAASampleCount MSAASampleCount = EMSAASampleCount::Off;
 
-        /** Variable-rate shading rate applied to opted-in passes (sky, particles, translucency,
-        fog, and the opaque base pass). Coarser = fewer fragment shader invocations (faster,
-        softer). Off by default; note the base pass also writes the picker buffer, so coarse
-        rates reduce click-picking precision. No effect on GPUs without pipeline FSR support. */
+        // VRS rate for opted-in passes (sky, particles, translucency, fog, opaque base). Coarser = fewer PS
+        // invocations but softer + reduced picker precision (base pass writes it). No-op without pipeline FSR.
         PROPERTY(Editable, Category = "Rendering")
         EVariableRateShading VariableRateShading = EVariableRateShading::Off;
 
