@@ -1054,7 +1054,15 @@ namespace Lumina
                 HoverTypeCache.bChecked = true;
             }
         }
-        
+
+        // Registered doc (e.g. from .AddComment) for the hovered symbol, if any.
+        FString DocText;
+        if (TypeContext && !IsDebuggerPausedHere())
+        {
+            const TextEditor::CursorPosition DocPos = CodeEditor.GetCurrentCursorPosition();
+            TypeContext->GetDocAt(DocPos.line + 1, DocPos.column + 1, DocText);
+        }
+
         if (IsDebuggerPausedHere())
         {
             Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
@@ -1196,6 +1204,34 @@ namespace Lumina
                     return;
                 }
             }
+
+            // Not a harvested symbol (e.g. World.Physics:AddForce resolves through the runtime
+            // metatable, so it's never harvested) -- but Luau still has its type, and the registry
+            // may have a doc comment for it. Surface those instead of an empty hover.
+            if (!TypeText.empty() || !DocText.empty())
+            {
+                BeginTranslucentTooltip();
+                if (!DottedPath.empty())
+                {
+                    ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f), "%s", DottedPath.c_str());
+                    ImGui::Separator();
+                }
+                if (!TypeText.empty())
+                {
+                    ImGui::PushTextWrapPos(420.0f);
+                    ImGui::TextDisabled("type:");
+                    ImGui::TextUnformatted(TypeText.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+                if (!DocText.empty())
+                {
+                    if (!TypeText.empty()) ImGui::Spacing();
+                    ImGui::PushTextWrapPos(420.0f);
+                    ImGui::TextColored(ImVec4(0.78f, 0.85f, 0.72f, 1.0f), "%s", DocText.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+                EndTranslucentTooltip();
+            }
             return;
         }
 
@@ -1219,6 +1255,14 @@ namespace Lumina
             ImGui::PushTextWrapPos(420.0f);
             ImGui::TextDisabled("inferred type:");
             ImGui::TextUnformatted(TypeText.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+        }
+
+        if (!DocText.empty())
+        {
+            ImGui::PushTextWrapPos(420.0f);
+            ImGui::TextColored(ImVec4(0.78f, 0.85f, 0.72f, 1.0f), "%s", DocText.c_str());
             ImGui::PopTextWrapPos();
             ImGui::Spacing();
         }

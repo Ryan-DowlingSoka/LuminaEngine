@@ -54,6 +54,7 @@
 #include "Renderer/RenderThread.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/ScriptTypeRegistry.h"
 #include "Scripting/Lua/Stack.h"
 #include "Scripting/Lua/VariadicArgs.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
@@ -412,6 +413,29 @@ namespace Lumina
         static void World_BeginPhysicsBatch(CWorld* World) { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->BeginBodyBatch(); }
         static void World_EndPhysicsBatch(CWorld* World)   { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->EndBodyBatch();   }
         static void         World_Destroy(CWorld* World, entt::entity Entity)             { if (World) ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity); }
+
+        // Metatable __index for the global World table: resolves subsystem namespaces (World.Physics,
+        // and later World.Audio/Rendering/...) to the CALLING script's world via thread data, so the
+        // single shared table is correct across every world. Direct World.* fields (SpawnPrefab, etc.)
+        // are present on the table and bypass __index; only a missing key lands here.
+        static int World_SubsystemIndex(lua_State* L)
+        {
+            const char* Key = lua_tostring(L, 2);
+            if (Key == nullptr) { lua_pushnil(L); return 1; }
+
+            const auto* TD = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
+            CWorld* World = TD ? TD->World : nullptr;
+            if (World == nullptr) { lua_pushnil(L); return 1; }
+
+            if (strcmp(Key, "Physics") == 0)
+            {
+                Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene());
+                return 1;
+            }
+
+            lua_pushnil(L);
+            return 1;
+        }
         static bool         World_IsValid(CWorld* World, entt::entity Entity)             { return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity); }
 
         // Removes tombstone holes left in component pools. Reorders elements, invalidating cached
@@ -614,27 +638,50 @@ namespace Lumina
             .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
             .Register();
         
-        GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
-            .AddFunction<&Physics::IPhysicsScene::GetEntityBodyID>("GetEntityBodyID")
-            .AddFunction<&Physics::IPhysicsScene::ActivateBody>("ActivateBody")
-            .AddFunction<&Physics::IPhysicsScene::DeactivateBody>("DeactivateBody")
-            .AddFunction<&Physics::IPhysicsScene::OnImpulseEvent>("ApplyImpulse")
-            .AddFunction<&Physics::IPhysicsScene::OnForceEvent>("ApplyForce")
-            .AddFunction<&Physics::IPhysicsScene::OnTorqueEvent>("ApplyTorque")
-            .AddFunction<&Physics::IPhysicsScene::OnAngularImpulseEvent>("ApplyAngularImpulse")
-            .AddFunction<&Physics::IPhysicsScene::OnSetVelocityEvent>("SetVelocity")
-            .AddFunction<&Physics::IPhysicsScene::OnSetAngularVelocityEvent>("SetAngularVelocity")
-            .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
-            .AddFunction<&Physics::IPhysicsScene::OnAddForceAtPositionEvent>("AddForceAtPosition")
-            .AddFunction<&Physics::IPhysicsScene::OnSetGravityFactorEvent>("SetGravityFactor")
-            .AddFunction<&Physics::IPhysicsScene::GetVelocityAtPoint>("GetVelocityAtPoint")
-            .AddFunction<&Physics::IPhysicsScene::GetLinearVelocity>("GetLinearVelocity")
-            .AddFunction<&Physics::IPhysicsScene::GetAngularVelocity>("GetAngularVelocity")
-            .AddFunction<&Physics::IPhysicsScene::GetCenterOfMass>("GetCenterOfMass")
-            .AddFunction<&Physics::IPhysicsScene::GetBodyPosition>("GetBodyPosition")
-            .AddFunction<&Physics::IPhysicsScene::GetBodyRotation>("GetBodyRotation")
+        // Physics scene userdata. Methods are entity-based (they resolve the body internally), so
+        // it reads identically whether reached as self.Physics, World.Physics, or for another
+        // entity's id. Commands (AddForce/...) apply on the next physics step; getters return the
+        // latched physics snapshot. Overloaded getters are static_cast to pick the entity version.
+        using PScene = Physics::IPhysicsScene;
+        GlobalRef.NewClass<PScene>("PhysicsScene")
+            .AddFunction<&PScene::GetEntityBodyID>("GetBodyID")
+                .AddComment("Jolt body id backing the entity, or 0 if it has no rigid body.")
+            .AddFunction<&PScene::ActivateBody>("ActivateBody")
+                .AddComment("Wake a sleeping body so it simulates again.")
+            .AddFunction<&PScene::DeactivateBody>("DeactivateBody")
+                .AddComment("Put a body to sleep until something disturbs it.")
+            .AddFunction<&PScene::AddForce>("AddForce")
+                .AddComment("Apply a world-space force (N) to the entity's body for one physics step.")
+            .AddFunction<&PScene::AddImpulse>("AddImpulse")
+                .AddComment("Apply an instantaneous world-space impulse (kg*m/s).")
+            .AddFunction<&PScene::AddTorque>("AddTorque")
+                .AddComment("Apply a world-space torque (N*m) for one physics step.")
+            .AddFunction<&PScene::AddAngularImpulse>("AddAngularImpulse")
+                .AddComment("Apply an instantaneous angular impulse (kg*m^2/s).")
+            .AddFunction<&PScene::AddForceAtPosition>("AddForceAtPosition")
+                .AddComment("Apply a force at a world-space point, producing torque about the center of mass.")
+            .AddFunction<&PScene::AddImpulseAtPosition>("AddImpulseAtPosition")
+                .AddComment("Apply an impulse at a world-space point.")
+            .AddFunction<&PScene::SetLinearVelocity>("SetLinearVelocity")
+                .AddComment("Replace the body's linear velocity (m/s).")
+            .AddFunction<&PScene::SetAngularVelocity>("SetAngularVelocity")
+                .AddComment("Replace the body's angular velocity (rad/s).")
+            .AddFunction<&PScene::SetGravityFactor>("SetGravityFactor")
+                .AddComment("Per-body gravity multiplier (0 = float, 1 = normal).")
+            .AddFunction<static_cast<FVector3(PScene::*)(entt::entity)>(&PScene::GetLinearVelocity)>("GetLinearVelocity")
+                .AddComment("Linear velocity from the latched physics snapshot (frame-coherent).")
+            .AddFunction<static_cast<FVector3(PScene::*)(entt::entity)>(&PScene::GetAngularVelocity)>("GetAngularVelocity")
+                .AddComment("Angular velocity from the latched physics snapshot.")
+            .AddFunction<static_cast<FVector3(PScene::*)(entt::entity, const FVector3&)>(&PScene::GetVelocityAtPoint)>("GetVelocityAtPoint")
+                .AddComment("Velocity of a world-space point on the body (includes spin).")
+            .AddFunction<static_cast<FVector3(PScene::*)(entt::entity)>(&PScene::GetCenterOfMass)>("GetCenterOfMass")
+                .AddComment("World-space center of mass.")
+            .AddFunction<static_cast<FVector3(PScene::*)(entt::entity)>(&PScene::GetBodyPosition)>("GetBodyPosition")
+                .AddComment("Actual physics body position -- not the lagged render transform.")
+            .AddFunction<static_cast<FQuat(PScene::*)(entt::entity)>(&PScene::GetBodyRotation)>("GetBodyRotation")
+                .AddComment("Actual physics body rotation -- not the lagged render transform.")
             .Register();
-        
+
         GlobalRef.NewClass<entt::runtime_view>("RuntimeView")
             .AddFunction<&entt::runtime_view::contains>("Contains")
             .AddFunction<&LuaBinds::ForEachInRuntimeView_Lua>("Each")
@@ -689,6 +736,29 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_GetScript>("GetScript");            // GetScript(entity) -> script table or nil
         WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
         WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
+
+        // World.<Subsystem> namespaces (World.Physics, ...) resolve per script through this metatable
+        // so the single shared World table is correct across every world. See World_SubsystemIndex.
+        {
+            lua_State* L = GlobalRef.GetState();
+            WorldTable.Push();
+            lua_newtable(L);
+            lua_pushcfunction(L, &LuaBinds::World_SubsystemIndex, "World.__index");
+            lua_rawsetfield(L, -2, "__index");
+            lua_setmetatable(L, -2);
+            lua_pop(L, 1);
+        }
+
+#if WITH_EDITOR
+        // Editor type for the World table. Subsystem types (PhysicsScene, ...) are auto-derived from
+        // their NewClass bindings above; here we only state how they hang off World. `[string]: any`
+        // keeps the not-yet-typed flat World.* helpers (FindByName, SpawnPrefab, ...) error-free.
+        Lua::FScriptTypeRegistry::Get().RegisterSnippet("World",
+            "declare World: {\n"
+            "    Physics: PhysicsScene,\n"
+            "    [string]: any,\n"
+            "}\n");
+#endif
 
         // RenderTarget.Paint(target, u, v, radius [, r, g, b, a [, strength [, hardness]]])
         // target = LoadObject handle; UV 0..1, radius relative to longer side, color defaults to opaque red.
@@ -1919,7 +1989,6 @@ namespace Lumina
         }
         
         ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
-        ScriptComponent.Script->Reference.RawSet("_Physics",  PhysicsScene.get());
         ScriptComponent.Script->Reference.RawSet("_Events",   &LuaEventBus);
         ScriptComponent.Script->Reference.RawSet("_Timers",   &TimerManager);
         ScriptComponent.Script->Reference.RawSet("_Draw",     DrawInterfaceRef);

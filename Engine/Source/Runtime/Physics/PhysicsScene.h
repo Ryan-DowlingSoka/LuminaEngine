@@ -56,5 +56,27 @@ namespace Lumina::Physics
         // Game-thread only, must be balanced; BodyIDs are valid after EndBodyBatch.
         virtual void BeginBodyBatch() = 0;
         virtual void EndBodyBatch() = 0;
+
+        // ---- Entity-based facet API (script-facing) -------------------------------------------
+        // Non-virtual conveniences over the body-id interface above: resolve the entity's body,
+        // then apply or read. Commands fill a parameter POD and call the handler directly (safe --
+        // scripts never overlap the step). Reads return the latched snapshot. No-op if the entity
+        // has no body. This is the single method set behind self.Physics and World.Physics.
+        void AddForce(entt::entity E, const FVector3& Force)                   { SForceEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Force = Force; OnForceEvent(Ev); }
+        void AddImpulse(entt::entity E, const FVector3& Impulse)               { SImpulseEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Impulse = Impulse; OnImpulseEvent(Ev); }
+        void AddTorque(entt::entity E, const FVector3& Torque)                 { STorqueEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Torque = Torque; OnTorqueEvent(Ev); }
+        void AddAngularImpulse(entt::entity E, const FVector3& AngularImpulse) { SAngularImpulseEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.AngularImpulse = AngularImpulse; OnAngularImpulseEvent(Ev); }
+        void AddForceAtPosition(entt::entity E, const FVector3& Force, const FVector3& Position)     { SAddForceAtPositionEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Force = Force; Ev.Position = Position; OnAddForceAtPositionEvent(Ev); }
+        void AddImpulseAtPosition(entt::entity E, const FVector3& Impulse, const FVector3& Position) { SAddImpulseAtPositionEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Impulse = Impulse; Ev.Position = Position; OnAddImpulseAtPositionEvent(Ev); }
+        void SetLinearVelocity(entt::entity E, const FVector3& Velocity)         { SSetVelocityEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Velocity = Velocity; OnSetVelocityEvent(Ev); }
+        void SetAngularVelocity(entt::entity E, const FVector3& AngularVelocity) { SSetAngularVelocityEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.AngularVelocity = AngularVelocity; OnSetAngularVelocityEvent(Ev); }
+        void SetGravityFactor(entt::entity E, float Factor)                     { SSetGravityFactorEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.GravityFactor = Factor; OnSetGravityFactorEvent(Ev); }
+
+        FVector3 GetLinearVelocity(entt::entity E)                         { return GetLinearVelocity(GetEntityBodyID(E)); }
+        FVector3 GetAngularVelocity(entt::entity E)                        { return GetAngularVelocity(GetEntityBodyID(E)); }
+        FVector3 GetVelocityAtPoint(entt::entity E, const FVector3& Point) { return GetVelocityAtPoint(GetEntityBodyID(E), Point); }
+        FVector3 GetCenterOfMass(entt::entity E)                           { return GetCenterOfMass(GetEntityBodyID(E)); }
+        FVector3 GetBodyPosition(entt::entity E)                           { return GetBodyPosition(GetEntityBodyID(E)); }
+        FQuat    GetBodyRotation(entt::entity E)                           { return GetBodyRotation(GetEntityBodyID(E)); }
     };
 }

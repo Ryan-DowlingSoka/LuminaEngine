@@ -21,10 +21,9 @@
 --   self.Exports   — editable properties table (also reachable as self.<key>)
 --
 -- The script-facing API is split between flat helpers on `self` (the common,
--- entity-core operations: lifecycle, transform, components, identity) and
--- namespaced facets for the larger domains. The facets read like the engine's
--- global tables but are scoped to THIS entity:
---   self.Physics  — forces, velocity, body pose      (self.Physics:ApplyImpulse(v))
+-- entity-core operations: lifecycle, transform, components, identity, physics
+-- verbs) and namespaced facets for the larger domains. The facets read like the
+-- engine's global tables but are scoped to THIS entity:
 --   self.Tree     — parent / child hierarchy          (self.Tree:GetParent())
 --   self.Timers   — delays, intervals, waits          (self.Timers:After(1, fn))
 --   self.Events   — pub/sub event bus                 (self.Events:Subscribe("Hit", fn))
@@ -33,6 +32,12 @@
 -- Facets are built lazily on first access and cached, so an entity only pays
 -- for the ones it uses. Engine services are injected under private (underscore)
 -- slots and live behind these facets — game code never touches them directly.
+--
+-- Strict boundary: `self` exposes ONLY this entity / script instance. Anything that
+-- touches the world or an engine subsystem goes through the global `World` — physics
+-- is World.Physics:AddForce(self.Entity, f), audio is World.Audio, etc. There is no
+-- self.Physics. (The world-scoped facets above — Tree/Timers/Events/Draw — are being
+-- migrated to World as well; see the API redesign.)
 
 local EntityScript = {}
 
@@ -46,7 +51,6 @@ EntityScript._Shape = {
     Name      = "FName",
     Exports   = "table",
     Input     = "SInputComponent (after EnableInput)",
-    Physics   = "facet: forces, velocity, body pose",
     Tree      = "facet: parent / child hierarchy",
     Timers    = "facet: delays, intervals, waits",
     Events    = "facet: pub/sub event bus",
@@ -281,114 +285,9 @@ function EntityScript:SetCameraTarget(Target)
     end
 end
 
--- ==========================================================================
--- Facet: self.Physics
--- ==========================================================================
--- Thin wrappers around IPhysicsScene that build the event struct and fill in
--- this entity's body id, so scripts don't repeat the SImpulseEvent etc.
--- boilerplate. Cross-entity physics work still goes through the global APIs.
-
-local Physics = DefineFacet("Physics")
-
-function Physics:GetBodyID()
-    local Owner = self.Owner
-    return Owner._Physics:GetEntityBodyID(Owner.Entity)
-end
-
-function Physics:ApplyImpulse(Impulse)
-    local E = SImpulseEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Impulse = Impulse
-    self.Owner._Physics:ApplyImpulse(E)
-end
-
-function Physics:ApplyForce(Force)
-    local E = SForceEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Force = Force
-    self.Owner._Physics:ApplyForce(E)
-end
-
-function Physics:ApplyTorque(Torque)
-    local E = STorqueEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Torque = Torque
-    self.Owner._Physics:ApplyTorque(E)
-end
-
-function Physics:ApplyAngularImpulse(AngularImpulse)
-    local E = SAngularImpulseEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.AngularImpulse = AngularImpulse
-    self.Owner._Physics:ApplyAngularImpulse(E)
-end
-
-function Physics:ApplyImpulseAt(Impulse, Position)
-    local E = SAddImpulseAtPositionEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Impulse = Impulse
-    E.Position = Position
-    self.Owner._Physics:AddImpulseAtPosition(E)
-end
-
-function Physics:ApplyForceAt(Force, Position)
-    local E = SAddForceAtPositionEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Force = Force
-    E.Position = Position
-    self.Owner._Physics:AddForceAtPosition(E)
-end
-
-function Physics:SetVelocity(Velocity)
-    local E = SSetVelocityEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Velocity = Velocity
-    self.Owner._Physics:SetVelocity(E)
-end
-
-function Physics:SetAngularVelocity(AngularVelocity)
-    local E = SSetAngularVelocityEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.AngularVelocity = AngularVelocity
-    self.Owner._Physics:SetAngularVelocity(E)
-end
-
-function Physics:GetLinearVelocity()
-    return self.Owner._Physics:GetLinearVelocity(self:GetBodyID())
-end
-
-function Physics:GetAngularVelocity()
-    return self.Owner._Physics:GetAngularVelocity(self:GetBodyID())
-end
-
-function Physics:GetVelocityAtPoint(Point)
-    return self.Owner._Physics:GetVelocityAtPoint(self:GetBodyID(), Point)
-end
-
--- Body's actual current pose. Use these instead of self.Transform when the
--- script runs in PrePhysics and needs to compute force application points or
--- ray origins relative to the body — the cached transform component holds the
--- lagged interpolated render value, not what physics will integrate from.
-
-function Physics:GetBodyPosition()
-    return self.Owner._Physics:GetBodyPosition(self:GetBodyID())
-end
-
-function Physics:GetBodyRotation()
-    return self.Owner._Physics:GetBodyRotation(self:GetBodyID())
-end
-
-function Physics:GetForward()
-    return self:GetBodyRotation():RotateVector(vector.create(0.0, 0.0, 1.0))
-end
-
-function Physics:GetRight()
-    return self:GetBodyRotation():RotateVector(vector.create(1.0, 0.0, 0.0))
-end
-
-function Physics:GetUp()
-    return self:GetBodyRotation():RotateVector(vector.create(0.0, 1.0, 0.0))
-end
+-- Physics lives on World, not self: World.Physics:AddForce(self.Entity, Force),
+-- World.Physics:SetLinearVelocity(self.Entity, Velocity), World.Physics:GetBodyPosition(
+-- self.Entity), etc. Pass self.Entity as the target. There is intentionally no self.Physics.
 
 -- ==========================================================================
 -- Facet: self.Tree

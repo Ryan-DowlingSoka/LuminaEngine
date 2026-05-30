@@ -6,6 +6,7 @@
 #include "Luau/AutocompleteTypes.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/ConfigResolver.h"
+#include "Luau/Documentation.h"
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Frontend.h"
@@ -15,6 +16,8 @@
 #include "Luau/Scope.h"
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
+#include "Log/Log.h"
+#include "Scripting/Lua/ScriptTypeRegistry.h"
 
 #include <memory>
 #include <string>
@@ -67,6 +70,7 @@ namespace Lumina
             return Luau::Position(unsigned(std::max(0, Line1 - 1)),
                                   unsigned(std::max(0, Col1 - 1)));
         }
+
     }
 
     struct FLuaTypeContext::FImpl
@@ -77,6 +81,9 @@ namespace Lumina
         std::unique_ptr<Luau::Frontend>     Frontend;
         bool                                bDirty = true;
         bool                                bRegisteredBuiltins = false;
+
+        // Symbol -> comment, built from FScriptTypeRegistry. Empty-string key is the sentinel.
+        Luau::DocumentationDatabase         DocDb{ std::string() };
     };
 
     FLuaTypeContext::FLuaTypeContext(FStringView ModuleName)
@@ -107,15 +114,56 @@ namespace Lumina
         Impl->Frontend->markDirty(Impl->Name);
     }
 
+    void FLuaTypeContext::EnsureGlobals()
+    {
+        if (Impl->bRegisteredBuiltins)
+        {
+            return;
+        }
+
+        // Wire stdlib into global scope for autocomplete/hover. Done once per Frontend.
+        Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
+        Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
+
+        // Engine API types come from FScriptTypeRegistry -- auto-derived class types plus the
+        // World/EntityScript snippets, contributed by the bindings themselves (no hardcoded text
+        // here). Each chunk loads separately so one malformed chunk can't void the rest; a failure
+        // leaves that symbol as `any` (still usable), logged so it's diagnosable.
+        const std::string Package(Lua::kEngineScriptPackage);
+        TVector<FString> Chunks;
+        Lua::FScriptTypeRegistry::Get().GetDefinitionChunks(Chunks);
+        for (const FString& Chunk : Chunks)
+        {
+            const std::string_view Source(Chunk.c_str(), Chunk.size());
+            const Luau::LoadDefinitionFileResult R1 = Impl->Frontend->loadDefinitionFile(
+                Impl->Frontend->globals, Impl->Frontend->globals.globalScope,
+                Source, Package, /*captureComments*/ false, /*typeCheckForAutocomplete*/ false);
+            const Luau::LoadDefinitionFileResult R2 = Impl->Frontend->loadDefinitionFile(
+                Impl->Frontend->globalsForAutocomplete, Impl->Frontend->globalsForAutocomplete.globalScope,
+                Source, Package, /*captureComments*/ false, /*typeCheckForAutocomplete*/ true);
+            if (!R1.success || !R2.success)
+            {
+                LOG_WARN("[LuaTypeContext] An engine type definition chunk failed to load; that symbol falls back to 'any'.");
+            }
+        }
+
+        // Doc database: maps the symbols Luau derived for our typed members to the .AddComment text,
+        // so hover/autocomplete can show it. Keys are built to match Luau's scheme in the registry.
+        TVector<Lua::FScriptDocEntry> DocEntries;
+        Lua::FScriptTypeRegistry::Get().GetDocEntries(DocEntries);
+        for (const Lua::FScriptDocEntry& Entry : DocEntries)
+        {
+            Luau::BasicDocumentation Doc;
+            Doc.documentation.assign(Entry.Text.c_str(), Entry.Text.size());
+            Impl->DocDb[std::string(Entry.Symbol.c_str(), Entry.Symbol.size())] = Doc;
+        }
+
+        Impl->bRegisteredBuiltins = true;
+    }
+
     bool FLuaTypeContext::EnsureChecked()
     {
-        if (!Impl->bRegisteredBuiltins)
-        {
-            // Wire stdlib into global scope for autocomplete/hover. Done once per Frontend.
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
-            Impl->bRegisteredBuiltins = true;
-        }
+        EnsureGlobals();
 
         if (!Impl->bDirty)
         {
@@ -167,7 +215,15 @@ namespace Lumina
             }
             if (E.documentationSymbol.has_value())
             {
-                C.Documentation.assign(E.documentationSymbol->c_str(), E.documentationSymbol->size());
+                // Resolve the symbol to its registered comment text (e.g. from .AddComment); leave
+                // the doc blank rather than surfacing the raw symbol when there's no entry.
+                if (const Luau::Documentation* Doc = Impl->DocDb.find(*E.documentationSymbol))
+                {
+                    if (const Luau::BasicDocumentation* Basic = Doc->get_if<Luau::BasicDocumentation>())
+                    {
+                        C.Documentation.assign(Basic->documentation.c_str(), Basic->documentation.size());
+                    }
+                }
             }
             Out.push_back(eastl::move(C));
         }
@@ -194,6 +250,33 @@ namespace Lumina
         std::string S = Luau::toString(*Ty, Opts);
         OutType.assign(S.c_str(), S.size());
         return true;
+    }
+
+    bool FLuaTypeContext::GetDocAt(int Line1, int Col1, FString& OutDoc)
+    {
+        OutDoc.clear();
+        if (!EnsureChecked()) return false;
+
+        const Luau::SourceModule* Source = Impl->Frontend->getSourceModule(Impl->Name);
+        if (!Source) return false;
+
+        Luau::ModulePtr Mod = Impl->Frontend->moduleResolverForAutocomplete.getModule(Impl->Name);
+        if (!Mod) Mod = Impl->Frontend->moduleResolver.getModule(Impl->Name);
+        if (!Mod) return false;
+
+        const std::optional<Luau::DocumentationSymbol> Symbol =
+            Luau::getDocumentationSymbolAtPosition(*Source, *Mod, FromOne(Line1, Col1));
+        if (!Symbol) return false;
+
+        if (const Luau::Documentation* Doc = Impl->DocDb.find(*Symbol))
+        {
+            if (const Luau::BasicDocumentation* Basic = Doc->get_if<Luau::BasicDocumentation>())
+            {
+                OutDoc.assign(Basic->documentation.c_str(), Basic->documentation.size());
+                return !OutDoc.empty();
+            }
+        }
+        return false;
     }
 
     void FLuaTypeContext::GetTypeErrors(TVector<FLuaTypeDiagnostic>& Out)
@@ -237,14 +320,10 @@ namespace Lumina
     void FLuaTypeContext::RegisterEngineSymbol(FStringView Name)
     {
         if (Name.empty()) return;
-        // registerBuiltinGlobals must run first: it builds globalScope and freezes the TypeArena layout addGlobalBinding writes into.
-        if (!Impl->bRegisteredBuiltins)
-        {
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
-            Impl->bRegisteredBuiltins = true;
-        }
+        // EnsureGlobals must run first: it builds globalScope and freezes the TypeArena layout addGlobalBinding writes into.
+        EnsureGlobals();
         const std::string SName(Name.data(), Name.size());
+        if (Lua::FScriptTypeRegistry::Get().IsTypedGlobal(FStringView(SName.c_str(), SName.size()))) return; // precisely typed; don't clobber with any.
         RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globals,                SName);
         RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, SName);
 
@@ -255,16 +334,12 @@ namespace Lumina
     void FLuaTypeContext::RegisterEngineSymbols(const TVector<FString>& Names)
     {
         if (Names.empty()) return;
-        if (!Impl->bRegisteredBuiltins)
-        {
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
-            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
-            Impl->bRegisteredBuiltins = true;
-        }
+        EnsureGlobals();
         for (const FString& Name : Names)
         {
             if (Name.empty()) continue;
             const std::string SName(Name.c_str(), Name.size());
+            if (Lua::FScriptTypeRegistry::Get().IsTypedGlobal(FStringView(SName.c_str(), SName.size()))) continue; // typed; skip the any-binding.
             RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globals,                SName);
             RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, SName);
         }

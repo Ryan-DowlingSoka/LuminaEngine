@@ -54,6 +54,10 @@ namespace Lumina
         // covers the position or the type couldn't be resolved.
         bool GetTypeAt(int Line1, int Col1, FString& OutType);
 
+        // Documentation (registered via .AddComment / engine defs) for the symbol at (Line1, Col1).
+        // Returns false if the position resolves to no documented symbol.
+        bool GetDocAt(int Line1, int Col1, FString& OutDoc);
+
         // Collect type-checker errors from the last check; empty if the buffer didn't parse
         // (compile errors flow through OnScriptCompileError). Engine globals are `any`.
         void GetTypeErrors(TVector<FLuaTypeDiagnostic>& Out);
@@ -64,6 +68,10 @@ namespace Lumina
         void RegisterEngineSymbols(const TVector<FString>& Names);
 
     private:
+        // Registers Luau builtins + the engine API type definitions (World.Physics, ...) into the
+        // Frontend globals. Runs once; idempotent. Must precede any check or addGlobalBinding.
+        void EnsureGlobals();
+
         struct FImpl;
         FImpl* Impl;
     };

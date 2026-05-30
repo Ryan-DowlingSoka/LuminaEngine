@@ -5,6 +5,13 @@
 #include "Containers/Array.h"
 #include "Containers/String.h"
 
+// Editor-only: the type-definition metadata (auto-derived signatures, doc comments) is built for the
+// script editor's analyzer and compiled out of shipping/game runtime entirely.
+#if WITH_EDITOR
+#include "LuaTypeName.h"
+#include "ScriptTypeRegistry.h"
+#endif
+
 #include <EASTL/algorithm.h>
 #include <EASTL/type_traits.h>
 
@@ -183,6 +190,31 @@ namespace Lumina::Lua
         // Must be called after Register.
         FClassBuilder& AddStaticFunction(FStringView FuncName, lua_CFunction Func);
 
+        // Accumulates an auto-derived Luau field declaration ("Name: (self: T, ...) -> Ret"); Register
+        // hands the set to FScriptTypeRegistry as this class's editor type. Editor-only no-op otherwise.
+        void RecordTypeMember(FStringView MemberName, FString Decl)
+        {
+#if WITH_EDITOR
+            TypeMembers.push_back(FScriptTypeMember{ FString(MemberName.data(), MemberName.size()), eastl::move(Decl), FString() });
+#else
+            (void)MemberName; (void)Decl;
+#endif
+        }
+
+        // Attaches a doc comment to the most recently recorded member -- backs the fluent
+        // `.AddFunction<...>("X").AddComment("...")`. Editor-only; a no-op in shipping builds.
+        void SetLastMemberComment(FStringView Comment)
+        {
+#if WITH_EDITOR
+            if (!TypeMembers.empty())
+            {
+                TypeMembers.back().Comment.assign(Comment.data(), Comment.size());
+            }
+#else
+            (void)Comment;
+#endif
+        }
+
     protected:
 
         virtual void InstallUserdataDestructor(int /*Tag*/) {}
@@ -193,6 +225,9 @@ namespace Lumina::Lua
         bool                        bHasTypeId  = false;
         TVector<FMethodEntry>       Methods;
         TVector<FPropertyEntry>     Properties;
+#if WITH_EDITOR
+        TVector<FScriptTypeMember>  TypeMembers;
+#endif
     };
 
     template <typename T>
@@ -221,9 +256,14 @@ namespace Lumina::Lua
                 {
                     return InvokerSelfUntagged<T, TFunc>(State);
                 });
+#if WITH_EDITOR
+                // Auto-derive the editor type signature from the bound C++ method (self + its args).
+                RecordTypeMember(FuncName, BuildLuauMethodDecl<TFunc>(FuncName, Name));
+#endif
             }
             else
             {
+                // Non-member bound as a method: no self model to derive; the type's open indexer covers it.
                 FClassBuilder::AddMethod(FuncName, [](lua_State* State) -> int { return Invoker<TFunc>(State); });
             }
             return *this;
@@ -277,8 +317,20 @@ namespace Lumina::Lua
             }
 
             FClassBuilder::AddProperty(PropName, Getter, Setter);
+
+#if WITH_EDITOR
+            FString PropDecl(PropName.data(), PropName.size());
+            PropDecl += ": ";
+            PropDecl += LuaTypeNameOf<MemberT>();
+            RecordTypeMember(PropName, eastl::move(PropDecl));
+#endif
             return *this;
         }
+
+        // Attaches a doc comment to the last method/property added -- the fluent metadata hook:
+        //   .AddFunction<&T::Foo>("Foo").AddComment("What Foo does.")
+        // Chains like the rest of the builder; editor-only, no shipping-runtime cost.
+        TClass& AddComment(FStringView Comment) { SetLastMemberComment(Comment); return *this; }
 
         TClass& AddRawProperty(FStringView PropName, lua_CFunction Getter, lua_CFunction Setter = nullptr)
         {

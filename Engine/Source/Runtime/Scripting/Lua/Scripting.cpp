@@ -5,6 +5,7 @@
 #include "luacode.h"
 #include "lualib.h"
 #include "ScriptTypes.h"
+#include "ScriptTypeRegistry.h"
 #include "Debugger/LuaDebugger.h"
 #include "Audio/AudioGlobals.h"
 #include "Core/Utils/TimedEvent.h"
@@ -269,6 +270,14 @@ namespace Lumina::Lua
         lua_setglobal(L, Name.data()); // [MT]
 
         lua_pop(L, 1); // []
+
+#if WITH_EDITOR
+        // Hand the auto-derived signatures to the editor type registry as this class's Luau type.
+        if (!TypeMembers.empty())
+        {
+            FScriptTypeRegistry::Get().RegisterClassType(Name, TypeMembers);
+        }
+#endif
 
         return *this;
     }
@@ -902,6 +911,53 @@ namespace Lumina::Lua
         });
 
         LoadStdlibFiles();
+
+#if WITH_EDITOR
+        // Editor type for the entity-script `self`. Hand-authored (it's a Lua base, not a C++ binding),
+        // but registered here next to the stdlib rather than hardcoded in the editor. `local Script:
+        // EntityScript = EntityScript.new()` types `self` in every method. A future non-entity script
+        // kind registers its own base type the same way. `[string]: any` covers Exports + custom fields.
+        FScriptTypeRegistry::Get().RegisterSnippet("EntityScript", R"DEF(
+export type EntityScript = {
+    Entity: number,
+    Name: string,
+    Transform: any,
+    World: any,
+    Input: any,
+    Exports: { [string]: any },
+
+    IsValid: (self: EntityScript) -> boolean,
+    Destroy: (self: EntityScript) -> (),
+    Clone: (self: EntityScript) -> number,
+
+    GetComponent: (self: EntityScript, componentType: any) -> any,
+    HasComponent: (self: EntityScript, componentType: any) -> boolean,
+    AddComponent: (self: EntityScript, componentType: any) -> any,
+    RemoveComponent: (self: EntityScript, componentType: any) -> (),
+
+    EnableInput: (self: EntityScript) -> any,
+    DisableInput: (self: EntityScript) -> (),
+
+    Translate: (self: EntityScript, delta: vector) -> (),
+    AddRotationFromEuler: (self: EntityScript, euler: vector) -> (),
+    GetForward: (self: EntityScript) -> vector,
+    GetRight: (self: EntityScript) -> vector,
+    GetUp: (self: EntityScript) -> vector,
+    GetLocation: (self: EntityScript) -> vector,
+    GetRotation: (self: EntityScript) -> any,
+    GetScale: (self: EntityScript) -> vector,
+    SetLocation: (self: EntityScript, location: vector) -> (),
+    SetRotation: (self: EntityScript, rotation: any) -> (),
+    SetRotationFromEuler: (self: EntityScript, euler: vector) -> (),
+    SetActiveCamera: (self: EntityScript, blendTime: number?, ease: number?) -> (),
+    SetCameraTarget: (self: EntityScript, target: number) -> (),
+
+    [string]: any,
+}
+
+declare EntityScript: { new: () -> EntityScript }
+)DEF");
+#endif
     }
 
     void FScriptingContext::LoadStdlibFiles()
