@@ -24,17 +24,19 @@ LuminaWorkspaceSettings({
     ObjDir       = LuminaConfig.GetObjDirectory(),
 })
 
-    if _OPTIONS["with-tests"] then
-        group "Tests"
-            include "Engine/Tests"
-        group ""
-    end
-
     group "Engine"
 		include "Engine/Source/Runtime"
         include "Engine/Editor"
         include "Engine/Sandbox"
 	group ""
+
+    -- Included after Engine so Tests' ModuleDependencies (Runtime/Editor) are already registered and
+    -- propagate their public include dirs (notably ModuleAPI.h) into the Tests project.
+    if _OPTIONS["with-tests"] then
+        group "Tests"
+            include "Engine/Tests"
+        group ""
+    end
 
     -- Engine plugins drop in automatically: Engine/Plugins/<Name>/<Name>.lua becomes a project here, matching FPluginManager's startup walk.
     group "Plugins"
@@ -59,7 +61,6 @@ LuminaWorkspaceSettings({
             include "Engine/Source/ThirdParty/Tracy"
         end
         include "Engine/Source/ThirdParty/MiniAudio"
-        include "Engine/Source/ThirdParty/EnkiTS"
         include "Engine/Source/ThirdParty/Luau"
         include "Engine/Source/ThirdParty/SPDLog"
         include "Engine/Source/ThirdParty/JoltPhysics"

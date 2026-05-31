@@ -120,8 +120,6 @@ LuminaThirdParty.Register({ Name = "Recast",        IncludeDirs = { "Recast/Reca
 LuminaThirdParty.Register({ Name = "Luau",          IncludeDirs = { "luau/include" } })
 LuminaThirdParty.Register({ Name = "LuauAnalysis",  IncludeDirs = { "luau/include" } })
 
--- Task system
-LuminaThirdParty.Register({ Name = "EnkiTS",        IncludeDirs = { "EnkiTS/src" } })
 
 -- Geometry / mesh / texture processing
 LuminaThirdParty.Register({ Name = "MeshOptimizer", IncludeDirs = { "meshoptimizer/src" } })
@@ -144,7 +142,7 @@ LuminaThirdParty.RuntimePublicDeps =
     "GLFW", "ImGui", "FreeType", "RmlUi",
     "Vulkan", "Volk", "VMA", "VKBootstrap", "SLang",
     "MiniAudio", "JoltPhysics", "Recast",
-    "Luau", "EnkiTS",
+    "Luau",
     "MeshOptimizer", "MikkTSpace", "BasicUniversal",
 }
 

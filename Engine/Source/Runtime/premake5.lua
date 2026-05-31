@@ -31,3 +31,11 @@ LuminaModule({
 
 -- Aftermath import lib + DLL copy; Runtime owns the copy since it builds into the executable's Binaries dir.
 LuminaOptions.LinkAftermath({ Copy = true })
+
+-- The fiber job scheduler reads thread_local state (worker index, current fiber, scheduler fiber)
+-- across SwitchToFiber, and fibers migrate between OS threads on reuse. /GT (fiber-safe TLS) stops the
+-- optimizer from caching a stale TLS block pointer across a switch — without it the scheduler reads
+-- another thread's TLS after a migration and jumps through a garbage job pointer. See JobScheduler.cpp.
+filter { "files:**/JobScheduler.cpp" }
+    buildoptions { "/GT" }
+filter {}

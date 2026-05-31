@@ -4,6 +4,7 @@
 #include "Core/Threading/Thread.h"
 #include "Log/Log.h"
 #include "Memory/Memory.h"
+#include <cstdlib>
 
 namespace Lumina
 {
@@ -11,66 +12,159 @@ namespace Lumina
 
     namespace
     {
-        void OnStartThread(uint32 threadNum)
+        constexpr uint32 kMaxChunks = 256;
+
+        using FRawThunk = void (*)(void* Ctx, uint32 Start, uint32 End, uint32 Thread);
+
+        struct FParChunk
         {
-            LUMINA_PROFILE_SCOPE();
-            
-            FString ThreadName = "Background Worker: " + eastl::to_string(threadNum);
-            Threading::SetThreadName(ThreadName.c_str());
-        
-            Memory::InitializeThreadHeap();
+            FRawThunk Thunk;
+            void*     Ctx;
+            uint32    Start;
+            uint32    End;
+        };
+
+        void RunParChunk(void* Arg, uint32 Worker)
+        {
+            FParChunk* C = static_cast<FParChunk*>(Arg);
+            C->Thunk(C->Ctx, C->Start, C->End, Worker);
         }
 
-        void OnStopThread(uint32_t threadNum)
+        // Even split of [0, Num) into Count chunks; the first Remainder chunks get one extra element.
+        uint32 ComputeChunkCount(uint32 Num, uint32 MinRange)
         {
-            LUMINA_PROFILE_SCOPE();
-            
-            Memory::ShutdownThreadHeap();
+            const uint32 Grain = MinRange == 0 ? 1u : MinRange;
+            uint32 NumChunks = (Num + Grain - 1) / Grain;
+
+            uint32 MaxChunks = Jobs::GetNumWorkers() * 4u;
+            if (MaxChunks == 0)         MaxChunks = 1;
+            if (MaxChunks > kMaxChunks) MaxChunks = kMaxChunks;
+
+            if (NumChunks > MaxChunks) NumChunks = MaxChunks;
+            if (NumChunks == 0)        NumChunks = 1;
+            return NumChunks;
         }
 
-        void ObWaitForTaskCompleteStart(uint32_t threadNum)
+        // Fire-and-forget task backing Task::AsyncTask. Owns the user function + chunk storage and
+        // self-destructs once its counter drains.
+        struct FAsyncContext
         {
-            const char* TaskStartTxt = "Wait For Task Complete";
-            TracyMessage(TaskStartTxt, strlen(TaskStartTxt));
-        }
+            TaskSetFunction           Function;
+            TWeakPtr<FTaskCompletion> Handle;
+            Jobs::FCounter*           Counter   = nullptr;
 
-        void* CustomAllocFunc(size_t alignment, size_t size, void* userData_, const char* file_, int line_)
-        {
-            return Memory::Malloc(size, alignment);
-        }
+            struct FChunk
+            {
+                FAsyncContext* Ctx;
+                uint32         Start;
+                uint32         End;
+            };
+            FChunk* Chunks    = nullptr;
+            uint32  NumChunks = 0;
 
-        void CustomFreeFunc(void* ptr, size_t size, void* userData_, const char* file_, int line_)
-        {
-            Memory::Free(ptr);
-        }
+            static void RunChunk(void* Arg, uint32 Worker)
+            {
+                FChunk* C = static_cast<FChunk*>(Arg);
+                C->Ctx->Function(C->Start, C->End, Worker);
+            }
+
+            static void OnComplete(void* Raw, uint32 /*Worker*/)
+            {
+                FAsyncContext* Self = static_cast<FAsyncContext*>(Raw);
+                if (TSharedPtr<FTaskCompletion> H = Self->Handle.lock())
+                {
+                    H->bCompleted.exchange(true, std::memory_order_release);
+                    std::atomic_notify_all(&H->bCompleted);
+                }
+                Jobs::FreeCounter(Self->Counter);
+                void* ChunksMem = Self->Chunks;
+                Memory::Free(ChunksMem);
+                Memory::Delete(Self);
+            }
+
+            void Launch(uint32 Num, uint32 MinRange, ETaskPriority Priority)
+            {
+                NumChunks = ComputeChunkCount(Num, MinRange);
+                Chunks    = static_cast<FChunk*>(Memory::Malloc(sizeof(FChunk) * NumChunks, alignof(FChunk)));
+                Counter   = Jobs::AllocCounter(0);
+                Jobs::SetCounterCompletion(Counter, &FAsyncContext::OnComplete, this);
+
+                Jobs::FJobDecl Decls[kMaxChunks];
+                const uint32 Base = Num / NumChunks;
+                const uint32 Rem  = Num % NumChunks;
+                uint32 Start = 0;
+                for (uint32 c = 0; c < NumChunks; ++c)
+                {
+                    const uint32 Len = Base + (c < Rem ? 1u : 0u);
+                    Chunks[c] = FChunk{ this, Start, Start + Len };
+                    Decls[c]  = Jobs::FJobDecl{ &FAsyncContext::RunChunk, &Chunks[c] };
+                    Start += Len;
+                }
+
+                Jobs::RunJobs(Decls, NumChunks, ToJobPriority(Priority), Counter);
+            }
+        };
     }
-    
+
     namespace Task
     {
         void Initialize()
         {
             GTaskSystem = Memory::New<FTaskSystem>();
 
-            GTaskSystem->NumWorkers                             = Threading::GetNumThreads() - 2;
-        
-            enki::TaskSchedulerConfig config;
-            config.numTaskThreadsToCreate                       = GTaskSystem->NumWorkers;
-            config.numExternalTaskThreads                       = 3;
-            config.customAllocator.alloc                        = CustomAllocFunc;
-            config.customAllocator.free                         = CustomFreeFunc;
-            config.profilerCallbacks.threadStart                = OnStartThread;
-            config.profilerCallbacks.waitForTaskCompleteStart   = ObWaitForTaskCompleteStart;
-            config.profilerCallbacks.threadStop                 = OnStopThread;
+            const uint32 Hardware = Threading::GetNumThreads();
 
-            GTaskSystem->Scheduler.Initialize(config);
+            Jobs::FConfig Config;
+            Config.NumWorkerThreads   = Hardware > 3 ? Hardware - 2 : 1; // leave headroom for main + render
+            if (const char* WorkersEnv = std::getenv("LUMINA_JOB_WORKERS"))
+            {
+                const int N = std::atoi(WorkersEnv);
+                if (N > 0) Config.NumWorkerThreads = (uint32)N;
+            }
+            Config.NumExternalThreads = 8;
+
+            Jobs::Initialize(Config);
+            GTaskSystem->RegisterExternalThread(); // the main thread gets a stable slot
         }
 
         void Shutdown()
         {
-            GTaskSystem->Scheduler.WaitforAllAndShutdown();
+            Jobs::WaitForAll();
+            GTaskSystem->UnregisterExternalThread();
+            Jobs::Shutdown();
             Memory::Delete(GTaskSystem);
             GTaskSystem = nullptr;
         }
+    }
+
+    void FTaskSystem::ParallelForImpl(uint32 Num, uint32 MinRange, ETaskPriority Priority, FParallelThunk Thunk, void* Ctx)
+    {
+        const uint32 NumChunks = ComputeChunkCount(Num, MinRange);
+
+        if (NumChunks == 1)
+        {
+            Thunk(Ctx, 0, Num, Jobs::GetWorkerIndex());
+            return;
+        }
+
+        FParChunk      Chunks[kMaxChunks];
+        Jobs::FJobDecl Decls[kMaxChunks];
+
+        const uint32 Base = Num / NumChunks;
+        const uint32 Rem  = Num % NumChunks;
+        uint32 Start = 0;
+        for (uint32 c = 0; c < NumChunks; ++c)
+        {
+            const uint32 Len = Base + (c < Rem ? 1u : 0u);
+            Chunks[c] = FParChunk{ Thunk, Ctx, Start, Start + Len };
+            Decls[c]  = Jobs::FJobDecl{ &RunParChunk, &Chunks[c] };
+            Start += Len;
+        }
+
+        Jobs::FCounter* Counter = Jobs::AllocCounter(0);
+        Jobs::RunJobs(Decls, NumChunks, ToJobPriority(Priority), Counter);
+        Jobs::WaitForCounter(Counter, 0);
+        Jobs::FreeCounter(Counter);
     }
 
     FTaskHandle FTaskSystem::ScheduleLambda(uint32 Num, uint32 MinRange, TaskSetFunction&& Function, ETaskPriority Priority)
@@ -80,42 +174,20 @@ namespace Lumina
             LOG_WARN("Task Size of [0] passed to task system.");
             return nullptr;
         }
-        
-        FTaskHandle TaskHandle = MakeShared<FTaskCompletion>();
-        FLambdaTask* Task = Memory::New<FLambdaTask>(TaskHandle, Priority, Num, std::max(1u, MinRange), Move(Function));
-        ScheduleTask(Task);
-        
-        return TaskHandle;
-    }
 
-    void FTaskSystem::ScheduleTask(ITaskSet* pTask)
-    {
-        LUMINA_PROFILE_SECTION("Tasks::ScheduleTask");
-        Scheduler.AddTaskSetToPipe(pTask);
-    }
+        FTaskHandle    Handle = MakeShared<FTaskCompletion>();
+        FAsyncContext* Ctx    = Memory::New<FAsyncContext>();
+        Ctx->Function = Move(Function);
+        Ctx->Handle   = Handle;
+        Ctx->Launch(Num, MinRange, Priority);
 
-    void FTaskSystem::ScheduleTask(IPinnedTask* pTask)
-    {
-        LUMINA_PROFILE_SECTION("Tasks::ScheduleTask");
-        Scheduler.AddPinnedTask(pTask);
-    }
-
-    void FTaskSystem::WaitForTask(const ITaskSet* pTask, ETaskPriority Priority)
-    {
-        LUMINA_PROFILE_SECTION("Tasks::WaitForTask");
-        Scheduler.WaitforTask(pTask, (enki::TaskPriority)Priority);
-    }
-
-    void FTaskSystem::WaitForTask(const IPinnedTask* pTask)
-    {
-        LUMINA_PROFILE_SECTION("Tasks::WaitForTask");
-        Scheduler.WaitforTask(pTask);
+        return Handle;
     }
 
     void FTaskSystem::WaitForAll()
     {
         LUMINA_PROFILE_SCOPE();
-        Scheduler.WaitforAll(); 
+        Jobs::WaitForAll();
     }
 
     FTaskHandle Task::AsyncTask(uint32 Num, uint32 MinRange, TaskSetFunction&& Function, ETaskPriority Priority)

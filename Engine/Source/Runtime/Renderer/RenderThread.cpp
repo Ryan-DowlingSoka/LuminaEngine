@@ -134,10 +134,11 @@ namespace Lumina
         Threading::SetThreadName("Lumina Render");
         Threading::InitializeThreadHeap();
 
-        // Register a dedicated enki slot; sharing slot 0 with the main thread causes task scheduling crashes.
+        // Claim a dedicated job-system thread slot so this thread can submit and wait without
+        // colliding with the main thread's slot.
         if (GTaskSystem != nullptr)
         {
-            GTaskSystem->GetScheduler().RegisterExternalTaskThread();
+            GTaskSystem->RegisterExternalThread();
         }
 
         TVector<FQueuedCommand> Batch;
@@ -175,7 +176,7 @@ namespace Lumina
 
         if (GTaskSystem != nullptr)
         {
-            GTaskSystem->GetScheduler().DeRegisterExternalTaskThread();
+            GTaskSystem->UnregisterExternalThread();
         }
 
         Threading::ShutdownThreadHeap();

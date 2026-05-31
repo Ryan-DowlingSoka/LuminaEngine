@@ -8,14 +8,24 @@ Script.Exports = {
     Speed = 5.0,
 }
 
+local Entities = {}
+
 -- Runs once when the entity spawns. Cache components, set up state here.
 function Script:OnReady()
+
+	for i = 1, 15000 do
+		local New = World.Duplicate(6)
+		table.insert(Entities, New)
+		World.SetLocation(New, Random.InSphere(500))
+	end
 
 end
 
 -- Per-frame tick in play mode. Defining this is what makes the engine
 -- tick this entity -- leave it out and it is never iterated.
 function Script:OnUpdate(DeltaTime)
+	
+
 end
 
 -- ---------------------------------------------------------------------

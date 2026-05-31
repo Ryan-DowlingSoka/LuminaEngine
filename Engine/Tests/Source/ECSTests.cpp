@@ -103,9 +103,9 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
     auto B = Registry.create();
     auto C = Registry.create();
 
-    Registry.emplace<STransformComponent>(A).LocalTransform.Location = glm::vec3(10.f, 0.f, 0.f);
-    Registry.emplace<STransformComponent>(B).LocalTransform.Location = glm::vec3(5.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(C).LocalTransform.Location = glm::vec3(2.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(A).LocalTransform.Location = FVector3(10.f, 0.f, 0.f);
+    Registry.emplace<STransformComponent>(B).LocalTransform.Location = FVector3(5.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(C).LocalTransform.Location = FVector3(2.f,  0.f, 0.f);
 
     // AddToParent only links the relationship; ReparentEntity would
     // bake the (zeroed) cached world matrix into local transforms.
@@ -119,7 +119,7 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
 
     EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(C).WorldTransform.Location.x, 17.f);
 
-    Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
+    Registry.get<STransformComponent>(A).LocalTransform.Location = FVector3(20.f, 0.f, 0.f);
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
     // Lazy resolve via the grandchild: A is dirty, B/C clean. ResolveTransformChain
@@ -145,10 +145,10 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     auto C = Registry.create();
     auto D = Registry.create();
 
-    Registry.emplace<STransformComponent>(A).LocalTransform.Location = glm::vec3(10.f, 0.f, 0.f);
-    Registry.emplace<STransformComponent>(B).LocalTransform.Location = glm::vec3(5.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(C).LocalTransform.Location = glm::vec3(2.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(D).LocalTransform.Location = glm::vec3(0.f,  3.f, 0.f);
+    Registry.emplace<STransformComponent>(A).LocalTransform.Location = FVector3(10.f, 0.f, 0.f);
+    Registry.emplace<STransformComponent>(B).LocalTransform.Location = FVector3(5.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(C).LocalTransform.Location = FVector3(2.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(D).LocalTransform.Location = FVector3(0.f,  3.f, 0.f);
 
     ECS::Utils::AddToParent(Registry, B, A);
     ECS::Utils::AddToParent(Registry, C, B);
@@ -160,7 +160,7 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     Registry.emplace<FNeedsTransformUpdate>(D);
     ECS::Utils::ResolveAllDirtyTransforms(Registry);
 
-    Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
+    Registry.get<STransformComponent>(A).LocalTransform.Location = FVector3(20.f, 0.f, 0.f);
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
     // Resolving via C must also refresh sibling D, which isn't dirty itself and would

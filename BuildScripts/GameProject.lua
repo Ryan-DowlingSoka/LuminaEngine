@@ -12,7 +12,6 @@ local DefaultGameDependencies =
     "ImGui",
     "RPMalloc",
     "EA",
-    "EnkiTS",
     "Tracy",
     "Luau",
 }

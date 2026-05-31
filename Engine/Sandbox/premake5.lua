@@ -6,7 +6,7 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+        "ImGui", "RPMalloc", "EA", "Tracy", "Luau",
     },
     LibDirs =
     {

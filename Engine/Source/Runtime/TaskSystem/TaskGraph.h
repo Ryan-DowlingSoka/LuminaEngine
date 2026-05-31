@@ -11,6 +11,8 @@
 #include <utility>
 #include <type_traits>
 
+namespace Lumina::Jobs { struct FCounter; }
+
 namespace Lumina
 {
     /** Task graph for fan-out / dependency / fan-in patterns; dependents queue automatically when parents complete. */
@@ -87,14 +89,20 @@ namespace Lumina
         RUNTIME_API FNodeHandle AddOneShotNode(void* Callable, FInvokeOneShot Invoke, FDestroyCallable Destroy, ETaskPriority Priority);
         RUNTIME_API FNodeHandle AddParallelForNode(uint32 Count, uint32 MinRange, void* Callable, FInvokeParallel Invoke, FDestroyCallable Destroy, ETaskPriority Priority);
 
-        // Block allocator so FNodes and their (arena-backed) Deps are reused via Reset()
+        // Schedule a node's work as worker-balanced chunks on its own counter; on completion the
+        // node decrements its dependents' in-degree and schedules any that reach zero.
+        static void ScheduleNode(FNode* Node);
+        static void OnNodeComplete(void* NodeCtx, uint32 Worker);
+
+        // Block allocator so FNodes and their (arena-backed) chunk arrays are reused via Reset()
         // rather than reallocated every frame; grows if a graph ever needs more.
         FBlockLinearAllocator                   Allocator;
         TVector<FNode*>                         Nodes;
         TVector<eastl::pair<uint32, uint32>>    Edges;
-        // Dispatch scratch, kept across frames so it reuses capacity.
-        TVector<uint32>                         DepCount;
-        TVector<uint32>                         DepCursor;
+        Jobs::FCounter*                         GraphCounter = nullptr;
+        // Root set captured before any scheduling, so workers concurrently driving a dependent's
+        // in-degree to zero can't race the dispatch loop into double-scheduling it.
+        TVector<uint32>                         DispatchRoots;
         bool                                    bDispatched = false;
     };
 }

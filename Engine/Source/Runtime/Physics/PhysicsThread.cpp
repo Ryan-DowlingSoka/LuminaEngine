@@ -136,7 +136,7 @@ namespace Lumina
 
         if (GTaskSystem != nullptr)
         {
-            GTaskSystem->GetScheduler().RegisterExternalTaskThread();
+            GTaskSystem->RegisterExternalThread();
         }
 
         TVector<FQueuedCommand> Batch;
@@ -174,7 +174,7 @@ namespace Lumina
 
         if (GTaskSystem != nullptr)
         {
-            GTaskSystem->GetScheduler().DeRegisterExternalTaskThread();
+            GTaskSystem->UnregisterExternalThread();
         }
 
         Threading::ShutdownThreadHeap();

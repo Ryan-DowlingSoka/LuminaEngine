@@ -1006,7 +1006,7 @@ namespace Lumina
             DrawMeshletStartOffsets.reserve(EstimatedProxies);
             DrawCommands.reserve(EstimatedProxies);
 
-            const uint32 NumThreads = GTaskSystem->GetScheduler().GetNumTaskThreads();
+            const uint32 NumThreads = GTaskSystem->GetNumTaskThreads();
 
             // 8MB: bone vector dominates (skeletons x bones x 48B); headroom for ~12k+ per thread.
             constexpr SIZE_T kArenaBlockSize = 8 * 1024 * 1024;

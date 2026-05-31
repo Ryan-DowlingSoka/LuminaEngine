@@ -1,10 +1,13 @@
-﻿#pragma once
+#pragma once
 
-#include "TaskScheduler.h"
 #include "TaskTypes.h"
+#include "Scheduler/JobScheduler.h"
 #include "Core/Threading/Thread.h"
 #include "Memory/Memory.h"
 #include "Platform/GenericPlatform.h"
+#include <EASTL/type_traits.h>
+#include <type_traits>
+#include <utility>
 
 namespace Lumina
 {
@@ -12,10 +15,9 @@ namespace Lumina
 
     namespace Task
     {
-        
-        void Initialize();
-        void Shutdown();
-        
+        RUNTIME_API void Initialize();
+        RUNTIME_API void Shutdown();
+
         struct FParallelRange
         {
             uint32 Start;
@@ -26,19 +28,19 @@ namespace Lumina
 
     class FTaskSystem
     {
-        friend struct FCompletionActionDelete;
-        
     public:
-        
-        bool IsBusy() const { return Scheduler.GetIsShutdownRequested(); }
-        uint32_t GetNumWorkers() const { return NumWorkers; }
-        
-        enki::TaskScheduler& GetScheduler() { return Scheduler; }
+
+        // Background worker threads.
+        uint32 GetNumWorkers() const { return Jobs::GetNumWorkers(); }
+        // Total addressable thread slots (workers + external). Use this to size per-thread arrays.
+        uint32 GetNumTaskThreads() const { return Jobs::GetNumThreadSlots(); }
+
+        uint32 RegisterExternalThread() { return Jobs::RegisterExternalThread(); }
+        void   UnregisterExternalThread() { Jobs::UnregisterExternalThread(); }
 
         /** Num iterations split across worker threads; ranges are unordered. Returned handle is auto-cleaned. */
         RUNTIME_API FTaskHandle ScheduleLambda(uint32 Num, uint32 MinRange, TaskSetFunction&& Function, ETaskPriority Priority = ETaskPriority::Medium);
-        
-        
+
         template<typename TFunc>
         void ParallelFor(uint32 Num, TFunc&& Func, uint32 MinRange = 0, ETaskPriority Priority = ETaskPriority::Medium)
         {
@@ -46,135 +48,110 @@ namespace Lumina
             {
                 return;
             }
-            
-            struct ParallelTask : ITaskSet
-            {
-                ParallelTask(TFunc&& InFunc, uint32 InNum, uint32 InMinRange)
-                    : ITaskSet(InNum, InMinRange)
-                    , Func(std::forward<TFunc>(InFunc))
-                {
-                }
-
-                void ExecuteRange(TaskSetPartition range_, uint32_t ThreadNum) override
-                {
-                    if constexpr (eastl::is_invocable_v<TFunc, const Task::FParallelRange&>)
-                    {
-                        Func(Task::FParallelRange{range_.start, range_.end, ThreadNum});
-                        return;
-                    }
-                    
-                    for (uint32 i = range_.start; i < range_.end; ++i)
-                    {
-                        if constexpr (eastl::is_invocable_v<TFunc, uint32>)
-                        {
-                            Func(i);
-                        }
-                        else if constexpr (eastl::is_invocable_v<TFunc, uint32, uint32>)
-                        {
-                            Func(i, ThreadNum);
-                        }
-                    }
-                }
-
-                TFunc Func;
-            };
 
             LUMINA_PROFILE_SECTION("Tasks::ParallelFor");
-            ParallelTask Task = ParallelTask(std::forward<TFunc>(Func), Num, std::min(1u, MinRange == 0 ? Num : MinRange));
-            if (Num == 1)
+
+            using TDecayed = std::decay_t<TFunc>;
+            TDecayed Stored = std::forward<TFunc>(Func);
+
+            auto Thunk = +[](void* Ctx, uint32 Start, uint32 End, uint32 Thread)
             {
-                Task.ExecuteRange(TaskSetPartition{0, 1}, Threading::GetThreadID());
-                return;
-            }
-            
-            Task.m_Priority = static_cast<enki::TaskPriority>(Priority);
-            ScheduleTask(&Task);
-            WaitForTask(&Task, Priority);
+                TDecayed& F = *static_cast<TDecayed*>(Ctx);
+                if constexpr (eastl::is_invocable_v<TDecayed, const Task::FParallelRange&>)
+                {
+                    F(Task::FParallelRange{ Start, End, Thread });
+                }
+                else
+                {
+                    for (uint32 i = Start; i < End; ++i)
+                    {
+                        if constexpr (eastl::is_invocable_v<TDecayed, uint32, uint32>)
+                        {
+                            F(i, Thread);
+                        }
+                        else if constexpr (eastl::is_invocable_v<TDecayed, uint32>)
+                        {
+                            F(i);
+                        }
+                    }
+                }
+            };
+
+            ParallelForImpl(Num, MinRange, Priority, Thunk, &Stored);
         }
 
         template<typename TIterator, typename TFunc>
         void ParallelForEach(TIterator Begin, TIterator End, TFunc&& Func, ETaskPriority Priority = ETaskPriority::Medium)
         {
-            struct ParallelTask : ITaskSet
+            const uint32 Num = static_cast<uint32>(End - Begin);
+            if (Num == 0)
             {
-                ParallelTask(TFunc&& InFunc, TIterator InBegin, TIterator InEnd)
-                    : ITaskSet(static_cast<uint32>(InEnd - InBegin))
-                    , Func(std::forward<TFunc>(InFunc))
-                    , Begin(InBegin)
-                {
-                }
-        
-                void ExecuteRange(TaskSetPartition range_, uint32_t ThreadNum) override
-                {
-                    if constexpr (eastl::is_invocable_v<TFunc, TIterator, TIterator, uint32>)
-                    {
-                        Func(Begin + range_.start, Begin + range_.end, ThreadNum);
-                        return;
-                    }
-                    else if constexpr (eastl::is_invocable_v<TFunc, TIterator, TIterator>)
-                    {
-                        Func(Begin + range_.start, Begin + range_.end);
-                        return;
-                    }
-                    
-                    for (uint32 i = range_.start; i < range_.end; ++i)
-                    {
-                        TIterator It = Begin + i;
-                        
-                        if constexpr (eastl::is_invocable_v<TFunc, decltype(*It)&, uint32>)
-                        {
-                            Func(*It, ThreadNum);
-                        }
-                        else if constexpr (eastl::is_invocable_v<TFunc, decltype(*It)&>)
-                        {
-                            Func(*It);
-                        }
-                        else if constexpr (eastl::is_invocable_v<TFunc, TIterator, uint32>)
-                        {
-                            Func(It, ThreadNum);
-                        }
-                        else if constexpr (eastl::is_invocable_v<TFunc, TIterator>)
-                        {
-                            Func(It);
-                        }
-                    }
-                }
-        
-                TFunc Func;
-                TIterator Begin;
-            };
-        
-            uint32 Num = static_cast<uint32>(End - Begin);
-            
-            LUMINA_PROFILE_SECTION("Tasks::ParallelForEach");
-            ParallelTask Task = ParallelTask(std::forward<TFunc>(Func), Begin, End);
-            
-            if (Num <= 1)
-            {
-                Task.ExecuteRange(TaskSetPartition{0, Num}, Threading::GetThreadID());
                 return;
             }
-            
-            Task.m_Priority = static_cast<enki::TaskPriority>(Priority);
-            ScheduleTask(&Task);
-            WaitForTask(&Task, Priority);
+
+            LUMINA_PROFILE_SECTION("Tasks::ParallelForEach");
+
+            using TDecayed = std::decay_t<TFunc>;
+            struct FCtx
+            {
+                TDecayed  Func;
+                TIterator Begin;
+            };
+            FCtx Ctx{ std::forward<TFunc>(Func), Begin };
+
+            auto Thunk = +[](void* Raw, uint32 Start, uint32 End_, uint32 Thread)
+            {
+                FCtx& X = *static_cast<FCtx*>(Raw);
+                if constexpr (eastl::is_invocable_v<TDecayed, TIterator, TIterator, uint32>)
+                {
+                    X.Func(X.Begin + Start, X.Begin + End_, Thread);
+                    return;
+                }
+                else if constexpr (eastl::is_invocable_v<TDecayed, TIterator, TIterator>)
+                {
+                    X.Func(X.Begin + Start, X.Begin + End_);
+                    return;
+                }
+                else
+                {
+                    for (uint32 i = Start; i < End_; ++i)
+                    {
+                        TIterator It = X.Begin + i;
+                        if constexpr (eastl::is_invocable_v<TDecayed, decltype(*It)&, uint32>)
+                        {
+                            X.Func(*It, Thread);
+                        }
+                        else if constexpr (eastl::is_invocable_v<TDecayed, decltype(*It)&>)
+                        {
+                            X.Func(*It);
+                        }
+                        else if constexpr (eastl::is_invocable_v<TDecayed, TIterator, uint32>)
+                        {
+                            X.Func(It, Thread);
+                        }
+                        else if constexpr (eastl::is_invocable_v<TDecayed, TIterator>)
+                        {
+                            X.Func(It);
+                        }
+                    }
+                }
+            };
+
+            ParallelForImpl(Num, 0, Priority, Thunk, &Ctx);
         }
-        
-        RUNTIME_API void ScheduleTask(ITaskSet* pTask);
 
-        RUNTIME_API void ScheduleTask(IPinnedTask* pTask);
-
-        RUNTIME_API void WaitForTask(const ITaskSet* pTask, ETaskPriority Priority = ETaskPriority::Low);
-        
-        RUNTIME_API void WaitForTask(const IPinnedTask* pTask);
-        
+        /** Block until every job submitted so far has completed. */
         RUNTIME_API void WaitForAll();
-    
 
-        enki::TaskScheduler                 Scheduler;
-        uint32                              NumWorkers = 0;
+    private:
+
+        using FParallelThunk = void (*)(void* Ctx, uint32 Start, uint32 End, uint32 Thread);
+
+        // Splits [0, Num) into worker-balanced chunks, runs them, and waits. Single source of the
+        // chunking policy; the templated entry points type-erase their callable into Thunk + Ctx.
+        RUNTIME_API void ParallelForImpl(uint32 Num, uint32 MinRange, ETaskPriority Priority, FParallelThunk Thunk, void* Ctx);
     };
-    
+
     namespace Task
     {
         RUNTIME_API FTaskHandle AsyncTask(uint32 Num, uint32 MinRange, TaskSetFunction&& Function, ETaskPriority Priority = ETaskPriority::Medium);

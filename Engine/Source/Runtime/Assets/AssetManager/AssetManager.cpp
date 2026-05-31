@@ -4,7 +4,6 @@
 #include "Assets/AssetRegistry/AssetData.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Log/Log.h"
-#include "TaskScheduler.h"
 #include "TaskSystem/TaskSystem.h"
 
 namespace Lumina
@@ -125,31 +124,11 @@ namespace Lumina
 
     void FAssetManager::SubmitAssetRequest(const TSharedPtr<FAssetRequest>& Request)
     {
-        struct FAssetTask : ITaskSet
+        Task::AsyncTask(1, 1, [this, Request](uint32, uint32, uint32)
         {
-            FAssetManager*              Manager;
-            TSharedPtr<FAssetRequest>   Request;
-            FCompletionActionDelete     Deleter;
-
-            FAssetTask(FAssetManager* InManager, const TSharedPtr<FAssetRequest>& InRequest)
-                : ITaskSet(1)
-                , Manager(InManager)
-                , Request(InRequest)
-            {
-                Deleter.SetDependency(Deleter.Dependency, this);
-            }
-
-            void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-            {
-                Request->Process();
-                
-                Manager->NotifyAssetRequestCompleted(Request);
-            }
-        };
-
-        auto* Task = Memory::New<FAssetTask>(this, Request);
-        
-        GTaskSystem->ScheduleTask(Task);
+            Request->Process();
+            NotifyAssetRequestCompleted(Request);
+        });
     }
     
 }

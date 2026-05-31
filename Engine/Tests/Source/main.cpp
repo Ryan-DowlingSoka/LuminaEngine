@@ -4,6 +4,7 @@
 #include "EASTL/allocator.h"
 #include "Log/Log.h"
 #include "Memory/Memory.h"
+#include "TaskSystem/TaskSystem.h"
 
 class EngineTestEnvironment : public ::testing::Environment
 {
@@ -11,21 +12,23 @@ public:
     void SetUp() override
     {
         Lumina::Memory::Initialize();
-        
+
         Lumina::Threading::Initialize("Main Thread");
         Lumina::FName::Initialize();
         Lumina::Logging::Init();
+        Lumina::Task::Initialize();
 
         Lumina::InitializeCObjectSystem();
     }
 
     void TearDown() override
     {
+        Lumina::Task::Shutdown();
         Lumina::Logging::Shutdown();
         Lumina::FName::Shutdown();
         Lumina::Threading::Shutdown();
         Lumina::ShutdownCObjectSystem();
-        
+
     }
 };
 
@@ -38,73 +41,6 @@ int main(int Argc, char** Argv)
     return RUN_ALL_TESTS();
 }
 
-namespace eastl
-{
-    allocator GDefaultAllocator;
-
-    allocator* GetDefaultAllocator()
-    {
-        return &GDefaultAllocator;
-    }
-
-    allocator* SetDefaultAllocator(allocator* pAllocator)
-    {
-        return &GDefaultAllocator;
-    }
-
-    allocator::allocator(const char* EASTL_NAME(pName))
-    {
-#if LE_DEBUG
-        mpName = pName;
-#endif
-    }
-
-    allocator::allocator(const allocator& EASTL_NAME(alloc))
-    {
-#if LE_DEBUG
-        mpName = EASTL_ALLOCATOR_DEFAULT_NAME;
-#endif
-    }
-
-    allocator::allocator(const allocator&, const char* EASTL_NAME(pName))
-    {
-#if LE_DEBUG
-        mpName = pName;
-#endif
-    }
-
-    allocator& allocator::operator=(const allocator& EASTL_NAME(alloc))
-    {
-        return *this;
-    }
-
-    const char* allocator::get_name() const
-    {
-        return "Lumina";
-    }
-
-    void allocator::set_name(const char* EASTL_NAME(pName))
-    {
-        // Implement set_name logic
-    }
-
-    void* allocator::allocate(size_t n, int flags)
-    {
-        return malloc(n);
-    }
-
-    void* allocator::allocate(size_t n, size_t alignment, size_t offset, int flags)
-    {
-        return malloc(n);
-    }
-
-    void allocator::deallocate(void* p, size_t)
-    {
-        free(p);
-    }
-
-    bool operator==( allocator const&, allocator const& ) { return true; }
-    bool operator!=( allocator const&, allocator const& ) { return false; }
-}
-
+// The eastl::allocator binding is provided by the canonical Memory/EASTLImpl.cpp, which Module.lua
+// auto-adds to this image. (Previously duplicated here, before EASTLImpl was centralized.)
 DECLARE_MODULE_ALLOCATOR_OVERRIDES();

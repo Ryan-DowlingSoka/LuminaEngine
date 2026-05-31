@@ -1558,7 +1558,7 @@ namespace Lumina::Physics
 
         // First character in this scene: stand up the per-worker substep allocator pool. 4 MiB
         // per worker is comfortably above a single CharacterVirtual::ExtendedUpdate's high-water.
-        const uint32 NumWorkers = GTaskSystem ? GTaskSystem->GetScheduler().GetNumTaskThreads() : 1u;
+        const uint32 NumWorkers = GTaskSystem ? GTaskSystem->GetNumTaskThreads() : 1u;
         CharacterAllocators.reserve(NumWorkers);
         for (uint32 i = 0; i < NumWorkers; ++i)
         {
