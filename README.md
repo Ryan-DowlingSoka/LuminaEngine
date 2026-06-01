@@ -20,16 +20,32 @@
 
 ## Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [Screenshots](#screenshots)
-- [Getting Started](#getting-started)
-- [Asset Formats](#asset-formats)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Third-Party Dependencies](#third-party-dependencies)
-- [Acknowledgments](#acknowledgments)
-- [License](#license)
+- [Lumina Game Engine](#lumina-game-engine)
+  - [Contents](#contents)
+  - [Overview](#overview)
+  - [Features](#features)
+    - [Rendering](#rendering)
+    - [Architecture](#architecture)
+    - [Editor](#editor)
+    - [Performance](#performance)
+    - [Luau Scripting](#luau-scripting)
+  - [Screenshots](#screenshots)
+  - [Getting Started](#getting-started)
+    - [Requirements](#requirements)
+    - [Installation](#installation)
+    - [Build Configuration](#build-configuration)
+    - [Troubleshooting](#troubleshooting)
+  - [Asset Formats](#asset-formats)
+    - [Free Asset Resources](#free-asset-resources)
+  - [Documentation](#documentation)
+    - [Coding Standards](#coding-standards)
+  - [Contributing](#contributing)
+    - [Workflow](#workflow)
+    - [Requirements](#requirements-1)
+  - [Third-Party Dependencies](#third-party-dependencies)
+  - [Acknowledgments](#acknowledgments)
+  - [License](#license)
+  - [Connect](#connect)
 
 ---
 
@@ -80,7 +96,7 @@ through the work of motivated contributors who help push the engine forward.
 
 ### Performance
 
-- Multi-threaded task system built on EnkiTS
+- Multi-threaded task system built with fibers.
 - Custom memory allocators built on RPMalloc
 - Built-in profiling through Tracy integration
 
@@ -302,7 +318,6 @@ Listed alphabetically.
 | basis_universal | GPU texture compression with runtime transcoding to BC7/ETC/ASTC |
 | ConcurrentQueue | Lock-free queue supporting multiple producers and consumers |
 | EASTL | EA Standard Template Library optimized for game development |
-| EnkiTS | Lightweight task scheduler for parallel-for, task sets, and dependency graphs |
 | EnTT | Fast entity component system with sparse-set storage and signals |
 | FastGLTF | High-performance glTF 2.0 parser with full specification support |
 | GLFW | Multi-platform window and input library for OpenGL and Vulkan |
