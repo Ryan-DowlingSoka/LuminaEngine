@@ -118,7 +118,7 @@ namespace Lumina
             bValid = true;
         }
 
-        // Must be called while the owning ImGui context is still alive — the
+        // Must be called while the owning ImGui context is still alive, the
         // pooled ImDrawLists were allocated through the context's allocator.
         void Clear()
         {

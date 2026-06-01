@@ -12,7 +12,6 @@
 #include "Scene/RenderScene/RenderScene.h"
 #include "Scene/RenderScene/TexturePaintTypes.h"
 #include "UI/WorldUIContext.h"
-#include "Subsystems/FCameraManager.h"
 #include "Subsystems/TimerManager.h"
 #include "Physics/Ray/RayCast.h"
 #include "Renderer/PrimitiveDrawInterface.h"
@@ -52,6 +51,15 @@ namespace Lumina
     public:
         
         using FSystemVariant = TVariant<FEntitySystemWrapper, FEntityScriptSystem>;
+
+        // A system as scheduled in a stage: its variant, the priority for that stage, and its declared
+        // component/resource access (used to run non-conflicting systems concurrently in TickSystems).
+        struct FScheduledSystem
+        {
+            FSystemVariant Variant;
+            FSystemAccess  Access;
+            uint8          StagePriority = 255;
+        };
 
         CWorld();
         static void RegisterLuaModule(Lua::FRef& GlobalRef);
@@ -149,8 +157,8 @@ namespace Lumina
         FUNCTION(Script)
         EUpdateStage GetUpdateStage() const;
 
-        FTimerManager& GetTimerManager() { return TimerManager; }
-        const FTimerManager& GetTimerManager() const { return TimerManager; }
+        FTimerManager& GetTimerManager() { return EntityRegistry.ctx().get<FTimerManager>(); }
+        const FTimerManager& GetTimerManager() const { return EntityRegistry.ctx().get<FTimerManager>(); }
 
         NODISCARD EWorldType GetWorldType() const { return WorldType; }
 
@@ -200,7 +208,7 @@ namespace Lumina
         // Per-world UI (Rml context + documents); created in InitializeWorld, freed in TeardownWorld.
         FWorldUIContext* GetUIContext() const { return UIContext.get(); }
 
-        const TVector<FSystemVariant>& GetSystemsForUpdateStage(EUpdateStage Stage);
+        const TVector<FScheduledSystem>& GetSystemsForUpdateStage(EUpdateStage Stage);
 
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnTransformComponentConstruct(entt::registry& Registry, entt::entity Entity);
@@ -275,15 +283,11 @@ namespace Lumina
 
         FSystemContext                                      SystemContext;
         
-        TUniquePtr<FCameraManager>                          CameraManager;
         TUniquePtr<IRenderScene>                            RenderScene;
         TUniquePtr<Physics::IPhysicsScene>                  PhysicsScene;
         TUniquePtr<FWorldUIContext>                         UIContext;
         
-        TVector<FSystemVariant>                             SystemUpdateList[(int32)EUpdateStage::Max];
-
-        FLuaEventBus                                        LuaEventBus;
-        FTimerManager                                       TimerManager;
+        TVector<FScheduledSystem>                           SystemUpdateList[(int32)EUpdateStage::Max];
 
         // Subscription to FScriptingContext::OnScriptLoaded; re-binds matching SScriptComponents
         // on reload. Populated in InitializeWorld, removed in TeardownWorld.
@@ -312,10 +316,6 @@ namespace Lumina
         
         EWorldType                                          WorldType = EWorldType::None;
         bool                                                bInitializing = true;
-
-        // FIFO of live fracture fragments; oldest reaped to stay under Physics.Destruction.MaxLiveFragments
-        // so body/contact buffers don't overflow. May hold dead entities; validated on reap.
-        TDeque<entt::entity>                                ActiveFragments;
     };
     
     
@@ -334,8 +334,9 @@ namespace Lumina
         THashSet<uint64> UniqueSystems;
         for (auto& i : SystemUpdateList)
         {
-            for (const FSystemVariant& System : i)
+            for (const FScheduledSystem& Scheduled : i)
             {
+                const FSystemVariant& System = Scheduled.Variant;
                 uint64 Hash = eastl::visit([&](const auto& Sys) { return Sys.GetHash(); }, System);
                 if (UniqueSystems.count(Hash) == 0)
                 {

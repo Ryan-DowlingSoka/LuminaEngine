@@ -33,7 +33,8 @@ namespace Lumina::Physics
     
     struct FJoltData
     {
-        TUniquePtr<JPH::JobSystemThreadPool> JobThreadPool;
+        // Either Jolt's own thread pool or our fiber-scheduler bridge, chosen at init by a CVar.
+        TUniquePtr<JPH::JobSystem> JobSystem;
         #if JPH_DEBUG_RENDERER
         TUniquePtr<FJoltDebugRenderer> DebugRenderer;
         #endif
@@ -49,7 +50,7 @@ namespace Lumina::Physics
         void Shutdown() override;
         TUniquePtr<IPhysicsScene> CreatePhysicsScene(CWorld* World) override;
 
-        static JPH::JobSystemThreadPool* GetThreadPool();
+        static JPH::JobSystem* GetThreadPool();
         #if JPH_DEBUG_RENDERER
 		static FJoltDebugRenderer* GetDebugRenderer();
         #endif

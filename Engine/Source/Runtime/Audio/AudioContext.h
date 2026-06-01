@@ -14,14 +14,19 @@ namespace Lumina
 	{
 		void Initialize();
 		void Shutdown();
+		// Per-frame pump (drains queued commands + housekeeping). Call once per frame from the engine.
+		void Update();
 	}
 
-	// Thread-safe; commands queue to a dedicated audio thread.
+	// Thread-safe; commands queue and are drained by a per-frame pump job on the task pool.
 	class RUNTIME_API IAudioContext
 	{
 	public:
 
 		virtual ~IAudioContext() = default;
+
+		// Drain queued audio commands + housekeeping (kicked once per frame). Default no-op.
+		virtual void Update() {}
 
 		NODISCARD virtual void* GetNative() const = 0;
 

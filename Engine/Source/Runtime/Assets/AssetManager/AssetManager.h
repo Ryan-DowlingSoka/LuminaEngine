@@ -1,41 +1,49 @@
 #pragma once
 
-#include "Assets/AssetRequest.h"
 #include "Containers/Array.h"
-#include "Memory/SmartPtr.h"
+#include "Containers/String.h"
+#include "GUID/GUID.h"
 #include "PrimaryAssetId.h"
+#include "TaskSystem/FiberSync.h"
+#include "TaskSystem/Future.h"
 
 
 namespace Lumina
 {
-	class FAssetRecord;
+	class CObject;
 	struct FAssetData;
 
+	// Result of an async load: a fiber-aware future for the loaded object (nullptr on failure). Poll it
+	// (IsReady), block on it (Get / Wait, parks the calling fiber, never stalls a worker), or chain a
+	// callback off it (Then). A default-constructed handle is invalid (the request didn't resolve).
+	using FAssetHandle = TFuture<CObject*>;
+
+	// Loads objects from packages, deduplicating concurrent requests for the same asset. Sync and async
+	// loads share one path: both hand back the same shared future, so the only difference is whether the
+	// caller performs the load inline (sync) or lets a worker do it (async), and then waits or not.
 	class RUNTIME_API FAssetManager final
 	{
 	public:
 		FAssetManager() = default;
 		LE_NO_COPYMOVE(FAssetManager);
 
-
 		static FAssetManager& Get();
 
-		TSharedPtr<FAssetRequest> LoadAssetAsync(const FFixedString& PackagePath, const FGuid& RequestedAsset);
-		CObject* LoadAssetSynchronous(const FFixedString& PackagePath, const FGuid& RequestedAsset);
+		// Kick off (or join) an async load. Returns the shared handle for this asset.
+		FAssetHandle LoadAssetAsync(const FFixedString& PackagePath, const FGuid& RequestedAsset);
+		// Load now and return the object. Joins an in-flight async load (fiber-aware wait) if one exists,
+		// otherwise loads inline on the caller. nullptr on failure.
+		CObject*     LoadAssetSynchronous(const FFixedString& PackagePath, const FGuid& RequestedAsset);
 
-		void NotifyAssetRequestCompleted(const TSharedPtr<FAssetRequest>& Request);
-
+		// Block until every in-flight async load has finished. Fiber-aware.
 		void FlushAsyncLoading();
 
 		// Finds the asset whose AssetName == Id.Name with EAssetFlags::Primary set; nullptr on miss.
-		FAssetData* ResolvePrimaryAsset(const FPrimaryAssetId& Id) const;
+		FAssetData*  ResolvePrimaryAsset(const FPrimaryAssetId& Id) const;
 
-		// Sync load by primary id; nullptr if no Primary asset is registered under that name.
-		CObject* LoadPrimaryAssetSynchronous(const FPrimaryAssetId& Id);
-
-		// Async load by primary id. Callback fires with nullptr if the id
-		// doesn't resolve.
-		TSharedPtr<FAssetRequest> LoadPrimaryAssetAsync(const FPrimaryAssetId& Id);
+		CObject*     LoadPrimaryAssetSynchronous(const FPrimaryAssetId& Id);
+		// Returns an invalid handle if the id doesn't resolve to a Primary asset.
+		FAssetHandle LoadPrimaryAssetAsync(const FPrimaryAssetId& Id);
 
 		template<typename T>
 		TObjectPtr<T> LoadPrimaryAssetSynchronous(const TPrimaryAssetId<T>& Id)
@@ -45,20 +53,21 @@ namespace Lumina
 
 	private:
 
-		TSharedPtr<FAssetRequest> CreateOrFindAssetRequest(const FFixedString& InAssetPath, const FGuid& GUID, bool& bAlreadyInQueue);
-		void SubmitAssetRequest(const TSharedPtr<FAssetRequest>& Request);
-		
-	
+		// One pass over the in-flight table. If this asset is already loading, returns its shared handle
+		// and leaves bShouldLoad false. Otherwise registers a fresh handle, hands its promise to the
+		// caller (via OutPromise), and sets bShouldLoad true, the caller then performs the load.
+		FAssetHandle AcquireLoad(const FGuid& GUID, TPromise<CObject*>& OutPromise, bool& bShouldLoad);
+		// Load the object from its package, fulfill the promise, and retire the in-flight entry.
+		void         PerformLoad(const FFixedString& Path, const FGuid& GUID, TPromise<CObject*> Promise);
+
 	private:
 
-		FMutex								RequestMutex;
-		TVector<TSharedPtr<FAssetRequest>>	ActiveRequests;
-
+		FFiberMutex                          RequestMutex;
+		THashMap<FGuid, FAssetHandle>        InFlight; // asset GUID -> shared load handle, while loading
 	};
 
 
-	// TPrimaryAssetId<T> templated impls — out-of-line here because they
-	// need the full FAssetManager declaration above.
+	// TPrimaryAssetId<T> templated impls, out-of-line here because they need the full FAssetManager.
 
 	template<typename T>
 	TObjectPtr<T> TPrimaryAssetId<T>::LoadSynchronous() const
@@ -70,18 +79,15 @@ namespace Lumina
 	template<typename T>
 	void TPrimaryAssetId<T>::LoadAsync(const TFunction<void(T*)>& Callback) const
 	{
-		TSharedPtr<FAssetRequest> Request = FAssetManager::Get().LoadPrimaryAssetAsync(static_cast<const FPrimaryAssetId&>(*this));
-		if (!Request)
+		FAssetHandle Handle = FAssetManager::Get().LoadPrimaryAssetAsync(static_cast<const FPrimaryAssetId&>(*this));
+		if (!Handle.IsValid())
 		{
 			if (Callback) Callback(nullptr);
 			return;
 		}
 		if (Callback)
 		{
-			Request->AddListener([Callback](CObject* Obj)
-			{
-				Callback(static_cast<T*>(Obj));
-			});
+			Handle.Then([Callback](CObject*& Obj) { Callback(static_cast<T*>(Obj)); });
 		}
 	}
 }

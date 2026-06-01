@@ -206,8 +206,16 @@ namespace Lumina
         {
             return nullptr;
         }
-    
-        return Item->GetObj();
+
+        // Generation matches, so the slot still holds this object (not yet deallocated), the pointer is
+        // safe to read and to test the flag on. Treat an object already marked for destruction as gone,
+        // matching FindObject and so weak resolves don't hand back a dying object.
+        CObjectBase* Object = Item->GetObj();
+        if (Object == nullptr || Object->HasAnyFlag(OF_MarkedDestroy))
+        {
+            return nullptr;
+        }
+        return Object;
     }
 
     CObjectBase* FCObjectArray::GetObjectByIndex(int32 Index) const
@@ -250,20 +258,78 @@ namespace Lumina
         {
             return false;
         }
-            
+
         if (Object)
         {
+            // The caller still holds the ref being dropped, so the object is alive here, reading its
+            // index is safe. The decrement is lock-free; only the at-zero free takes the lock.
             if (FCObjectEntry* Item = ChunkedArray.GetItem(Object->GetInternalIndex()))
             {
                 uint32 NewCount = Item->ReleaseStrongRef();
                 if (NewCount == 0)
                 {
-                    Object->ConditionalBeginDestroy();
-                    return true;
+                    return ConditionalDestroy(Object);
                 }
             }
         }
         return false;
+    }
+
+    CObjectBase* FCObjectArray::TryAddStrongRef(const FObjectHandle& Handle)
+    {
+        if (!Handle.IsValid())
+        {
+            return nullptr;
+        }
+
+        FRecursiveScopeLock Lock(Mutex);
+
+        FCObjectEntry* Item = ChunkedArray.GetItem(Handle.Index);
+        if (!Item || Item->GetGeneration() != Handle.Generation)
+        {
+            return nullptr; // freed and the slot moved on (or never existed)
+        }
+
+        CObjectBase* Object = Item->GetObj();
+        if (Object == nullptr || Object->HasAnyFlag(OF_MarkedDestroy))
+        {
+            return nullptr; // being destroyed
+        }
+
+        // Holding the lock here serializes against ConditionalDestroy: it either sees this incremented
+        // count and bails, or already marked the object (caught above). No resurrection-after-free.
+        Item->AddStrongRef();
+        return Object;
+    }
+
+    bool FCObjectArray::ConditionalDestroy(CObjectBase* Object)
+    {
+        if (Object == nullptr)
+        {
+            return false;
+        }
+
+        {
+            FRecursiveScopeLock Lock(Mutex);
+
+            if (Object->HasAnyFlag(OF_MarkedDestroy))
+            {
+                return false; // already being destroyed
+            }
+
+            const FCObjectEntry* Item = ChunkedArray.GetItem(Object->GetInternalIndex());
+            if (Item && Item->IsReferenced())
+            {
+                return false; // (re)acquired a strong ref since the count hit zero, keep it alive
+            }
+
+            // Mark under the lock so any concurrent TryAddStrongRef now refuses. Once marked we own the
+            // destruction; the actual teardown runs outside the lock so OnDestroy can't deadlock on it.
+            Object->SetFlag(OF_MarkedDestroy);
+        }
+
+        Object->DestroyInternal();
+        return true;
     }
 
     void FCObjectArray::AddStrongRefByIndex(int32 Index)
@@ -276,10 +342,20 @@ namespace Lumina
 
     bool FCObjectArray::ReleaseStrongRefByIndex(int32 Index)
     {
+        if (bShuttingDown)
+        {
+            return false;
+        }
         if (FCObjectEntry* Item = ChunkedArray.GetItem(Index))
         {
             uint32 NewCount = Item->ReleaseStrongRef();
-            return NewCount == 0 && Item->GetObj() != nullptr;
+            if (NewCount == 0)
+            {
+                if (CObjectBase* Object = Item->GetObj())
+                {
+                    return ConditionalDestroy(Object);
+                }
+            }
         }
         return false;
     }

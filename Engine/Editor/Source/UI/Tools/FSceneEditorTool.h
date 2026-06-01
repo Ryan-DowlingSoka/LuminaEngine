@@ -239,8 +239,9 @@ namespace Lumina
         void CycleGuizmoOp();
         void ToggleGuizmoMode();
 
-        // Hook: GConfig section the gizmo snap prefs persist under (per tool, kept distinct).
-        virtual const char* GetGizmoConfigSection() const { return "Editor.SceneEditorTool"; }
+        // Hook: persist the current gizmo snap members to the tool's settings object. Default no-op;
+        // World/Prefab editors override to write their CDeveloperSettings + save.
+        virtual void PersistGizmoSettings() {}
 
         // --- Viewport overlay toolbar (shared) -----------------------------------------
         // The floating in-viewport toolbar is identical across tools. The play controls + editor-mode

@@ -377,7 +377,9 @@ namespace Lumina
 
         if (!MaybeResult.has_value())
         {
-            NewTexture->ForceDestroyNow();
+            // Refcount-safe teardown (matches the success path below): frees the unreferenced transient
+            // texture, but won't dangle a holder if one ever takes a ref.
+            NewTexture->ConditionalBeginDestroy();
             return;
         }
 
@@ -431,7 +433,7 @@ namespace Lumina
 
         if (!bCooked)
         {
-            NewTexture->ForceDestroyNow();
+            NewTexture->ConditionalBeginDestroy();
             return;
         }
 

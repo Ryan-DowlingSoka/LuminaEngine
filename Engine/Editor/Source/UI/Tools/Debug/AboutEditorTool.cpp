@@ -21,7 +21,7 @@ namespace Lumina
     void FAboutEditorTool::DrawHelpMenu()
     {
         DrawHelpTextRow("Engine Version",
-            "Shown on the About tab — combine with the build hash when filing issues.");
+            "Shown on the About tab, combine with the build hash when filing issues.");
         DrawHelpTextRow("Documentation",
             "Long-form docs live on the GitHub wiki linked from the About tab.");
         DrawHelpTextRow("Help in Other Tools",
@@ -192,9 +192,7 @@ namespace Lumina
                 ImGui::PopStyleColor();
             };
 
-            AddContributor("Bryan Casagrande", "Lead Developer & Engine Architect", ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
-            AddContributor("Marzac", "Spark");
-            AddContributor("Tiny Butch", "Spark");
+            AddContributor("Dr. Elliot", "Lead Developer & Engine Architect", ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
 
             ImGui::EndTable();
         }

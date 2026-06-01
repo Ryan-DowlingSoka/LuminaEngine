@@ -19,9 +19,11 @@
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "RuntimeComponent.h"
+#include "Memory/SmartPtr.h"
 #include "Scripting/Lua/ScriptTypes.h"
 #include "Scripting/Lua/Scripting.h"
 #include "World/World.h"
+#include <atomic>
 
 using namespace entt::literals; 
 
@@ -883,15 +885,97 @@ namespace Lumina::ECS::Utils
         return false;
     }
 
+    // NOTE (fibers): this is a std OS recursive mutex, not a fiber-aware FFiberMutex. That is only safe
+    // because NO critical section under this lock ever parks the fiber (no Task::/future/FiberSync waits --
+    // all transform resolve work is pure CPU). If that ever changes, a fiber could migrate OS threads while
+    // holding the lock -> unlock-from-wrong-thread UB + recursive re-lock deadlock. HARD RULE: never await
+    // while holding this. It is recursive solely because World_MoveToward batch-holds it across
+    // ResolveTransformChain/SetEntityWorldTransform; de-nesting those is the prerequisite to moving this to a
+    // (non-recursive) FFiberMutex so contended waiters park their fiber instead of blocking a worker.
     FRecursiveMutex& GetTransformResolveMutex()
     {
         static FRecursiveMutex Instance;
         return Instance;
     }
 
+    // Per-registry hint for the lock-free transform-read fast path.
+    struct alignas(LE_CACHELINE_SIZE) FTransformDirtyState
+    {
+        std::atomic<bool> bAnyDirty{ true };
+    };
+
+    static void OnTransformDirtied(FTransformDirtyState* State, FEntityRegistry&, entt::entity)
+    {
+        State->bAnyDirty.store(true, std::memory_order_release);
+    }
+
+    static FTransformDirtyState* FindTransformDirtyState(FEntityRegistry& Registry)
+    {
+        if (TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>())
+        {
+            return Holder->get();
+        }
+        return nullptr;
+    }
+
+    // Idempotent: creates the per-registry state + connects the dirty-tracking hook exactly once. Called at
+    // the start of the bulk resolve, which guarantees the hook is live before bAnyDirty is ever cleared.
+    static FTransformDirtyState& EnsureTransformDirtyState(FEntityRegistry& Registry)
+    {
+        if (TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>())
+        {
+            return *Holder->get();
+        }
+
+        FTransformDirtyState& State = *Registry.ctx().emplace<TUniquePtr<FTransformDirtyState>>(MakeUnique<FTransformDirtyState>());
+        Registry.on_construct<FNeedsTransformUpdate>().connect<&OnTransformDirtied>(&State);
+        return State;
+    }
+
+    // Recompute world = parentWorld * local for every descendant of Root.
+    template<typename TTransformStorage>
+    static void PropagateTransformsToDescendants(FEntityRegistry& Registry, TTransformStorage& TransformStorage, entt::entity Root, bool bClearDirty)
+    {
+        TFixedVector<entt::entity, 64> Stack;
+        Stack.push_back(Root);
+
+        while (!Stack.empty())
+        {
+            const entt::entity Parent = Stack.back();
+            Stack.pop_back();
+
+            const FTransform ParentWorld = TransformStorage.get(Parent).WorldTransform;
+            ForEachChild(Registry, Parent, [&](entt::entity Child)
+            {
+                STransformComponent& ChildTransform = TransformStorage.get(Child);
+
+                ChildTransform.WorldTransform = ParentWorld * ChildTransform.LocalTransform;
+                ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
+
+                if (bClearDirty)
+                {
+                    Registry.remove<FNeedsTransformUpdate>(Child);
+                }
+
+                Stack.push_back(Child);
+            });
+        }
+    }
+
     void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Lock-free fast path: nothing in this registry is dirty -> the read is known clean, skip the mutex.
+        // This is the common case after the frame's bulk resolve, when parallel reads (render extract, etc.)
+        // would otherwise all serialize on the global resolve mutex. See FTransformDirtyState.
+        if (const FTransformDirtyState* DirtyState = FindTransformDirtyState(Registry))
+        {
+            if (!DirtyState->bAnyDirty.load(std::memory_order_acquire))
+            {
+                return;
+            }
+        }
 
         // Recursive mutex: concurrent MarkDirty + GetWorldMatrix would corrupt the sparse set; resolver may recurse.
         FRecursiveScopeLock Lock(GetTransformResolveMutex());
@@ -901,6 +985,9 @@ namespace Lumina::ECS::Utils
         int32 TopmostDirtyIndex = -1;
 
         entt::entity Current = Entity;
+        auto&& RelStorage = Registry.storage<FRelationshipComponent>();
+        auto&& XFormStorage = Registry.storage<STransformComponent>();
+        
         while (Current != entt::null)
         {
             if (Registry.all_of<FNeedsTransformUpdate>(Current))
@@ -915,7 +1002,7 @@ namespace Lumina::ECS::Utils
                 break;
             }
 
-            entt::entity Parent = Registry.get<FRelationshipComponent>(Current).Parent;
+            entt::entity Parent = RelStorage.get(Current).Parent;
             if (Parent == entt::null || !Registry.valid(Parent))
             {
                 break;
@@ -932,14 +1019,13 @@ namespace Lumina::ECS::Utils
         for (int32 i = TopmostDirtyIndex; i >= 0; --i)
         {
             entt::entity Ancestor = AncestorChain[i];
-            auto& Transform = Registry.get<STransformComponent>(Ancestor);
+            auto& Transform = XFormStorage.get(Ancestor);
 
             FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Ancestor);
             if (Rel && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
-                FMatrix4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).CachedMatrix;
-                FMatrix4 Local       = Transform.LocalTransform.GetMatrix();
-                Transform.WorldTransform = FTransform(ParentWorld * Local);
+                const FTransform& ParentWorld = XFormStorage.get(Rel->Parent).WorldTransform;
+                Transform.WorldTransform = ParentWorld * Transform.LocalTransform;
             }
             else
             {
@@ -952,30 +1038,16 @@ namespace Lumina::ECS::Utils
 
         // Propagate down the full subtree (siblings also referenced the ancestor's matrix). Resolve the
         // transform storage once and index it directly instead of a pool-map lookup per node.
-        auto& TransformStorage = Registry.storage<STransformComponent>();
-        TFunction<void(entt::entity)> UpdateChildrenRecursive;
-        UpdateChildrenRecursive = [&](entt::entity ParentEntity)
-        {
-            const FMatrix4 ParentMatrix = TransformStorage.get(ParentEntity).CachedMatrix;
-            ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
-            {
-                auto& ChildTransform = TransformStorage.get(Child);
-
-                ChildTransform.WorldTransform = FTransform(ParentMatrix * ChildTransform.LocalTransform.GetMatrix());
-                ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
-
-                Registry.remove<FNeedsTransformUpdate>(Child);
-
-                UpdateChildrenRecursive(Child);
-            });
-        };
-
-        UpdateChildrenRecursive(AncestorChain[TopmostDirtyIndex]);
+        PropagateTransformsToDescendants(Registry, XFormStorage, AncestorChain[TopmostDirtyIndex], /*bClearDirty*/ true);
     }
 
     void ResolveAllDirtyTransforms(FEntityRegistry& Registry)
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Install the dirty-tracking hook before anything can clear the flag (idempotent). After this bulk
+        // pass clears the pool we set bAnyDirty=false; any subsequent emplace re-arms it via OnTransformDirtied.
+        FTransformDirtyState& DirtyState = EnsureTransformDirtyState(Registry);
 
         auto SingleView        = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
         auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
@@ -1001,11 +1073,20 @@ namespace Lumina::ECS::Utils
                 auto& DirtyTransform    = RelationshipGroup.get<STransformComponent>(DirtyEntity);
                 auto& DirtyRelationship = RelationshipGroup.get<FRelationshipComponent>(DirtyEntity);
 
-                if (DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent))
+                const bool bHasParent = DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent);
+
+                // Skip entities whose parent is also dirty: the topmost dirty ancestor's descent already
+                // covers this whole subtree. This halves the work on bulk loads (everything dirty) and keeps
+                // the parallel descent-roots' subtrees disjoint, so no two tasks write the same entity.
+                if (bHasParent && Registry.all_of<FNeedsTransformUpdate>(DirtyRelationship.Parent))
                 {
-                    FMatrix4 ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform.GetMatrix();
-                    FMatrix4 LocalMat    = DirtyTransform.LocalTransform.GetMatrix();
-                    DirtyTransform.WorldTransform = FTransform(ParentWorld * LocalMat);
+                    return;
+                }
+
+                if (bHasParent)
+                {
+                    const FTransform& ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform;
+                    DirtyTransform.WorldTransform = ParentWorld * DirtyTransform.LocalTransform;
                 }
                 else
                 {
@@ -1014,24 +1095,7 @@ namespace Lumina::ECS::Utils
 
                 DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
 
-                TFunction<void(entt::entity)> UpdateChildrenRecursive;
-                UpdateChildrenRecursive = [&](entt::entity ParentEntity)
-                {
-                    const FMatrix4 ParentWorld = TransformStorage.get(ParentEntity).WorldTransform.GetMatrix();
-                    ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
-                    {
-                        auto& ChildTransform = TransformStorage.get(Child);
-
-                        FMatrix4 ChildLocal = ChildTransform.LocalTransform.GetMatrix();
-
-                        ChildTransform.WorldTransform = FTransform(ParentWorld * ChildLocal);
-                        ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
-
-                        UpdateChildrenRecursive(Child);
-                    });
-                };
-
-                UpdateChildrenRecursive(DirtyEntity);
+                PropagateTransformsToDescendants(Registry, TransformStorage, DirtyEntity, /*bClearDirty*/ false);
             };
 
             if (DirtyEntities.size() > 1000)
@@ -1076,6 +1140,9 @@ namespace Lumina::ECS::Utils
         }
 
         Registry.clear<FNeedsTransformUpdate>();
+
+        // Pool is now empty: arm the lock-free read fast path until the next emplace re-dirties it.
+        DirtyState.bAnyDirty.store(false, std::memory_order_release);
     }
 
     FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)

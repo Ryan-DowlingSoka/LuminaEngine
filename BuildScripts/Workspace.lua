@@ -183,6 +183,9 @@ function ApplyLuminaFeatureDefines()
         "TRACY_ENABLE",
         "TRACY_CALLSTACK",
         "TRACY_ON_DEMAND",
+        -- Fiber zone tracking: the job scheduler brackets each fiber switch with TracyFiberEnter/Leave so
+        -- zones stay attributed to the migrating fiber, not the OS worker (else "zone ended twice").
+        "TRACY_FIBERS",
         "TRACY_ALLOW_SHADOW_WARNING",
         "RMLUI_TRACY_PROFILING",
     })

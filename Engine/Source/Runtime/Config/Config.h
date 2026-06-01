@@ -10,56 +10,8 @@
 
 namespace Lumina
 {
-    // Type tag on a registered setting; drives editor widget choice (JSON storage is identical regardless).
-    enum class EConfigValueType : uint8
-    {
-        Bool,
-        Int,
-        Float,
-        String,
-        Path,           // String value; editor shows a file picker
-        DirectoryPath,  // String value; editor shows a directory picker
-        Color,          // 4 floats [r,g,b,a]; editor shows ColorEdit4
-        Vec2,           // 2 floats
-        Vec3,           // 3 floats
-        Vec4,           // 4 floats
-        StringArray,
-        Enum,           // String constrained to EnumOptions
-    };
-
-    // Declarative setting record registered via FConfig::RegisterSetting; unregistered keys still
-    // work via Get/Set but don't appear in the typed editor.
-    struct FConfigSetting
-    {
-        FString             Key;            // Dotted "Editor.WorldEditorTool.GuizmoSnapEnabled"
-        EConfigValueType    Type            = EConfigValueType::String;
-        nlohmann::json      DefaultValue;   // Falls back to this when key is missing on disk
-        FString             Category;       // Slash-separated grouping for the editor: "Editor/World Tool"
-        FString             Description;    // Tooltip in the editor
-        FString             OwnerFile;      // VFS path of the file Set() should write to (e.g. "/Editor/Config/EditorSettings.json")
-        FString             FileFilter;     // For Path: "Lua Script (*.luau)\0*.luau\0"
-        TVector<FString>    EnumOptions;    // For Enum
-        double              MinValue        = 0.0;
-        double              MaxValue        = 0.0;
-        bool                bHasRange       = false;
-
-        // Builder helpers
-        FConfigSetting& WithDefault(nlohmann::json Value)       { DefaultValue = Move(Value); return *this; }
-        FConfigSetting& WithCategory(FStringView InCategory)    { Category.assign(InCategory.data(), InCategory.size()); return *this; }
-        FConfigSetting& WithDescription(FStringView InDesc)     { Description.assign(InDesc.data(), InDesc.size()); return *this; }
-        FConfigSetting& WithOwnerFile(FStringView InFile)       { OwnerFile.assign(InFile.data(), InFile.size()); return *this; }
-        FConfigSetting& WithFileFilter(FStringView InFilter)    { FileFilter.assign(InFilter.data(), InFilter.size()); return *this; }
-        FConfigSetting& WithEnumOptions(TVector<FString> Opts)  { EnumOptions = Move(Opts); return *this; }
-        FConfigSetting& WithRange(double Min, double Max)       { MinValue = Min; MaxValue = Max; bHasRange = true; return *this; }
-
-        static FConfigSetting Make(FStringView InKey, EConfigValueType InType)
-        {
-            FConfigSetting S;
-            S.Key.assign(InKey.data(), InKey.size());
-            S.Type = InType;
-            return S;
-        }
-    };
+    class CClass;
+    class CObject;
 
     RUNTIME_API extern class FConfig* GConfig;
 
@@ -67,20 +19,31 @@ namespace Lumina
     {
     public:
 
+        // ---- Developer settings (reflection-driven CDeveloperSettings objects) ----
+
+        // Discover every CDeveloperSettings subclass and load its JSON section into its CDO.
+        // Idempotent: classes already initialized are skipped, so it is safe to call again after
+        // a module (e.g. the editor) registers more settings classes.
+        void DiscoverAndLoadSettings();
+
+        // Re-serialize a settings class's CDO into its ConfigFile, preserving other sections.
+        void SaveSettings(CClass* SettingsClass);
+
+        // Iterate discovered settings classes in load order (for the editor panel).
+        void ForEachSettingsClass(const TFunction<void(CClass*)>& Func) const;
+
+        // Pristine code-default snapshot for a settings class (reset-to-default baseline). Null if none.
+        CObject* GetSettingsDefault(CClass* SettingsClass) const;
+
+        // Section key a class persists under within its grouped ConfigFile (class name sans leading 'C').
+        static FString GetSettingsSection(CClass* SettingsClass);
+
+        // ---- Generic JSON config (used for input-action maps + cooked/launch metadata) ----
+
         // Loads every .json under the VFS dir; top-level keys merge into root, source path recorded so Set() writes back.
         void LoadPath(FStringView ConfigPath);
 
-        // Schema declaration. Modules declare their settings here at startup.
-        // Re-registering an existing key replaces the prior declaration.
-        void RegisterSetting(FConfigSetting Setting);
-
-        // Lookup a registered setting (nullptr if never declared).
-        const FConfigSetting* FindSetting(FStringView Key) const;
-
-        // Iterate every registered setting (in registration order).
-        void ForEachSetting(const TFunction<void(const FConfigSetting&)>& Func) const;
-
-        // Typed read; missing key falls back to a registered DefaultValue, else the Default arg.
+        // Typed read of a dotted key; missing key returns the Default arg.
         template<typename T>
         T Get(FStringView Key, const T& Default = T{}) const;
 
@@ -89,23 +52,13 @@ namespace Lumina
         template<typename T>
         bool Set(FStringView Key, const T& Value);
 
-        // Typed accessors. Each falls back to the registered default
-        // (or T's default-constructed value) if the key is missing.
-        bool                GetBool(FStringView Key) const;
-        int32               GetInt(FStringView Key) const;
-        float               GetFloat(FStringView Key) const;
-        FString             GetString(FStringView Key) const;
-        FString             GetPath(FStringView Key) const          { return GetString(Key); }
-        FVector2            GetVec2(FStringView Key) const;
-        FVector3            GetVec3(FStringView Key) const;
-        FVector4            GetVec4(FStringView Key) const;
-        FVector4            GetColor(FStringView Key) const         { return GetVec4(Key); }
-        TVector<FString>    GetStringArray(FStringView Key) const;
-
-        // Raw JSON access for the editor / advanced cases.
+        // Raw JSON access for advanced cases (e.g. the input-action map loader).
         const nlohmann::json* GetRaw(FStringView Key) const;
 
     private:
+
+        // Loads (and caches) a settings JSON file; returns an empty object if absent/unparseable.
+        nlohmann::json& LoadSettingsFile(const FString& VFSPath);
 
         bool SetRaw(FStringView Key, nlohmann::json Value);
 
@@ -123,8 +76,11 @@ namespace Lumina
         THashMap<FString, nlohmann::json>           FileConfigs;        // VFS path -> parsed json
         THashMap<FString, FString>                  PathToFile;         // dotted-key prefix -> VFS path
 
-        TVector<FString>                            RegistryOrder;      // for stable iteration
-        THashMap<FString, FConfigSetting>           Registry;
+        // Developer-settings state.
+        THashMap<CClass*, CObject*>                 SettingsDefaults;   // class -> pristine code-default snapshot
+        TVector<CClass*>                            DiscoveredSettings; // discovery/load order
+        THashSet<CClass*>                           SettingsFileLoaded; // classes whose file values were applied
+        THashMap<FString, nlohmann::json>           SettingsFileCache;  // VFS path -> parsed settings file
     };
 
     // Template definitions.
@@ -141,16 +97,7 @@ namespace Lumina
             }
             catch (...)
             {
-                // Fall through to default — value type didn't match.
-            }
-        }
-
-        if (const FConfigSetting* Setting = FindSetting(Key))
-        {
-            if (!Setting->DefaultValue.is_null())
-            {
-                try { return Setting->DefaultValue.get<T>(); }
-                catch (...) {}
+                // Fall through to default, value type didn't match.
             }
         }
 

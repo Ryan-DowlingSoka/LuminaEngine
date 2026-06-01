@@ -12,6 +12,10 @@
 
 namespace Lumina
 {
+    FSystemAccess SAnimationGraphSystem::Access = FSystemAccess{}
+        .Write<SSkeletalMeshComponent>()
+        .Read<SAnimationGraphComponent, SBlackboardComponent>();
+
     void SAnimationGraphSystem::Update(const FSystemContext& SystemContext) noexcept
     {
         LUMINA_PROFILE_SCOPE();

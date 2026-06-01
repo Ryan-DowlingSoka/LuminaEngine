@@ -162,7 +162,7 @@ namespace Lumina
 
         GRenderContext->ResetTimerQuery(Query);
 
-        // Stats queries: top-level only — Vulkan disallows nested pipeline-stats queries.
+        // Stats queries: top-level only, Vulkan disallows nested pipeline-stats queries.
         const bool bWantStats = Frame.ScopeStack.empty();
         int32 StatsIdx = -1;
         IPipelineStatsQuery* StatsQuery = nullptr;
@@ -244,7 +244,7 @@ namespace Lumina
             return;
         }
 
-        // Skip stale pool entries from earlier frames — only poll this frame's scopes.
+        // Skip stale pool entries from earlier frames, only poll this frame's scopes.
         for (const FGPUProfileScope& Scope : Frame.Scopes)
         {
             if (Scope.QueryIndex < 0 || Scope.QueryIndex >= (int32)Frame.QueryPool.size())

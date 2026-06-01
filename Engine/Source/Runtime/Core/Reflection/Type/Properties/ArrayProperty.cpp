@@ -60,7 +60,18 @@ namespace Lumina
 
     void FArrayProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        UNREACHABLE();
+        int32 NumElements = (int32)GetNum(Value);
+        FArchiveArray Array = Slot.EnterArray(NumElements);
+
+        if (Slot.GetArchiver().IsReading())
+        {
+            Resize(Value, (size_t)NumElements);
+        }
+
+        for (int32 i = 0; i < NumElements; ++i)
+        {
+            Inner->SerializeItem(Array.EnterElement(), GetAt(Value, (size_t)i));
+        }
     }
 
     bool FArrayProperty::Identical(const void* ValueA, const void* ValueB) const

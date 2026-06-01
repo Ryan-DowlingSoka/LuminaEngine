@@ -178,8 +178,58 @@ namespace Lumina
     
     FQueue::~FQueue()
     {
+#if defined(TRACY_ENABLE)
+        if (TracyContext)
+        {
+            std::scoped_lock Lock(Mutex);
+            LockMark(Mutex);
+            TracyVkDestroy(TracyContext)
+            TracyContext = nullptr;
+        }
+#endif
+
         vkDestroySemaphore(Device->GetDevice(), TimelineSemaphore, VK_ALLOC_CALLBACK);
         TimelineSemaphore = nullptr;
+    }
+
+    void FQueue::InitProfilerContext()
+    {
+#if defined(TRACY_ENABLE)
+        if (Type == ECommandQueue::Transfer || TracyContext != nullptr)
+        {
+            return;
+        }
+
+        // The context only needs a command buffer transiently to calibrate the CPU/GPU clocks
+        // (it submits + waits idle on this queue). A throwaway pool/buffer is enough.
+        VkCommandPoolCreateInfo PoolInfo = {};
+        PoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        PoolInfo.queueFamilyIndex = QueueFamilyIndex;
+        PoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+        VkCommandPool Pool = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateCommandPool(Device->GetDevice(), &PoolInfo, VK_ALLOC_CALLBACK, &Pool));
+
+        VkCommandBufferAllocateInfo BufferInfo = {};
+        BufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        BufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        BufferInfo.commandBufferCount = 1;
+        BufferInfo.commandPool = Pool;
+
+        VkCommandBuffer Buffer = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateCommandBuffers(Device->GetDevice(), &BufferInfo, &Buffer));
+
+        {
+            std::scoped_lock Lock(Mutex);
+            LockMark(Mutex);
+            TracyContext = TracyVkContext(Device->GetPhysicalDevice(), Device->GetDevice(), Queue, Buffer);
+        }
+
+        const char* Name = (Type == ECommandQueue::Compute) ? "Compute Queue" : "Graphics Queue";
+        TracyVkContextName(TracyContext, Name, (uint16)strlen(Name))
+
+        vkDestroyCommandPool(Device->GetDevice(), Pool, VK_ALLOC_CALLBACK);
+#endif
     }
 
     TRefCountPtr<FTrackedCommandBuffer> FQueue::GetOrCreateCommandBuffer()
@@ -706,7 +756,7 @@ namespace Lumina
 
     void FVulkanRenderContext::WaitIdle()
     {
-        if (GRenderThread != nullptr && GRenderThread->IsRunning() && !Threading::IsRenderThread())
+        if (GRenderThread != nullptr && GRenderThread->IsRunning() && !FRenderThread::IsInRenderStage())
         {
             GRenderThread->EnqueueAndWait("WaitIdle", [this]()
             {
@@ -1249,6 +1299,15 @@ namespace Lumina
                 ? QueueByType[uint32(ECommandQueue::Compute)]
                 : GraphicsQueue;
             LOG_DISPLAY("No dedicated transfer queue family; routing transfer submissions to a shared queue.");
+        }
+
+        // Single-threaded init point: give each owned queue its one Tracy GPU context.
+        for (TUniquePtr<FQueue>& OwnedQueue : Queues)
+        {
+            if (OwnedQueue)
+            {
+                OwnedQueue->InitProfilerContext();
+            }
         }
 
         return true;

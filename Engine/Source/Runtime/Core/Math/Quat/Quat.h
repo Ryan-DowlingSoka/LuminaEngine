@@ -113,7 +113,7 @@ namespace Lumina
     // ManualStub shim below at parser-time gives reflection something to bite.
     using FQuat = TQuat<float>;
 #endif
-    // Not reflected — always defined.
+    // Not reflected, always defined.
     using FDoubleQuat = TQuat<double>;
 }
 

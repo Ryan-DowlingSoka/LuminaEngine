@@ -39,7 +39,7 @@ namespace Lumina
     void FGPUProfilerEditorTool::DrawHelpMenu()
     {
         DrawHelpTextRow("Enable",
-            "GPU profiling is gated on the r.GPUProfiler.Enabled CVar — toggleable from the gear menu. "
+            "GPU profiling is gated on the r.GPUProfiler.Enabled CVar, toggleable from the gear menu. "
             "It costs frames so leave it off when not investigating.");
         DrawHelpTextRow("Reading the tree",
             "Each node is a GPU scope pushed via FGPUProfileScope. Time shown is GPU time in ms; "
@@ -50,7 +50,7 @@ namespace Lumina
             "Vertex / fragment / compute invocations from the active backend's query pool. "
             "Available only when the backend reports pipeline statistics.");
         DrawHelpTextRow("Adding scopes",
-            "In C++: FGPUProfileScope Scope(CmdBuffer, \"YourPassName\"); — scopes nest naturally.");
+            "In C++: FGPUProfileScope Scope(CmdBuffer, \"YourPassName\");, scopes nest naturally.");
     }
 
     void FGPUProfilerEditorTool::DrawProfilerWindow(bool bIsFocused)

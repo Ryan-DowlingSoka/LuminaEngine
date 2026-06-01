@@ -23,6 +23,18 @@ namespace Lumina
 
         using ThreadID = uint64;
 
+        // Tracy timeline ordering: lower hint sorts higher (Main pinned to the top), and threads sharing a
+        // hint are grouped together. Passed through to tracy::SetThreadNameWithHint / TracyFiberEnterHint.
+        enum EThreadGroup : int32
+        {
+            ThreadGroup_Main    = 0,
+            ThreadGroup_Physics = 10,
+            ThreadGroup_Audio   = 20,
+            ThreadGroup_Worker  = 100,
+            ThreadGroup_Fiber   = 200,
+            ThreadGroup_Other   = 1000,
+        };
+
         RUNTIME_API void ThreadYield();
         RUNTIME_API uint64 GetThreadID();
         RUNTIME_API bool IsMainThread();
@@ -42,6 +54,12 @@ namespace Lumina
         RUNTIME_API void InitializeThreadHeap();
         RUNTIME_API void ShutdownThreadHeap();
         RUNTIME_API bool SetThreadName(const char* Name);
+
+        // Names the current thread and assigns its Tracy timeline group (see EThreadGroup).
+        RUNTIME_API bool SetThreadName(const char* Name, int32 GroupHint);
+
+        // Opts the current thread out of EcoQoS power throttling.
+        RUNTIME_API bool SetThreadPerformanceHint();
     }
     
 

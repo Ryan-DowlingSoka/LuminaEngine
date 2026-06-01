@@ -94,9 +94,13 @@ namespace Lumina
         EndRenderPass();
         
 #if defined(TRACY_ENABLE)
-        if (CurrentCommandBuffer->TracyContext != nullptr)
+        if (FQueue* CmdQueue = CurrentCommandBuffer->Queue; CmdQueue && CmdQueue->TracyContext != nullptr)
         {
-            TracyVkCollect(CurrentCommandBuffer->TracyContext, CurrentCommandBuffer->CommandBuffer)
+            // The queue's context is shared across all command buffers, so serialize the collect
+            // (it reads/resets the shared query pool) against concurrent recorders on this queue.
+            std::scoped_lock Lock(CmdQueue->Mutex);
+            LockMark(CmdQueue->Mutex);
+            TracyVkCollect(CmdQueue->TracyContext, CurrentCommandBuffer->CommandBuffer)
         }
 #endif
 
@@ -1209,12 +1213,13 @@ namespace Lumina
         AddMarker(Name, Color);
 
         #if defined(TRACY_ENABLE)
-        if (CurrentCommandBuffer->TracyContext != nullptr && TracyZoneDepth < MaxTracyZoneDepth && Name != nullptr)
+        TracyVkCtx ZoneContext = CurrentCommandBuffer->Queue ? CurrentCommandBuffer->Queue->TracyContext : nullptr;
+        if (ZoneContext != nullptr && TracyZoneDepth < MaxTracyZoneDepth && Name != nullptr)
         {
             constexpr const char* SourceFile = __FILE__;
             constexpr const char* SourceFunc = "GPU";
             new (TracyZoneStorage[TracyZoneDepth]) tracy::VkCtxScope(
-                CurrentCommandBuffer->TracyContext,
+                ZoneContext,
                 (uint32_t)__LINE__,
                 SourceFile, sizeof(__FILE__) - 1,
                 SourceFunc, 3,
@@ -1706,7 +1711,7 @@ namespace Lumina
             const bool bAutoBarriers = PendingState.IsInState(EPendingCommandState::AutomaticBarriers);
             for (const FBufferAccess& Access : State.BufferAccesses)
             {
-                // Keep BDA/bindless resources alive — no descriptor binding holds them otherwise.
+                // Keep BDA/bindless resources alive, no descriptor binding holds them otherwise.
                 CurrentCommandBuffer->AddReferencedResource(Access.Buffer);
                 if (bAutoBarriers)
                 {

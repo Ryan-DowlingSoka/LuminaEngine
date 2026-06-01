@@ -8,6 +8,8 @@
 #include "Memory/SmartPtr.h"
 #include "MiniAudio/miniaudio.h"
 
+namespace Lumina::Jobs { struct FCounter; }
+
 namespace Lumina
 {
 	class FMiniaudioContext final : public IAudioContext
@@ -16,6 +18,9 @@ namespace Lumina
 
 		FMiniaudioContext();
 		~FMiniaudioContext() override;
+
+		// Kicks a single-in-flight pump job onto the task pool (drains commands + housekeeping).
+		void Update() override;
 
 		void* GetNative() const override { return (void*)&Engine; }
 
@@ -39,7 +44,8 @@ namespace Lumina
 	private:
 
 		FAudioHandle AllocateHandle();
-		void AudioThreadMain();
+		void PumpOnce();                         // one drain pass: commands + procedural + cleanup
+		static void PumpEntry(void* Arg, uint32 WorkerIndex);
 		void ProcessCommand(const FAudioCommand& Cmd);
 		void CleanupFinishedSounds();
 
@@ -78,8 +84,9 @@ namespace Lumina
 
 		TConcurrentQueue<FAudioCommand> CommandQueue;
 
-		FThread AudioThread;
-		TAtomic<bool> bRunning{false};
+		TAtomic<bool>   bRunning{false};
+		TAtomic<bool>   bPumpActive{false};      // exactly one pump job in flight at a time
+		Jobs::FCounter* PumpCounter = nullptr;   // tracks the in-flight pump job (for shutdown drain)
 
 		TAtomic<uint32> NextGeneration{1};
 		

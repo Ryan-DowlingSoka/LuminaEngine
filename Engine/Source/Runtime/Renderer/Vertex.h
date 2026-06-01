@@ -113,7 +113,7 @@ namespace Lumina
     }
 
     // Importers must zero Tangent: dedup byte-compares before MikkTSpace runs.
-    // Cannot use member initializer — would break TCanBulkSerialize (needs trivial).
+    // Cannot use member initializer, would break TCanBulkSerialize (needs trivial).
     struct FVertex
     {
         FVector3       Position;

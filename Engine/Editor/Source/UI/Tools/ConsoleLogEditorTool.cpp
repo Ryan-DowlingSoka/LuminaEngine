@@ -35,7 +35,7 @@ namespace Lumina
         DrawHelpTextRow("Export",
             "Copies the currently filtered messages out to a text file.");
         DrawHelpTextRow("Clear",
-            "Clears the visible buffer only — the underlying ring buffer the engine writes to is unaffected.");
+            "Clears the visible buffer only, the underlying ring buffer the engine writes to is unaffected.");
     }
 
     void FConsoleLogEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)

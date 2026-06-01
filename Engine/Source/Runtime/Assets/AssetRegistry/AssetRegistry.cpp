@@ -419,7 +419,7 @@ namespace Lumina
     TVector<FAssetData*> FAssetRegistry::GetReferencersOf(const FGuid& GUID) const
     {
         // Two-phase: rebuild map under write lock if dirty, then read under
-        // shared lock. Const-cast is fine — map cache is mutable state.
+        // shared lock. Const-cast is fine, map cache is mutable state.
         {
             FWriteScopeLock RLock(ReverseMapMutex);
             if (bReverseMapDirty)

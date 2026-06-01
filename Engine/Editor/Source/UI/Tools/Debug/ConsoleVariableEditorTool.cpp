@@ -83,10 +83,10 @@ namespace Lumina
     {
         DrawHelpTextRow("What this is",
             "Browse and edit every registered console variable. Changes fire the variable's OnChange "
-            "callback immediately — same code path as typing the command at the console prompt.");
+            "callback immediately, same code path as typing the command at the console prompt.");
         DrawHelpTextRow("Variables vs Commands",
             "Variables hold a typed value (bool/int/float/string) you can edit inline. Commands are "
-            "zero-argument actions — click Execute to run.");
+            "zero-argument actions, click Execute to run.");
         DrawHelpTextRow("Search",
             "The filter matches against both the variable name and its description, case-insensitive.");
         DrawHelpTextRow("Reset",

@@ -11,24 +11,11 @@ namespace Lumina
         , CommandPool(InPool)
         , Queue(InQueue)
     {
-        if (InQueue->Type != ECommandQueue::Transfer)
-        {
-            std::scoped_lock Lock(InQueue->Mutex);
-            LockMark(InQueue->Mutex);
-            TracyContext = TracyVkContext(InDevice->GetPhysicalDevice(), InDevice->GetDevice(), Queue->Queue, CommandBuffer);
-        }
+        // The Tracy GPU context lives on the FQueue (one per queue), not per command buffer.
     }
 
     FTrackedCommandBuffer::~FTrackedCommandBuffer()
     {
-        if (TracyContext)
-        {
-            std::scoped_lock Lock(Queue->Mutex);
-            LockMark(Queue->Mutex);
-            TracyVkDestroy(TracyContext)
-            TracyContext = nullptr;
-        }
-        
         vkDestroyCommandPool(Device->GetDevice(), CommandPool, VK_ALLOC_CALLBACK);
         CommandPool = VK_NULL_HANDLE;
     }

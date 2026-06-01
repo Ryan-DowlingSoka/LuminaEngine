@@ -44,7 +44,7 @@ namespace Lumina
         void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "UV"; }
         FString GetNodeDisplayName() const override { return "FlipBook"; }
-        FString GetNodeTooltip() const override { return "Animated sprite-sheet UV — slices the input UV into NumColumns x NumRows tiles, advances at FPS frames per second."; }
+        FString GetNodeTooltip() const override { return "Animated sprite-sheet UV, slices the input UV into NumColumns x NumRows tiles, advances at FPS frames per second."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
         CMaterialInput* UV = nullptr;

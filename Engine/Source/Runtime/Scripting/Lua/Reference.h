@@ -469,7 +469,7 @@ namespace Lumina::Lua
                 return;
             }
 
-            // Push onto target state, not owning state — required for sub-coroutine arg passing.
+            // Push onto target state, not owning state, required for sub-coroutine arg passing.
             Value.Push(State);
         }
 

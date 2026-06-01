@@ -4,6 +4,9 @@
 #include "Core/Threading/Thread.h"
 #include "Log/Log.h"
 #include "Memory/Memory.h"
+#if USING(WITH_EDITOR)
+#include "Scheduler/JobProfiler.h"
+#endif
 #include <cstdlib>
 
 namespace Lumina
@@ -97,7 +100,7 @@ namespace Lumina
                 {
                     const uint32 Len = Base + (c < Rem ? 1u : 0u);
                     Chunks[c] = FChunk{ this, Start, Start + Len };
-                    Decls[c]  = Jobs::FJobDecl{ &FAsyncContext::RunChunk, &Chunks[c] };
+                    Decls[c]  = Jobs::FJobDecl{ &FAsyncContext::RunChunk, &Chunks[c], "Task::Async" };
                     Start += Len;
                 }
 
@@ -130,6 +133,9 @@ namespace Lumina
         void Shutdown()
         {
             Jobs::WaitForAll();
+#if USING(WITH_EDITOR)
+            FJobProfiler::Get().Shutdown();
+#endif
             GTaskSystem->UnregisterExternalThread();
             Jobs::Shutdown();
             Memory::Delete(GTaskSystem);
@@ -157,7 +163,7 @@ namespace Lumina
         {
             const uint32 Len = Base + (c < Rem ? 1u : 0u);
             Chunks[c] = FParChunk{ Thunk, Ctx, Start, Start + Len };
-            Decls[c]  = Jobs::FJobDecl{ &RunParChunk, &Chunks[c] };
+            Decls[c]  = Jobs::FJobDecl{ &RunParChunk, &Chunks[c], "Task::ParallelFor" };
             Start += Len;
         }
 

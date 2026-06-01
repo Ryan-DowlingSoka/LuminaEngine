@@ -152,9 +152,15 @@ namespace Lumina
         const FTransform& GetWorldTransform() const
         {
             ResolveIfDirty();
-            return WorldTransform; 
+            return WorldTransform;
         }
-        
+
+        // Cached world transform WITHOUT a resolve.
+        const FVector3&   GetWorldLocationCached() const { return WorldTransform.Location; }
+        const FQuat&      GetWorldRotationCached() const { return WorldTransform.Rotation; }
+        const FVector3&   GetWorldScaleCached()    const { return WorldTransform.Scale; }
+        const FMatrix4&   GetWorldMatrixCached()   const { return CachedMatrix; }
+
         FUNCTION(Script)
         void SetWorldTransform(const FTransform& InTransform)
         {

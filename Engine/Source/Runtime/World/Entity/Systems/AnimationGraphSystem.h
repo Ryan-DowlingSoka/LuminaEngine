@@ -15,6 +15,10 @@ namespace Lumina
 
     public:
 
+        // Writes only the skeletal pose; reads anim-graph + blackboard params. Safe to run alongside
+        // systems that touch disjoint components (e.g. SPathFollowSystem). Defined in the .cpp.
+        static FSystemAccess Access;
+
         static void Update(const FSystemContext& SystemContext) noexcept;
     };
 }

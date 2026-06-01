@@ -11,10 +11,12 @@ namespace Lumina
 
     void FStringProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
+        Slot.Serialize(*static_cast<FString*>(Value));
     }
 
     void FNameProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
+        Slot.Serialize(*static_cast<FName*>(Value));
     }
 
     void FNameProperty::Serialize(FArchive& Ar, void* Value)

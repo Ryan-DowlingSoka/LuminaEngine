@@ -36,7 +36,33 @@ namespace Lumina
 
     void FOptionalProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        UNREACHABLE();
+        FArchiveRecord Record = Slot.EnterRecord();
+
+        if (Slot.GetArchiver().IsReading())
+        {
+            bool bEngaged = false;
+            Record << StructuredArchive::TNamedValue<bool>("Engaged", bEngaged);
+
+            if (bEngaged)
+            {
+                SetValue(Value, nullptr);
+                Inner->SerializeItem(Record.EnterField("Value"), GetValue(Value));
+            }
+            else
+            {
+                Reset(Value);
+            }
+        }
+        else
+        {
+            bool bEngaged = HasValue(Value);
+            Record << StructuredArchive::TNamedValue<bool>("Engaged", bEngaged);
+
+            if (bEngaged)
+            {
+                Inner->SerializeItem(Record.EnterField("Value"), GetValue(Value));
+            }
+        }
     }
 
     bool FOptionalProperty::Identical(const void* ValueA, const void* ValueB) const

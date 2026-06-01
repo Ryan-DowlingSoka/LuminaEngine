@@ -1,13 +1,14 @@
 #pragma once
 #include "Containers/Array.h"
 #include "Renderer/Vertex.h"
+#include "TaskSystem/Scheduler/JobScheduler.h"
 
 namespace Lumina
 {
     struct RUNTIME_API FLineBatcherComponent
     {
         static constexpr auto in_place_delete = true;
-        
+
         struct FLineInstance
         {
             FVector3   Start;
@@ -18,55 +19,38 @@ namespace Lumina
             uint8       bDepthTest:1;
             uint8       bSingleFrame:1;
         };
-        
-        struct FQueuedLine
+
+        // Persistent (Duration >= 0) lines, carried across frames; rebuilt from survivors each frame by
+        // the render-side ProcessBatchedLines.
+        TVector<FLineInstance> Lines;
+
+        // Per-worker-slot produce buffers
+        TVector<TVector<FLineInstance>> ThreadBuffers;
+
+        FLineBatcherComponent()
         {
-            FVector3   Start;
-            FVector3   End;
-            uint32      ColorPacked;
-            float       Duration;
-            float       Thickness;
-            uint8       bDepthTest:1;
-            uint8       bSingleFrame:1;
-        };
+            // One slot per addressable thread (workers + external), so GetWorkerIndex() below is always in range.
+            ThreadBuffers.resize(Jobs::GetNumThreadSlots());
+        }
 
-        TVector<FLineInstance>          Lines;
-        
-        TConcurrentQueue<FQueuedLine>   Queue;
-
-        // Thread-safe. Call from any worker. The line becomes visible the
-        // next time DrainQueue runs (once per render-extraction tick).
+        // Lock-free: writes only the calling thread's own slot. Visible at the next render extract.
         void EnqueueLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f)
         {
-            FQueuedLine Q;
-            Q.Start         = Start;
-            Q.End           = End;
-            Q.ColorPacked   = PackColor(Color);
-            Q.Duration      = Duration;
-            Q.Thickness     = Thickness;
-            Q.bDepthTest    = bDepthTest ? 1u : 0u;
-            Q.bSingleFrame  = (Duration == -1.0f) ? 1u : 0u;
-            Queue.enqueue(Q);
-        }
-        
-        // Pull every queued line into Lines. Single-threaded; call before
-        // reading Lines for render extraction.
-        void DrainQueue()
-        {
-            FQueuedLine Q;
-            while (Queue.try_dequeue(Q))
+            const uint32 Slot = Jobs::GetWorkerIndex();
+            if (Slot >= ThreadBuffers.size())
             {
-                Lines.emplace_back(FLineInstance
-                {
-                    .Start              = Q.Start,
-                    .End                = Q.End,
-                    .ColorPacked        = Q.ColorPacked,
-                    .RemainingLifetime  = Q.Duration,
-                    .Thickness          = Q.Thickness,
-                    .bDepthTest         = Q.bDepthTest,
-                    .bSingleFrame       = Q.bSingleFrame,
-                });
+                return;
             }
+
+            FLineInstance L;
+            L.Start             = Start;
+            L.End               = End;
+            L.ColorPacked       = PackColor(Color);
+            L.RemainingLifetime = Duration;
+            L.Thickness         = Thickness;
+            L.bDepthTest        = bDepthTest ? 1u : 0u;
+            L.bSingleFrame      = Math::EpsilonEqual(Duration, -1.0f, LE_SMALL_NUMBER) ? 1u : 0u;
+            ThreadBuffers[Slot].push_back(L);
         }
     };
 }

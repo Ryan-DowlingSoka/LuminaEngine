@@ -17,4 +17,12 @@ namespace Lumina
 		delete GAudioContext;
 		GAudioContext = nullptr;
 	}
+
+	void Audio::Update()
+	{
+		if (GAudioContext != nullptr)
+		{
+			GAudioContext->Update();
+		}
+	}
 }

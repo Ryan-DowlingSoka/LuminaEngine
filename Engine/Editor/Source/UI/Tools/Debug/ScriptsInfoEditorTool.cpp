@@ -229,7 +229,7 @@ namespace Lumina
 
         ImGui::TextWrapped(
             "Browse the live Lua API. This list is harvested from the running VM, so it always "
-            "reflects what scripts actually see — including stdlib modules and recently registered classes.");
+            "reflects what scripts actually see, including stdlib modules and recently registered classes.");
         ImGui::Separator();
 
         if (ImGui::Button(LE_ICON_REFRESH " Refresh"))

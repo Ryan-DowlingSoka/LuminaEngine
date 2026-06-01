@@ -33,10 +33,8 @@ namespace Lumina
 
         uint64                      SubmissionID = 0;
         uint64                      RecordingID = 0;
-        
-        TracyVkCtx                  TracyContext = nullptr;
-        
-        
+
+
         // Keeps resources alive for the command buffer's lifetime.
         TFixedVector<FRHIResourceRef, 100>       ReferencedResources;
         TFixedVector<FRHIBufferRef, 50>          ReferencedStagingResources;

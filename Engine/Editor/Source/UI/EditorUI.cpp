@@ -87,6 +87,7 @@
 #include "Tools/EditorToolRegistry.h"
 #include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
+#include "Tools/TaskSystemProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
 #include "Tools/PluginBrowserEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
@@ -101,7 +102,9 @@
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
 #include "Tools/Debug/InputActionEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
-#include "Tools/Debug/ProjectSettingsEditorTool.h"
+#include "Tools/Debug/SettingsEditorTool.h"
+#include "Settings/EditorSettings.h"
+#include "Config/EngineSettings.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
@@ -730,7 +733,7 @@ namespace Lumina
         }
         else
         {
-            // Reset on resume so the next pause — even on the same file —
+            // Reset on resume so the next pause, even on the same file,
             // re-fires the focus.
             LuaDebuggerLastOpenedSource.clear();
         }
@@ -916,7 +919,7 @@ namespace Lumina
         // Lua scripts can be routed to the platform editor via a config toggle.
         // Default is the in-engine FLuaEditorTool.
         const bool bIsLuaScript = (Ext == ".lua" || Ext == ".luau");
-        if (bIsLuaScript && GConfig->GetBool("Editor.LuaEditor.UsePlatformEditor"))
+        if (bIsLuaScript && GetDefault<CLuaEditorSettings>()->bUsePlatformEditor)
         {
             Platform::LaunchURL(StringUtils::ToWideString(VirtualPath.data()).c_str());
             return;
@@ -943,7 +946,7 @@ namespace Lumina
 
     FEditorTool* FEditorUI::FindToolByTypeID(uint32 TypeID) const
     {
-        // Linear scan is fine — the tool list is small (< ~20 in normal use)
+        // Linear scan is fine, the tool list is small (< ~20 in normal use)
         // and lookups happen at menu-draw frequency, not per-frame hot paths.
         for (FEditorTool* Tool : EditorTools)
         {
@@ -1025,7 +1028,7 @@ namespace Lumina
     {
         bDrawerActivatedThisFrame = true;
 
-        // Already pinned into the layout — just focus its tab instead of opening a drawer.
+        // Already pinned into the layout, just focus its tab instead of opening a drawer.
         if (Drawer.bDocked)
         {
             FocusTargetWindowName = Drawer.Tool->GetToolName().c_str();
@@ -1115,7 +1118,7 @@ namespace Lumina
         FFooterDrawer* Drawer = FindDrawerForTool(OpenDrawer);
 
         // WorkPos/WorkSize already exclude the title bar and status bar, so the bottom of
-        // the work area sits just above the status bar — exactly where the drawer anchors.
+        // the work area sits just above the status bar, exactly where the drawer anchors.
         const float MaxHeight = Viewport->WorkSize.y * (Drawer ? Drawer->HeightFrac : 0.4f);
         const float Height    = MaxHeight * Eased;
 
@@ -1243,7 +1246,7 @@ namespace Lumina
 
         bool bIsToolStillOpen = true;
         // The world editor can never be closed. Drawer tools (Content Browser / Output
-        // Log) are closable while docked — closing sends them back to the footer drawer.
+        // Log) are closable while docked, closing sends them back to the footer drawer.
         bool* bIsToolOpen = (EditorTool == WorldEditorTool) ? nullptr : &bIsToolStillOpen;
         
         // Top level editors can only be docked with each others
@@ -1413,7 +1416,7 @@ namespace Lumina
         
         const bool bIsLastFocusedTool = (LastActiveTool == Tool);
 
-        // Ctrl+S routes to the focused tool only — checking IsKeyPressed inside
+        // Ctrl+S routes to the focused tool only, checking IsKeyPressed inside
         // each tool's Update fires for every open tool simultaneously.
         if (bIsLastFocusedTool && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S, false))
         {
@@ -1795,7 +1798,7 @@ namespace Lumina
 
             bool bShouldClose = false;
 
-            // Save & Exit — primary.
+            // Save & Exit, primary.
             const bool bAnySelected = SelectedCount > 0;
             ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogAccentBlue);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.46f, 0.74f, 1.00f, 1.0f));
@@ -1823,7 +1826,7 @@ namespace Lumina
             ImGui::PopStyleColor(4);
             ImGui::SameLine(0.0f, Gap);
 
-            // Discard & Exit — gold accent, makes the consequence visible.
+            // Discard & Exit, gold accent, makes the consequence visible.
             ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogRowBg);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kProjDialogRowBgHover);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kProjDialogRowBgActive);
@@ -1835,7 +1838,7 @@ namespace Lumina
             ImGui::PopStyleColor(4);
             ImGui::SameLine(0.0f, Gap);
 
-            // Cancel — soft, abort the exit entirely.
+            // Cancel, soft, abort the exit entirely.
             ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogRowBg);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kProjDialogRowBgHover);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kProjDialogRowBgActive);
@@ -1919,8 +1922,8 @@ namespace Lumina
 
         ImGui::Separator();
 
-        DrawToolMenuItem<FProjectSettingsEditorTool>(LE_ICON_SETTINGS_HELPER " Project Settings", this);
-        
+        DrawToolMenuItem<FSettingsEditorTool>(LE_ICON_COG " Settings", this);
+
         if (ImGui::BeginMenu(LE_ICON_ROTATE_LEFT " Recent"))
         {
             auto Recents = PruneMissingRecents();
@@ -2022,7 +2025,7 @@ namespace Lumina
         {
             if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Reload Project Module"))
             {
-                FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+                const FString& ModuleFile = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
                 GEngine->LoadProjectScript(ModuleFile);
             }
         }
@@ -2055,6 +2058,7 @@ namespace Lumina
         DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
+        DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
@@ -2521,7 +2525,7 @@ namespace Lumina
             ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
             ImGui::TextWrapped(
                 "Your project was created. premake is generating its Visual Studio "
-                "solution in the background — watch the editor log for output.");
+                "solution in the background, watch the editor log for output.");
             ImGui::PopStyleColor();
 
             ImGui::Spacing();
@@ -2575,7 +2579,7 @@ namespace Lumina
             const float Gap   = 8.0f;
             const float BtnW  = (Avail - Gap * 2.0f) / 3.0f;
 
-            // Reveal in Explorer — always available.
+            // Reveal in Explorer, always available.
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.26f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.30f, 0.34f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.18f, 0.18f, 0.20f, 1.00f));
@@ -2587,7 +2591,7 @@ namespace Lumina
 
             ImGui::SameLine(0.0f, Gap);
 
-            // Close Editor — secondary.
+            // Close Editor, secondary.
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.26f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.30f, 0.34f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.18f, 0.18f, 0.20f, 1.00f));
@@ -2600,7 +2604,7 @@ namespace Lumina
 
             ImGui::SameLine(0.0f, Gap);
 
-            // Open Solution — primary blue, disabled until premake finishes.
+            // Open Solution, primary blue, disabled until premake finishes.
             ImGui::BeginDisabled(!bSlnReady);
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.50f, 0.95f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 1.00f, 1.00f));
@@ -2639,7 +2643,8 @@ namespace Lumina
         //@TODO TEMP, maybe just wait until finished to load startup.
         GTaskSystem->WaitForAll();
         
-        const FString RawEditorStartupMap = GConfig->Get<std::string>("Project.EditorStartupMap").c_str();
+        const FStringView EditorMapView = GetDefault<CProjectSettings>()->EditorStartupMap.GetPath();
+        const FString RawEditorStartupMap(EditorMapView.data(), EditorMapView.size());
         const FFixedString EditorStartupMapFixed = VFS::ResolveToVirtualPath(RawEditorStartupMap);
         const FString EditorStartupMap(EditorStartupMapFixed.c_str(), EditorStartupMapFixed.size());
         if (FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(EditorStartupMap))

@@ -54,7 +54,7 @@ namespace Lumina
         // The viewport overlay toolbar is shared (FSceneEditorTool); these hooks add the world's
         // play/simulate controls, editor-mode selector, view-mode extras, and config section.
         bool IsViewportPlaying() const override;
-        const char* GetGizmoConfigSection() const override;
+        void PersistGizmoSettings() override;
         void DrawViewportToolbarPlayControls(float ButtonSize) override;
         void DrawViewportToolbarModeSelector(float ButtonSize) override;
         void DrawViewModeExtraItems() override;

@@ -2,6 +2,7 @@
 #include "imgui.h"
 #include "Core/Math/Transform.h"
 #include "Core/Object/ObjectHandleTyped.h"
+#include "Core/Object/SoftObjectPtr.h"
 #include "Core/Reflection/PropertyCustomization/PropertyCustomization.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Math/Math.h"
@@ -216,6 +217,28 @@ namespace Lumina
         bool bFinishPending = false;
     };
 
+    // Soft-object asset picker: identical UX to FCObjectPropertyCustomization but edits the
+    // FSoftObjectPath by string path and never loads the asset (discovers via FAssetRegistry).
+    class FSoftObjectPropertyCustomization : public IPropertyTypeCustomization
+    {
+    public:
+
+        static TSharedPtr<FSoftObjectPropertyCustomization> MakeInstance()
+        {
+            return MakeShared<FSoftObjectPropertyCustomization>();
+        }
+
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
+
+    private:
+
+        FSoftObjectPath Path;
+        ImGuiTextFilter SearchFilter;
+        bool bFinishPending = false;
+    };
+
     class FEnumPropertyCustomization : public IPropertyTypeCustomization
     {
     public:
@@ -365,7 +388,7 @@ namespace Lumina
         FTransform CachedValue{};
         FTransform DisplayValue{};
 
-        // Clicking an axis tag resets that component to 0 — a discrete edit, so we open the
+        // Clicking an axis tag resets that component to 0, a discrete edit, so we open the
         // transaction the click frame (Started) and commit it the next (Finished).
         bool bFinishPending = false;
     };

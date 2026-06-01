@@ -25,14 +25,14 @@ namespace Lumina::Logging
 	
 }
 
-// WARN/ERROR/CRITICAL always compile in — they carry crash diagnostics you
+// WARN/ERROR/CRITICAL always compile in, they carry crash diagnostics you
 // want even in a shipped build.
 #define LOG_CRITICAL(...)	::Lumina::Logging::GetLogger()->critical(__VA_ARGS__)
 #define LOG_ERROR(...)		::Lumina::Logging::GetLogger()->error(__VA_ARGS__)
 #define LOG_WARN(...)		::Lumina::Logging::GetLogger()->warn(__VA_ARGS__)
 
 // DISPLAY always compiles in (info severity): rare boot/system milestones that must survive Shipping.
-// Not a general info channel — use LOG_INFO for everyday status.
+// Not a general info channel, use LOG_INFO for everyday status.
 #define LOG_DISPLAY(...)	::Lumina::Logging::GetLogger()->info(__VA_ARGS__)
 
 // TRACE/DEBUG/INFO are gated by LUMINA_VERBOSE_LOGGING; off (Shipping default) they expand to nothing.

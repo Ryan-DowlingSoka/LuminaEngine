@@ -66,6 +66,47 @@ namespace Lumina
 
     void FEnumProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        UNREACHABLE();
+        const bool bIsBitmaskEnum = Enum->IsBitmaskEnum();
+
+        if (Slot.GetArchiver().IsReading())
+        {
+            FName EnumName;
+            Slot.Serialize(EnumName);
+
+            if (EnumName.IsNone())
+            {
+                // Missing/unknown key: leave the property at its default.
+                return;
+            }
+
+            int64 EnumValue = 0;
+            if (bIsBitmaskEnum)
+            {
+                FString Str(EnumName.c_str());
+                FString Delimiter(" | ");
+                size_t Start = 0;
+                size_t End = 0;
+                while ((End = Str.find(Delimiter, Start)) != eastl::string::npos)
+                {
+                    FName Token(Str.substr(Start, End - Start).c_str());
+                    EnumValue |= (int64)Enum->GetEnumValueByName(Token);
+                    Start = End + Delimiter.size();
+                }
+                FName Token(Str.substr(Start).c_str());
+                EnumValue |= (int64)Enum->GetEnumValueByName(Token);
+            }
+            else
+            {
+                EnumValue = (int64)Enum->GetEnumValueByName(EnumName);
+            }
+
+            InnerProperty->SetIntPropertyValue(Value, EnumValue);
+        }
+        else
+        {
+            const int64 IntValue = InnerProperty->GetSignedIntPropertyValue(Value);
+            FName EnumName = bIsBitmaskEnum ? Enum->GetValueOrBitFieldAsString(IntValue) : Enum->GetNameAtValue(IntValue);
+            Slot.Serialize(EnumName);
+        }
     }
 }

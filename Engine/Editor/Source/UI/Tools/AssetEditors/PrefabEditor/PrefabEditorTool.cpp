@@ -5,6 +5,8 @@
 #include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
 #include "Components/EditorEntityTags.h"
 #include "Config/Config.h"
+#include "Core/Object/ObjectCore.h"
+#include "Settings/EditorSettings.h"
 #include "Core/Math/Math.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
 #include "UI/Tools/EditorEntityUtils.h"
@@ -60,10 +62,11 @@ namespace Lumina
             DrawDetailsPanel(bFocused);
         });
 
-        bGuizmoSnapEnabled  = GConfig->Get("Editor.PrefabEditorTool.GuizmoSnapEnabled", true);
-        GuizmoSnapTranslate = GConfig->Get("Editor.PrefabEditorTool.GuizmoSnapTranslate", 0.1f);
-        GuizmoSnapRotate    = GConfig->Get("Editor.PrefabEditorTool.GuizmoSnapRotate", 5.0f);
-        GuizmoSnapScale     = GConfig->Get("Editor.PrefabEditorTool.GuizmoSnapScale", 0.1f);
+        const CPrefabEditorSettings* Settings = GetDefault<CPrefabEditorSettings>();
+        bGuizmoSnapEnabled  = Settings->bGizmoSnapEnabled;
+        GuizmoSnapTranslate = Settings->GizmoSnapTranslate;
+        GuizmoSnapRotate    = Settings->GizmoSnapRotate;
+        GuizmoSnapScale     = Settings->GizmoSnapScale;
 
         OutlinerContext.RebuildTreeFunction = [this](FTreeListView& Tree)
         {
@@ -426,10 +429,7 @@ namespace Lumina
     void FPrefabEditorTool::OnSave()
     {
         // Persist gizmo prefs alongside the asset save so they survive across editor sessions.
-        GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapEnabled",   bGuizmoSnapEnabled);
-        GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapTranslate", GuizmoSnapTranslate);
-        GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapRotate",    GuizmoSnapRotate);
-        GConfig->Set("Editor.PrefabEditorTool.GuizmoSnapScale",     GuizmoSnapScale);
+        PersistGizmoSettings();
 
         // Super commits the preview world into the prefab (CommitScene) then saves the package.
         Super::OnSave();
@@ -985,7 +985,7 @@ namespace Lumina
         }
 
         // Viewport entity picking: left-click a prefab entity to select it (Ctrl-click toggles).
-        // Selects the actual clicked entity (children included) — no instance-root resolution here.
+        // Selects the actual clicked entity (children included), no instance-root resolution here.
         if (bViewportHovered)
         {
             IRenderScene* Renderer = World->GetRenderer();
@@ -1094,7 +1094,7 @@ namespace Lumina
             EditorEntityUtils::ApplyWorldMatrixToTransform(Registry, PivotEntity, EntityMatrix);
 
             // Co-move every other selected entity by the pivot's delta. Skip locked-prefab-style
-            // children — prefab editor has no locked instances, so the only filter is "valid + not pivot".
+            // children, prefab editor has no locked instances, so the only filter is "valid + not pivot".
             const FVector3 PivotPreLocation = FVector3(PreManipulate[3]);
             for (entt::entity Other : SelectedEntities)
             {
@@ -1153,9 +1153,14 @@ namespace Lumina
         }
     }
 
-    const char* FPrefabEditorTool::GetGizmoConfigSection() const
+    void FPrefabEditorTool::PersistGizmoSettings()
     {
-        return "Editor.PrefabEditorTool";
+        CPrefabEditorSettings* Settings = GetMutableDefault<CPrefabEditorSettings>();
+        Settings->bGizmoSnapEnabled  = bGuizmoSnapEnabled;
+        Settings->GizmoSnapTranslate = GuizmoSnapTranslate;
+        Settings->GizmoSnapRotate    = GuizmoSnapRotate;
+        Settings->GizmoSnapScale     = GuizmoSnapScale;
+        GConfig->SaveSettings(CPrefabEditorSettings::StaticClass());
     }
 
     void FPrefabEditorTool::DrawHelpMenu()

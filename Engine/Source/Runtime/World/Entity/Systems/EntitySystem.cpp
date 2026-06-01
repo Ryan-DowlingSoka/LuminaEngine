@@ -11,6 +11,16 @@ namespace Lumina
         return Underlying.data("PriorityList"_hs).get(Instance).cast<const FUpdatePriorityList&>();
     }
 
+    FSystemAccess FEntitySystemWrapper::GetSystemAccess() const
+    {
+        // Systems opt in by reflecting an "Access" member; absent → exclusive (serial), the safe default.
+        if (entt::meta_data Data = Underlying.data("Access"_hs))
+        {
+            return Data.get(Instance).cast<const FSystemAccess&>();
+        }
+        return FSystemAccess::Exclusive();
+    }
+
     void FEntitySystemWrapper::Startup(const FSystemContext& SystemContext) const noexcept
     {
         ECS::Utils::InvokeMetaFunc(Underlying, "Startup"_hs, entt::forward_as_meta(SystemContext));
@@ -39,6 +49,11 @@ namespace Lumina
         }
         
         return (uint64)WeakScript.lock().get();
+    }
+
+    FSystemAccess FEntityScriptSystem::GetSystemAccess() const
+    {
+        return FSystemAccess::Exclusive();
     }
 
     FUpdatePriorityList FEntityScriptSystem::GetUpdatePriorityList() const

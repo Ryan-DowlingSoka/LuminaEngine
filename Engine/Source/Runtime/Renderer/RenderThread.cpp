@@ -5,11 +5,22 @@
 #include "Core/Profiler/Profile.h"
 #include "Core/Templates/LuminaTemplate.h"
 #include "TaskSystem/TaskSystem.h"
+#include "TaskSystem/Scheduler/JobScheduler.h"
 
 
 namespace Lumina
 {
     RUNTIME_API FRenderThread* GRenderThread = nullptr;
+
+    // True while the calling worker is running the render drain (and therefore a render command). The
+    // drain is serial and does not yield to the scheduler, so it never migrates off its worker, a
+    // thread_local is correct. See FRenderThread::IsInRenderStage().
+    static thread_local bool GbInRenderDrain = false;
+
+    bool FRenderThread::IsInRenderStage()
+    {
+        return GbInRenderDrain;
+    }
 
     FRenderThread& FRenderThread::Get()
     {
@@ -29,44 +40,48 @@ namespace Lumina
 
     void FRenderThread::Start()
     {
-        if (bWorkerRunning.load(Atomic::MemoryOrderAcquire))
+        if (bRunning.load(Atomic::MemoryOrderAcquire))
         {
             return;
         }
-
-        bExitRequested.store(false, Atomic::MemoryOrderRelease);
-        bWorkerRunning.store(true, Atomic::MemoryOrderRelease);
-
-        Worker = std::thread([this]() { WorkerMain(); });
+        DrainCounter = Jobs::AllocCounter(0);
+        bRunning.store(true, Atomic::MemoryOrderRelease);
     }
 
     void FRenderThread::Stop()
     {
-        if (!bWorkerRunning.load(Atomic::MemoryOrderAcquire))
+        if (!bRunning.load(Atomic::MemoryOrderAcquire))
         {
             return;
         }
 
-        Flush();
+        Flush();                              // all enqueued commands completed
+        Jobs::WaitForCounter(DrainCounter, 0); // the drain job itself has fully exited (no more 'this' use)
 
+        bRunning.store(false, Atomic::MemoryOrderRelease);
+
+        if (DrainCounter != nullptr)
         {
-            std::unique_lock Lock(QueueMutex);
-            bExitRequested.store(true, Atomic::MemoryOrderRelease);
-            QueueCV.notify_all();
+            Jobs::FreeCounter(DrainCounter);
+            DrainCounter = nullptr;
         }
+    }
 
-        if (Worker.joinable())
+    void FRenderThread::ArmDrain()
+    {
+        // Schedule a drain only if none is active; the running drain picks up newly-queued commands.
+        bool Expected = false;
+        if (bDrainActive.compare_exchange_strong(Expected, true, Atomic::MemoryOrderAcqRel))
         {
-            Worker.join();
+            Jobs::RunJob(&FRenderThread::DrainEntry, this, Jobs::EJobPriority::High, DrainCounter, "RenderFrame");
         }
-
-        bWorkerRunning.store(false, Atomic::MemoryOrderRelease);
-        Threading::SetRenderThread(std::thread::id{});
     }
 
     void FRenderThread::Enqueue(const char* DebugName, FCommand&& Cmd)
     {
-        if (!bWorkerRunning.load(Atomic::MemoryOrderAcquire))
+        // Not started (boot / shutdown): run inline so the GPU effect is immediate and nobody waits on
+        // a dead system.
+        if (!bRunning.load(Atomic::MemoryOrderAcquire))
         {
             CommandsEnqueued.fetch_add(1, Atomic::MemoryOrderAcqRel);
             RunCommand(DebugName, Cmd);
@@ -79,12 +94,13 @@ namespace Lumina
             PendingCommands.push_back({ DebugName, Move(Cmd) });
             CommandsEnqueued.fetch_add(1, Atomic::MemoryOrderAcqRel);
         }
-        QueueCV.notify_one();
+        ArmDrain();
     }
 
     void FRenderThread::EnqueueAndWait(const char* DebugName, FCommand&& Cmd)
     {
-        if (!bWorkerRunning.load(Atomic::MemoryOrderAcquire) || Threading::IsRenderThread())
+        // Already inside the drain (a render command calling back in): run inline, can't wait on self.
+        if (!bRunning.load(Atomic::MemoryOrderAcquire) || IsInRenderStage())
         {
             CommandsEnqueued.fetch_add(1, Atomic::MemoryOrderAcqRel);
             RunCommand(DebugName, Cmd);
@@ -100,11 +116,7 @@ namespace Lumina
 
     void FRenderThread::Flush()
     {
-        if (!bWorkerRunning.load(Atomic::MemoryOrderAcquire))
-        {
-            return;
-        }
-        if (Threading::IsRenderThread())
+        if (!bRunning.load(Atomic::MemoryOrderAcquire) || IsInRenderStage())
         {
             return;
         }
@@ -116,7 +128,7 @@ namespace Lumina
 
     void FRenderThread::WaitForCounter(uint64 Target)
     {
-        if (!bWorkerRunning.load(Atomic::MemoryOrderAcquire) || Threading::IsRenderThread())
+        if (!bRunning.load(Atomic::MemoryOrderAcquire) || IsInRenderStage())
         {
             return;
         }
@@ -128,37 +140,42 @@ namespace Lumina
         });
     }
 
-    void FRenderThread::WorkerMain()
+    void FRenderThread::DrainEntry(void* Arg, uint32 /*WorkerIndex*/)
     {
-        Threading::SetRenderThread(std::this_thread::get_id());
-        Threading::SetThreadName("Lumina Render");
-        Threading::InitializeThreadHeap();
+        static_cast<FRenderThread*>(Arg)->DrainLoop();
+    }
 
-        // Claim a dedicated job-system thread slot so this thread can submit and wait without
-        // colliding with the main thread's slot.
-        if (GTaskSystem != nullptr)
-        {
-            GTaskSystem->RegisterExternalThread();
-        }
+    void FRenderThread::DrainLoop()
+    {
+        GbInRenderDrain = true;
 
         TVector<FQueuedCommand> Batch;
-        Batch.reserve(256);
-
-        while (true)
+        for (;;)
         {
             {
                 std::unique_lock Lock(QueueMutex);
-                QueueCV.wait(Lock, [this]()
-                {
-                    return !PendingCommands.empty() || bExitRequested.load(Atomic::MemoryOrderAcquire);
-                });
-
-                if (bExitRequested.load(Atomic::MemoryOrderAcquire) && PendingCommands.empty())
-                {
-                    break;
-                }
-
                 Batch.swap(PendingCommands);
+            }
+
+            if (Batch.empty())
+            {
+                // Tentatively done. Re-check under the arm flag so a command racing in isn't stranded.
+                bDrainActive.store(false, Atomic::MemoryOrderRelease);
+
+                bool HasMore;
+                {
+                    std::unique_lock Lock(QueueMutex);
+                    HasMore = !PendingCommands.empty();
+                }
+                if (HasMore)
+                {
+                    bool Expected = false;
+                    if (bDrainActive.compare_exchange_strong(Expected, true, Atomic::MemoryOrderAcqRel))
+                    {
+                        continue; // re-armed self
+                    }
+                }
+                break; // queue empty, or another Enqueue armed a fresh drain
             }
 
             for (FQueuedCommand& Q : Batch)
@@ -174,12 +191,7 @@ namespace Lumina
             }
         }
 
-        if (GTaskSystem != nullptr)
-        {
-            GTaskSystem->UnregisterExternalThread();
-        }
-
-        Threading::ShutdownThreadHeap();
+        GbInRenderDrain = false;
     }
 
     void FRenderThread::RunCommand(const char* DebugName, FCommand& Cmd)

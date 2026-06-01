@@ -525,7 +525,7 @@ namespace Lumina
             }
             else if (PackageHeader.Version > GPackageFileLuminaVersion.FileVersion)
             {
-                // Older files load fine — readers branch on Ar.GetFileVersion() to migrate.
+                // Older files load fine, readers branch on Ar.GetFileVersion() to migrate.
                 // Newer files we genuinely can't read.
                 LOG_ERROR("LoadPackage: {} was saved with engine version {} (current {}); cannot load files from a newer engine", Path, PackageHeader.Version, GPackageFileLuminaVersion.FileVersion);
             }
@@ -608,7 +608,7 @@ namespace Lumina
             Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
             Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
 
-            // Cook output never carries thumbnails — they're editor-only.
+            // Cook output never carries thumbnails, they're editor-only.
             if (bCooking)
             {
                 Header.ThumbnailDataOffset = 0;
@@ -715,7 +715,7 @@ namespace Lumina
 
     void CPackage::WriteImports(FPackageSaver& Ar, FPackageHeader& Header, FSaveContext& SaveContext)
     {
-        // Must run AFTER WriteExports — pulls the import order from the saver's ObjectToIndexMap
+        // Must run AFTER WriteExports, pulls the import order from the saver's ObjectToIndexMap
         // so on-disk indices match what was emitted in export data.
         Ar.PopulateImportTable(ImportTable);
 

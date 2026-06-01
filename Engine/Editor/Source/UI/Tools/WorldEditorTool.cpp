@@ -8,6 +8,8 @@
 #include "Components/EditorEntityTags.h"
 #include "ContentBrowserEditorTool.h"
 #include "Config/Config.h"
+#include "Core/Object/ObjectCore.h"
+#include "Settings/EditorSettings.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Delegates/CoreDelegates.h"
@@ -92,7 +94,7 @@ namespace Lumina
             return Entity;
         }
 
-        // The picked entity is itself a root — keep it.
+        // The picked entity is itself a root, keep it.
         if (Registry.all_of<FSelectionRoot>(Entity))
         {
             return Entity;
@@ -340,10 +342,11 @@ namespace Lumina
             DrawDetailsPanel(bFocused);
         });
         
-        bGuizmoSnapEnabled  = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapEnabled", true);
-        GuizmoSnapTranslate = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapTranslate", 0.1f);
-        GuizmoSnapRotate    = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapRotate", 5.0f);
-        GuizmoSnapScale     = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapScale", 0.1f);
+        const CWorldEditorSettings* Settings = GetDefault<CWorldEditorSettings>();
+        bGuizmoSnapEnabled  = Settings->bGizmoSnapEnabled;
+        GuizmoSnapTranslate = Settings->GizmoSnapTranslate;
+        GuizmoSnapRotate    = Settings->GizmoSnapRotate;
+        GuizmoSnapScale     = Settings->GizmoSnapScale;
 
         RegisterEditorActions();
         RegisterEditorModes();
@@ -901,8 +904,10 @@ namespace Lumina
             }
         }
 
-        // Each per-entity box is 24 batched lines; drawing one per selected entity floods the line
-        // batcher for large marquee selections. Past a cap, draw a single enclosing bounds instead.
+        // Each per-entity box is 24 batched lines; drawing one per selected entity floods the line batcher
+        // for large marquee selections. Past a cap, skip the per-entity outlines entirely -- a single
+        // enclosing bound around the whole selection is visually pointless, so we draw nothing extra and
+        // let the component visualizers carry the selection feedback.
         constexpr size_t kMaxIndividualSelectionBoxes = 256;
 
         if (!bGameViewMode && SelectedEntities.size() <= kMaxIndividualSelectionBoxes)
@@ -917,43 +922,6 @@ namespace Lumina
                 // Every selectable entity type gets the same selection box (static mesh, skeletal mesh,
                 // or a unit-box fallback for lights/empties/etc.), resolved by the shared helper.
                 EditorEntityUtils::DrawEntitySelectionBox(World, Entity, FColor::Green, 0.2f, 5.0f);
-            }
-        }
-        else if (!bGameViewMode)
-        {
-            FEntityRegistry& Registry = World->GetEntityRegistry();
-            FVector3 BoundsMin( FLT_MAX);
-            FVector3 BoundsMax(-FLT_MAX);
-            bool bHasBounds = false;
-
-            for (entt::entity Entity : SelectedEntities)
-            {
-                FVector3 Center, HalfExtents;
-                FQuat Rotation;
-                if (!EditorEntityUtils::GetEntityDrawBox(Registry, Entity, Center, HalfExtents, Rotation))
-                {
-                    continue;
-                }
-
-                // Union the oriented box's 8 world corners into an axis-aligned bound.
-                for (int Corner = 0; Corner < 8; ++Corner)
-                {
-                    const FVector3 Signed(
-                        (Corner & 1) ? HalfExtents.x : -HalfExtents.x,
-                        (Corner & 2) ? HalfExtents.y : -HalfExtents.y,
-                        (Corner & 4) ? HalfExtents.z : -HalfExtents.z);
-                    const FVector3 WorldCorner = Center + Math::Rotate(Rotation, Signed);
-                    BoundsMin = Math::Min(BoundsMin, WorldCorner);
-                    BoundsMax = Math::Max(BoundsMax, WorldCorner);
-                }
-                bHasBounds = true;
-            }
-
-            if (bHasBounds)
-            {
-                const FVector3 Center      = (BoundsMin + BoundsMax) * 0.5f;
-                const FVector3 HalfExtents = (BoundsMax - BoundsMin) * 0.5f;
-                World->DrawBoxCorners(Center, HalfExtents, FQuat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Green, 0.05f, 5.0f);
             }
         }
 
@@ -1430,7 +1398,7 @@ namespace Lumina
                         {
                             BeginTransaction();
                             bImGuizmoUsedOnce = true;
-                            // Click landed on the gizmo, not empty space — kill the marquee armed by IsMouseClicked.
+                            // Click landed on the gizmo, not empty space, kill the marquee armed by IsMouseClicked.
                             SelectionBox.bActive = false;
                         }
                         
@@ -2201,9 +2169,14 @@ namespace Lumina
         return bGamePreviewRunning;
     }
 
-    const char* FWorldEditorTool::GetGizmoConfigSection() const
+    void FWorldEditorTool::PersistGizmoSettings()
     {
-        return "Editor.WorldEditorTool";
+        CWorldEditorSettings* Settings = GetMutableDefault<CWorldEditorSettings>();
+        Settings->bGizmoSnapEnabled  = bGuizmoSnapEnabled;
+        Settings->GizmoSnapTranslate = GuizmoSnapTranslate;
+        Settings->GizmoSnapRotate    = GuizmoSnapRotate;
+        Settings->GizmoSnapScale     = GuizmoSnapScale;
+        GConfig->SaveSettings(CWorldEditorSettings::StaticClass());
     }
 
     void FWorldEditorTool::DrawViewportToolbarPlayControls(float ButtonSize)
@@ -2556,7 +2529,7 @@ namespace Lumina
         }
 
         // "Attach Script": inline searchable dropdown of every script across all mounts
-        // (project, plugins, engine) — see Lua::GatherScriptPaths.
+        // (project, plugins, engine), see Lua::GatherScriptPaths.
         const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
 
         ImGui::AlignTextToFramePadding();
@@ -3682,7 +3655,7 @@ namespace Lumina
             }
 
             // Esc ends the play session; handled here (not ImGui) since Game focus's NoKeyboard
-            // hides the key. Deferred to Update — stopping tears down the PIE world.
+            // hides the key. Deferred to Update, stopping tears down the PIE world.
             if (Key.GetKeyCode() == EKey::Escape && !Key.IsRepeat())
             {
                 bStopPlayRequested = true;

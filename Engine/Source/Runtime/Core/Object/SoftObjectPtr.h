@@ -70,7 +70,7 @@ namespace Lumina
 
         bool operator==(const FSoftObjectPath& Other) const
         {
-            // Path-only — stable across resolve state. See class comment.
+            // Path-only, stable across resolve state. See class comment.
             return Path == Other.Path;
         }
         bool operator!=(const FSoftObjectPath& Other) const { return !(*this == Other); }
@@ -84,7 +84,7 @@ namespace Lumina
 
 
     /** Typed soft pointer wrapping FSoftObjectPath; layout-identical to it
-     *  (single member, no vtable) — the reflector relies on this. */
+     *  (single member, no vtable), the reflector relies on this. */
     template<typename T>
     struct TSoftObjectPtr
     {

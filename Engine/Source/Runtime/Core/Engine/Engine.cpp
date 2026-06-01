@@ -3,6 +3,7 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Audio/AudioContext.h"
 #include "Config/Config.h"
+#include "Config/EngineSettings.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Delegates/CoreDelegates.h"
@@ -12,6 +13,9 @@
 #include "Core/Object/Package/Package.h"
 #include "Core/Profiler/CPUProfiler.h"
 #include "Core/Profiler/Profile.h"
+#if USING(WITH_EDITOR)
+#include "TaskSystem/Scheduler/JobProfiler.h"
+#endif
 #include "Core/Windows/Window.h"
 #include "encoder/basisu_enc.h"
 #include "FileSystem/FileSystem.h"
@@ -202,6 +206,8 @@ namespace Lumina
         }
 
         #if USING(WITH_EDITOR)
+        GConfig->DiscoverAndLoadSettings();
+
         DeveloperToolUI = CreateDevelopmentTools();
         DeveloperToolUI->Initialize(UpdateContext);
         // Below the viewport router, so panel clicks reach the world first.
@@ -263,8 +269,9 @@ namespace Lumina
         }
 
         Physics::Shutdown();
-        Task::Shutdown();
+        // Audio's per-frame pump runs on the task pool, so drain/free it before the task system stops.
         Audio::Shutdown();
+        Task::Shutdown();
 
         // Drop plugin records before UnloadAllModules rips the DLLs out from under us.
         FPluginManager::Get().ShutdownAllPlugins();
@@ -285,6 +292,12 @@ namespace Lumina
         UpdateContext.MarkFrameStart(Platform::GetTime());
 
         FCPUProfiler::Get().BeginFrame();
+#if USING(WITH_EDITOR)
+        FJobProfiler::Get().BeginFrame();
+#endif
+
+        // Drain queued audio commands on the task pool (outside the minimized gate so audio keeps up).
+        Audio::Update();
 
         if (!Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
@@ -415,6 +428,9 @@ namespace Lumina
         }
         
         FCPUProfiler::Get().EndFrame();
+#if USING(WITH_EDITOR)
+        FJobProfiler::Get().EndFrame();
+#endif
 
         UpdateContext.MarkFrameEnd(Platform::GetTime());
 
@@ -474,13 +490,14 @@ namespace Lumina
         // (advanced chunking is plugin-only).
         if (GConfig != nullptr)
         {
-            const TVector<FString> Paths = GConfig->GetStringArray("Project.CookRoots");
-            Result.reserve(Paths.size());
-            for (const FString& P : Paths)
+            const TVector<TSoftObjectPtr<CWorld>>& Roots = GetDefault<CProjectSettings>()->CookRoots;
+            Result.reserve(Roots.size());
+            for (const TSoftObjectPtr<CWorld>& SoftRoot : Roots)
             {
-                if (P.empty()) continue;
+                const FStringView PathView = SoftRoot.GetPath();
+                if (PathView.empty()) continue;
                 FCookRoot Root;
-                Root.Asset = P;
+                Root.Asset = FString(PathView.data(), PathView.size());
                 Root.Chunk = FName("Main");
                 Result.emplace_back(Move(Root));
             }
@@ -541,6 +558,10 @@ namespace Lumina
 
         GConfig->LoadPath("/Config");
 
+        // /Config is now mounted; (re)load any settings classes that persist under it
+        // (e.g. CProjectSettings). Idempotent for classes already loaded.
+        GConfig->DiscoverAndLoadSettings();
+
         // After /Game mounts (so plugins can refer to project paths) but before the project
         // DLL loads, so types they introduce are in reflection when its modules construct.
         FPluginManager::Get().DiscoverProjectPlugins(ProjectPath);
@@ -572,66 +593,37 @@ namespace Lumina
             FPluginManager::Get().ApplyProjectOverrides(Overrides);
         }
 
-        // Engine-read project settings; games may register more from their module init.
-        const FStringView ProjectFile = "/Config/GameSettings.json";
-        GConfig->RegisterSetting(FConfigSetting::Make("Project.LuaModuleFile", EConfigValueType::Path)
-            .WithCategory("Project/Scripting")
-            .WithDescription("Lua module loaded after the project DLL is loaded.")
-            .WithFileFilter("Luau Script (*.luau)\0*.luau\0All Files (*.*)\0*.*\0")
-            .WithOwnerFile(ProjectFile));
+        // Project settings now live on CProjectSettings (see Config/EngineSettings.h), loaded by
+        // GConfig->DiscoverAndLoadSettings() once /Config is mounted, and read via GetDefault<CProjectSettings>().
 
-        GConfig->RegisterSetting(FConfigSetting::Make("Project.GameInstanceClass", EConfigValueType::String)
-            .WithCategory("Project/Scripting")
-            .WithDescription("Reflected CGameInstance subclass to instantiate at runtime. Empty = base CGameInstance.")
-            .WithOwnerFile(ProjectFile));
-
-        GConfig->RegisterSetting(FConfigSetting::Make("Project.GameStartupMap", EConfigValueType::Path)
-            .WithCategory("Project/Maps")
-            .WithDescription("World loaded when the standalone game starts.")
-            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
-            .WithOwnerFile(ProjectFile));
-
-        GConfig->RegisterSetting(FConfigSetting::Make("Project.EditorStartupMap", EConfigValueType::Path)
-            .WithCategory("Project/Maps")
-            .WithDescription("World opened automatically when the editor finishes loading the project.")
-            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
-            .WithOwnerFile(ProjectFile));
-
-        // Cook roots seed the dependency graph; their transitive refs get cooked into the PAK.
-        // The .lasset FileFilter activates the per-row Browse picker in the StringArray renderer.
-        GConfig->RegisterSetting(FConfigSetting::Make("Project.CookRoots", EConfigValueType::StringArray)
-            .WithCategory("Project/Maps")
-            .WithDescription("Asset paths the cooker walks from to build the shipped PAK. Usually maps.")
-            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
-            .WithOwnerFile(ProjectFile));
-
-        // One-shot migration: copy a legacy .lproject CookRoots[] into Project.CookRoots
+        // One-shot migration: copy a legacy .lproject CookRoots[] into the project settings
         // when the latter is empty. Chunk hints are dropped (plugins own chunked routing).
-        if (auto It = Data.find("CookRoots"); It != Data.end() && It->is_array() && GConfig != nullptr)
+        if (auto It = Data.find("CookRoots"); It != Data.end() && It->is_array())
         {
-            const TVector<FString> Existing = GConfig->GetStringArray("Project.CookRoots");
-            if (Existing.empty() && !It->empty())
+            CProjectSettings* ProjectSettings = GetMutableDefault<CProjectSettings>();
+            if (ProjectSettings->CookRoots.empty() && !It->empty())
             {
-                std::vector<std::string> Migrated;
+                TVector<TSoftObjectPtr<CWorld>> Migrated;
                 Migrated.reserve(It->size());
                 for (const auto& R : *It)
                 {
                     if (R.is_string())
                     {
-                        Migrated.push_back(R.get<std::string>());
+                        Migrated.emplace_back(FStringView(R.get<std::string>().c_str()));
                     }
                     else if (R.is_object())
                     {
                         if (auto AIt = R.find("Asset"); AIt != R.end() && AIt->is_string())
                         {
-                            Migrated.push_back(AIt->get<std::string>());
+                            Migrated.emplace_back(FStringView(AIt->get<std::string>().c_str()));
                         }
                     }
                 }
                 if (!Migrated.empty())
                 {
-                    LOG_INFO("LoadProject: migrating {} cook root(s) from .lproject to Project.CookRoots", Migrated.size());
-                    GConfig->Set("Project.CookRoots", Migrated);
+                    LOG_INFO("LoadProject: migrating {} cook root(s) from .lproject to Project settings", Migrated.size());
+                    ProjectSettings->CookRoots = Move(Migrated);
+                    GConfig->SaveSettings(CProjectSettings::StaticClass());
                 }
             }
         }
@@ -668,7 +660,7 @@ namespace Lumina
 
         FAssetRegistry::Get().RunInitialDiscovery();
 
-        FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+        const FString& ModuleFile = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
         LoadProjectScript(ModuleFile);
 
         // Must run after GConfig->LoadPath but before any OnReady script body.
@@ -682,7 +674,7 @@ namespace Lumina
 
     void FEngine::CreateGameInstance()
     {
-        const FString ClassName = GConfig->Get<std::string>("Project.GameInstanceClass").c_str();
+        const FString& ClassName = GetDefault<CProjectSettings>()->GameInstanceClass;
 
         CClass* InstanceClass = nullptr;
         if (!ClassName.empty())
@@ -707,7 +699,8 @@ namespace Lumina
     {
         // Priority: explicit Project.GameStartupMap > first CookRoots entry, so a project
         // that only declares CookRoots[] works without the legacy single-map field.
-        FString RawMapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
+        const FStringView GameMapView = GetDefault<CProjectSettings>()->GameStartupMap.GetPath();
+        FString RawMapName(GameMapView.data(), GameMapView.size());
         if (RawMapName.empty())
         {
             const TVector<FCookRoot> Roots = GetCookRoots();
@@ -727,7 +720,7 @@ namespace Lumina
 
         // Tolerate legacy absolute paths from before the path resolver.
         const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
-        // DISPLAY — survives Shipping; first diagnostic to look at on a black screen.
+        // DISPLAY, survives Shipping; first diagnostic to look at on a black screen.
         LOG_DISPLAY("LoadStartupMap: loading '{}' (resolved '{}').", RawMapName.c_str(), MapName.c_str());
 
         CWorld* SourceWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
@@ -760,7 +753,7 @@ namespace Lumina
         }
         else
         {
-            LOG_WARN("LoadStartupMap: no primary viewport — world loaded but nothing will render.");
+            LOG_WARN("LoadStartupMap: no primary viewport, world loaded but nothing will render.");
         }
     }
 
@@ -950,7 +943,7 @@ namespace Lumina
 
     bool FEngine::StartCookedGame()
     {
-        // Resolve exe dir again — used for project DLL lookup.
+        // Resolve exe dir again, used for project DLL lookup.
         const FString ExeFullPath = StringUtils::FromWideString(Platform::BaseDir());
         const size_t LastSlash = ExeFullPath.find_last_of("/\\");
         const FString ExeDir = (LastSlash == FString::npos)
@@ -988,7 +981,7 @@ namespace Lumina
             LOG_DISPLAY("FEngine::LoadCookedRuntime: asset discovery complete.");
         }
 
-        const FString ScriptPath = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+        const FString& ScriptPath = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
         if (!ScriptPath.empty())
         {
             LoadProjectScript(ScriptPath);

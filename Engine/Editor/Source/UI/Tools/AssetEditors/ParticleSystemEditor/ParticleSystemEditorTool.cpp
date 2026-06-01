@@ -117,7 +117,7 @@ namespace Lumina
     {
         DrawHelpTextRow("Stack",
             "An emitter is built from a Spawn stack (runs once per particle) and an Update stack "
-            "(runs every frame). Add modules with the + buttons and reorder them — order matters.");
+            "(runs every frame). Add modules with the + buttons and reorder them, order matters.");
         DrawHelpTextRow("Modules",
             "Each module is one behavior (shape, velocity, gravity, color over life, ...). Select a "
             "module to edit its inputs in the Details panel. Toggle the checkbox to disable it.");

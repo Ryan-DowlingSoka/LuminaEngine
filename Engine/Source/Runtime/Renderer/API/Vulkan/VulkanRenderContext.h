@@ -83,6 +83,10 @@ namespace Lumina
         // Free-threaded; called from ICommandList::Open.
         TRefCountPtr<FTrackedCommandBuffer> GetOrCreateCommandBuffer();
 
+        // One Tracy GPU context per queue (Tracy's model is one context per VkQueue, not per
+        // command buffer). Call once at init from a single thread. No-op for the transfer queue.
+        void InitProfilerContext();
+
         void RetireCommandBuffers();
         
         uint64 GetCompletedInstance() const;
@@ -110,6 +114,7 @@ namespace Lumina
         FVulkanRenderContext*               RenderContext = nullptr;
         VkQueue                             Queue = VK_NULL_HANDLE;
         VkSemaphore                         TimelineSemaphore = VK_NULL_HANDLE;
+        TracyVkCtx                          TracyContext = nullptr;
     
         TAtomic<uint64>                     LastRecordingID{0};
     

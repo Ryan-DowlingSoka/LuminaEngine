@@ -192,9 +192,20 @@ namespace Lumina
 
         /** Returns true if object was deleted. */
         RUNTIME_API bool ReleaseStrongRef(CObjectBase* Object);
-    
+
+        /** Validate a weak handle and acquire a strong ref in one atomic step (serialized with the
+         *  destroy decision below). Returns the live object with its strong count already incremented,
+         *  or nullptr if it was freed/reused. This is the only safe weak->strong upgrade. */
+        RUNTIME_API CObjectBase* TryAddStrongRef(const FObjectHandle& Handle);
+
+        /** Free Object iff it currently has no strong refs. The not-referenced check and the
+         *  mark-for-destroy both run under the array lock, so a concurrent TryAddStrongRef either
+         *  resurrects the object first (and this bails) or is refused afterwards, no UAF either way.
+         *  Returns true if it freed. */
+        RUNTIME_API bool ConditionalDestroy(CObjectBase* Object);
+
         RUNTIME_API void AddStrongRefByIndex(int32 Index);
-    
+
         RUNTIME_API bool ReleaseStrongRefByIndex(int32 Index);
 
         RUNTIME_API void AddWeakRefByIndex(int32 Index);
@@ -206,8 +217,10 @@ namespace Lumina
         RUNTIME_API int32 GetStrongRefCountByIndex(int32 Index) const;
     
         RUNTIME_API int32 GetNumAliveObjects() const;
-    
+
         RUNTIME_API int32 GetMaxObjects() const;
+
+        FORCEINLINE bool IsShuttingDown() const { return bShuttingDown; }
     
         template<typename Func>
         requires(eastl::is_invocable_v<Func, CObjectBase*, int32>)

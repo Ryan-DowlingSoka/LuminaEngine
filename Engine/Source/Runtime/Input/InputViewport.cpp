@@ -144,7 +144,7 @@ namespace Lumina
     bool FInputViewport::RouteEvent(FEvent& Event)
     {
         // State updates run unconditionally so a release we routed as a
-        // fallback still latches — otherwise keys can stay "down" forever.
+        // fallback still latches, otherwise keys can stay "down" forever.
         Context->OnEvent(Event);
 
         const EInputMode Mode = Context->GetInputMode();
@@ -379,7 +379,7 @@ namespace Lumina
             return false;
         }
 
-        // Captured cursor owns input — ImGui hover/focus flags lie under
+        // Captured cursor owns input, ImGui hover/focus flags lie under
         // GLFW_CURSOR_DISABLED, so don't trust them for routing.
         for (FInputViewport* V : Viewports)
         {

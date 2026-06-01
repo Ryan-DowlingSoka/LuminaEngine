@@ -64,7 +64,7 @@ namespace Lumina
         // Pulls any new lines from Session->PendingLines into LogLines.
         void DrainSession();
 
-        // Adds a line directly (UI thread only — main path for synchronous events).
+        // Adds a line directly (UI thread only, main path for synchronous events).
         void AppendLog(FStringView Line);
         void ClearLog();
 

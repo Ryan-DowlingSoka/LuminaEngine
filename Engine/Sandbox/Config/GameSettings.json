@@ -1,10 +1,11 @@
 {
-    "Project": {
-        "CookRoots": [
-            "/Game/NewWorld.lasset"
-        ],
-        "EditorStartupMap": "",
+    "ProjectSettings": {
+        "CookRoots": [],
+        "EditorStartupMap": "/Game/NewWorld.lasset",
+        "GameInstanceClass": "",
         "GameStartupMap": "/Game/NewWorld.lasset",
-        "LuaModuleFile": "/Game/Scripts/SandboxModule.luau"
+        "LuaModuleFile": {
+            "Path": "asdasd"
+        }
     }
 }

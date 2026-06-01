@@ -94,7 +94,7 @@ namespace Lumina
 
     void FTerrainEditMode::OnEnter(CWorld* World)
     {
-        // Spawning a default terrain on enter makes the mode self-bootstrapping —
+        // Spawning a default terrain on enter makes the mode self-bootstrapping,
         // first time the user clicks "Terrain" there's something to paint on.
         if (World && FindPreferredTerrain(World) == entt::null)
         {
@@ -400,7 +400,7 @@ namespace Lumina
         bHitValid = false;
 
         // A stroke is bounded by the left button being held. The moment it's released
-        // (anywhere — even off the viewport), commit the stroke's undo transaction.
+        // (anywhere, even off the viewport), commit the stroke's undo transaction.
         if (bTransactionOpen && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
             if (Context)
@@ -502,7 +502,7 @@ namespace Lumina
         const float RealDelta = std::max(ImGui::GetIO().DeltaTime, 0.0f);
 
         // Continuous brushes integrate by frame time, so apply every frame while held
-        // (including with a stationary cursor — that's how you dig deeper in place).
+        // (including with a stationary cursor, that's how you dig deeper in place).
 
         // Ramp captures the start of the stroke once, then drags the end while held.
         if (Mode == ETerrainBrushMode::Ramp)

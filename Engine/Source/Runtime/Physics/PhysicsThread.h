@@ -5,11 +5,16 @@
 #include "Memory/SmartPtr.h"
 #include "ModuleAPI.h"
 
-#include <condition_variable>
 
+namespace Lumina::Jobs { struct FCounter; }
 
 namespace Lumina
 {
+    // Schedules physics commands onto the fiber job pool. Kept as a façade (same Enqueue/Flush API) so
+    // callers, KickPhysics/WaitForPhysics in WorldManager, the engine lifecycle, are unchanged. The
+    // physics step is no longer a dedicated OS thread: each Enqueue submits a pool job, Flush waits the
+    // job counter (assist-waits on the calling thread). One-frame-behind kick/join is preserved by the
+    // caller (kick at FrameEnd, Flush at the next FrameStart).
     class RUNTIME_API FPhysicsThread
     {
     public:
@@ -23,9 +28,10 @@ namespace Lumina
         void Start();
         void Stop();
 
-        bool IsRunning() const { return bWorkerRunning.load(Atomic::MemoryOrderAcquire); }
+        bool IsRunning() const { return bRunning.load(Atomic::MemoryOrderAcquire); }
 
-        // DebugName must outlive the call (string literal).
+        // DebugName must outlive the call (string literal). Submitted as a pool job; runs inline if the
+        // system is not started.
         void Enqueue(const char* DebugName, FCommand&& Cmd);
         void EnqueueAndWait(const char* DebugName, FCommand&& Cmd);
         void Flush();
@@ -39,28 +45,18 @@ namespace Lumina
 
     private:
 
-        void WorkerMain();
-        void RunCommand(const char* DebugName, FCommand& Cmd);
-
-        struct FQueuedCommand
+        struct FJobCtx
         {
-            const char* DebugName;
-            FCommand    Cmd;
+            FPhysicsThread* Owner;
+            FCommand        Cmd;
         };
+        static void RunJobEntry(void* Arg, uint32 WorkerIndex);
 
-        std::thread                 Worker;
-        TAtomic<bool>               bWorkerRunning = false;
-        TAtomic<bool>               bExitRequested = false;
+        TAtomic<bool>       bRunning = false;
+        Jobs::FCounter*     JobCounter = nullptr; // outstanding physics jobs; Flush waits this to zero
 
-        FMutex                      QueueMutex;
-        std::condition_variable     QueueCV;
-        TVector<FQueuedCommand>     PendingCommands;
-
-        FMutex                      IdleMutex;
-        std::condition_variable     IdleCV;
-
-        TAtomic<uint64>             CommandsEnqueued = 0;
-        TAtomic<uint64>             CommandsCompleted = 0;
+        TAtomic<uint64>     CommandsEnqueued = 0;
+        TAtomic<uint64>     CommandsCompleted = 0;
     };
 
     RUNTIME_API extern FPhysicsThread* GPhysicsThread;

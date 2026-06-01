@@ -17,6 +17,8 @@
 #include "Paths/Paths.h"
 #include "Tools/UI/ImGui/ImGuiAllocator.h"
 #include "Config/Config.h"
+#include "Config/EngineSettings.h"
+#include "Core/Object/ObjectCore.h"
 #include "Core/Windows/Window.h"
 
 namespace Lumina
@@ -45,9 +47,9 @@ namespace Lumina
 
         float ResolveUIScale()
         {
-            // Editor.UIScale: 0 = auto (monitor DPI + resolution), >0 = explicit factor.
-            // Registered as an editor setting in LuminaEditor.cpp; unset in game builds.
-            const float Override = GConfig ? GConfig->GetFloat("Editor.UIScale") : 0.0f;
+            // CEditorSettings::UIScale: 0 = auto (monitor DPI + resolution), >0 = explicit factor.
+            // Unset in game builds (the editor config file is not mounted).
+            const float Override = GetDefault<CEditorSettings>()->UIScale;
             if (Override > 0.0f)
             {
                 return Override;

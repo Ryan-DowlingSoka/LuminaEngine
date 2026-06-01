@@ -59,7 +59,7 @@ namespace Lumina
         const SPointLightComponent& PointLight = Registry.get<SPointLightComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
         
-        PDI->DrawSphere(Transform.GetWorldLocation(), PointLight.Attenuation, 
+        PDI->DrawSphere(Transform.GetWorldLocationCached(), PointLight.Attenuation, 
             FVector4(PointLight.LightColor, 1.0f), 32, 1.0f, true, 0.0f);
     }
 
@@ -72,10 +72,10 @@ namespace Lumina
     {
         const SSpotLightComponent& SpotLight    = Registry.get<SSpotLightComponent>(Entity);
         const STransformComponent& Transform    = Registry.get<STransformComponent>(Entity);
-        FVector3 Forward                       = Transform.GetWorldRotation() * FViewVolume::ForwardAxis;
+        FVector3 Forward                       = Transform.GetWorldRotationCached() * FViewVolume::ForwardAxis;
 
-        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, Math::Radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
-        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, Math::Radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
+        PDI->DrawCone(Transform.GetWorldLocationCached(), -Forward, Math::Radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
+        PDI->DrawCone(Transform.GetWorldLocationCached(), -Forward, Math::Radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
     }
 
     CStruct* CComponentVisualizer_DirectionalLight::GetSupportedComponentType() const
@@ -88,7 +88,7 @@ namespace Lumina
         const auto& Light       = Registry.get<SDirectionalLightComponent>(Entity);
         const auto& Transform   = Registry.get<STransformComponent>(Entity);
         
-        PDI->DrawArrow(Transform.GetWorldLocation(), -Light.Direction, 1.5f, FColor::Yellow, 4.0f);
+        PDI->DrawArrow(Transform.GetWorldLocationCached(), -Light.Direction, 1.5f, FColor::Yellow, 4.0f);
     }
 
     CStruct* CComponentVisualizer_SphereCollider::GetSupportedComponentType() const
@@ -101,7 +101,7 @@ namespace Lumina
         const SSphereColliderComponent& Sphere = Registry.get<SSphereColliderComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
         
-        PDI->DrawSphere(Transform.GetWorldLocation() + Sphere.TranslationOffset, Sphere.Radius * Transform.MaxScale(), FColor::Green, 12, 3.5f, true, 0.0f);
+        PDI->DrawSphere(Transform.GetWorldLocationCached() + Sphere.TranslationOffset, Sphere.Radius * Transform.MaxScale(), FColor::Blue, 8, 3.5f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_BoxCollider::GetSupportedComponentType() const
@@ -115,7 +115,7 @@ namespace Lumina
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
         
         FQuat OffsetQuat(Box.RotationOffset);
-        PDI->DrawBox(Transform.GetWorldLocation() + Box.TranslationOffset, Box.HalfExtent * Transform.GetWorldScale(), Transform.GetWorldRotation() * OffsetQuat, FColor::Green, 3.5f, true, 0.0f);
+        PDI->DrawBox(Transform.GetWorldLocationCached() + Box.TranslationOffset, Box.HalfExtent * Transform.GetWorldScaleCached(), Transform.GetWorldRotationCached() * OffsetQuat, FColor::Blue, 3.5f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_CapsuleCollider::GetSupportedComponentType() const
@@ -130,11 +130,11 @@ namespace Lumina
 
         // DrawCapsule wants the two cylinder-axis endpoints (caps tangent there), Y-aligned in local space.
         const float Scale     = Transform.MaxScale();
-        const FVector3 Center = Transform.GetWorldLocation() + Capsule.TranslationOffset;
-        const FQuat WorldRot  = Transform.GetWorldRotation() * FQuat(Capsule.RotationOffset);
+        const FVector3 Center = Transform.GetWorldLocationCached() + Capsule.TranslationOffset;
+        const FQuat WorldRot  = Transform.GetWorldRotationCached() * FQuat(Capsule.RotationOffset);
         const FVector3 Axis   = WorldRot * FVector3(0.0f, Capsule.HalfHeight * Scale, 0.0f);
 
-        PDI->DrawCapsule(Center - Axis, Center + Axis, Capsule.Radius * Scale, FColor::Green, 12, 3.5f, true, 0.0f);
+        PDI->DrawCapsule(Center - Axis, Center + Axis, Capsule.Radius * Scale, FColor::Blue, 12, 3.5f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_CylinderCollider::GetSupportedComponentType() const
@@ -149,8 +149,8 @@ namespace Lumina
 
         // No DrawCylinder primitive: stitch one from two rings plus N vertical spokes. Y-aligned in local space.
         const float Scale     = Transform.MaxScale();
-        const FVector3 Center = Transform.GetWorldLocation() + Cyl.TranslationOffset;
-        const FQuat WorldRot  = Transform.GetWorldRotation() * FQuat(Cyl.RotationOffset);
+        const FVector3 Center = Transform.GetWorldLocationCached() + Cyl.TranslationOffset;
+        const FQuat WorldRot  = Transform.GetWorldRotationCached() * FQuat(Cyl.RotationOffset);
         const float Radius    = Cyl.Radius * Scale;
         const float HalfH     = Cyl.HalfHeight * Scale;
 
@@ -172,12 +172,12 @@ namespace Lumina
             const FVector3 B = Bottom + Offset;
             if (i > 0)
             {
-                PDI->DrawLine(PrevTop,    T, FColor::Green, 3.5f, true, 0.0f);
-                PDI->DrawLine(PrevBottom, B, FColor::Green, 3.5f, true, 0.0f);
+                PDI->DrawLine(PrevTop,    T, FColor::Blue, 3.5f, true, 0.0f);
+                PDI->DrawLine(PrevBottom, B, FColor::Blue, 3.5f, true, 0.0f);
                 // A few vertical spokes (every 6 segments) so the side is readable.
                 if ((i % 6) == 0)
                 {
-                    PDI->DrawLine(T, B, FColor::Green, 3.5f, true, 0.0f);
+                    PDI->DrawLine(T, B, FColor::Blue, 3.5f, true, 0.0f);
                 }
             }
             PrevTop = T;
@@ -196,12 +196,12 @@ namespace Lumina
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
 
         // Match Jolt: Start/End are cylinder-axis endpoints; Radius scales by MaxScale.
-        const FVector3 Location = Transform.GetWorldLocation();
-        const FVector3 Axis = Transform.GetWorldRotation() * FVector3(0.0f, Character.HalfHeight, 0.0f);
+        const FVector3 Location = Transform.GetWorldLocationCached();
+        const FVector3 Axis = Transform.GetWorldRotationCached() * FVector3(0.0f, Character.HalfHeight, 0.0f);
         const FVector3 Start = Location - Axis;
         const FVector3 End   = Location + Axis;
 
-        PDI->DrawCapsule(Start, End, Character.Radius * Transform.MaxScale(), FVector4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
+        PDI->DrawCapsule(Start, End, Character.Radius * Transform.MaxScale(), FColor::Blue, 12, 2.0f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_RigidBody::GetSupportedComponentType() const
@@ -219,11 +219,10 @@ namespace Lumina
             return;
         }
 
-        const FVector3 WorldCOM = Transform.GetWorldLocation()
-            + Transform.GetWorldRotation() * (Body.CenterOfMassOffset * Transform.GetWorldScale());
+        const FVector3 WorldCOM = Transform.GetWorldLocationCached() + Transform.GetWorldRotationCached() * (Body.CenterOfMassOffset * Transform.GetWorldScaleCached());
 
         PDI->DrawSphere(WorldCOM, 0.08f, FVector4(1.0f, 0.0f, 1.0f, 1.0f), 12, 2.0f, false, 0.0f);
-        PDI->DrawLine(Transform.GetWorldLocation(), WorldCOM, FVector4(1.0f, 0.0f, 1.0f, 1.0f), 2.0f, false, 0.0f);
+        PDI->DrawLine(Transform.GetWorldLocationCached(), WorldCOM, FVector4(1.0f, 0.0f, 1.0f, 1.0f), 2.0f, false, 0.0f);
     }
 
     CStruct* CComponentVisualizer_Camera::GetSupportedComponentType() const
@@ -239,8 +238,8 @@ namespace Lumina
         // Cached ViewVolume only refreshes at runtime via SCameraSystem, so rebuild the view-projection from the live transform.
         // The real far plane is effectively infinite; clamp only the gizmo's far for display (never affects the camera).
         constexpr float GizmoFar = 25.0f;
-        const FVector3 Location = Transform.GetWorldLocation();
-        const FQuat    Rotation = Transform.GetWorldRotation();
+        const FVector3 Location = Transform.GetWorldLocationCached();
+        const FQuat    Rotation = Transform.GetWorldRotationCached();
         const FVector3 Forward  = Rotation * FViewVolume::ForwardAxis;
         const FVector3 Up       = Rotation * FViewVolume::UpAxis;
 

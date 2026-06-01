@@ -110,7 +110,7 @@ namespace Lumina
     {
         VkBufferUsageFlags result = VK_NO_FLAGS;
 
-        // TRANSFER_SRC always set — vendors confirmed no perf cost.
+        // TRANSFER_SRC always set, vendors confirmed no perf cost.
         result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         
         if (Usage.IsFlagSet(EBufferUsageFlags::VertexBuffer))
@@ -532,7 +532,7 @@ namespace Lumina
 
         if (!CurrentChunk)
         {
-            // Pow-2 sizing; LargestChunkSize excluded from floor — ratcheting inflated every chunk past the upload pool block size.
+            // Pow-2 sizing; LargestChunkSize excluded from floor, ratcheting inflated every chunk past the upload pool block size.
             uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
             uint64 SizeToAllocate = NextPow2_u64(Target);
             SizeToAllocate = Align(SizeToAllocate, FBufferChunk::GSizeAlignment);
@@ -1757,7 +1757,7 @@ namespace Lumina
         if (Dyn.bDepthCompareOp)     DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
         if (Dyn.bPolygonMode)        DynamicStates.push_back(VK_DYNAMIC_STATE_POLYGON_MODE_EXT);
 
-        // Depth-only pipelines (shadows) must NOT declare blend dynamic — vkCmdSetColorBlend* with no attachments is invalid.
+        // Depth-only pipelines (shadows) must NOT declare blend dynamic, vkCmdSetColorBlend* with no attachments is invalid.
         const bool bHasColorAttachments = !RenderPassDesc.ColorAttachments.empty();
         if (Dyn.bColorBlendEnable   && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
         if (Dyn.bColorBlendEquation && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);

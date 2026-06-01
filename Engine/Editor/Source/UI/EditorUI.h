@@ -73,7 +73,7 @@ namespace Lumina
         requires eastl::is_base_of_v<FEditorTool, T> && eastl::is_constructible_v<T, Args...>
         void ToggleTool(Args&&... args);
 
-        // Convenience for the Tools menu — draws a MenuItem whose check state
+        // Convenience for the Tools menu, draws a MenuItem whose check state
         // mirrors the tool's existence and whose click toggles it.
         template<typename T, typename... Args>
         requires eastl::is_base_of_v<FEditorTool, T> && eastl::is_constructible_v<T, Args...>

@@ -19,7 +19,6 @@ namespace Lumina
 
     void FObjectProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        FArchiveRecord Record = Slot.EnterRecord();
         auto Ptr = static_cast<TObjectPtr<CObject>*>(Value);
 
         CObject* Raw = Ptr->Get();

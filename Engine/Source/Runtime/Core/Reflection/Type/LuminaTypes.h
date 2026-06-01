@@ -282,9 +282,10 @@ namespace Lumina
         {
             Ar << *TTypeInfo::GetPropertyValuePtr(Value);
         }
-        
+
         virtual void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults = nullptr) override
         {
+            Slot.Serialize(*TTypeInfo::GetPropertyValuePtr(Value));
         }
         
     };

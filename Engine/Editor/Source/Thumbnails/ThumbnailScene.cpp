@@ -64,8 +64,9 @@ namespace Lumina
         if (World.IsValid())
         {
             World->TeardownWorld();
-            World->ForceDestroyNow();
         }
+        // Releasing the only strong ref to the transient preview world drops its refcount to zero and
+        // frees it, no ForceDestroyNow (which would dangle this TObjectPtr, then touch freed memory).
         World        = nullptr;
         CameraEntity = entt::null;
         bInitialized = false;

@@ -19,6 +19,10 @@ namespace Lumina
 
     public:
 
+        // Update only reads colliders/transforms and writes SNavMeshComponent (no structural changes),
+        // so it overlaps animation/camera in the editor (Paused) stage. Defined in the .cpp.
+        static FSystemAccess Access;
+
         static void Startup (const FSystemContext& Context) noexcept;
         static void Update  (const FSystemContext& Context) noexcept;
         static void Teardown(const FSystemContext& Context) noexcept;

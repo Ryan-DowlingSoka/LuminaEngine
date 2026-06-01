@@ -112,7 +112,7 @@ namespace Lumina::VFS
             }
             else if (!It->second.bIsDirectory)
             {
-                // A file already exists at this path — refuse to convert it; bail out
+                // A file already exists at this path, refuse to convert it; bail out
                 // rather than silently corrupting the chain.
                 break;
             }

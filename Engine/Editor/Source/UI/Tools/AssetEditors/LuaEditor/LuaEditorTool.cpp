@@ -1,6 +1,8 @@
 #include "LuaEditorTool.h"
 
 #include "Config/Config.h"
+#include "Core/Object/ObjectCore.h"
+#include "Settings/EditorSettings.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Scripting/Lua/Scripting.h"
@@ -219,22 +221,6 @@ namespace Lumina
             return true;
         }
 
-        const char* kKeyUsePlatformEditor = "Editor.LuaEditor.UsePlatformEditor";
-        const char* kKeyFontScale         = "Editor.LuaEditor.FontScale";
-        const char* kKeyTabSize           = "Editor.LuaEditor.TabSize";
-        const char* kKeyLineSpacing       = "Editor.LuaEditor.LineSpacing";
-        const char* kKeyShowWhitespace    = "Editor.LuaEditor.ShowWhitespace";
-        const char* kKeyShowLineNumbers   = "Editor.LuaEditor.ShowLineNumbers";
-        const char* kKeyShowMiniMap       = "Editor.LuaEditor.ShowMiniMap";
-        const char* kKeyAutoIndent        = "Editor.LuaEditor.AutoIndent";
-        const char* kKeyMatchBrackets     = "Editor.LuaEditor.MatchBrackets";
-        const char* kKeyCompletePairs     = "Editor.LuaEditor.CompletePairs";
-        const char* kKeyPalette           = "Editor.LuaEditor.Palette";
-        const char* kKeyInsertSpaces      = "Editor.LuaEditor.InsertSpacesOnTabs";
-        const char* kKeyTrimOnSave        = "Editor.LuaEditor.TrimTrailingOnSave";
-        const char* kKeyAutoTrigger       = "Editor.LuaEditor.AutoTriggerCompletion";
-        const char* kKeyTriggerDelayMs    = "Editor.LuaEditor.AutoTriggerDelayMs";
-
         struct FLuaSnippet
         {
             const char* Label;
@@ -273,22 +259,22 @@ namespace Lumina
         const FStringView ParentView = VFS::Parent(InVirtualPath, true);
         ParentDir = FString(ParentView.data(), ParentView.size());
 
-        // Pull persisted preferences. Defaults are registered in LuminaEditor.cpp.
-        EditorFontScale         = GConfig->GetFloat(kKeyFontScale);
-        EditorTabSize           = std::max(1, std::min(8, GConfig->GetInt(kKeyTabSize)));
-        EditorLineSpacing       = GConfig->GetFloat(kKeyLineSpacing);
-        bEditorShowWhitespace   = GConfig->GetBool(kKeyShowWhitespace);
-        bEditorShowLineNumbers  = GConfig->GetBool(kKeyShowLineNumbers);
-        bEditorShowMiniMap      = GConfig->GetBool(kKeyShowMiniMap);
-        bAutoIndent             = GConfig->GetBool(kKeyAutoIndent);
-        bShowMatchingBrackets   = GConfig->GetBool(kKeyMatchBrackets);
-        bCompletePairedGlyphs   = GConfig->GetBool(kKeyCompletePairs);
-        bInsertSpacesOnTabs     = GConfig->GetBool(kKeyInsertSpaces);
-        bTrimTrailingOnSave     = GConfig->GetBool(kKeyTrimOnSave);
-        bAutoTriggerCompletion  = GConfig->GetBool(kKeyAutoTrigger);
-        AutoTriggerDelayMs      = std::max(0, std::min(2000, GConfig->GetInt(kKeyTriggerDelayMs)));
-        const FString PaletteStr = GConfig->GetString(kKeyPalette);
-        EditorPalette = (PaletteStr == "Light") ? EPalette::Light : EPalette::Dark;
+        // Pull persisted preferences from the developer-settings object.
+        const CLuaEditorSettings* Settings = GetDefault<CLuaEditorSettings>();
+        EditorFontScale         = Settings->FontScale;
+        EditorTabSize           = std::max(1, std::min(8, Settings->TabSize));
+        EditorLineSpacing       = Settings->LineSpacing;
+        bEditorShowWhitespace   = Settings->bShowWhitespace;
+        bEditorShowLineNumbers  = Settings->bShowLineNumbers;
+        bEditorShowMiniMap      = Settings->bShowMiniMap;
+        bAutoIndent             = Settings->bAutoIndent;
+        bShowMatchingBrackets   = Settings->bMatchBrackets;
+        bCompletePairedGlyphs   = Settings->bCompletePairs;
+        bInsertSpacesOnTabs     = Settings->bInsertSpacesOnTabs;
+        bTrimTrailingOnSave     = Settings->bTrimTrailingOnSave;
+        bAutoTriggerCompletion  = Settings->bAutoTriggerCompletion;
+        AutoTriggerDelayMs      = std::max(0, std::min(2000, Settings->AutoTriggerDelayMs));
+        EditorPalette = (Settings->Palette == "Light") ? EPalette::Light : EPalette::Dark;
     }
 
     void FLuaEditorTool::OnInitialize()
@@ -584,7 +570,7 @@ namespace Lumina
             "Saving recompiles immediately. The runtime VM picks up the change on its next instantiation; "
             "stdlib reload is exposed as Engine.ReloadStdlib() in Lua.");
         DrawHelpTextRow("Stdlib",
-            "EntityScript, Random, Color, Tween are preloaded as globals — no `require` needed. "
+            "EntityScript, Random, Color, Tween are preloaded as globals, no `require` needed. "
             "Source lives under VFS Stdlib/.");
         DrawHelpTextRow("Bookmarks",
             "F2 toggles a bookmark on the current line. Shift+F2 cycles between them. Session-only.");
@@ -2152,20 +2138,22 @@ namespace Lumina
 
         if (ImGui::Button("Persist as default", ImVec2(-1, 0)))
         {
-            GConfig->Set<float>(kKeyFontScale,       EditorFontScale);
-            GConfig->Set<int32>(kKeyTabSize,         EditorTabSize);
-            GConfig->Set<float>(kKeyLineSpacing,     EditorLineSpacing);
-            GConfig->Set<bool>(kKeyShowWhitespace,   bEditorShowWhitespace);
-            GConfig->Set<bool>(kKeyShowLineNumbers,  bEditorShowLineNumbers);
-            GConfig->Set<bool>(kKeyShowMiniMap,      bEditorShowMiniMap);
-            GConfig->Set<bool>(kKeyAutoIndent,       bAutoIndent);
-            GConfig->Set<bool>(kKeyMatchBrackets,    bShowMatchingBrackets);
-            GConfig->Set<bool>(kKeyCompletePairs,    bCompletePairedGlyphs);
-            GConfig->Set<bool>(kKeyInsertSpaces,     bInsertSpacesOnTabs);
-            GConfig->Set<bool>(kKeyTrimOnSave,       bTrimTrailingOnSave);
-            GConfig->Set<bool>(kKeyAutoTrigger,      bAutoTriggerCompletion);
-            GConfig->Set<int32>(kKeyTriggerDelayMs,  AutoTriggerDelayMs);
-            GConfig->Set<std::string>(kKeyPalette,   std::string(EditorPalette == EPalette::Dark ? "Dark" : "Light"));
+            CLuaEditorSettings* Settings = GetMutableDefault<CLuaEditorSettings>();
+            Settings->FontScale             = EditorFontScale;
+            Settings->TabSize               = EditorTabSize;
+            Settings->LineSpacing           = EditorLineSpacing;
+            Settings->bShowWhitespace       = bEditorShowWhitespace;
+            Settings->bShowLineNumbers      = bEditorShowLineNumbers;
+            Settings->bShowMiniMap          = bEditorShowMiniMap;
+            Settings->bAutoIndent           = bAutoIndent;
+            Settings->bMatchBrackets        = bShowMatchingBrackets;
+            Settings->bCompletePairs        = bCompletePairedGlyphs;
+            Settings->bInsertSpacesOnTabs   = bInsertSpacesOnTabs;
+            Settings->bTrimTrailingOnSave   = bTrimTrailingOnSave;
+            Settings->bAutoTriggerCompletion = bAutoTriggerCompletion;
+            Settings->AutoTriggerDelayMs    = AutoTriggerDelayMs;
+            Settings->Palette               = (EditorPalette == EPalette::Dark) ? "Dark" : "Light";
+            GConfig->SaveSettings(CLuaEditorSettings::StaticClass());
             ImGuiX::Notifications::NotifySuccess("Lua editor settings saved.");
         }
 

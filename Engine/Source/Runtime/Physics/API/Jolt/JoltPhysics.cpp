@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include "JoltPhysicsScene.h"
+#include "JoltJobSystemBridge.h"
 #include "Core/Threading/Thread.h"
 #include "Jolt/RegisterTypes.h"
 #include "Jolt/Core/Factory.h"
@@ -23,6 +24,10 @@ static int IsDebuggerPresent() { return 0; }
 namespace Lumina::Physics
 {
     static TUniquePtr<FJoltData> JoltData;
+
+    static TConsoleVar CVarJoltUseEngineJobSystem("Physics.Jolt.UseEngineJobSystem", true,
+        "Route Jolt physics jobs through the engine fiber scheduler instead of Jolt's own thread pool. Read once at physics init.");
+
     #if JPH_DEBUG_RENDERER
     static JPH::BodyManager::DrawSettings DebugDrawSettings;
 
@@ -80,7 +85,7 @@ namespace Lumina::Physics
         va_list list;
         va_start(list, format);
         char buffer[1024];
-        vsnprintf(buffer, sizeof(buffer), format, list);
+        (void)vsnprintf(buffer, sizeof(buffer), format, list);
 
         if (JoltData)
         {
@@ -91,30 +96,30 @@ namespace Lumina::Physics
     #endif
 
     // Tag at the hook, not call-site: Jolt's job threads would miss a call-site scope.
-    void* JPHCustomAllocate(size_t size)
+    static void* JPHCustomAllocate(size_t size)
     {
         LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Malloc(size);
     }
 
-    void* JPHCustomReallocate(void* block, size_t oldSize, size_t newSize)
+    static void* JPHCustomReallocate(void* block, size_t oldSize, size_t newSize)
     {
         LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Realloc(block, newSize);
     }
 
-    void JPHCustomFree(void* block)
+    static void JPHCustomFree(void* block)
     {
         Memory::Free(block);
     }
 
-    void* JPHCustomAlignedAllocate(size_t size, size_t alignment)
+    static void* JPHCustomAlignedAllocate(size_t size, size_t alignment)
     {
         LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Malloc(size, alignment);
     }
 
-    void JPHCustomAlignedFree(void* block)
+    static void JPHCustomAlignedFree(void* block)
     {
         Memory::Free(block);
     }
@@ -162,8 +167,17 @@ namespace Lumina::Physics
         
         int NumJoltThreads = (int)Threading::GetNumThreads() - 3;
         NumJoltThreads = std::max(NumJoltThreads, 1);
-        JoltData->JobThreadPool = MakeUnique<JPH::JobSystemThreadPool>(2048, 8, NumJoltThreads);
 
+        if (CVarJoltUseEngineJobSystem.GetValue())
+        {
+            // +1 mirrors Jolt's own pool: the thread calling WaitForJobs also executes jobs.
+            JoltData->JobSystem = MakeUnique<FJoltJobSystemBridge>(2048, 8, NumJoltThreads + 1);
+            LOG_DISPLAY("[Jolt] Physics jobs routed through the engine fiber scheduler (max concurrency {}).", NumJoltThreads + 1);
+        }
+        else
+        {
+            JoltData->JobSystem = MakeUnique<JPH::JobSystemThreadPool>(2048, 8, NumJoltThreads);
+        }
     }
 
     void FJoltPhysicsContext::Shutdown()
@@ -183,9 +197,9 @@ namespace Lumina::Physics
         return MakeUnique<FJoltPhysicsScene>(World);
     }
 
-    JPH::JobSystemThreadPool* FJoltPhysicsContext::GetThreadPool()
+    JPH::JobSystem* FJoltPhysicsContext::GetThreadPool()
     {
-        return JoltData->JobThreadPool.get();
+        return JoltData->JobSystem.get();
     }
 
     #if JPH_DEBUG_RENDERER

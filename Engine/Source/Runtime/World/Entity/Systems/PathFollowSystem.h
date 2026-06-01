@@ -16,6 +16,8 @@ namespace Lumina
 
     public:
 
+        static FSystemAccess Access;   // disjoint from animation → overlaps it; defined in the .cpp
+
         static void Update(const FSystemContext& Context) noexcept;
     };
 }

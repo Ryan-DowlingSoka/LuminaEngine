@@ -65,7 +65,7 @@ namespace Lumina
     void FCPUProfilerEditorTool::DrawHelpMenu()
     {
         DrawHelpTextRow("Enable",
-            "CPU profiling is gated on cpu.Profiler.Enabled — toggle from the gear menu. Costs frames; "
+            "CPU profiling is gated on cpu.Profiler.Enabled, toggle from the gear menu. Costs frames; "
             "leave off when not investigating.");
         DrawHelpTextRow("Targets",
             "Multiple sample targets (engine main thread, render thread, asset cooker) can be picked "
@@ -77,7 +77,7 @@ namespace Lumina
             "Rolling history of total frame CPU time on the active target. Spikes correlate with surges "
             "in the tree.");
         DrawHelpTextRow("Adding scopes",
-            "In C++: LUMINA_PROFILE(\"YourScope\"); — scopes nest naturally.");
+            "In C++: LUMINA_PROFILE(\"YourScope\");, scopes nest naturally.");
     }
 
     void FCPUProfilerEditorTool::DrawProfilerWindow(bool)

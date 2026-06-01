@@ -1086,21 +1086,41 @@ namespace Lumina
             
             // Environment processing runs serially after Graph.Wait(): bAmbientFromSky needs
             // LightData.SunDirection populated by ProcessDirectionalLight first.
+            //
+            // Line batching as first-class graph nodes. The cull is the heavy parallel part, and it must be a
+            // ROOT AddParallelFor so its chunks enter the queue at Dispatch alongside the mesh fan-out -- when
+            // it was fired from inside a single Add node at runtime, its chunks were born late and the worker
+            // pool bubbled between the mesh fan-out draining and the line work appearing. Prepare is cheap and
+            // runs inline here (build chunk views + clear scratch); Finalize merges/scatters after the cull.
+            FLineBatcherComponent* LineBatcher = nullptr;
+            LineBatcherView.each([&](FLineBatcherComponent& C) { if (LineBatcher == nullptr) LineBatcher = &C; });
+            const uint32 LineChunkCount = (LineBatcher != nullptr) ? PrepareBatchedLines(*LineBatcher) : 0u;
+
+            if (LineChunkCount > 0)
+            {
+                FTaskGraph::FNodeHandle LineBatchNode = Graph.AddParallelFor(LineChunkCount, 1, [this](const Task::FParallelRange& Range)
+                {
+                    BatchLineChunks(Range);
+                });
+                FTaskGraph::FNodeHandle LineFinalizeNode = Graph.Add([this, LineBatcher]
+                {
+                    FinalizeBatchedLines(*LineBatcher);
+                });
+                Graph.AddDependency(LineFinalizeNode, LineBatchNode);
+            }
+
+            // Triangles are low-volume; keep them as one High-priority node so they overlap the mesh fan-out
+            // without needing the full chunk split.
             Graph.Add([&]
             {
-                LUMINA_PROFILE_SECTION("Batched Line Processing");
-
-                LineBatcherView.each([&](FLineBatcherComponent& LineBatcherComponent)
-                {
-                    ProcessBatchedLines(LineBatcherComponent);
-                });
+                LUMINA_PROFILE_SECTION("Batched Triangle Processing");
 
                 TriangleBatcherView.each([&](FTriangleBatcherComponent& TriangleBatcherComponent)
                 {
                     ProcessBatchedTriangles(TriangleBatcherComponent);
                 });
-            });
-            
+            }, ETaskPriority::High);
+
             Graph.Add([&]
             {
                 LUMINA_PROFILE_SECTION("Process Widget Primitives");
@@ -1163,7 +1183,7 @@ namespace Lumina
                             return Math::Dot(DA, DA) > Math::Dot(DB, DB);
                         });
                 }
-            });
+            }, ETaskPriority::High);
 
             Graph.Add([&]
             {
@@ -1241,8 +1261,8 @@ namespace Lumina
                     });
                 }
                 #endif
-            });
-            
+            }, ETaskPriority::High);
+
             auto DLightTask = Graph.AddParallelFor(DirectionalView.handle()->size(), 32, [&](Task::FParallelRange Range)
             {
                 LUMINA_PROFILE_SECTION("Process Directional Light");
@@ -3497,116 +3517,280 @@ namespace Lumina
         LightData.Lights[0] = Light;
     }
 
-    void FForwardRenderScene::ProcessBatchedLines(FLineBatcherComponent& Batcher)
+    uint32 FForwardRenderScene::PrepareBatchedLines(FLineBatcherComponent& Batcher)
     {
-        FFrameData& Frame       = *ExtractFrame;
-        auto& SceneGlobalData   = Frame.SceneGlobalData;
-        auto& SimpleVertices    = Frame.SimpleVertices;
-        auto& LineBatches     = Frame.LineBatches;
+        using FLineInstance = FLineBatcherComponent::FLineInstance;
+        constexpr uint32 kMaxBuckets = FLineBatchScratch::kMaxBuckets;
 
-        Batcher.DrainQueue();
+        // Gather the input as fixed-size chunks over the persistent carry-over list + each per-worker
+        // produce buffer. No drain/copy: each chunk points straight into its source. Chunking (rather than
+        // one task per buffer) keeps the parallel batch balanced even when one producer slot emitted far
+        // more lines than the others. Runs inline before graph Dispatch, so the batch node's chunks are
+        // ready and enqueued up front (no runtime bubble).
+        constexpr uint32 kChunkLines = 4096;
 
-        TVector<FLineBatcherComponent::FLineInstance>& Lines = Batcher.Lines;
-        const SIZE_T LineCount = Lines.size();
+        LineChunkScratch.clear();
+        uint32 LineCount = 0;
+        auto AddSource = [&](const FLineInstance* Data, uint32 Num)
+        {
+            for (uint32 Off = 0; Off < Num; Off += kChunkLines)
+            {
+                LineChunkScratch.push_back(FLineChunk{ Data + Off, Math::Min(kChunkLines, Num - Off) });
+            }
+            LineCount += Num;
+        };
+
+        if (!Batcher.Lines.empty())
+        {
+            AddSource(Batcher.Lines.data(), (uint32)Batcher.Lines.size());
+        }
+        for (TVector<FLineInstance>& Buffer : Batcher.ThreadBuffers)
+        {
+            if (!Buffer.empty())
+            {
+                AddSource(Buffer.data(), (uint32)Buffer.size());
+            }
+        }
+
         if (LineCount == 0)
         {
-            return;
+            return 0;
         }
-        
-        struct FBucket
+
+        const uint32 NumThreads = GTaskSystem->GetNumTaskThreads();
+        if (LineBatchScratch.size() < NumThreads)
+        {
+            LineBatchScratch.resize(NumThreads);
+        }
+        for (uint32 t = 0; t < NumThreads; ++t)
+        {
+            FLineBatchScratch& S = LineBatchScratch[t];
+            S.NumBuckets = 0;
+            S.Survivors.clear();
+            for (uint32 b = 0; b < kMaxBuckets; ++b)
+            {
+                S.BucketVerts[b].clear();
+            }
+        }
+
+        return (uint32)LineChunkScratch.size();
+    }
+
+    // Parallel cull + per-worker bucketing over the prepared chunks. Each worker writes only its own scratch
+    // slot (FParallelRange::Thread is a dense worker slot, and a worker runs one chunk at a time), so there
+    // is no contention. A copy of the line is taken so the lifetime decrement is local; surviving persistent
+    // lines are collected and rebuilt into Lines by FinalizeBatchedLines.
+    void FForwardRenderScene::BatchLineChunks(const Task::FParallelRange& Range)
+    {
+        LUMINA_PROFILE_SECTION("Batch Lines");
+
+        using FLineInstance = FLineBatcherComponent::FLineInstance;
+        constexpr uint32 kMaxBuckets = FLineBatchScratch::kMaxBuckets;
+
+        const float    Dt      = ExtractFrame->SceneGlobalData.DeltaTime;
+        FFrustum       Frustum = ExtractFrame->SceneGlobalData.CullData.Frustum; // local: IsInside is non-const
+        FLineBatchScratch&     S      = LineBatchScratch[Range.Thread];
+        const FLineChunk* const Chunks = LineChunkScratch.data();
+
+        for (uint32 c = Range.Start; c < Range.End; ++c)
+        {
+            const FLineChunk& Chunk = Chunks[c];
+            for (uint32 i = 0; i < Chunk.Count; ++i)
+            {
+                FLineInstance Line = Chunk.Data[i];
+
+                const FAABB LineBounds(Math::Min(Line.Start, Line.End), Math::Max(Line.Start, Line.End));
+                if (Frustum.IsInside(LineBounds))
+                {
+                    uint32 Idx = ~0u;
+                    for (uint32 b = 0; b < S.NumBuckets; ++b)
+                    {
+                        if (S.BucketDepthTest[b] == Line.bDepthTest &&
+                            Math::EpsilonEqual(S.BucketThickness[b], Line.Thickness, LE_SMALL_NUMBER))
+                        {
+                            Idx = b;
+                            break;
+                        }
+                    }
+                    if (Idx == ~0u)
+                    {
+                        // Clamp to the last bucket if the (thickness, depth-test) combos ever exceed
+                        // the cap; the original serial path made the same <= kMaxBuckets assumption.
+                        Idx = (S.NumBuckets < kMaxBuckets) ? S.NumBuckets++ : (kMaxBuckets - 1);
+                        S.BucketThickness[Idx] = Line.Thickness;
+                        S.BucketDepthTest[Idx] = Line.bDepthTest;
+                    }
+
+                    TVector<FSimpleElementVertex>& V = S.BucketVerts[Idx];
+                    V.push_back({ Line.Start, Line.ColorPacked });
+                    V.push_back({ Line.End,   Line.ColorPacked });
+                }
+
+                if (Line.bSingleFrame)
+                {
+                    continue;
+                }
+
+                Line.RemainingLifetime -= Dt;
+                if (Line.RemainingLifetime > 0.0f)
+                {
+                    S.Survivors.push_back(Line);
+                }
+            }
+        }
+    }
+
+    // Runs after the batch node: merge per-worker buckets, lay out a contiguous vertex range, scatter, and
+    // rebuild the persistent line list. Reads the same LineBatchScratch the batch node filled.
+    void FForwardRenderScene::FinalizeBatchedLines(FLineBatcherComponent& Batcher)
+    {
+        using FLineInstance = FLineBatcherComponent::FLineInstance;
+        constexpr uint32 kMaxBuckets = FLineBatchScratch::kMaxBuckets;
+
+        FFrameData& Frame       = *ExtractFrame;
+        auto& SimpleVertices    = Frame.SimpleVertices;
+        auto& LineBatches       = Frame.LineBatches;
+
+        TVector<FLineInstance>& Lines = Batcher.Lines;
+        auto& ThreadBuffers           = Batcher.ThreadBuffers;
+
+        const uint32 NumThreads = GTaskSystem->GetNumTaskThreads();
+
+        // Merge per-worker buckets into a global table keyed by (thickness, depth-test), and
+        // accumulate each global bucket's vertex count.
+        struct FGlobalBucket
         {
             float   Thickness;
-            uint32  StartVertex;
-            uint32  VertexCount;
             uint8   bDepthTest;
+            uint32  VertexCount;
+            uint32  StartVertex;
         };
-        
-        TFixedVector<FBucket, 16> Buckets;
+        TFixedVector<FGlobalBucket, kMaxBuckets> Global;
 
-        auto FindOrCreateBucket = [&](float Thickness, uint8 bDepthTest) -> uint32
+        for (uint32 t = 0; t < NumThreads; ++t)
         {
-            for (uint32 i = 0, n = (uint32)Buckets.size(); i < n; ++i)
+            FLineBatchScratch& S = LineBatchScratch[t];
+            for (uint32 b = 0; b < S.NumBuckets; ++b)
             {
-                const FBucket& B = Buckets[i];
-                if (B.bDepthTest == bDepthTest &&
-                    Math::EpsilonEqual(B.Thickness, Thickness, LE_SMALL_NUMBER))
+                const uint32 VC = (uint32)S.BucketVerts[b].size();
+                if (VC == 0)
                 {
-                    return i;
+                    S.GlobalBucket[b] = ~0u;
+                    continue;
                 }
-            }
-            Buckets.emplace_back(Thickness, 0u, 0u, bDepthTest);
-            return (uint32)Buckets.size() - 1;
-        };
-        
-        struct FLineDraw
-        {
-            FVector3 Start;
-            FVector3 End;
-            uint32    ColorPacked;
-            uint8     BucketIdx;
-        };
-        TVector<FLineDraw> DrawCache;
-        DrawCache.reserve(LineCount);
-        
-        const float Dt = SceneGlobalData.DeltaTime;
-        FFrustum& ViewFrustum = SceneGlobalData.CullData.Frustum;
-        SIZE_T WriteIdx = 0;
-        for (SIZE_T i = 0; i < LineCount; ++i)
-        {
-            FLineBatcherComponent::FLineInstance& Line = Lines[i];
 
-            const FAABB LineBounds(Math::Min(Line.Start, Line.End), Math::Max(Line.Start, Line.End));
-            if (ViewFrustum.IsInside(LineBounds))
-            {
-                const uint32 BucketIdx = FindOrCreateBucket(Line.Thickness, Line.bDepthTest);
-                Buckets[BucketIdx].VertexCount += 2;
-                DrawCache.emplace_back(Line.Start, Line.End, Line.ColorPacked, (uint8)BucketIdx);
-            }
-
-            if (Line.bSingleFrame)
-            {
-                continue;
-            }
-
-            Line.RemainingLifetime -= Dt;
-            if (Line.RemainingLifetime > 0.0f)
-            {
-                if (WriteIdx != i)
+                uint32 G = ~0u;
+                for (uint32 k = 0, n = (uint32)Global.size(); k < n; ++k)
                 {
-                    Lines[WriteIdx] = Line;
+                    if (Global[k].bDepthTest == S.BucketDepthTest[b] &&
+                        Math::EpsilonEqual(Global[k].Thickness, S.BucketThickness[b], LE_SMALL_NUMBER))
+                    {
+                        G = k;
+                        break;
+                    }
                 }
-                ++WriteIdx;
+                if (G == ~0u)
+                {
+                    G = (Global.size() < kMaxBuckets) ? (uint32)Global.size() : (kMaxBuckets - 1);
+                    if (G == (uint32)Global.size())
+                    {
+                        Global.emplace_back(FGlobalBucket{ S.BucketThickness[b], S.BucketDepthTest[b], 0u, 0u });
+                    }
+                }
+                Global[G].VertexCount += VC;
+                S.GlobalBucket[b] = G;
             }
         }
-        Lines.resize(WriteIdx);
 
+        // Prefix sum to give each global bucket a contiguous range in SimpleVertices.
         const uint32 BaseVertex = (uint32)SimpleVertices.size();
         uint32 Cursor = BaseVertex;
-        for (FBucket& B : Buckets)
+        for (FGlobalBucket& B : Global)
         {
             B.StartVertex = Cursor;
             Cursor += B.VertexCount;
         }
         SimpleVertices.resize(Cursor);
 
-        TFixedVector<uint32, 8> BucketWriteCursors;
-        BucketWriteCursors.resize(Buckets.size());
-        for (SIZE_T b = 0, n = Buckets.size(); b < n; ++b)
+        const bool bParallel = (Cursor - BaseVertex) > 4096;
+
+        // Hand each (worker, bucket) a disjoint sub-range within its global bucket so the copy is race-free.
+        TFixedVector<uint32, kMaxBuckets> GlobalWrite;
+        GlobalWrite.resize(Global.size());
+        for (uint32 k = 0, n = (uint32)Global.size(); k < n; ++k)
         {
-            BucketWriteCursors[b] = Buckets[b].StartVertex;
+            GlobalWrite[k] = Global[k].StartVertex;
         }
-        
-        for (const FLineDraw& Draw : DrawCache)
+        for (uint32 t = 0; t < NumThreads; ++t)
         {
-            uint32& Wc = BucketWriteCursors[Draw.BucketIdx];
-            SimpleVertices[Wc++] = { Draw.Start, Draw.ColorPacked };
-            SimpleVertices[Wc++] = { Draw.End,   Draw.ColorPacked };
+            FLineBatchScratch& S = LineBatchScratch[t];
+            for (uint32 b = 0; b < S.NumBuckets; ++b)
+            {
+                const uint32 VC = (uint32)S.BucketVerts[b].size();
+                if (VC == 0)
+                {
+                    continue;
+                }
+                const uint32 G = S.GlobalBucket[b];
+                S.WriteCursor[b] = GlobalWrite[G];
+                GlobalWrite[G] += VC;
+            }
         }
 
-        LineBatches.reserve(LineBatches.size() + Buckets.size());
-        for (const FBucket& B : Buckets)
+        // Parallel scatter: each worker copies its buckets into their reserved slices.
+        FSimpleElementVertex* const Dst = SimpleVertices.data();
+        auto CopyBody = [&](const Task::FParallelRange& Range)
         {
-            LineBatches.emplace_back(B.StartVertex, B.VertexCount, B.Thickness, B.bDepthTest);
+            LUMINA_PROFILE_SECTION("Copy Batched Lines");
+            for (uint32 t = Range.Start; t < Range.End; ++t)
+            {
+                FLineBatchScratch& S = LineBatchScratch[t];
+                for (uint32 b = 0; b < S.NumBuckets; ++b)
+                {
+                    const TVector<FSimpleElementVertex>& V = S.BucketVerts[b];
+                    if (V.empty())
+                    {
+                        continue;
+                    }
+                    std::memcpy(Dst + S.WriteCursor[b], V.data(), V.size() * sizeof(FSimpleElementVertex));
+                }
+            }
+        };
+        if (bParallel) { Task::ParallelFor(NumThreads, CopyBody, 1); }
+        else           { CopyBody(Task::FParallelRange{ 0u, NumThreads, 0u }); }
+
+        LineBatches.reserve(LineBatches.size() + Global.size());
+        for (const FGlobalBucket& B : Global)
+        {
+            LineBatches.emplace_back(B.StartVertex, B.VertexCount, B.Thickness, (bool)B.bDepthTest);
+        }
+
+        // Rebuild the persistent line list from surviving (non-single-frame) lines; order is irrelevant.
+        uint32 SurvivorTotal = 0;
+        for (uint32 t = 0; t < NumThreads; ++t)
+        {
+            SurvivorTotal += (uint32)LineBatchScratch[t].Survivors.size();
+        }
+        if (SurvivorTotal == 0)
+        {
+            Lines.clear();
+        }
+        else
+        {
+            LineCompactScratch.clear();
+            LineCompactScratch.reserve(SurvivorTotal);
+            for (uint32 t = 0; t < NumThreads; ++t)
+            {
+                const TVector<FLineInstance>& Sv = LineBatchScratch[t].Survivors;
+                LineCompactScratch.insert(LineCompactScratch.end(), Sv.begin(), Sv.end());
+            }
+            Lines.swap(LineCompactScratch);
+        }
+
+        // Reset the per-worker produce buffers for next frame (capacity retained, so no per-frame realloc).
+        for (TVector<FLineInstance>& Buffer : ThreadBuffers)
+        {
+            Buffer.clear();
         }
     }
 
@@ -7544,7 +7728,7 @@ namespace Lumina
         constexpr uint32 BloomMaxMips = 5;
 
         // Push constants for BloomDownsampleSPD.slang. Bindless: HDRIndex picks the
-        // source SRV, MipUAV[i] picks the per-mip UAV — no pass-local binding set.
+        // source SRV, MipUAV[i] picks the per-mip UAV, no pass-local binding set.
         struct FBloomDownSPDPushConstants
         {
             FUIntVector2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
@@ -8823,13 +9007,13 @@ namespace Lumina
         // shader-read in the pass that depth-writes them. Shared across views (view-independent).
         {
             FBindingSetDesc ShadowSetDesc;
-            // 0: cascade with comparison sampler — hardware PCF.
+            // 0: cascade with comparison sampler, hardware PCF.
             ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(0, NamedImages[(int)ENamedImage::Cascade],
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
             // 1: shadow atlas with comparison sampler.
             ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(1, ShadowAtlas.GetImage(),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            // 2: cascade again, with point/standard sampler — PCSS blocker search needs raw depth.
+            // 2: cascade again, with point/standard sampler, PCSS blocker search needs raw depth.
             ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(2, NamedImages[(int)ENamedImage::Cascade],
                 TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
 

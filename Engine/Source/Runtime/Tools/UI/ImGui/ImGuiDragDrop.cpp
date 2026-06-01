@@ -14,7 +14,7 @@ namespace Lumina::DragDrop
     static FPayload GPayload;
 
     // ImGui needs a non-zero data buffer for SetDragDropPayload. We only use
-    // the channel as a signal — the typed data lives in GPayload.
+    // the channel as a signal, the typed data lives in GPayload.
     static char GSentinel = 0;
 
     static FFixedString MakeFixed(FStringView View)

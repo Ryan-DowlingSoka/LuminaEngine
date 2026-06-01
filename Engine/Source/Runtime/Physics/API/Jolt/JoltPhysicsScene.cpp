@@ -637,7 +637,12 @@ namespace Lumina::Physics
     void FJoltPhysicsScene::Update(double DeltaTime)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
+        // Mark this scene as stepping so on_construct defers body creation (Jolt forbids it mid-step).
+        // Per-scene flag, so it survives the physics job migrating workers.
+        bStepInProgress.store(true, std::memory_order_release);
+        struct FStepGuard { TAtomic<bool>& F; ~FStepGuard() { F.store(false, std::memory_order_release); } } StepGuard{ bStepInProgress };
+
         // Drain pending body creations before the step; release lock per pop so re-enqueue is safe.
         for (;;)
         {
@@ -1060,6 +1065,12 @@ namespace Lumina::Physics
         entt::registry& Registry = World->GetEntityRegistry();
         auto& TransformStorage = Registry.storage<STransformComponent>();
 
+        // A pending FNeedsPhysicsBodyUpdate is a game-authored teleport (e.g. SetLocation right after a
+        // runtime spawn) that ApplyDirtyTransforms hasn't pushed to the body yet. Writing the body's current
+        // (pre-teleport) pose back here would clobber the authored target, and the teleport would then re-read
+        // the clobbered value -- so the body snaps back to where it spawned. Skip those until the teleport lands.
+        const auto& PendingTeleport = Registry.storage<FNeedsPhysicsBodyUpdate>();
+
         for (uint32 i = 0; i < Count; ++i)
         {
             const EInterpFlag Flag    = InterpStaging.Flags[i];
@@ -1076,7 +1087,7 @@ namespace Lumina::Physics
                 continue;
             }
 
-            if (!TransformStorage.contains(Entity))
+            if (!TransformStorage.contains(Entity) || PendingTeleport.contains(Entity))
             {
                 continue;
             }
@@ -2027,14 +2038,14 @@ namespace Lumina::Physics
         LUMINA_PROFILE_SCOPE();
 
         // Inside a game-thread batch (e.g. fracture): collect and create together in EndBodyBatch.
-        if (bBatchingBodies && !Threading::IsPhysicsThread())
+        if (bBatchingBodies && !bStepInProgress.load(std::memory_order_acquire))
         {
             BatchedBodyCreations.push_back(Entity);
             return;
         }
 
-        // Jolt forbids CreateBody/AddBody during a step; defer if on the physics thread.
-        if (Threading::IsPhysicsThread())
+        // Jolt forbids CreateBody/AddBody during a step; defer if the scene is mid-step.
+        if (bStepInProgress.load(std::memory_order_acquire))
         {
             FScopeLock Lock(PendingRigidBodyMutex);
             PendingRigidBodyCreations.push(Entity);

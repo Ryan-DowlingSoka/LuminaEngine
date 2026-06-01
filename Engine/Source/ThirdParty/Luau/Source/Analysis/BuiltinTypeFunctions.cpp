@@ -2293,7 +2293,7 @@ TypeFunctionReductionResult<TypeId> indexFunctionImpl(
     if (indexerNormTy->hasTops() || indexerNormTy->hasErrors())
         return {std::nullopt, Reduction::Erroneous, {}, {}};
 
-    // indexer can be a union —> break them down into a vector
+    // indexer can be a union,> break them down into a vector
     const std::vector<TypeId>* typesToFind = nullptr;
     const std::vector<TypeId> singleType{indexerTy};
     if (auto unionTy = get<UnionType>(indexerTy))

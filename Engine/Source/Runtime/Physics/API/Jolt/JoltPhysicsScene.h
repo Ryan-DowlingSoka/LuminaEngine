@@ -8,6 +8,7 @@
 #include "Containers/Array.h"
 #include <cstring>
 #include "Core/Threading/Thread.h"
+#include "Core/Threading/Atomic.h"
 #include "Memory/SmartPtr.h"
 #include "Physics/PhysicsScene.h"
 #include "World/Entity/Events/ImpulseEvent.h"
@@ -267,6 +268,11 @@ namespace Lumina::Physics
 
     	FMutex										PendingRigidBodyMutex;
     	TQueue<entt::entity>						PendingRigidBodyCreations;
+
+    	// True while Update() is stepping this scene. Jolt forbids body creation during a step, so
+    	// on_construct defers instead. Per-scene (not thread_local) so it stays correct when the
+    	// physics step runs as a migrating fiber job rather than a dedicated thread.
+    	TAtomic<bool>								bStepInProgress{false};
 
     	// When set (between BeginBodyBatch/EndBodyBatch on the game thread), rigid-body
     	// constructions are collected here and created together instead of one at a time.

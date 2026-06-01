@@ -35,7 +35,7 @@ namespace Lumina::Fibers
     FFiber ThreadToFiber()
     {
         // FIBER_FLAG_FLOAT_SWITCH: save/restore x87 + MXCSR across switches (else FP control state leaks
-        // between fibers). Already-a-fiber is fine — return the existing handle.
+        // between fibers). Already-a-fiber is fine, return the existing handle.
         if (::IsThreadAFiber())
         {
             return ::GetCurrentFiber();

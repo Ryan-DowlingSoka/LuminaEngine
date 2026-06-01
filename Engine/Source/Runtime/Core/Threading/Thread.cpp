@@ -68,7 +68,7 @@ namespace Lumina
         void Initialize(const char* MainThreadName)
         {
             GMainThreadID = std::this_thread::get_id();
-            SetThreadName(MainThreadName);
+            SetThreadName(MainThreadName, ThreadGroup_Main);
         }
 
         void Shutdown()

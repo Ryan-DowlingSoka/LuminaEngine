@@ -313,7 +313,7 @@ namespace Lumina
             const nlohmann::json& ActionJson = It.value();
             if (!ActionJson.is_object())
             {
-                LOG_WARN("[InputActions] '{}' is not an object — skipping.", ActionName.c_str());
+                LOG_WARN("[InputActions] '{}' is not an object, skipping.", ActionName.c_str());
                 continue;
             }
 

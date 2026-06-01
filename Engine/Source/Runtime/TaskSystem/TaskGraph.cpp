@@ -247,14 +247,14 @@ namespace Lumina
             {
                 const uint32 Len = Base + (c < Rem ? 1u : 0u);
                 Node->Chunks[c] = FNode::FChunk{ Node, Start, Start + Len };
-                Node->Decls[c]  = Jobs::FJobDecl{ &FNode::RunChunk, &Node->Chunks[c] };
+                Node->Decls[c]  = Jobs::FJobDecl{ &FNode::RunChunk, &Node->Chunks[c], "Graph" };
                 Start += Len;
             }
         }
 
         // Capture the root set NOW, while PendingDeps is stable (no node has been scheduled yet, so no
         // worker can be decrementing in-degrees). Scheduling a root below may complete it and drive a
-        // dependent to zero on a worker thread; that worker — not this loop — owns scheduling it.
+        // dependent to zero on a worker thread; that worker, not this loop, owns scheduling it.
         DispatchRoots.clear();
         for (uint32 i = 0; i < NumNodes; ++i)
         {

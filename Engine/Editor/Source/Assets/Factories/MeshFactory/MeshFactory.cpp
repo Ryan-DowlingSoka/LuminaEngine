@@ -705,9 +705,20 @@ namespace Lumina
             SlowTask.EnterProgressFrame(kSaveBudget);
         }
         
+        // The import assets cross-reference each other (mesh->Skeleton, skeleton->PreviewMesh,
+        // anim->Skeleton) and the local PrimarySkeleton holds one too. Force-destroying them while
+        // those TObjectPtrs are live would dangle them. Break the skeleton<->mesh back-edge and drop
+        // the local handle, then tear down by refcount: in reverse creation order each object reaches
+        // zero strong refs (its holders are destroyed first) and ConditionalBeginDestroy frees it.
+        if (PrimarySkeleton)
+        {
+            PrimarySkeleton->PreviewMesh = nullptr;
+        }
+        PrimarySkeleton = nullptr;
+
         for (auto It = CreatedObjects.rbegin(); It != CreatedObjects.rend(); ++It)
         {
-            (*It)->ForceDestroyNow();
+            (*It)->ConditionalBeginDestroy();
         }
     }
 }

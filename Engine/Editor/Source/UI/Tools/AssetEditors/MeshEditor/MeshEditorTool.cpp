@@ -717,7 +717,7 @@ namespace Lumina
             "Toggle wireframe, normals, tangents, AABB from the View menu. Useful for verifying imports "
             "and diagnosing lighting issues.");
         DrawHelpTextRow("Reimport",
-            "If the source FBX/GLTF on disk changed, use File > Reimport to refresh — preserves material "
+            "If the source FBX/GLTF on disk changed, use File > Reimport to refresh, preserves material "
             "overrides where slot names match.");
     }
 

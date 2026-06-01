@@ -330,7 +330,7 @@ namespace Lumina
         {
             if (Desc.Modules.empty())
             {
-                ImGui::TextDisabled("No native modules — content-only plugin.");
+                ImGui::TextDisabled("No native modules, content-only plugin.");
             }
             else if (ImGui::BeginTable("##Modules", 3,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |

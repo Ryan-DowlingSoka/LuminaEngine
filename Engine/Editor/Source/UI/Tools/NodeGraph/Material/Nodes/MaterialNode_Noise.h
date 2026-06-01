@@ -103,7 +103,7 @@ namespace Lumina
         void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "Noise"; }
         FString GetNodeDisplayName() const override { return "VoronoiNoise"; }
-        FString GetNodeTooltip() const override { return "2D Voronoi/Worley noise — distance to the closest cell point."; }
+        FString GetNodeTooltip() const override { return "2D Voronoi/Worley noise, distance to the closest cell point."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
         CMaterialInput* UV = nullptr;
     };
@@ -116,7 +116,7 @@ namespace Lumina
         void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "Noise"; }
         FString GetNodeDisplayName() const override { return "SimpleNoise"; }
-        FString GetNodeTooltip() const override { return "Cheapest pseudo-random noise — a single sin-hash. High-frequency sparkle."; }
+        FString GetNodeTooltip() const override { return "Cheapest pseudo-random noise, a single sin-hash. High-frequency sparkle."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
         CMaterialInput* UV = nullptr;
     };

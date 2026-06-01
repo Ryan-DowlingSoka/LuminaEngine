@@ -3,8 +3,9 @@
 #include "AssetManager.h"
 #include "Assets/AssetRegistry/AssetData.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Core/Object/ObjectCore.h"
+#include "Core/Object/Package/Package.h"
 #include "Log/Log.h"
-#include "TaskSystem/TaskSystem.h"
 
 namespace Lumina
 {
@@ -13,52 +14,99 @@ namespace Lumina
         static FAssetManager Instance;
         return Instance;
     }
-    
-    TSharedPtr<FAssetRequest> FAssetManager::LoadAssetAsync(const FFixedString& PackagePath, const FGuid& RequestedAsset)
+
+    FAssetHandle FAssetManager::AcquireLoad(const FGuid& GUID, TPromise<CObject*>& OutPromise, bool& bShouldLoad)
     {
-        bool bAlreadyInQueue = false;
-        TSharedPtr<FAssetRequest> ActiveRequest = CreateOrFindAssetRequest(PackagePath, RequestedAsset, bAlreadyInQueue);
-        
-        if (!bAlreadyInQueue)
+        FFiberScopeLock Lock(RequestMutex);
+
+        if (auto It = InFlight.find(GUID); It != InFlight.end())
         {
-            SubmitAssetRequest(ActiveRequest);
+            bShouldLoad = false;
+            return It->second;
         }
 
-        return ActiveRequest;
+        TPromise<CObject*> Promise;
+        FAssetHandle Handle = Promise.GetFuture();
+        InFlight.emplace(GUID, Handle);
+        OutPromise  = Move(Promise);
+        bShouldLoad = true;
+        return Handle;
+    }
+
+    void FAssetManager::PerformLoad(const FFixedString& Path, const FGuid& GUID, TPromise<CObject*> Promise)
+    {
+        CObject* Object = nullptr;
+        if (CPackage* Package = CPackage::LoadPackage(Path))
+        {
+            Object = Package->LoadObject(GUID);
+        }
+
+        Promise.SetValue(Object);
+
+        // Retire after fulfilling: a request arriving in this window attaches to the already-satisfied
+        // handle (and resolves immediately) instead of kicking off a duplicate load.
+        FFiberScopeLock Lock(RequestMutex);
+        InFlight.erase(GUID);
+    }
+
+    FAssetHandle FAssetManager::LoadAssetAsync(const FFixedString& PackagePath, const FGuid& RequestedAsset)
+    {
+        TPromise<CObject*> Promise;
+        bool bShouldLoad = false;
+        FAssetHandle Handle = AcquireLoad(RequestedAsset, Promise, bShouldLoad);
+
+        if (bShouldLoad)
+        {
+            FFixedString Path = PackagePath;
+            Task::Async([this, Path, RequestedAsset, P = Move(Promise)]() mutable
+            {
+                PerformLoad(Path, RequestedAsset, Move(P));
+            });
+        }
+
+        return Handle;
     }
 
     CObject* FAssetManager::LoadAssetSynchronous(const FFixedString& PackagePath, const FGuid& RequestedAsset)
     {
-        bool bAlreadyInQueue = false;
-        TSharedPtr<FAssetRequest> ActiveRequest = CreateOrFindAssetRequest(PackagePath, RequestedAsset, bAlreadyInQueue);
-        
-        if (bAlreadyInQueue)
-        {
-            return FindObject<CObject>(ActiveRequest->RequestedGUID);
-        }
-        
-        ActiveRequest->Process();
-        NotifyAssetRequestCompleted(ActiveRequest);
-        
-        return ActiveRequest->GetPendingObject();
-    }
+        TPromise<CObject*> Promise;
+        bool bShouldLoad = false;
+        FAssetHandle Handle = AcquireLoad(RequestedAsset, Promise, bShouldLoad);
 
-    void FAssetManager::NotifyAssetRequestCompleted(const TSharedPtr<FAssetRequest>& Request)
-    {
-        auto It = eastl::find(ActiveRequests.begin(), ActiveRequests.end(), Request);
-        ASSERT(It != ActiveRequests.end());
-
-        for (auto& Functor : Request->Listeners)
+        if (bShouldLoad)
         {
-            Functor(Request->PendingObject);
+            // No one else is loading this: load inline (the handle is fulfilled immediately, so the
+            // Get() below doesn't actually block) rather than pay a scheduling hop just to wait.
+            PerformLoad(PackagePath, RequestedAsset, Move(Promise));
+            return Handle.Get();
         }
-        
-        ActiveRequests.erase(It);
+
+        // An async load for this asset is already in flight. Don't block on its handle: a sync request
+        // can be re-entrant (e.g. fired from a PostLoad while the same asset is mid-load), and blocking
+        // would self-deadlock. Return the current in-memory object.
+        return FindObject<CObject>(RequestedAsset);
     }
 
     void FAssetManager::FlushAsyncLoading()
     {
-
+        // Loads can queue more loads (dependencies), so drain in waves until the table stays empty.
+        for (;;)
+        {
+            TVector<FAssetHandle> Pending;
+            {
+                FFiberScopeLock Lock(RequestMutex);
+                if (InFlight.empty())
+                {
+                    return;
+                }
+                Pending.reserve(InFlight.size());
+                for (const auto& Entry : InFlight)
+                {
+                    Pending.push_back(Entry.second);
+                }
+            }
+            WhenAll(Pending).Get();
+        }
     }
 
     FAssetData* FAssetManager::ResolvePrimaryAsset(const FPrimaryAssetId& Id) const
@@ -69,7 +117,6 @@ namespace Lumina
         }
 
         const FName Target = Id.GetName();
-        FAssetData* Hit = nullptr;
         const TVector<FAssetData*> Candidates = FAssetRegistry::Get().FindByPredicate(
             [&](const FAssetData& D)
             {
@@ -91,45 +138,20 @@ namespace Lumina
     CObject* FAssetManager::LoadPrimaryAssetSynchronous(const FPrimaryAssetId& Id)
     {
         FAssetData* Data = ResolvePrimaryAsset(Id);
-        if (Data == nullptr) return nullptr;
+        if (Data == nullptr)
+        {
+            return nullptr;
+        }
         return LoadAssetSynchronous(Data->Path, Data->AssetGUID);
     }
 
-    TSharedPtr<FAssetRequest> FAssetManager::LoadPrimaryAssetAsync(const FPrimaryAssetId& Id)
+    FAssetHandle FAssetManager::LoadPrimaryAssetAsync(const FPrimaryAssetId& Id)
     {
         FAssetData* Data = ResolvePrimaryAsset(Id);
-        if (Data == nullptr) return {};
+        if (Data == nullptr)
+        {
+            return {};
+        }
         return LoadAssetAsync(Data->Path, Data->AssetGUID);
     }
-
-    TSharedPtr<FAssetRequest> FAssetManager::CreateOrFindAssetRequest(const FFixedString& InAssetPath, const FGuid& GUID, bool& bAlreadyInQueue)
-    {
-        FScopeLock Lock(RequestMutex);
-        
-        auto It = eastl::find_if(ActiveRequests.begin(), ActiveRequests.end(), [&](const TSharedPtr<FAssetRequest>& Request)
-        {
-            return Request->GetAssetPath() == InAssetPath && Request->RequestedGUID == GUID;
-        });
-
-        if (It != ActiveRequests.end())
-        {
-            bAlreadyInQueue = true;
-            return *It;
-        }
-
-        bAlreadyInQueue = false;
-        TSharedPtr<FAssetRequest> NewRequest = MakeShared<FAssetRequest>(InAssetPath, GUID, nullptr);
-        return ActiveRequests.emplace_back(NewRequest);
-    }
-
-    void FAssetManager::SubmitAssetRequest(const TSharedPtr<FAssetRequest>& Request)
-    {
-        Task::AsyncTask(1, 1, [this, Request](uint32, uint32, uint32)
-        {
-            Request->Process();
-            NotifyAssetRequestCompleted(Request);
-        });
-    }
-    
 }
-

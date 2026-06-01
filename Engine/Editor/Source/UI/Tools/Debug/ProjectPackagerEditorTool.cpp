@@ -50,7 +50,7 @@ namespace Lumina
             "assets skip the load+resave entirely. Bump FCookDDC::kCookStamp in code to invalidate the "
             "whole cache after changing cook logic.");
         DrawHelpTextRow("Cook vs Full Package",
-            "Cook Only stops after the .pak set — fast iteration when you only changed assets. "
+            "Cook Only stops after the .pak set, fast iteration when you only changed assets. "
             "Full Package runs cook + build + copy and produces a runnable distribution.");
         DrawHelpTextRow("Configurations",
             "Shipping (default): no editor / no debug overhead, optimized. Development: profiler scopes + "
@@ -139,7 +139,7 @@ namespace Lumina
                 AppendLog(FString("FAILED: ") + LastError);
             }
 
-            // Worker is finished — join (instant) before releasing our handle.
+            // Worker is finished, join (instant) before releasing our handle.
             if (Worker.joinable())
             {
                 Worker.join();
@@ -233,7 +233,7 @@ namespace Lumina
         ClearLog();
 
         // 1) Cook synchronously on the main thread. Touches engine state, but
-        //    fast — typically sub-second for a small project.
+        //    fast, typically sub-second for a small project.
         Stage = EStage::Cooking;
 
         const FString ProjectName(GEngine->GetProjectName().data(), GEngine->GetProjectName().size());
@@ -357,7 +357,7 @@ namespace Lumina
         if (Roots.empty())
         {
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-                "Cook Roots: <none — open Project Settings > Maps > Cook Roots to add asset paths,");
+                "Cook Roots: <none, open Project Settings > Maps > Cook Roots to add asset paths,");
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
                 "             or declare CookRoots in a .lplugin / flag assets EAssetFlags::Primary>");
         }
@@ -377,7 +377,7 @@ namespace Lumina
             }
         }
 
-        // Status badge — visible at a glance while a build is running.
+        // Status badge, visible at a glance while a build is running.
         const bool bIsRunning = (Stage == EStage::Cooking || Stage == EStage::Building || Stage == EStage::Copying);
         if (bIsRunning)
         {

@@ -1,16 +1,17 @@
 #pragma once
 
 #include "Platform/GenericPlatform.h"
+#include "Containers/Array.h"
 
-// Lumina job system — a fiber scheduler with counter-based dependencies.
+// Lumina job system, a fiber scheduler with counter-based dependencies.
 //
 // One worker thread per core drains lock-free MPMC job queues (one per priority). Each job runs on a
 // pooled user-mode fiber. When a job waits on a counter it does NOT block the worker: the fiber is
-// parked and the worker switches to other runnable work; the fiber is resumed later — possibly on a
+// parked and the worker switches to other runnable work; the fiber is resumed later, possibly on a
 // different worker (fibers migrate freely). That keeps every core productive, makes nested parallelism
 // deadlock-free, and unlike a blocking wait the waiting stack is suspended rather than held.
 //
-// Non-worker ("external") threads — main/render/physics — are not on fibers. A WaitForCounter from an
+// Non-worker ("external") threads, main/render/physics, are not on fibers. A WaitForCounter from an
 // external thread keeps the old assist-wait behavior: it runs queued jobs inline until satisfied.
 //
 // This is the low-level core. The task-facing API (Task::ParallelFor / FTaskGraph / etc.)
@@ -34,6 +35,7 @@ namespace Lumina::Jobs
     {
         FJobFunction Function = nullptr;
         void*        Argument = nullptr;
+        const char*  Name     = nullptr; // optional label (string literal) for the editor profiler
     };
 
     struct FConfig
@@ -72,7 +74,7 @@ namespace Lumina::Jobs
 
     // Submit jobs. The counter is incremented by Count up-front; each job decrements it on completion.
     RUNTIME_API void RunJobs(const FJobDecl* Jobs, uint32 Count, EJobPriority Priority, FCounter* Counter);
-    RUNTIME_API void RunJob(FJobFunction Fn, void* Arg, EJobPriority Priority, FCounter* Counter);
+    RUNTIME_API void RunJob(FJobFunction Fn, void* Arg, EJobPriority Priority, FCounter* Counter, const char* Name = nullptr);
 
     // Manually decrement a counter (not tied to a job). Fires waiters/completion at zero. Used for
     // graph fan-in where a node's completion signals a shared counter.
@@ -84,4 +86,81 @@ namespace Lumina::Jobs
 
     // Block the calling thread until every job submitted so far has completed.
     RUNTIME_API void WaitForAll();
+
+    // ---- Generic fiber suspension (the foundation for fiber-aware mutexes / condition variables /
+    // semaphores / futures, layered on top in FiberSync.h and Future.h) ----
+
+    // Opaque token for a suspended worker fiber. A wait queue holds one of these for each parked
+    // fiber and hands it back to ResumeFiber to make it runnable again.
+    struct FFiberHandle
+    {
+        void* Fiber = nullptr;
+        explicit operator bool() const { return Fiber != nullptr; }
+    };
+
+    // Called on the scheduler fiber, AFTER the parking fiber's context is fully saved, to publish the
+    // fiber into a wait queue. Link the supplied handle into your queue under your own lock here.
+    // Return true to actually park; return false to abort the park and resume immediately (used to
+    // close the race where the wait condition was satisfied between the caller's check and the park).
+    using FParkFn = bool (*)(void* Ctx, FFiberHandle Handle);
+
+    // Suspend the CURRENT worker fiber. The worker is freed to run other jobs; this call returns only
+    // once ResumeFiber(handle) is invoked for this fiber (possibly on a different worker). OnPark runs
+    // the publish step described above. WORKER FIBERS ONLY, external threads must assist-wait instead
+    // (see AssistOneJob); fiber-aware primitives branch on IsWorkerThread().
+    RUNTIME_API void ParkFiber(FParkFn OnPark, void* Ctx);
+
+    // Make a previously parked fiber runnable again. Callable from any thread.
+    RUNTIME_API void ResumeFiber(FFiberHandle Handle);
+
+    // Run one queued job inline if one is available; returns true if it ran one. The assist primitive
+    // for external-thread (non-fiber) wait loops in fiber-aware sync objects, running queued work
+    // while spinning keeps the system deadlock-free when the awaited signal depends on other jobs.
+    RUNTIME_API bool AssistOneJob();
+
+    // ---- Introspection (for the editor Task System profiler) ----
+
+    // Cheap on-demand snapshot of pool occupancy. Always compiled (no standing cost).
+    struct FJobLiveStats
+    {
+        uint32 NumWorkers    = 0;
+        uint32 NumWorkFibers = 0;
+        uint32 FibersFree    = 0;
+        uint32 FibersReady   = 0;
+        uint32 FibersInUse   = 0;       // NumWorkFibers - Free - Ready (clamped)
+        uint32 QueueDepth[3] = { 0, 0, 0 }; // per priority (approx)
+        int64  InFlight      = 0;
+    };
+    RUNTIME_API void GetLiveStats(FJobLiveStats& Out);
+
+    enum class EFiberState : uint8 { Free, Running, Parked, Ready };
+
+    struct FFiberState
+    {
+        uint16      Index         = 0;
+        EFiberState State         = EFiberState::Free;
+        uint16      OwnerWorker   = 0xFFFF;  // valid when Running
+        uint32      WaitCounterId = 0;       // valid when Parked
+        const char* Name          = nullptr; // current/last job label
+    };
+    // Live per-fiber state, the task system "as it sits". Editor builds only (empty otherwise).
+    RUNTIME_API void SnapshotFiberStates(TVector<FFiberState>& Out);
+
+    struct FCounterState
+    {
+        uint32 Id            = 0;
+        int32  Value         = 0;
+        uint32 ParkedWaiters = 0;
+    };
+    // Counters that currently have parked waiters, the live dependency state. Editor builds only.
+    RUNTIME_API void SnapshotActiveCounters(TVector<FCounterState>& Out);
+
+    struct FWorkerCoreState
+    {
+        uint32 Worker = 0;     // worker index in [0, NumWorkers)
+        uint32 Core   = 0;     // OS logical processor it last ran a job on
+        bool   bBusy  = false; // currently executing a job fiber
+    };
+    // Per-worker core occupancy, for the editor's CPU-core view. Editor builds only (empty otherwise).
+    RUNTIME_API void SnapshotWorkerCores(TVector<FWorkerCoreState>& Out);
 }

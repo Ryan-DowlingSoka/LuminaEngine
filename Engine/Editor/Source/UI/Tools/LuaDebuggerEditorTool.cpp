@@ -32,7 +32,7 @@ namespace Lumina
         DrawHelpTextRow("Call Stack",
             "Click a frame to scope the Locals/Upvalues view. The Lua editor jumps to that frame's source line.");
         DrawHelpTextRow("Watches",
-            "Add expressions in the Lua editor's Watch panel — they re-evaluate against the selected frame's "
+            "Add expressions in the Lua editor's Watch panel, they re-evaluate against the selected frame's "
             "environment on every pause.");
         DrawHelpTextRow("Breakpoints",
             "Click the gutter in the Lua editor to toggle. Right-click 'Configure...' for conditional, "
@@ -111,7 +111,7 @@ namespace Lumina
 
         ImGui::Spacing();
 
-        // Buttons disabled while running — gray them out so the affordance
+        // Buttons disabled while running, gray them out so the affordance
         // is obvious. Clicks are still no-ops if disabled state is wrong.
         ImGui::BeginDisabled(!bPaused);
 
@@ -162,7 +162,7 @@ namespace Lumina
         {
             const Lua::FStackFrame& Frame = Stack[I];
             char Label[256];
-            std::snprintf(Label, sizeof(Label), "[%d] %s — %s:%d##frame%d",
+            std::snprintf(Label, sizeof(Label), "[%d] %s, %s:%d##frame%d",
                 I,
                 Frame.FunctionName.empty() ? "?" : Frame.FunctionName.c_str(),
                 Frame.Source.empty()       ? "?" : Frame.Source.c_str(),
@@ -231,6 +231,6 @@ namespace Lumina
     {
         ImGui::TextDisabled("Breakpoints");
         ImGui::Separator();
-        ImGui::TextDisabled("(Manage breakpoints from the script editor's gutter — right-click a line number.)");
+        ImGui::TextDisabled("(Manage breakpoints from the script editor's gutter, right-click a line number.)");
     }
 }

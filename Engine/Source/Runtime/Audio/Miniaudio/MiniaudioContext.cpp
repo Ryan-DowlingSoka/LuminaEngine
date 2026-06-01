@@ -6,6 +6,7 @@
 #include "Log/Log.h"
 #include "Memory/Memory.h"
 #include "MiniAudio/miniaudio.h"
+#include "TaskSystem/Scheduler/JobScheduler.h"
 
 namespace Lumina
 {
@@ -42,21 +43,21 @@ namespace Lumina
 			return;
 		}
 		
+		// PumpCounter is allocated lazily on the first Update(), Audio::Initialize runs before
+		// Task::Initialize, so the Jobs system isn't up yet here.
 		bRunning.store(true, Atomic::MemoryOrderRelease);
-
-		AudioThread = FThread([this]()
-		{
-			AudioThreadMain();
-		});
 	}
 
 	FMiniaudioContext::~FMiniaudioContext()
 	{
 		bRunning.store(false, Atomic::MemoryOrderRelease);
 
-		if (AudioThread.joinable())
+		// Let any in-flight pump job finish before we tear down its sounds / the engine.
+		if (PumpCounter != nullptr)
 		{
-			AudioThread.join();
+			Jobs::WaitForCounter(PumpCounter, 0);
+			Jobs::FreeCounter(PumpCounter);
+			PumpCounter = nullptr;
 		}
 
 		for (TUniquePtr<FActiveSound>& Sound : ActiveSounds)
@@ -66,6 +67,53 @@ namespace Lumina
 		ActiveSounds.clear();
 
 		ma_engine_uninit(&Engine);
+	}
+
+	void FMiniaudioContext::Update()
+	{
+		if (!bRunning.load(Atomic::MemoryOrderAcquire) || !Jobs::IsInitialized())
+		{
+			return;
+		}
+		if (PumpCounter == nullptr)
+		{
+			PumpCounter = Jobs::AllocCounter(0);
+		}
+
+		bool Expected = false;
+		if (bPumpActive.compare_exchange_strong(Expected, true, Atomic::MemoryOrderAcqRel))
+		{
+			Jobs::RunJob(&FMiniaudioContext::PumpEntry, this, Jobs::EJobPriority::Normal, PumpCounter, "Audio::Pump");
+		}
+	}
+
+	void FMiniaudioContext::PumpEntry(void* Arg, uint32 /*WorkerIndex*/)
+	{
+		FMiniaudioContext* Self = static_cast<FMiniaudioContext*>(Arg);
+		Self->PumpOnce();
+		Self->bPumpActive.store(false, Atomic::MemoryOrderRelease);
+	}
+
+	void FMiniaudioContext::PumpOnce()
+	{
+		LUMINA_PROFILE_SECTION_COLORED("Audio::Pump", tracy::Color::Orange);
+
+		constexpr int32 MaxCommandsPerTick = 64;
+		FAudioCommand Cmd;
+		int32 Processed = 0;
+		while (Processed < MaxCommandsPerTick && CommandQueue.try_dequeue(Cmd))
+		{
+			ProcessCommand(Cmd);
+			++Processed;
+		}
+
+		FPendingProceduralStart Start;
+		while (PendingProceduralStarts.try_dequeue(Start))
+		{
+			ProcessPendingProceduralStart(Start);
+		}
+
+		CleanupFinishedSounds();
 	}
 	
 
@@ -156,37 +204,6 @@ namespace Lumina
 
 		PendingProceduralStarts.enqueue(eastl::move(Start));
 		return Handle;
-	}
-	
-	void FMiniaudioContext::AudioThreadMain()
-	{
-		Memory::InitializeThreadHeap();
-		Threading::SetThreadName("Audio Thread");
-
-		constexpr int32 MaxCommandsPerTick = 64;
-		FAudioCommand Cmd;
-
-		while (bRunning.load(std::memory_order_acquire))
-		{
-			LUMINA_PROFILE_SECTION_COLORED("Audio-Thread-Tick", tracy::Color::Orange);
-
-			int32 Processed = 0;
-			while (Processed < MaxCommandsPerTick && CommandQueue.try_dequeue(Cmd))
-			{
-				ProcessCommand(Cmd);
-				++Processed;
-			}
-
-			FPendingProceduralStart Start;
-			while (PendingProceduralStarts.try_dequeue(Start))
-			{
-				ProcessPendingProceduralStart(Start);
-			}
-
-			CleanupFinishedSounds();
-
-			Threading::Sleep(5);
-		}
 	}
 
 	void FMiniaudioContext::ProcessCommand(const FAudioCommand& Cmd)

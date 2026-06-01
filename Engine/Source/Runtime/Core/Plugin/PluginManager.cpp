@@ -340,7 +340,7 @@ namespace Lumina
                     Result.push_back(P);
                 }
             }
-            LOG_WARN("[PluginManager] Dependency cycle detected involving: {} — loading them in discovery order; resolve the cycle to silence this.",
+            LOG_WARN("[PluginManager] Dependency cycle detected involving: {}, loading them in discovery order; resolve the cycle to silence this.",
                 Names);
         }
         return Result;
@@ -421,7 +421,7 @@ namespace Lumina
             Loaded.bStartupCalled  = true;
             Plugin.GetLoadedModules().emplace_back(Move(Loaded));
 
-            // DISPLAY — boot milestone; we want it visible in Shipping
+            // DISPLAY, boot milestone; we want it visible in Shipping
             // post-mortems so "plugin X didn't load" is debuggable.
             LOG_DISPLAY("[PluginManager] Linked plugin '{}' static module '{}' (phase {})",
                 Plugin.GetName(), Module.Name, LexToString(Module.LoadingPhase));

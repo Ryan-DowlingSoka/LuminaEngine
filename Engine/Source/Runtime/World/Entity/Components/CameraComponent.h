@@ -11,7 +11,7 @@ namespace Lumina
 {
     class CMaterialInterface;
 
-    // Interpolation curve for blending the active camera (FCameraManager::SetActiveCamera);
+    // Interpolation curve for blending the active camera (SCameraSystem::SetActiveCamera);
     // EvaluateCameraBlend maps normalized [0..1] time onto [0..1].
     REFLECT()
     enum class ECameraBlendFunction : uint8

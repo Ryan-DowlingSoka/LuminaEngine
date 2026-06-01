@@ -326,7 +326,7 @@ public:
 
 	// Returns the absolute screen position of the top-left of the glyph at
 	// (line, column). Valid only after the first Render() call. Coordinates
-	// outside the visible region are still returned as-is — ImGui clipping
+	// outside the visible region are still returned as-is, ImGui clipping
 	// inside the editor's child window discards offscreen draws.
 	inline ImVec2 GetScreenPosForCoordinate(int line, int column) const {
 		return ImVec2(
@@ -1217,7 +1217,7 @@ protected:
 
 		// Track previous selection so we only re-snap the scroll position
 		// when the user actually navigates with arrow keys, not on every
-		// render — without this the popup overrides the user's mouse-wheel
+		// render, without this the popup overrides the user's mouse-wheel
 		// scroll on the very next frame.
 		size_t previousSelection = static_cast<size_t>(-1);
 

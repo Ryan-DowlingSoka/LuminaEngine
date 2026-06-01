@@ -29,7 +29,7 @@ namespace Lumina
     FString FPlugin::ResolveModuleBinaryPath(FStringView ModuleName) const
     {
         // Layout: <plugin>/Binaries/<Platform>/<Module>-<Cfg>.dll. PLATFORM_NAME keys the folder
-        // (has arch); SYSTEM_NAME matches SupportedPlatforms (no arch) — distinct, don't unify.
+        // (has arch); SYSTEM_NAME matches SupportedPlatforms (no arch), distinct, don't unify.
         FString Result = PluginDirectory;
         Result += "/Binaries/";
         Result += LUMINA_PLATFORM_NAME;

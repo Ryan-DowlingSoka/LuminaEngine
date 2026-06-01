@@ -52,6 +52,8 @@
 #include <LuminaEditor.h>
 
 #include "Config/Config.h"
+#include "Core/Object/ObjectCore.h"
+#include "Settings/EditorSettings.h"
 #include "Tools/Import/ImportHelpers.h"
 
 namespace Lumina
@@ -268,12 +270,12 @@ namespace Lumina
         (void)FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddMember(this, &FContentBrowserEditorTool::RefreshContentBrowser);
         (void)GEditorEngine->GetProjectLoadedDelegate().AddMember(this, &FContentBrowserEditorTool::OnProjectLoaded);
         
-        ContentBrowserTileSize = GConfig->Get("Editor.ContentBrowser.TileSize", 86.0f);
+        ContentBrowserTileSize = GetDefault<CContentBrowserSettings>()->TileSize;
         ContentBrowserTileView.SetTileSize(ContentBrowserTileSize);
 
         if (GEditorEngine->HasLoadedProject())
         {
-            // Virtual mount path, not the native content dir — the browser iterates VFS.
+            // Virtual mount path, not the native content dir, the browser iterates VFS.
             SelectedPath = "/Game";
         }
 
@@ -805,7 +807,7 @@ namespace Lumina
                 return;
             }
 
-            // Plain file (script, widget, audio, etc.) — disk-level remove only.
+            // Plain file (script, widget, audio, etc.), disk-level remove only.
             if (VFS::Remove(Destroy.PendingDestroy))
             {
                 ImGuiX::Notifications::NotifySuccess("Deleted {0}", Destroy.PendingDestroy);
@@ -956,7 +958,8 @@ namespace Lumina
             ImGui::SetNextItemWidth(128.0f);
             if (ImGui::SliderFloat("##Zoom", &ContentBrowserTileSize, 46.0f, 256.0f, "Tile: %.1fx"))
             {
-                GConfig->Set("Editor.ContentBrowser.TileSize", ContentBrowserTileSize);
+                GetMutableDefault<CContentBrowserSettings>()->TileSize = ContentBrowserTileSize;
+                GConfig->SaveSettings(CContentBrowserSettings::StaticClass());
                 ContentBrowserTileView.SetTileSize(ContentBrowserTileSize);
             }
             

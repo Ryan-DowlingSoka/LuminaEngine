@@ -369,6 +369,9 @@ namespace Lumina
         case EPropertyTypeFlags::Object:
             Customization = FCObjectPropertyCustomization::MakeInstance();
             break;
+        case EPropertyTypeFlags::SoftObject:
+            Customization = FSoftObjectPropertyCustomization::MakeInstance();
+            break;
         case EPropertyTypeFlags::Name:
             Customization = FNamePropertyCustomization::MakeInstance();
             break;
@@ -795,6 +798,9 @@ namespace Lumina
         void* InstancePtr = PropertyHandle->GetValuePtr();
         void* DefaultInstancePtr = PropertyHandle->GetDefaultValuePtr();
         PropertyTable = MakeUnique<FPropertyTable>(InstancePtr, StructProperty->GetStruct(), DefaultInstancePtr);
+        // Forward the owning row's change callbacks so edits to nested-struct members notify
+        // (save/undo) exactly like top-level property edits.
+        PropertyTable->ChangeEventCallbacks = Callbacks;
         PropertyTable->RebuildTree();
     }
 

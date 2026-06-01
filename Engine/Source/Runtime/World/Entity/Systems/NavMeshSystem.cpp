@@ -21,6 +21,12 @@
 
 namespace Lumina
 {
+    FSystemAccess SNavMeshSystem::Access = FSystemAccess{}
+        .Write<SNavMeshComponent>()
+        .Read<SBoxColliderComponent, SSphereColliderComponent, SMeshColliderComponent,
+              SCapsuleColliderComponent, SCylinderColliderComponent, SCharacterPhysicsComponent,
+              STerrainColliderComponent, STransformComponent, SStaticMeshComponent>();
+
     // NOLINTBEGIN(bugprone-throwing-static-initialization)
 
     // Master toggle. When false, no nav debug draws at all (sub-CVars are ignored).

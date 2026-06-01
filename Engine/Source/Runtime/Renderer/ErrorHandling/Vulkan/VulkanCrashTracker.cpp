@@ -449,7 +449,7 @@ namespace Lumina::RHI
             return;
         }
 
-        // Same blob twice — we don't strip; deriving a debug name needs both halves.
+        // Same blob twice, we don't strip; deriving a debug name needs both halves.
         GFSDK_Aftermath_ShaderDebugName DebugName = {};
         GFSDK_Aftermath_Result DebugNameResult = GFSDK_Aftermath_GetShaderDebugNameSpirv(
             GFSDK_Aftermath_Version_API,

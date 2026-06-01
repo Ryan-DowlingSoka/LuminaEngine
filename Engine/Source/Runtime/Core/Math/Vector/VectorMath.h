@@ -194,7 +194,7 @@ namespace Lumina::Math
         return R;
     }
 
-    // Linear blend (mix) — scalar and per-component interpolant.
+    // Linear blend (mix), scalar and per-component interpolant.
     template<typename T, int N>
     [[nodiscard]] constexpr TVec<T, N> Mix(const TVec<T, N>& A, const TVec<T, N>& B, T Alpha)
     {

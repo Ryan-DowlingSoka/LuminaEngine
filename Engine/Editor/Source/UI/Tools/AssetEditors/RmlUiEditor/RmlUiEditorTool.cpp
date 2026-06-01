@@ -1,6 +1,8 @@
 #include "RmlUiEditorTool.h"
 
 #include "Config/Config.h"
+#include "Core/Object/ObjectCore.h"
+#include "Settings/EditorSettings.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Renderer/CommandList.h"
@@ -48,19 +50,6 @@ namespace Lumina
         };
         constexpr int CustomPresetIndex = (int)(sizeof(ResolutionPresets) / sizeof(ResolutionPresets[0])) - 1;
 
-        const char* kKeyFontScale       = "Editor.RmlUiEditor.FontScale";
-        const char* kKeyTabSize         = "Editor.RmlUiEditor.TabSize";
-        const char* kKeyLineSpacing     = "Editor.RmlUiEditor.LineSpacing";
-        const char* kKeyShowWhitespace  = "Editor.RmlUiEditor.ShowWhitespace";
-        const char* kKeyShowLineNumbers = "Editor.RmlUiEditor.ShowLineNumbers";
-        const char* kKeyShowMiniMap     = "Editor.RmlUiEditor.ShowMiniMap";
-        const char* kKeyAutoIndent      = "Editor.RmlUiEditor.AutoIndent";
-        const char* kKeyMatchBrackets   = "Editor.RmlUiEditor.MatchBrackets";
-        const char* kKeyCompletePairs   = "Editor.RmlUiEditor.CompletePairs";
-        const char* kKeyInsertSpaces    = "Editor.RmlUiEditor.InsertSpacesOnTabs";
-        const char* kKeyTrimOnSave      = "Editor.RmlUiEditor.TrimTrailingOnSave";
-        const char* kKeyAutoReload      = "Editor.RmlUiEditor.AutoReload";
-        const char* kKeyPalette         = "Editor.RmlUiEditor.Palette";
 
         struct FRmlSnippet
         {
@@ -283,7 +272,7 @@ namespace Lumina
                     }
                 }
 
-                // # followed by 3, 4, 6, or 8 hex digits — CSS color literal.
+                // # followed by 3, 4, 6, or 8 hex digits, CSS color literal.
                 if (start != end && *start == '#')
                 {
                     auto cursor = start;
@@ -329,7 +318,7 @@ namespace Lumina
             };
             for (const char* T : Tags) Lang.keywords.insert(T);
 
-            // Common HTML/RML attribute names — colored as declarations so
+            // Common HTML/RML attribute names, colored as declarations so
             // `class=` and `id=` stand out from arbitrary identifiers.
             static const char* const Attributes[] = {
                 "id", "class", "style", "src", "href", "type", "name", "value",
@@ -403,21 +392,21 @@ namespace Lumina
         bIsStylesheet = (VirtualPath.size() >= 5) &&
             (FStringView(VirtualPath.c_str(), VirtualPath.size()).substr(VirtualPath.size() - 5) == FStringView(".rcss"));
 
-        // Pull persisted preferences. Defaults are registered in LuminaEditor.cpp.
-        EditorFontScale         = GConfig->GetFloat(kKeyFontScale);
-        EditorTabSize           = std::max(1, std::min(8, GConfig->GetInt(kKeyTabSize)));
-        EditorLineSpacing       = GConfig->GetFloat(kKeyLineSpacing);
-        bEditorShowWhitespace   = GConfig->GetBool(kKeyShowWhitespace);
-        bEditorShowLineNumbers  = GConfig->GetBool(kKeyShowLineNumbers);
-        bEditorShowMiniMap      = GConfig->GetBool(kKeyShowMiniMap);
-        bAutoIndent             = GConfig->GetBool(kKeyAutoIndent);
-        bShowMatchingBrackets   = GConfig->GetBool(kKeyMatchBrackets);
-        bCompletePairedGlyphs   = GConfig->GetBool(kKeyCompletePairs);
-        bInsertSpacesOnTabs     = GConfig->GetBool(kKeyInsertSpaces);
-        bTrimTrailingOnSave     = GConfig->GetBool(kKeyTrimOnSave);
-        bAutoReload             = GConfig->GetBool(kKeyAutoReload);
-        const FString PaletteStr = GConfig->GetString(kKeyPalette);
-        EditorPalette = (PaletteStr == "Light") ? EPalette::Light : EPalette::Dark;
+        // Pull persisted preferences from the developer-settings object.
+        const CRmlUiEditorSettings* Settings = GetDefault<CRmlUiEditorSettings>();
+        EditorFontScale         = Settings->FontScale;
+        EditorTabSize           = std::max(1, std::min(8, Settings->TabSize));
+        EditorLineSpacing       = Settings->LineSpacing;
+        bEditorShowWhitespace   = Settings->bShowWhitespace;
+        bEditorShowLineNumbers  = Settings->bShowLineNumbers;
+        bEditorShowMiniMap      = Settings->bShowMiniMap;
+        bAutoIndent             = Settings->bAutoIndent;
+        bShowMatchingBrackets   = Settings->bMatchBrackets;
+        bCompletePairedGlyphs   = Settings->bCompletePairs;
+        bInsertSpacesOnTabs     = Settings->bInsertSpacesOnTabs;
+        bTrimTrailingOnSave     = Settings->bTrimTrailingOnSave;
+        bAutoReload             = Settings->bAutoReload;
+        EditorPalette = (Settings->Palette == "Light") ? EPalette::Light : EPalette::Dark;
     }
 
     void FRmlUiEditorTool::OnInitialize()
@@ -534,7 +523,7 @@ namespace Lumina
     {
         DrawHelpTextRow("RmlUi",
             "Lumina ships RmlUi as its HTML/CSS-style markup layer. Documents live as plain .rml files "
-            "alongside their .rcss stylesheets — no asset packaging.");
+            "alongside their .rcss stylesheets, no asset packaging.");
         DrawHelpTextRow("Live Preview",
             "Saving (Ctrl+S) reloads the document on the right pane. Auto Reload watches the file on disk "
             "and refreshes when external editors save.");
@@ -542,7 +531,7 @@ namespace Lumina
             "FRmlUiRenderer supports CPU gradient decorators (horizontal-gradient / vertical-gradient) but NOT "
             "shader-backed ones (linear-gradient, radial-gradient). Use the supported names.");
         DrawHelpTextRow("Color Swatches",
-            "#RRGGBB / #RRGGBBAA literals get an inline color picker — click the swatch in the gutter "
+            "#RRGGBB / #RRGGBBAA literals get an inline color picker, click the swatch in the gutter "
             "to open it. Edits commit through the editor's normal undo stack.");
         DrawHelpTextRow("Resolution / Safe Zones",
             "Use the toolbar to lock canvas size to a target resolution. Safe zone overlays help align "
@@ -602,19 +591,21 @@ namespace Lumina
 
     void FRmlUiEditorTool::PersistSettings() const
     {
-        GConfig->Set<float>(kKeyFontScale,       EditorFontScale);
-        GConfig->Set<int32>(kKeyTabSize,         EditorTabSize);
-        GConfig->Set<float>(kKeyLineSpacing,     EditorLineSpacing);
-        GConfig->Set<bool>(kKeyShowWhitespace,   bEditorShowWhitespace);
-        GConfig->Set<bool>(kKeyShowLineNumbers,  bEditorShowLineNumbers);
-        GConfig->Set<bool>(kKeyShowMiniMap,      bEditorShowMiniMap);
-        GConfig->Set<bool>(kKeyAutoIndent,       bAutoIndent);
-        GConfig->Set<bool>(kKeyMatchBrackets,    bShowMatchingBrackets);
-        GConfig->Set<bool>(kKeyCompletePairs,    bCompletePairedGlyphs);
-        GConfig->Set<bool>(kKeyInsertSpaces,     bInsertSpacesOnTabs);
-        GConfig->Set<bool>(kKeyTrimOnSave,       bTrimTrailingOnSave);
-        GConfig->Set<bool>(kKeyAutoReload,       bAutoReload);
-        GConfig->Set<std::string>(kKeyPalette,   std::string(EditorPalette == EPalette::Dark ? "Dark" : "Light"));
+        CRmlUiEditorSettings* Settings = GetMutableDefault<CRmlUiEditorSettings>();
+        Settings->FontScale             = EditorFontScale;
+        Settings->TabSize               = EditorTabSize;
+        Settings->LineSpacing           = EditorLineSpacing;
+        Settings->bShowWhitespace       = bEditorShowWhitespace;
+        Settings->bShowLineNumbers      = bEditorShowLineNumbers;
+        Settings->bShowMiniMap          = bEditorShowMiniMap;
+        Settings->bAutoIndent           = bAutoIndent;
+        Settings->bMatchBrackets        = bShowMatchingBrackets;
+        Settings->bCompletePairs        = bCompletePairedGlyphs;
+        Settings->bInsertSpacesOnTabs   = bInsertSpacesOnTabs;
+        Settings->bTrimTrailingOnSave   = bTrimTrailingOnSave;
+        Settings->bAutoReload           = bAutoReload;
+        Settings->Palette               = (EditorPalette == EPalette::Dark) ? "Dark" : "Light";
+        GConfig->SaveSettings(CRmlUiEditorSettings::StaticClass());
     }
 
 
@@ -968,7 +959,7 @@ namespace Lumina
                 "em - relative to current font size\n"
                 "vw / vh - viewport width / height percent");
         }
-        if (ImGui::CollapsingHeader("Layout — flex"))
+        if (ImGui::CollapsingHeader("Layout, flex"))
         {
             ImGui::TextWrapped(
                 "display: flex;\n"
@@ -1118,7 +1109,7 @@ namespace Lumina
             if (ImGui::DragInt("##rml_h", &H, 4.0f, 16, 4320, "H %d")) CanvasHeight = (uint32)std::max(16, H);
         }
 
-        // Swap dimensions — handy for portrait/landscape testing without
+        // Swap dimensions, handy for portrait/landscape testing without
         // re-typing W/H. Only meaningful when both dims are set.
         if (CanvasWidth > 0 && CanvasHeight > 0)
         {
@@ -1239,7 +1230,7 @@ namespace Lumina
         switch (BgMode)
         {
         case EBgMode::Solid:       ClearColor = FVector4(BgColor.x, BgColor.y, BgColor.z, 1.0f); break;
-        case EBgMode::Checker:     // fallthrough — we draw the checker in ImGui below
+        case EBgMode::Checker:     // fallthrough, we draw the checker in ImGui below
         case EBgMode::Transparent: ClearColor = FVector4(0.0f, 0.0f, 0.0f, 0.0f); break;
         }
         RmlUi::SetEditorContextClearColor(PreviewContext, ClearColor);
@@ -1322,7 +1313,7 @@ namespace Lumina
         {
             DL->AddRectFilled(CanvasMin, CanvasMax, ToU32(BgColor));
         }
-        // Transparent — draw nothing, the pane background shows through.
+        // Transparent, draw nothing, the pane background shows through.
 
         const ImTextureID Tex = GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(PreviewTarget.GetReference());
         DL->AddImage(Tex, CanvasMin, CanvasMax);
@@ -1582,7 +1573,7 @@ namespace Lumina
                                     }
                                     else
                                     {
-                                        // Couldn't preserve short form — promote to long.
+                                        // Couldn't preserve short form, promote to long.
                                         if (Digits == 3)
                                         {
                                             std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", NewR, NewG, NewB);
@@ -1617,7 +1608,7 @@ namespace Lumina
                     }
                 }
 
-                // Default advance — tabs jump to next tab stop.
+                // Default advance, tabs jump to next tab stop.
                 if (C == '\t')
                 {
                     Column += TabSize - (Column % TabSize);

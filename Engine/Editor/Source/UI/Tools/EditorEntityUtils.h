@@ -24,7 +24,7 @@ namespace Lumina::EditorEntityUtils
     bool IsEditorOnlyComponent(const entt::type_info& Type);
     bool IsEditorOnlyComponent(entt::id_type TypeHash);
 
-    /** Standard filter for CWorld::DuplicateEntity — drops the editor-only set above
+    /** Standard filter for CWorld::DuplicateEntity, drops the editor-only set above
      *  so duplicates don't carry the source's selection / clipboard / dirty flags. */
     bool DefaultDuplicateFilter(const entt::type_info& Type);
 

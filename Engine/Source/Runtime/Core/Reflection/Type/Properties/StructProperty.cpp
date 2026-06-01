@@ -10,6 +10,8 @@ namespace Lumina
 
     void FStructProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
+        FArchiveRecord Record = Slot.EnterRecord();
+        Struct->SerializeTaggedProperties(Record, Value, Defaults);
     }
 
     bool FStructProperty::Identical(const void* ValueA, const void* ValueB) const

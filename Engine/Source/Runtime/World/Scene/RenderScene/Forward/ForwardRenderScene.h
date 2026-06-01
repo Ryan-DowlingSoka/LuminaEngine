@@ -6,6 +6,7 @@
 #include "Renderer/BindingCache.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskGraph.h"
+#include "World/Entity/Components/LineBatcherComponent.h"
 #include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
@@ -525,7 +526,7 @@ namespace Lumina
         FRHIImage* GetSceneDepthRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Depth_MS) : GetNamedImage(ENamedImage::DepthAttachment); }
         FRHIImage* GetPickerRT()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker_MS) : GetNamedImage(ENamedImage::Picker); }
 
-        /** Resolve target — null when MSAA off (no resolve needed). Caller adds via FAttachment::SetResolveImage. */
+        /** Resolve target, null when MSAA off (no resolve needed). Caller adds via FAttachment::SetResolveImage. */
         FRHIImage* GetSceneColorResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR) : nullptr; }
         FRHIImage* GetSceneDepthResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::DepthAttachment) : nullptr; }
         FRHIImage* GetPickerResolve()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker) : nullptr; }
@@ -687,8 +688,15 @@ namespace Lumina
         // after AllocateShadowTiles (ViewProjection filled) and before the buffer upload.
         void BuildCullViews(const FViewVolume& ViewVolume);
         
-        void ProcessBatchedLines(FLineBatcherComponent& Batcher);
-        void ProcessBatchedTriangles(FTriangleBatcherComponent& Batcher);
+        // Line batching split into graph-schedulable phases so the heavy parallel cull is dispatched as a
+        // first-class root node (its chunks enter the queue at Dispatch, alongside the mesh fan-out) instead
+        // of being fired from inside a single node at runtime (which bubbled the pool). Prepare runs inline
+        // before Dispatch (cheap: build chunk views + clear scratch, returns the chunk count); BatchLineChunks
+        // is the parallel-for body; FinalizeBatchedLines merges/scatters/rebuilds after the batch node.
+        uint32 PrepareBatchedLines(FLineBatcherComponent& Batcher);
+        void   BatchLineChunks(const Task::FParallelRange& Range);
+        void   FinalizeBatchedLines(FLineBatcherComponent& Batcher);
+        void   ProcessBatchedTriangles(FTriangleBatcherComponent& Batcher);
         
         void NotifyMaxLightsHit();
 
@@ -858,6 +866,30 @@ namespace Lumina
         // Per-worker draw-gather scratch, persisted so outer storage keeps capacity;
         // arena-backed members are reset each frame (ResetForFrame) to avoid aliasing.
         TVector<FThreadLocalDrawData>           ThreadLocalStorage;
+
+        // Per-worker scratch for parallel debug-line batching; persisted across frames
+        // (vectors keep capacity, cleared each frame). Each worker buckets its culled
+        // lines by (thickness, depth-test) locally; a serial merge lays the per-bucket
+        // ranges out contiguously, then a parallel pass copies them into SimpleVertices.
+        struct alignas(64) FLineBatchScratch
+        {
+            static constexpr uint32 kMaxBuckets = 16;
+            float    BucketThickness[kMaxBuckets];
+            uint8    BucketDepthTest[kMaxBuckets];
+            uint32   GlobalBucket[kMaxBuckets];     // local -> global index, filled at merge
+            uint32   WriteCursor[kMaxBuckets];      // vertex write offset, filled at merge
+            uint32   NumBuckets = 0;
+            TVector<FSimpleElementVertex>                  BucketVerts[kMaxBuckets];
+            TVector<FLineBatcherComponent::FLineInstance>  Survivors;
+        };
+        TVector<FLineBatchScratch>              LineBatchScratch;
+        // Reused as the compacted persistent-line buffer so survivor rebuilds don't churn the heap.
+        TVector<FLineBatcherComponent::FLineInstance> LineCompactScratch;
+
+        // Fixed-size views over the batcher's per-worker buffers + persistent list, built each frame as the
+        // balanced work units for the parallel line batch (no drain). Reused so it doesn't churn the heap.
+        struct FLineChunk { const FLineBatcherComponent::FLineInstance* Data; uint32 Count; };
+        TVector<FLineChunk>                     LineChunkScratch;
         
         FTaskGraph                              DrawTaskGraph;
         FTaskGraph                              DedupTaskGraph;

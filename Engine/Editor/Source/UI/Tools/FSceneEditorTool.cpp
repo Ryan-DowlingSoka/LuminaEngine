@@ -48,7 +48,7 @@ namespace Lumina
         : FAssetEditorTool(Context, DisplayName)
     {
         // World path: the live CWorld is the document, but it is NOT held as the FAssetEditorTool
-        // Asset — its lifetime is owned by the editor (created/swapped/destroyed elsewhere), so a
+        // Asset, its lifetime is owned by the editor (created/swapped/destroyed elsewhere), so a
         // second owning ref here would corrupt the refcount on swap. Asset stays null; saving and
         // dirtying go through GetScenePackage()/OnSave overrides.
         World = InWorld;
@@ -914,7 +914,7 @@ namespace Lumina
             Tooltip = FString("Entity: " + eastl::to_string(entt::to_integral(Entity)));
         }
 
-        // Components shown on hover only — they no longer clutter the outliner tree.
+        // Components shown on hover only, they no longer clutter the outliner tree.
         Tooltip += "\n\nComponents:";
         bool bAnyComponent = false;
         ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, const entt::basic_sparse_set<>& /*Set*/, entt::meta_type Meta)
@@ -1562,8 +1562,6 @@ namespace Lumina
 
     void FSceneEditorTool::DrawSnapSettingsPopup()
     {
-        const FString Section = GetGizmoConfigSection();
-
         ImGui::Text("Snap Settings");
         ImGuiX::HelpMarker(
             "Constrains gizmo drags to fixed steps. Translate = world units. Rotate = degrees. "
@@ -1572,7 +1570,7 @@ namespace Lumina
 
         if (ImGui::Checkbox("Enable Snap", &bGuizmoSnapEnabled))
         {
-            GConfig->Set((Section + ".GuizmoSnapEnabled").c_str(), bGuizmoSnapEnabled);
+            PersistGizmoSettings();
         }
 
         ImGui::Spacing();
@@ -1631,9 +1629,7 @@ namespace Lumina
 
         if (bAnySettingDirty)
         {
-            GConfig->Set((Section + ".GuizmoSnapTranslate").c_str(), GuizmoSnapTranslate);
-            GConfig->Set((Section + ".GuizmoSnapRotate").c_str(), GuizmoSnapRotate);
-            GConfig->Set((Section + ".GuizmoSnapScale").c_str(), GuizmoSnapScale);
+            PersistGizmoSettings();
         }
 
         ImGui::PopStyleColor();
@@ -1692,7 +1688,7 @@ namespace Lumina
         if (ImGuiX::IconButton(LE_ICON_MAGNET, "##SnapToggle", 0xFFFFFFFF, BtnSize))
         {
             bGuizmoSnapEnabled = !bGuizmoSnapEnabled;
-            GConfig->Set((FString(GetGizmoConfigSection()) + ".GuizmoSnapEnabled").c_str(), bGuizmoSnapEnabled);
+            PersistGizmoSettings();
         }
         if (bSnapWasEnabled)
         {
@@ -1891,30 +1887,64 @@ namespace Lumina
         CComponentVisualizerRegistry& ComponentVisualizerRegistry = CComponentVisualizerRegistry::Get();
         FEntityRegistry& Registry = GetSceneRegistry();
 
-        auto DrawFor = [&](entt::entity Entity)
+        // Resolve which component storages actually have a visualizer ONCE per frame.
+        TFixedVector<eastl::pair<entt::sparse_set*, CComponentVisualizer*>, 16> VisualizerStorages;
+        for (auto&& [ID, Storage] : Registry.storage())
         {
-            ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, entt::basic_sparse_set<>&, const entt::meta_type& Type)
+            if (entt::meta_type MetaType = entt::resolve(Storage.info()))
             {
-                if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
+                if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs))
                 {
-                    CStruct* StructType = ReturnValue.cast<CStruct*>();
-                    if (CComponentVisualizer* Visualizer = ComponentVisualizerRegistry.GetComponentVisualizer(StructType))
+                    if (CComponentVisualizer* Visualizer = ComponentVisualizerRegistry.GetComponentVisualizer(ReturnValue.cast<CStruct*>()))
                     {
-                        Visualizer->Draw(World, Registry, Entity);
+                        VisualizerStorages.emplace_back(&Storage, Visualizer);
                     }
                 }
-            });
-        };
+            }
+        }
 
-        // Iterate the view (not SelectedEntities) so entt::exclude<SDisabledTag> applies.
-        Registry.view<FSelectedInEditorComponent>(entt::exclude<SDisabledTag>).each([&](entt::entity SelectedEntity)
+        if (VisualizerStorages.empty())
         {
+            return;
+        }
+
+        // Flatten the selection (view, not SelectedEntities, so entt::exclude<SDisabledTag> applies) into a
+        // contiguous list to index from worker threads. Bail before the resolve when nothing is selected.
+        TVector<entt::entity> SelectedEntities;
+        auto SelectedView = Registry.view<FSelectedInEditorComponent>(entt::exclude<SDisabledTag>);
+        SelectedEntities.reserve(SelectedView.size_hint());
+        SelectedView.each([&](entt::entity SelectedEntity)
+        {
+            SelectedEntities.push_back(SelectedEntity);
+        });
+
+        if (SelectedEntities.empty())
+        {
+            return;
+        }
+        
+        ECS::Utils::ResolveAllDirtyTransforms(Registry);
+
+        auto DrawFor = [&](entt::entity Entity)
+        {
+            for (auto& [Storage, Visualizer] : VisualizerStorages)
+            {
+                if (Storage->contains(Entity))
+                {
+                    Visualizer->Draw(World, Registry, Entity);
+                }
+            }
+        };
+        
+        Task::ParallelFor((uint32)SelectedEntities.size(), [&](uint32 Index)
+        {
+            const entt::entity SelectedEntity = SelectedEntities[Index];
             DrawFor(SelectedEntity);
             ECS::Utils::ForEachChild(Registry, SelectedEntity, [&](entt::entity Child)
             {
                 DrawFor(Child);
             });
-        });
+        }, 32);
     }
 
     void FSceneEditorTool::DrawDetailsPanel(bool bFocused)
@@ -2238,14 +2268,13 @@ namespace Lumina
         bOutlinerActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
                        || ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
 
-        const ImGuiStyle& Style = ImGui::GetStyle();
-
         {
+            const ImGuiStyle& Style = ImGui::GetStyle();
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
 
             const float ButtonWidth = ImGui::GetFrameHeight(); // square, matches the search field height
 
-            // Shared "Add" menu (empty / primitives / components / prefabs) — identical in both tools.
+            // Shared "Add" menu (empty / primitives / components / prefabs), identical in both tools.
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.3f, 0.8f));
             if (ImGuiX::IconButton(LE_ICON_PLUS, "##AddToSceneGraph", 0xFFFFFFFF, ImVec2(ButtonWidth, ButtonWidth)))
             {

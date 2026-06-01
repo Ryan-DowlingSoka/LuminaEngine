@@ -139,8 +139,8 @@ namespace Lumina
                 RmlUi::RenderEditorContexts(CL);
             }
 
-            GPU_PROFILE_SCOPE(&CL, "Frame Composite");
             {
+                GPU_PROFILE_SCOPE(&CL, "Frame Composite");
                 #if USING(WITH_EDITOR)
                 if (Snapshot)
                 {

@@ -107,7 +107,7 @@ namespace Lumina
             for (int K = ImGuiKey_NamedKey_BEGIN; K < ImGuiKey_NamedKey_END; ++K)
             {
                 const ImGuiKey Key = static_cast<ImGuiKey>(K);
-                // Skip mouse / gamepad / mod-alias entries — they live in the named-key range too.
+                // Skip mouse / gamepad / mod-alias entries, they live in the named-key range too.
                 if (Key >= ImGuiKey_MouseLeft && Key <= ImGuiKey_MouseWheelY) continue;
                 if (Key >= ImGuiKey_GamepadStart && Key <= ImGuiKey_GamepadRStickDown) continue;
                 if (Key >= ImGuiKey_ReservedForModCtrl && Key <= ImGuiKey_ReservedForModSuper) continue;
@@ -159,10 +159,10 @@ namespace Lumina
             "Positive/Negative slot pairs synthesize a -1..+1 axis (e.g. A/D for steering). The runtime "
             "InputContext exposes them as floats.");
         DrawHelpTextRow("Saving",
-            "Edits live in a working copy until you hit Save — at which point they're committed to "
+            "Edits live in a working copy until you hit Save, at which point they're committed to "
             "FInputActionMap and persisted to project config.");
         DrawHelpTextRow("In Lua",
-            "Input.BindAction(\"Jump\", function() ... end) — see Tools > Debug > Scripts Info > API "
+            "Input.BindAction(\"Jump\", function() ... end), see Tools > Debug > Scripts Info > API "
             "Reference under 'Input' for the full surface.");
     }
 

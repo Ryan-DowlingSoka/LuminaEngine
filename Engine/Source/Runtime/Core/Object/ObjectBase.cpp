@@ -112,35 +112,36 @@ namespace Lumina
         AddToRoot();
     }
     
+    void CObjectBase::DestroyInternal()
+    {
+        SetFlag(OF_MarkedDestroy);
+
+        OnDestroy();
+
+        GCObjectAllocator.FreeCObject(this);
+    }
+
     void CObjectBase::ForceDestroyNow()
     {
         if (HasAnyFlag(OF_MarkedDestroy))
         {
             return;
         }
-        
-        SetFlag(OF_MarkedDestroy);
-        
-        OnDestroy();
-        
-        GCObjectAllocator.FreeCObject(this);
+
+        // Unconditional teardown: any TObjectPtr still holding this object will be left dangling. That's
+        // valid at shutdown (everything goes) but a bug at runtime, long-lived non-owning references
+        // must be TWeakObjectPtr. Catch the misuse in debug builds; release still tears down.
+        DEBUG_ASSERT(GObjectArray.IsShuttingDown() || GObjectArray.GetStrongRefCountByIndex(InternalIndex) == 0,
+            "ForceDestroyNow on an object with live strong references; holders will dangle. Use TWeakObjectPtr for non-owning references.");
+
+        DestroyInternal();
     }
 
     void CObjectBase::ConditionalBeginDestroy()
     {
-        if (HasAnyFlag(OF_MarkedDestroy))
-        {
-            return;
-        }
-        
-        if (!GObjectArray.IsReferencedByIndex(InternalIndex))
-        {
-            SetFlag(OF_MarkedDestroy);
-
-            OnDestroy();
-            
-            GCObjectAllocator.FreeCObject(this);
-        }
+        // The reference check + mark + free are serialized against weak->strong upgrades inside the
+        // object array, so this can't race a resurrection into a use-after-free.
+        GObjectArray.ConditionalDestroy(this);
     }
 
     int32 CObjectBase::GetStrongRefCount() const

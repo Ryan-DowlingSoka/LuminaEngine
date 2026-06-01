@@ -916,7 +916,7 @@ void TextEditor::handleMouseInteractions() {
 
 			// Expand to word bounds at the hovered position. CodePoint::isWord
 			// follows the colorizer's identifier definition (letters, digits,
-			// underscore) — same rule the autocomplete engine uses.
+			// underscore), same rule the autocomplete engine uses.
 			if (idx >= 0 && idx < (int)line.size() && CodePoint::isWord(line[idx].codepoint)) {
 				int wordStart = idx;
 				while (wordStart > 0 && CodePoint::isWord(line[wordStart - 1].codepoint)) {
@@ -1644,7 +1644,7 @@ void TextEditor::handleCharacter(ImWchar character) {
 
 	// Fire autocomplete on word chars and on common member-access triggers.
 	// Without this, typing `foo.` or `foo:` never opens the popup until the
-	// user types another letter — which makes `.<member>` UX feel broken.
+	// user types another letter, which makes `.<member>` UX feel broken.
 	if (CodePoint::isWord(character) || character == '.' || character == ':') {
 		if (autocomplete.startTyping(cursors)) {
 			makeCursorVisible();
@@ -4849,7 +4849,7 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 
 			} else if (newStart.line == currentLocation.line && newStart.column > startLocation.column) {
 				// User typed forward into a new word boundary on the same
-				// line — typically a '.' or ':' separator that starts a new
+				// line, typically a '.' or ':' separator that starts a new
 				// member-access context (e.g. "Engine" -> "Engine."). Re-anchor
 				// the popup to the new word instead of closing it; otherwise
 				// the user has to backspace + retype to get suggestions for
@@ -4946,7 +4946,7 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					}
 
 				// Tab accepts the selected suggestion. Enter is intentionally
-				// NOT bound to accept — the popup auto-shows while typing,
+				// NOT bound to accept, the popup auto-shows while typing,
 				// and stealing Enter for accept makes "type word, press
 				// Enter for newline" insert the suggestion instead.
 				} else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
@@ -5024,7 +5024,7 @@ void TextEditor::Autocomplete::setSuggestions(const std::vector<std::string>& su
 bool TextEditor::Autocomplete::isSpecialKeyPressed() const {
 	// Keys the editor must not handle while autocomplete is active.
 	// Enter/KeypadEnter are intentionally absent so a newline still inserts
-	// when the popup happens to be open — Tab is the accept key.
+	// when the popup happens to be open, Tab is the accept key.
 	for (auto key : {ImGuiKey_Tab, ImGuiKey_UpArrow, ImGuiKey_DownArrow}) {
 		if (ImGui::IsKeyPressed(key)) {
 			return true;

@@ -507,7 +507,7 @@ namespace Lumina::Lua
         // as a cook root. Keep these names + leading-string-arg shape stable, or update it in lockstep.
         FRef AssetTable = GlobalsRef.NewTable("Asset");
 
-        // Asset.Hard(path) — blocking load; pushed as actual derived type.
+        // Asset.Hard(path), blocking load; pushed as actual derived type.
         AssetTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
         {
             CObject* Object = StaticLoadObject(Path);
@@ -515,13 +515,13 @@ namespace Lumina::Lua
             return FRef(State, -1);
         }>("Hard");
 
-        // Asset.Soft(path) — returns the FSoftObjectPath (resolves lazily).
+        // Asset.Soft(path), returns the FSoftObjectPath (resolves lazily).
         AssetTable.SetFunction<[](FStringView Path) -> FSoftObjectPath
         {
             return FSoftObjectPath(Path);
         }>("Soft");
 
-        // Asset.LoadAsync(path, callback) — fire-and-forget; callback fires on the main thread when
+        // Asset.LoadAsync(path, callback), fire-and-forget; callback fires on the main thread when
         // load completes (or immediately with nil if the path doesn't resolve).
         AssetTable.SetFunction<[](lua_State* State, FStringView Path, FRef Callback)
         {
@@ -539,13 +539,13 @@ namespace Lumina::Lua
             });
         }>("LoadAsync");
 
-        // Asset.Exists(path) — registry probe, no load.
+        // Asset.Exists(path), registry probe, no load.
         AssetTable.SetFunction<[](FStringView Path) -> bool
         {
             return FAssetRegistry::Get().GetAssetByPath(Path) != nullptr;
         }>("Exists");
 
-        // Asset.LoadPrimary(name) — sync load via FAssetManager.
+        // Asset.LoadPrimary(name), sync load via FAssetManager.
         AssetTable.SetFunction<[](lua_State* State, FName Name) -> FRef
         {
             CObject* Obj = FAssetManager::Get().LoadPrimaryAssetSynchronous(FPrimaryAssetId(Name));
@@ -1335,7 +1335,7 @@ declare EntityScript: { new: () -> EntityScript }
             if (C == '.') C = '/';
         }
 
-        // Search roots in order: Engine stdlib, then plugin /<Mount>/Scripts/, then /Game — so user
+        // Search roots in order: Engine stdlib, then plugin /<Mount>/Scripts/, then /Game, so user
         // code can only override a stdlib/plugin module by explicit absolute path, never by accident.
         auto TryRoot = [&](FStringView Root) -> bool
         {
@@ -1382,7 +1382,7 @@ declare EntityScript: { new: () -> EntityScript }
         TVector<FFixedString> Paths;
 
         // `.d.luau` marks a library/declaration module (stdlib, helpers) that is require()-d by
-        // other scripts but never attached to an entity — skip those so pickers only list
+        // other scripts but never attached to an entity, skip those so pickers only list
         // attachable scripts.
         auto IsLibraryScript = [](const FFixedString& Path) -> bool
         {
@@ -2039,7 +2039,7 @@ declare EntityScript: { new: () -> EntityScript }
 
             // debug library
             { "debug.traceback",  "thread|message|level","Returns a string with the current call stack. message and level are optional." },
-            { "debug.info",       "thread|level|what",  "Like Lua's debug.getinfo but flat — returns the requested fields directly. (Luau)" },
+            { "debug.info",       "thread|level|what",  "Like Lua's debug.getinfo but flat, returns the requested fields directly. (Luau)" },
             { "debug.getinfo",    "level|what",         "Returns a table describing the function at the given stack level." },
         };
 

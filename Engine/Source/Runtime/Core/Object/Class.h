@@ -112,6 +112,10 @@ namespace Lumina
 
         /** Reflected-property serialization with tags for versioning/skip support. */
         RUNTIME_API void SerializeTaggedProperties(FArchive& Ar, void* Data) const;
+
+        /** Structured (named-field) variant; drives each property's SerializeItem. Used by the
+         *  JSON backend so reflected data round-trips through human-readable named fields. */
+        RUNTIME_API void SerializeTaggedProperties(IStructuredArchive::FRecord Record, void* Data, void const* Defaults = nullptr) const;
         
         void Serialize(FArchive& Ar) override { }
         void Serialize(IStructuredArchive::FRecord Slot) override { }

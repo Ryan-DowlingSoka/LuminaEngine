@@ -16,8 +16,19 @@ namespace Lumina
 
     void FSoftObjectProperty::SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults)
     {
-        // No-op until structured archives land, matching FString/FNameProperty; cook uses
-        // binary Serialize() above. Do NOT assert here — other primitives behave the same.
-        (void)Slot; (void)Value; (void)Defaults;
+        FSoftObjectPath* Path = static_cast<FSoftObjectPath*>(Value);
+
+        if (Slot.GetArchiver().IsReading())
+        {
+            FString PathStr;
+            Slot.Serialize(PathStr);
+            Path->SetPath(FStringView(PathStr.c_str(), PathStr.size()));
+        }
+        else
+        {
+            const FStringView View = Path->GetPath();
+            FString PathStr(View.data(), View.size());
+            Slot.Serialize(PathStr);
+        }
     }
 }

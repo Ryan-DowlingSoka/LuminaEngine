@@ -280,4 +280,19 @@ namespace Lumina
             }
         }
     }
+
+    void CStruct::SerializeTaggedProperties(IStructuredArchive::FRecord Record, void* Data, void const* Defaults) const
+    {
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (!Current->ShouldSerialize())
+            {
+                continue;
+            }
+
+            void* ValuePtr = Current->GetValuePtr<void>(Data);
+            const void* DefPtr = Defaults ? Current->GetValuePtr<void>(Defaults) : nullptr;
+            Current->SerializeItem(Record.EnterField(Current->GetPropertyName()), ValuePtr, DefPtr);
+        }
+    }
 }

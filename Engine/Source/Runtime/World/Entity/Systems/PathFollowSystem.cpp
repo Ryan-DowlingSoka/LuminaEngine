@@ -11,6 +11,10 @@
 
 namespace Lumina
 {
+    FSystemAccess SPathFollowSystem::Access = FSystemAccess{}
+        .Write<SPathFollowComponent, SCharacterControllerComponent>()
+        .Read<STransformComponent>();
+
     namespace
     {
         void StorePath(SPathFollowComponent& Comp, const FNavPath& Path)

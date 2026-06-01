@@ -435,7 +435,7 @@ namespace Lumina
 
                 if (ImGui::BeginChild("##OptList", ComboDropDownSize, false, ImGuiChildFlags_NavFlattened))
                 {
-                    // Every script across all mounts (project, plugins, engine) — see Lua::GatherScriptPaths.
+                    // Every script across all mounts (project, plugins, engine), see Lua::GatherScriptPaths.
                     for (const FFixedString& VirtualPath : Lua::GatherScriptPaths())
                     {
                         if (!SearchFilter.PassFilter(VirtualPath.c_str()))
@@ -625,7 +625,7 @@ namespace Lumina
 
     void FScriptComponentPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
-        // Runs inside DispatchChange, after BeginTransaction — replay the deferred edit here so
+        // Runs inside DispatchChange, after BeginTransaction, replay the deferred edit here so
         // the undo snapshot captured the pre-change state.
         if (PendingMutation)
         {

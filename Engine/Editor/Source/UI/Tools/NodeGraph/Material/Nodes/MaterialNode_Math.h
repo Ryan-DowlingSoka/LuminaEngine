@@ -121,7 +121,7 @@ namespace Lumina
     public:
         void BuildNode() override;
         FString GetNodeDisplayName() const override { return "Atan2"; }
-        FString GetNodeTooltip() const override { return "Returns atan2(Y, X) — angle of the (X, Y) vector in radians."; }
+        FString GetNodeTooltip() const override { return "Returns atan2(Y, X), angle of the (X, Y) vector in radians."; }
         void* GetNodeDefaultValue() override { return &ConstA; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
@@ -255,7 +255,7 @@ namespace Lumina
     public:
         void BuildNode() override;
         FString GetNodeDisplayName() const override { return "Rsqrt"; }
-        FString GetNodeTooltip() const override { return "Returns 1/sqrt(A) — fast reciprocal square root."; }
+        FString GetNodeTooltip() const override { return "Returns 1/sqrt(A), fast reciprocal square root."; }
         void* GetNodeDefaultValue() override { return &ConstA; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };

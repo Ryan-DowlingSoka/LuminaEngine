@@ -28,7 +28,7 @@ namespace Lumina
         void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "Shading"; }
         FString GetNodeDisplayName() const override { return "DepthFade"; }
-        FString GetNodeTooltip() const override { return "Returns saturate(viewDepth / FadeDistance) — useful for distance-based fading."; }
+        FString GetNodeTooltip() const override { return "Returns saturate(viewDepth / FadeDistance), useful for distance-based fading."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
         CMaterialInput* FadeDistance = nullptr;

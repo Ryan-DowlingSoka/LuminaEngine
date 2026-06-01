@@ -122,7 +122,7 @@ namespace Lumina
         return entt::type_id<T>();
     }
 
-    // Wrap a value as a meta_any without copying — emitted as a reference inside
+    // Wrap a value as a meta_any without copying, emitted as a reference inside
     // the meta call. Mirrors entt::forward_as_meta.
     using entt::forward_as_meta;
 

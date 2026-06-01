@@ -107,8 +107,8 @@ namespace Lumina
         ImVec4                      GridColor{1.0f, 1.0f, 1.0f, 0.10f};
 
         bool                        bShowSafeZones = false;
-        float                       SafeZoneAction = 0.95f;   // 95% — action safe
-        float                       SafeZoneTitle = 0.90f;    // 90% — title safe
+        float                       SafeZoneAction = 0.95f;   // 95%, action safe
+        float                       SafeZoneTitle = 0.90f;    // 90%, title safe
         ImVec4                      SafeZoneColor{1.0f, 0.85f, 0.30f, 0.65f};
 
         bool                        bShowRulers = false;

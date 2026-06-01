@@ -26,6 +26,21 @@ namespace Lumina::Platform
     RUNTIME_API uint32 GetCurrentCoreNumber();
     RUNTIME_API FString GetCurrentProcessPath();
 
+    enum class ECpuCoreType : uint8 { Performance, Efficiency, Unknown };
+
+    // Process-wide CPU core layout, detected once and cached. Platform-agnostic: where the OS can't
+    // report per-core efficiency classes, every core reports Performance and bHybrid stays false.
+    struct FCpuTopology
+    {
+        uint32       NumLogicalCores = 0;   // total logical processors
+        uint32       NumPerformance  = 0;   // P-cores (top efficiency class)
+        uint32       NumEfficiency   = 0;   // E-cores (below the top class)
+        bool         bHybrid         = false;
+        ECpuCoreType CoreTypes[256]  = {};  // indexed by logical processor number; Unknown where absent
+    };
+
+    RUNTIME_API const FCpuTopology& GetCpuTopology();
+
     // Set an environment variable for THIS process (and any child processes it
     // spawns afterward). Does not persist beyond the process lifetime.
     RUNTIME_API bool SetEnvVariable(const FString& Name, const FString& Value);

@@ -367,7 +367,7 @@ namespace Lumina::NavMeshBuilder
         if (TileCount > kMaxTiles)
         {
             LOG_ERROR("NavMesh bake aborted: {} tiles ({}x{}) exceeds the {}-tile cap for TileWorldSize={:.1f}. "
-                      "The bake volume is too large — raise Settings.CellSize or TileSizeVoxels, or shrink the bounds / entity scale.",
+                      "The bake volume is too large, raise Settings.CellSize or TileSizeVoxels, or shrink the bounds / entity scale.",
                       TileCount, Grid.TilesX, Grid.TilesY, kMaxTiles, Grid.TileWorldSize);
             Handle.Output.Tiles.clear();
             Handle.TilesScheduled = 0;

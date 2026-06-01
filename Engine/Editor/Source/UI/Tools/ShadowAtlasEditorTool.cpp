@@ -27,7 +27,7 @@ namespace Lumina
             "quad-tree allocator sized by the light's screen-space importance.");
         DrawHelpTextRow("Color Coding",
             "Bigger tiles (more important / closer lights) shade toward red; small tiles toward blue. "
-            "The eye is drawn to the expensive allocations — usually what you care about.");
+            "The eye is drawn to the expensive allocations, usually what you care about.");
         DrawHelpTextRow("Stats",
             "Utilization % is the fraction of atlas pixels in use. Bucket histogram shows tile-size "
             "distribution; lots of tiny tiles can mean far-away lights deserve culling.");

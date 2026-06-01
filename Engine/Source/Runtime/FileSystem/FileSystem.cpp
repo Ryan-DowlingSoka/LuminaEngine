@@ -417,7 +417,7 @@ namespace Lumina::VFS
                     FStringView Tail = NormalizedView.substr(Base.size());
                     if (!Tail.empty() && Tail.front() != '/')
                     {
-                        // Base happens to be a prefix but not on a path boundary —
+                        // Base happens to be a prefix but not on a path boundary,
                         // skip (e.g. "/Foo" matching "/FooBar/...").
                         continue;
                     }

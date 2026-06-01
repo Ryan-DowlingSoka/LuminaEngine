@@ -263,7 +263,7 @@ namespace Lumina::CrashHandler
                     StackBuffer, sizeof(StackBuffer));
             }
 
-            // Best-effort log write — guarded because the logger sits on top of
+            // Best-effort log write, guarded because the logger sits on top of
             // STL/heap that may itself be corrupted.
             __try
             {

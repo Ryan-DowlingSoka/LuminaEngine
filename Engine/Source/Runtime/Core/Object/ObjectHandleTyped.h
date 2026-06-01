@@ -12,11 +12,25 @@ namespace Lumina
     template <typename T>
     char (&ResolveTypeIsComplete(...))[1];
     
+    // Strong, owning reference to a CObject, a CObject-specific shared_ptr. While any TObjectPtr holds
+    // an object it keeps it alive (intrusive strong refcount in GObjectArray), so dereferencing is safe:
+    // the object cannot be freed out from under you. The last TObjectPtr to release triggers destruction.
+    //
+    // Layout invariant: exactly one T* (pointer-sized). FObjectProperty serialization and the Lua bindings
+    // read a TObjectPtr<T> member as a raw T* at offset 0, do NOT add members.
+    //
+    // For a NON-owning reference that must survive the object being destroyed elsewhere, use
+    // TWeakObjectPtr instead: it validates on access and returns null once the object is gone.
     template<typename T>
     class TObjectPtr
     {
     private:
         T* Object = nullptr;
+
+        // Tag for adopting an already-incremented strong ref (no extra AddRef). Used by the weak->strong
+        // upgrade, which increments atomically inside the object array before handing the pointer back.
+        struct FAdoptRef {};
+        TObjectPtr(T* InObject, FAdoptRef) : Object(InObject) {}
 
         void AddRefInternal()
         {
@@ -259,11 +273,18 @@ namespace Lumina
             return *this;
         }
 
-        // Try to get a strong reference, returns null if object was deleted
+        // Try to get a strong reference; returns null if the object was deleted. Atomic: the validate +
+        // acquire happen together inside the object array, so this never races a concurrent destroy into
+        // a use-after-free (unlike Get()-then-wrap). This is the safe way to pin a weakly-held object.
         TObjectPtr<T> Lock() const
         {
-            T* Obj = Get();
-            return Obj ? TObjectPtr<T>(Obj) : TObjectPtr<T>();
+            CObjectBase* Obj = GObjectArray.TryAddStrongRef(Handle);
+            if (Obj == nullptr)
+            {
+                return TObjectPtr<T>();
+            }
+            // TryAddStrongRef already incremented the strong count; adopt it without a second AddRef.
+            return TObjectPtr<T>(static_cast<T*>(Obj), typename TObjectPtr<T>::FAdoptRef{});
         }
 
         T* Get() const

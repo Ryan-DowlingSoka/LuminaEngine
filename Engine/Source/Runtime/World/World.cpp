@@ -18,6 +18,7 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Profiler/CPUProfiler.h"
+#include "TaskSystem/TaskSystem.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Serialization/MemoryArchiver.h"
@@ -47,6 +48,7 @@
 #include "Input/InputViewport.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "Entity/Systems/SystemSingletons.h"
+#include "Entity/Systems/CameraSystem.h"
 #include "entity/components/tagcomponent.h"
 #include "Entity/Events/WorldEvents.h"
 #include "Entity/Events/LuaEventBus.h"
@@ -58,7 +60,6 @@
 #include "Scripting/Lua/Stack.h"
 #include "Scripting/Lua/VariadicArgs.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
-#include "Subsystems/FCameraManager.h"
 #include "Subsystems/WorldSettings.h"
 #include "UI/RmlUiBridge.h"
 #include "World/Entity/Components/RelationshipComponent.h"
@@ -878,18 +879,20 @@ namespace Lumina
         {
             PhysicsScene = Physics::GetPhysicsContext()->CreatePhysicsScene(this);
         }
-        CameraManager   = MakeUnique<FCameraManager>(this);
-
         // Emplaced even when null so ctx().get<>() consumers find the key (value is null in
         // non-simulating worlds and must be null-checked).
         EntityRegistry.ctx().emplace<Physics::IPhysicsScene*>(PhysicsScene.get());
-        EntityRegistry.ctx().emplace<FCameraManager*>(CameraManager.get());
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
         EntityRegistry.ctx().emplace<CWorld*>(this);
-        EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
 
-        // System-produced singletons: SCameraSystem writes FResolvedSceneView (read in Extract);
-        // SScriptSystem owns FScriptFixedUpdateState (fixed-step accumulator).
+        // Per-world subsystem singletons ticked by their systems: SEventBusSystem flushes FLuaEventBus,
+        // STimerSystem advances FTimerManager (both at FrameStart). Scripts reach them by ctx address.
+        EntityRegistry.ctx().emplace<FLuaEventBus>();
+        EntityRegistry.ctx().emplace<FTimerManager>();
+
+        // System-produced singletons: SCameraSystem owns FCameraGlobalState (active camera + blend) and
+        // writes FResolvedSceneView (read in Extract); SScriptSystem owns FScriptFixedUpdateState.
+        EntityRegistry.ctx().emplace<FCameraGlobalState>();
         EntityRegistry.ctx().emplace<FResolvedSceneView>();
         EntityRegistry.ctx().emplace<FScriptFixedUpdateState>();
 
@@ -1007,8 +1010,8 @@ namespace Lumina
             PhysicsScene->StopSimulate();
         }
         
-        LuaEventBus.Clear();
-        TimerManager.Clear();
+        EntityRegistry.ctx().get<FLuaEventBus>().Clear();
+        EntityRegistry.ctx().get<FTimerManager>().Clear();
 
         RegistryPending.clear<>();
         EntityRegistry.clear<>();
@@ -1071,18 +1074,8 @@ namespace Lumina
             SingletonDispatcher.update<FScriptComponentPendingReady>();
         }
 
-        if (Stage == EUpdateStage::FrameStart)
-        {
-            {
-                CPU_PROFILE_SCOPE_COLOR("Lua Events (Deferred)", FColor(0.95f, 0.70f, 0.25f));
-                LuaEventBus.ProcessDeferred();
-            }
-            {
-                CPU_PROFILE_SCOPE("Timers");
-                TimerManager.Tick(static_cast<float>(DeltaTime));
-            }
-        }
-
+        // Deferred Lua events + timers run inside TickSystems now (SEventBusSystem / STimerSystem,
+        // both FrameStart/Highest), so they tick before gameplay systems just as the old inline block did.
         {
             CPU_PROFILE_SCOPE("Systems");
             TickSystems(SystemContext);
@@ -1256,14 +1249,15 @@ namespace Lumina
     bool CWorld::RegisterSystem(const FSystemVariant& NewSystem)
     {
         const FUpdatePriorityList& PriorityList = eastl::visit([&](const auto& System) { return System.GetUpdatePriorityList(); }, NewSystem);
-        
+        const FSystemAccess Access = eastl::visit([&](const auto& System) { return System.GetSystemAccess(); }, NewSystem);
+
         bool StagesModified[(uint8)EUpdateStage::Max] = {};
 
         for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
         {
             if (PriorityList.IsStageEnabled((EUpdateStage)i))
             {
-                SystemUpdateList[i].emplace_back(NewSystem);
+                SystemUpdateList[i].push_back(FScheduledSystem{ NewSystem, Access, PriorityList.GetPriorityForStage((EUpdateStage)i) });
                 StagesModified[i] = true;
             }
         }
@@ -1275,18 +1269,9 @@ namespace Lumina
                 continue;
             }
 
-            auto Predicate = [i](const FSystemVariant& A, const FSystemVariant& B)
-            {
-                const FUpdatePriorityList& PrioListA = eastl::visit([&](const auto& System) { return System.GetUpdatePriorityList(); }, A);
-                const FUpdatePriorityList& PrioListB = eastl::visit([&](const auto& System) { return System.GetUpdatePriorityList(); }, B);
-                const uint8 PriorityA = PrioListA.GetPriorityForStage((EUpdateStage)i);
-                const uint8 PriorityB = PrioListB.GetPriorityForStage((EUpdateStage)i);
-                // Lower enum value = higher priority (Highest=0 .. Low=192), so ascending
-                // order runs Highest first and Low last within the stage.
-                return PriorityA < PriorityB;
-            };
-
-            eastl::sort(SystemUpdateList[i].begin(), SystemUpdateList[i].end(), Predicate);
+            // Lower value = higher priority (Highest=0 .. Low=192), so ascending runs Highest first.
+            eastl::sort(SystemUpdateList[i].begin(), SystemUpdateList[i].end(),
+                [](const FScheduledSystem& A, const FScheduledSystem& B) { return A.StagePriority < B.StagePriority; });
         }
 
         return true;
@@ -1756,18 +1741,18 @@ namespace Lumina
 
         if (EntityRegistry.all_of<SCameraComponent>(InEntity))
         {
-            CameraManager->SetActiveCamera(InEntity, BlendTime, Function);
+            SCameraSystem::SetActiveCamera(const_cast<FEntityRegistry&>(EntityRegistry), InEntity, BlendTime, Function);
         }
     }
 
     SCameraComponent* CWorld::GetActiveCamera() const
     {
-        return CameraManager->GetCameraComponent();
+        return SCameraSystem::GetActiveCamera(const_cast<FEntityRegistry&>(EntityRegistry));
     }
 
     entt::entity CWorld::GetActiveCameraEntity() const
     {
-        return CameraManager->GetActiveCameraEntity();
+        return SCameraSystem::GetActiveCameraEntity(const_cast<FEntityRegistry&>(EntityRegistry));
     }
 
     void CWorld::OnChangeCameraEvent(const FSwitchActiveCameraEvent& Event)
@@ -1891,7 +1876,7 @@ namespace Lumina
         return PIEWorld;
     }
 
-    const TVector<CWorld::FSystemVariant>& CWorld::GetSystemsForUpdateStage(EUpdateStage Stage)
+    const TVector<CWorld::FScheduledSystem>& CWorld::GetSystemsForUpdateStage(EUpdateStage Stage)
     {
         return SystemUpdateList[static_cast<uint32>(Stage)];
     }
@@ -1989,8 +1974,8 @@ namespace Lumina
         }
         
         ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
-        ScriptComponent.Script->Reference.RawSet("_Events",   &LuaEventBus);
-        ScriptComponent.Script->Reference.RawSet("_Timers",   &TimerManager);
+        ScriptComponent.Script->Reference.RawSet("_Events",   &EntityRegistry.ctx().get<FLuaEventBus>());
+        ScriptComponent.Script->Reference.RawSet("_Timers",   &EntityRegistry.ctx().get<FTimerManager>());
         ScriptComponent.Script->Reference.RawSet("_Draw",     DrawInterfaceRef);
 
         // Per-entity fields visible to the user as `self.*`.
@@ -2129,8 +2114,8 @@ namespace Lumina
     void CWorld::OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
         // Auto-remove all event bus subscriptions owned by this entity.
-        LuaEventBus.UnsubscribeEntity(Entity);
-        TimerManager.ClearTimersForEntity(Entity);
+        Registry.ctx().get<FLuaEventBus>().UnsubscribeEntity(Entity);
+        Registry.ctx().get<FTimerManager>().ClearTimersForEntity(Entity);
 
         SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
         if (ScriptComponent.Script == nullptr || !ScriptComponent.DetachFunc.IsValid())
@@ -2154,8 +2139,8 @@ namespace Lumina
             }
         }
 
-        LuaEventBus.UnsubscribeEntity(Entity);
-        TimerManager.ClearTimersForEntity(Entity);
+        EntityRegistry.ctx().get<FLuaEventBus>().UnsubscribeEntity(Entity);
+        EntityRegistry.ctx().get<FTimerManager>().ClearTimersForEntity(Entity);
 
         ScriptComponent.Script.reset();
         ScriptComponent.AttachFunc          = {};
@@ -2355,10 +2340,53 @@ namespace Lumina
 
     void CWorld::TickSystems(FSystemContext& Context)
     {
-        auto& SystemVector = SystemUpdateList[(uint32)Context.GetUpdateStage()];
-        for(FSystemVariant& SystemVariant : SystemVector)
+        TVector<FScheduledSystem>& Systems = SystemUpdateList[(uint32)Context.GetUpdateStage()];
+        const size_t Count = Systems.size();
+
+        auto RunOne = [&](FScheduledSystem& S) { eastl::visit([&](auto& Sys) { Sys.Update(Context); }, S.Variant); };
+
+        // Walk the priority-sorted list and greedily group consecutive systems that conflict with
+        // NOTHING already in the current batch; flush the batch (run concurrently) on the first
+        // conflict, then continue. Exclusive systems (no declared access) always run alone. A
+        // conflicting/lower-priority system lands in a later batch, so priority order is preserved.
+        size_t i = 0;
+        while (i < Count)
         {
-            eastl::visit([&](auto& System) { System.Update(Context); }, SystemVariant);
+            size_t j = i + 1;
+            if (!Systems[i].Access.bExclusive)
+            {
+                while (j < Count)
+                {
+                    bool ConflictsWithBatch = Systems[j].Access.bExclusive;
+                    for (size_t k = i; !ConflictsWithBatch && k < j; ++k)
+                    {
+                        ConflictsWithBatch = FSystemAccess::Conflicts(Systems[k].Access, Systems[j].Access);
+                    }
+                    if (ConflictsWithBatch)
+                    {
+                        break;
+                    }
+                    ++j;
+                }
+            }
+
+            const size_t BatchSize = j - i;
+            if (BatchSize <= 1)
+            {
+                RunOne(Systems[i]);
+            }
+            else
+            {
+                // One system per job; the game thread assist-waits, nested ParallelFor inside a system
+                // nests fine on fibers.
+                Task::ParallelFor(static_cast<uint32>(BatchSize), [&](uint32 Index)
+                {
+                    DEBUG_ASSERT(!Systems[i + Index].Access.bExclusive); // scheduler invariant
+                    RunOne(Systems[i + Index]);
+                }, 1);
+            }
+
+            i = j;
         }
     }
 }

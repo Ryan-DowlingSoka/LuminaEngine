@@ -3,7 +3,6 @@
 
 #include "Assets/AssetManager/AssetManager.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
-#include "Assets/AssetRequest.h"
 #include "Core/Serialization/Archiver.h"
 
 #include <mutex>
@@ -68,14 +67,14 @@ namespace Lumina
             if (Callback) Callback(nullptr);
             return;
         }
-        TSharedPtr<FAssetRequest> Request = FAssetManager::Get().LoadAssetAsync(
+        FAssetHandle Handle = FAssetManager::Get().LoadAssetAsync(
             FFixedString(Path.c_str(), Path.size()), CachedGUID);
-        if (!Request)
+        if (!Handle.IsValid())
         {
             if (Callback) Callback(nullptr);
             return;
         }
-        if (Callback) Request->AddListener(Callback);
+        if (Callback) Handle.Then([Callback](CObject*& Obj) { Callback(Obj); });
     }
 
     FArchive& operator<<(FArchive& Ar, FSoftObjectPath& Self)

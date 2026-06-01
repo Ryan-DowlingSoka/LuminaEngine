@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectMacros.h"
+#include "World/Entity/EntityHandle.h"
 #include "ComponentVisualizer.generated.h"
 
 namespace Lumina
@@ -37,7 +38,7 @@ namespace Lumina
         
         virtual CStruct* GetSupportedComponentType() const { return nullptr; }
         
-        virtual void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) { }
+        virtual void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) { }
     };
     
     REFLECT()
@@ -48,7 +49,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
         
     };
     
@@ -60,7 +61,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
     
     REFLECT()
@@ -71,7 +72,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
     
     REFLECT()
@@ -82,7 +83,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
         
     };
     
@@ -94,7 +95,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
         
     };
     
@@ -106,7 +107,7 @@ namespace Lumina
 
         CStruct* GetSupportedComponentType() const override;
 
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
 
     REFLECT()
@@ -117,7 +118,7 @@ namespace Lumina
 
         CStruct* GetSupportedComponentType() const override;
 
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
 
     REFLECT()
@@ -128,7 +129,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
         
     };
     
@@ -140,7 +141,7 @@ namespace Lumina
 
         CStruct* GetSupportedComponentType() const override;
 
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
 
     };
 
@@ -152,7 +153,7 @@ namespace Lumina
         
         CStruct* GetSupportedComponentType() const override;
         
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
         
     };
 }

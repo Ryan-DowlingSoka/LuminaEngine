@@ -1,5 +1,6 @@
 #pragma once
 #include "Containers/Function.h"
+#include "Containers/Array.h"
 #include "Core/Threading/Atomic.h"
 #include "Core/Threading/Thread.h"
 #include "Memory/SmartPtr.h"
@@ -8,10 +9,15 @@
 #include <condition_variable>
 
 
+namespace Lumina::Jobs { struct FCounter; }
+
 namespace Lumina
 {
-    // Render-thread worker owning the queue of game-thread-enqueued commands. When the worker is
-    // down (CVar off, before Start, after Stop) Enqueue runs inline on the caller.
+    // Owns the strict-FIFO queue of game-thread-enqueued render commands. As of the fiber migration
+    // (Phase 2) there is NO dedicated render OS thread: commands drain on a single auto-arming pool job
+    // (the "render drain"), so only one drain runs at a time, FIFO + single-threaded recording/submit
+    // are preserved, but the work rides a pool worker instead of a 31st thread. When the system is down
+    // (before Start, after Stop) Enqueue runs inline on the caller.
     class RUNTIME_API FRenderThread
     {
     public:
@@ -26,7 +32,13 @@ namespace Lumina
         void Start();
         void Stop();
 
-        bool IsRunning() const { return bWorkerRunning.load(Atomic::MemoryOrderAcquire); }
+        bool IsRunning() const { return bRunning.load(Atomic::MemoryOrderAcquire); }
+
+        // True when the caller is executing inside the render drain (i.e. inside a render command).
+        // Replaces the old OS-thread-id Threading::IsRenderThread() check, which is meaningless now
+        // that the drain rides a pool worker. The serial drain does not migrate, so a thread_local is
+        // valid; revisit if render-side recording ever yields to the scheduler (Phase 4).
+        static bool IsInRenderStage();
 
         // DebugName must be a string literal (lifetime not extended).
         void Enqueue(const char* DebugName, FCommand&& Cmd);
@@ -47,9 +59,10 @@ namespace Lumina
 
     private:
 
-        void WorkerMain();
-
         void RunCommand(const char* DebugName, FCommand& Cmd);
+        void ArmDrain();
+        void DrainLoop();
+        static void DrainEntry(void* Arg, uint32 WorkerIndex);
 
         struct FQueuedCommand
         {
@@ -57,15 +70,14 @@ namespace Lumina
             FCommand    Cmd;
         };
 
-        std::thread                 Worker;
-        TAtomic<bool>               bWorkerRunning = false;
-        TAtomic<bool>               bExitRequested = false;
+        TAtomic<bool>               bRunning = false;
 
         FMutex                      QueueMutex;
-        std::condition_variable     QueueCV;
         TVector<FQueuedCommand>     PendingCommands;
+        TAtomic<bool>               bDrainActive = false;     // exactly one drain job at a time
+        Jobs::FCounter*             DrainCounter = nullptr;   // tracks the in-flight drain job (for Stop)
 
-        FMutex                      IdleMutex;
+        FMutex                      IdleMutex;                // Flush waits here on CommandsCompleted
         std::condition_variable     IdleCV;
 
         TAtomic<uint64>             CommandsEnqueued = 0;

@@ -161,7 +161,7 @@ namespace Lumina::VFS
 
         Archive->ForEachEntryUnder(Path, [&](FStringView EntryPath, size_t Bytes)
         {
-            // Only emit immediate children of `Path` — entries deeper than
+            // Only emit immediate children of `Path`, entries deeper than
             // one level become a synthetic directory entry instead.
             FStringView Suffix = EntryPath.substr(Path.size() + 1); // skip leading "/"
             const size_t NextSlash = Suffix.find('/');

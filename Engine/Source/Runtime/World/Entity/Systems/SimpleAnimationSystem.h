@@ -13,7 +13,9 @@ namespace Lumina
 
     public:
 
+        static FSystemAccess Access;   // W skeletal pose + Lua VM (anim notifies); defined in the .cpp
+
         static void Update(const FSystemContext& SystemContext) noexcept;
-    
+
     };
 }

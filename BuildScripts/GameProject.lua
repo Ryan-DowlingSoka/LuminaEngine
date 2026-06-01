@@ -206,7 +206,7 @@ function LuminaGameProject(Def)
         StartProject   = Def.Name,
         TargetDir      = path.join("%{wks.location}", "Binaries", LuminaConfig.OutputDirectory),
         ObjDir         = path.join("%{wks.location}", "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"),
-        -- Default to Development for game projects — Debug is ~3x slower to
+        -- Default to Development for game projects, Debug is ~3x slower to
         -- compile and rarely needed for iteration; users can still pick it.
         Configurations = { "Development", "Debug", "Shipping" },
     })

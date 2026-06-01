@@ -21,6 +21,7 @@
 #include "Package/Package.h"
 #include "Paths/Paths.h"
 #include "Scripting/Lua/Scripting.h"
+#include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 
 namespace Lumina

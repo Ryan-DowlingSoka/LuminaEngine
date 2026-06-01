@@ -8,9 +8,14 @@
 #include "world/entity/components/entitytags.h"
 #include "World/Entity/Components/SimpleAnimationComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
+#include "World/Entity/Systems/SystemResources.h"
 
 namespace Lumina
 {
+    FSystemAccess SSimpleAnimationSystem::Access = FSystemAccess{}
+        .Write<SSkeletalMeshComponent, SystemResource::LuaVM>()
+        .Read<SSimpleAnimationComponent>();
+
     namespace
     {
         bool Contains(const TVector<int32>& Indices, int32 Value)

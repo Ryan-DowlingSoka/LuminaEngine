@@ -36,8 +36,8 @@ namespace Lumina
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
         void DrawHelpMenu() override;
         void DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize) override;
-        // Viewport overlay toolbar is shared (FSceneEditorTool); the prefab only supplies its config section.
-        const char* GetGizmoConfigSection() const override;
+        // Viewport overlay toolbar is shared (FSceneEditorTool); the prefab persists snap to its own settings.
+        void PersistGizmoSettings() override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
         bool ShouldGenerateThumbnailOnSave() const override { return true; }
 

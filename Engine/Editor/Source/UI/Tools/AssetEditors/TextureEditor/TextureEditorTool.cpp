@@ -686,7 +686,7 @@ namespace Lumina
             "The status bar shows current zoom percentage.");
         DrawHelpTextRow("Mip Levels",
             "If the texture has mips, the Mip slider lets you preview each level. The on-disk pixel "
-            "data is unchanged — this only changes which level is sampled for display.");
+            "data is unchanged, this only changes which level is sampled for display.");
         DrawHelpTextRow("HDR / Exposure",
             "HDR textures (RGBA16F, RGB9E5, etc.) clip above 1.0 in the editor's LDR pipeline. "
             "Use the Exposure stops slider to dim the preview and recover bright detail.");

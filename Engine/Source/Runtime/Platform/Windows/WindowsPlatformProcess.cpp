@@ -28,7 +28,7 @@ namespace Lumina::Platform
 {
     namespace
     {
-        static TVector<FString> GDLLSearchPaths;
+        TVector<FString> GDLLSearchPaths;
     }
     
     void* GetDLLHandle(const TCHAR* Filename)
@@ -85,7 +85,75 @@ namespace Lumina::Platform
 
     uint32 GetCurrentCoreNumber()
     {
-        return 0;
+        return ::GetCurrentProcessorNumber();
+    }
+
+    const FCpuTopology& GetCpuTopology()
+    {
+        static const FCpuTopology Topo = []
+        {
+            FCpuTopology T;
+            for (ECpuCoreType& C : T.CoreTypes) C = ECpuCoreType::Unknown;
+
+            DWORD Len = 0;
+            GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &Len);
+
+            TVector<uint8> Buffer(Len);
+            const bool bOk = Len != 0
+                && GetLogicalProcessorInformationEx(RelationProcessorCore,
+                       reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Buffer.data()), &Len);
+
+            if (!bOk)
+            {
+                // Topology unavailable: treat every logical core as a performance core.
+                const DWORD N = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+                T.NumLogicalCores = N < 256 ? N : 256;
+                T.NumPerformance  = T.NumLogicalCores;
+                for (uint32 i = 0; i < T.NumLogicalCores; ++i) T.CoreTypes[i] = ECpuCoreType::Performance;
+                return T;
+            }
+
+            // First pass: record each logical processor's efficiency class and find the top class.
+            // Per MSDN, a higher EfficiencyClass is the more performant core, so the max class is the P-cores.
+            uint8 EffClass[256];
+            memset(EffClass, 0xFF, sizeof(EffClass));
+            uint8 MaxClass = 0;
+
+            uint8* Cursor = Buffer.data();
+            uint8* End    = Buffer.data() + Len;
+            while (Cursor < End)
+            {
+                auto* Info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Cursor);
+                if (Info->Relationship == RelationProcessorCore)
+                {
+                    const PROCESSOR_RELATIONSHIP& PR = Info->Processor;
+                    if (PR.EfficiencyClass > MaxClass) MaxClass = PR.EfficiencyClass;
+                    for (WORD g = 0; g < PR.GroupCount; ++g)
+                    {
+                        const KAFFINITY Mask = PR.GroupMask[g].Mask;
+                        for (uint32 Bit = 0; Bit < sizeof(KAFFINITY) * 8; ++Bit)
+                        {
+                            if ((Mask & (static_cast<KAFFINITY>(1) << Bit)) == 0) continue;
+                            const uint32 Logical = static_cast<uint32>(PR.GroupMask[g].Group) * 64u + Bit;
+                            if (Logical < 256) EffClass[Logical] = PR.EfficiencyClass;
+                        }
+                    }
+                }
+                Cursor += Info->Size;
+            }
+
+            // Second pass: classify against the top class. Top class = P-cores; anything below = E-cores.
+            for (uint32 i = 0; i < 256; ++i)
+            {
+                if (EffClass[i] == 0xFF) continue;
+                ++T.NumLogicalCores;
+                if (EffClass[i] >= MaxClass) { T.CoreTypes[i] = ECpuCoreType::Performance; ++T.NumPerformance; }
+                else                         { T.CoreTypes[i] = ECpuCoreType::Efficiency;  ++T.NumEfficiency;  }
+            }
+            T.bHybrid = T.NumEfficiency > 0;
+            return T;
+        }();
+        return Topo;
     }
 
     void EnableHighResolutionTiming()
@@ -606,7 +674,7 @@ namespace Lumina::Platform
             return;
         }
 
-        // Normalize to backslashes and quote — explorer is picky about both.
+        // Normalize to backslashes and quote, explorer is picky about both.
         FWString Normalized(Path);
         eastl::replace(Normalized.begin(), Normalized.end(), L'/', L'\\');
 
@@ -651,7 +719,7 @@ namespace Lumina::Platform
             SW_SHOWNORMAL);
 
         // ShellExecute returns >32 on success. If wt isn't installed we get
-        // SE_ERR_FNF (2) — fall back to plain cmd.exe.
+        // SE_ERR_FNF (2), fall back to plain cmd.exe.
         if (reinterpret_cast<INT_PTR>(WtResult) <= 32)
         {
             ShellExecuteW(

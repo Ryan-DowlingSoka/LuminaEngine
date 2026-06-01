@@ -156,7 +156,7 @@ namespace Lumina
 
         if (HasWorld())
         {
-            // Use world context as "is initialized" — editor worlds don't have a physics scene.
+            // Use world context as "is initialized", editor worlds don't have a physics scene.
             if (GWorldManager->FindContext(World) == nullptr)
             {
                 GWorldManager->CreateWorldContext(World, EWorldType::Editor);
@@ -189,9 +189,12 @@ namespace Lumina
 
         if (HasWorld())
         {
+            // DestroyWorldContext tears the world down and releases the world manager's strong ref;
+            // releasing ours then drops the refcount to zero and frees it. Do NOT ForceDestroyNow here:
+            // this TObjectPtr still holds the world, so force-freeing would dangle (and the subsequent
+            // release would touch freed memory).
             GWorldManager->DestroyWorldContext(World);
-            World->ForceDestroyNow();
-            World = nullptr;
+            World.Reset();
         }
 
         ToolWindows.clear();
@@ -416,9 +419,10 @@ namespace Lumina
 
         if (World.IsValid())
         {
+            // Release our strong ref after the context teardown rather than force-freeing while still
+            // held (which would dangle this TObjectPtr). Refcount hitting zero frees the old world.
             GWorldManager->DestroyWorldContext(World);
-            World->ForceDestroyNow();
-            World = nullptr;
+            World.Reset();
         }
 
         World = InWorld;
@@ -676,7 +680,7 @@ namespace Lumina
         const STransformComponent& EntityTransform = World->GetEntityRegistry().get<STransformComponent>(Entity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        // Resolve to world space — local would mis-frame any entity parented under another.
+        // Resolve to world space, local would mis-frame any entity parented under another.
         const FVector3 EntityWorldLocation = EntityTransform.GetWorldLocation();
         const float FocusDistance = (CameraState.Mode == EEditorCameraMode::Orbit) ? CameraState.OrbitDistance : 10.0f;
 
@@ -940,7 +944,15 @@ namespace Lumina
                 Input.SetMouseMode(EMouseMode::Captured);
 
                 Transform.AddYaw(static_cast<float>(Input.GetMouseDeltaX() * 0.1));
-                Transform.AddPitch(static_cast<float>(Input.GetMouseDeltaY() * 0.1));
+
+                // Clamp accumulated pitch, not the per-frame delta: derive current elevation
+                // from forward and limit the delta so the camera can't flip past vertical.
+                const FVector3 Forward2 = Transform.GetForward();
+                const float Elevation   = Math::Degrees(Math::Asin(Math::Clamp(Forward2.y, -1.0f, 1.0f)));
+                constexpr float PitchLimit = 89.0f;
+                float PitchDelta = static_cast<float>(Input.GetMouseDeltaY() * 0.1);
+                PitchDelta = Math::Clamp(PitchDelta, Elevation - PitchLimit, Elevation + PitchLimit);
+                Transform.AddPitch(PitchDelta);
 
                 const double WheelZ = Input.GetMouseZ();
                 CameraState.SpeedScale += Math::Pow(1.05f, CameraState.SpeedScale) * static_cast<float>(WheelZ);
@@ -1111,7 +1123,7 @@ namespace Lumina
 
                     ImGui::TableNextColumn();
                     const FString Chord = A->DefaultChord.ToDisplayString();
-                    ImGui::TextUnformatted(Chord.empty() ? "—" : Chord.c_str());
+                    ImGui::TextUnformatted(Chord.empty() ? "-" : Chord.c_str());
                 }
             }
             ImGui::EndTable();

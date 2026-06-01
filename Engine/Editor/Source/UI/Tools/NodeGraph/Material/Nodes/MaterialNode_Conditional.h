@@ -21,7 +21,7 @@ namespace Lumina
         CMaterialInput* AEqual = nullptr;
         CMaterialInput* ALess = nullptr;
 
-        /** Equality tolerance — values within +/- Threshold of each other are considered equal. */
+        /** Equality tolerance, values within +/- Threshold of each other are considered equal. */
         PROPERTY(Editable) float Threshold = 0.00001f;
     };
 

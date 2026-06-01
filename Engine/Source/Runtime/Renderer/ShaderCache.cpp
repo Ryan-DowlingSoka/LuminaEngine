@@ -210,7 +210,7 @@ namespace Lumina::FShaderCache
         THashSet<FString> Visited;
         GatherSourceHash(ShaderVirtualPath, ShaderRoot, Visited, Hash);
 
-        // 0 is reserved as "skip source-hash check" — never return it.
+        // 0 is reserved as "skip source-hash check", never return it.
         if (Hash == 0)
         {
             Hash = 1;

@@ -22,7 +22,7 @@ namespace Lumina
             if (InAsset != nullptr)
             {
                 // SetObject auto-resolves the class CDO as the diff/reset
-                // default — no explicit plumbing needed here.
+                // default, no explicit plumbing needed here.
                 PropertyTable.SetObject(InAsset, InAsset->GetClass());
                 PropertyTable.MarkDirty();
                 PropertyTable.SetPostEditCallback([&](const FPropertyChangedEvent&)

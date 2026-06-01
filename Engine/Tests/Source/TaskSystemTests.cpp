@@ -3,6 +3,8 @@
 #include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/TaskGraph.h"
 #include "TaskSystem/Scheduler/JobScheduler.h"
+#include "TaskSystem/FiberSync.h"
+#include "TaskSystem/Future.h"
 #include "Containers/Array.h"
 #include "Log/Log.h"
 
@@ -274,7 +276,10 @@ TEST(TaskSystem, Perf_EmptyParallelForSchedulingOverhead)
 
     auto Empty = [](uint32) {};
 
-    for (int i = 0; i < 2000; ++i) Task::ParallelFor(Chunks, Empty, 1); // warmup
+    for (int i = 0; i < 2000; ++i)
+    {
+        Task::ParallelFor(Chunks, Empty, 1); // warmup
+    }
 
     constexpr int Iters = 20000;
     auto T0 = Clock::now();
@@ -372,7 +377,7 @@ TEST(TaskSystem, DeepNestedParallelFor)
 }
 
 // A job that parks (via a nested ParallelFor) may resume on a different worker. The worker slot read
-// after the wait must still be a valid, in-range slot — the across-yield re-read contract. Also a
+// after the wait must still be a valid, in-range slot, the across-yield re-read contract. Also a
 // liveness probe: the system must keep making progress across migration.
 TEST(TaskSystem, WorkerIndexValidAcrossNestedWait)
 {
@@ -445,5 +450,213 @@ TEST(TaskSystem, TaskGraph_WideFanIn_Stress)
         ASSERT_EQ(LeafRuns.load(), Width) << "iter " << Iter;
         ASSERT_EQ(SinkRuns.load(), 1)  << "iter " << Iter;
         ASSERT_TRUE(RootDoneBeforeLeaf.load()) << "dependency ordering violated at iter " << Iter;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Fiber-aware mutex
+// ----------------------------------------------------------------------------
+
+TEST(FiberSync, Mutex_MutualExclusionUnderContention)
+{
+    // Many jobs hammer a shared counter guarded by the fiber mutex; if the lock leaks, the
+    // non-atomic increment loses updates. Contention forces the worker-fiber park path.
+    FFiberMutex Mutex;
+    int64 Shared = 0;
+    constexpr uint32 N = 20000;
+
+    Task::ParallelFor(N, [&](uint32)
+    {
+        FFiberScopeLock Lock(Mutex);
+        Shared += 1; // deliberately non-atomic, correctness comes from the lock
+    }, 1);
+
+    EXPECT_EQ(Shared, static_cast<int64>(N));
+}
+
+TEST(FiberSync, Mutex_TryLockReflectsState)
+{
+    FFiberMutex Mutex;
+    ASSERT_TRUE(Mutex.TryLock());
+    EXPECT_FALSE(Mutex.TryLock());
+    Mutex.Unlock();
+    ASSERT_TRUE(Mutex.TryLock());
+    Mutex.Unlock();
+}
+
+// ----------------------------------------------------------------------------
+// Fiber-aware semaphore
+// ----------------------------------------------------------------------------
+
+TEST(FiberSync, Semaphore_BoundsConcurrency)
+{
+    // Permit at most K holders at once; track the live count and assert it never exceeds K.
+    constexpr int32 K = 3;
+    FFiberSemaphore Sem(K);
+    std::atomic<int32> Live{0};
+    std::atomic<int32> MaxLive{0};
+    std::atomic<int32> Bad{0};
+
+    Task::ParallelFor(4000u, [&](uint32)
+    {
+        Sem.Acquire();
+        const int32 Now = Live.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (Now > K) Bad.fetch_add(1, std::memory_order_relaxed);
+        int32 Prev = MaxLive.load(std::memory_order_relaxed);
+        while (Now > Prev && !MaxLive.compare_exchange_weak(Prev, Now)) {}
+        Live.fetch_sub(1, std::memory_order_acq_rel);
+        Sem.Release();
+    }, 1);
+
+    EXPECT_EQ(Bad.load(), 0) << "semaphore allowed more than " << K << " concurrent holders";
+    EXPECT_LE(MaxLive.load(), K);
+}
+
+// ----------------------------------------------------------------------------
+// Fiber-aware shared (reader/writer) mutex
+// ----------------------------------------------------------------------------
+
+TEST(FiberSync, SharedMutex_NoReaderWriterOverlap)
+{
+    FFiberSharedMutex Mutex;
+    std::atomic<int32> ActiveReaders{0};
+    std::atomic<int32> ActiveWriters{0};
+    std::atomic<int32> Bad{0};
+    int64 Protected = 0;
+
+    Task::ParallelFor(8000u, [&](uint32 Index)
+    {
+        if ((Index % 8) == 0)
+        {
+            FFiberWriteScopeLock Lock(Mutex);
+            const int32 W = ActiveWriters.fetch_add(1, std::memory_order_acq_rel) + 1;
+            if (W != 1 || ActiveReaders.load(std::memory_order_acquire) != 0)
+            {
+                Bad.fetch_add(1, std::memory_order_relaxed);
+            }
+            Protected += 1;
+            ActiveWriters.fetch_sub(1, std::memory_order_acq_rel);
+        }
+        else
+        {
+            FFiberReadScopeLock Lock(Mutex);
+            ActiveReaders.fetch_add(1, std::memory_order_acq_rel);
+            if (ActiveWriters.load(std::memory_order_acquire) != 0)
+            {
+                Bad.fetch_add(1, std::memory_order_relaxed);
+            }
+            ActiveReaders.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }, 1);
+
+    EXPECT_EQ(Bad.load(), 0) << "reader/writer exclusivity violated";
+    EXPECT_EQ(Protected, 1000) << "8000/8 writer sections expected";
+}
+
+// ----------------------------------------------------------------------------
+// Fiber-aware condition variable
+// ----------------------------------------------------------------------------
+
+TEST(FiberSync, ConditionVariable_ProducerConsumerHandoff)
+{
+    FFiberMutex Mutex;
+    FFiberConditionVariable CV;
+    int Value = 0;
+    bool Ready = false;
+    std::atomic<int> Observed{-1};
+
+    FTaskHandle Consumer = GTaskSystem->ScheduleLambda(1, 0, [&](uint32, uint32, uint32)
+    {
+        FFiberScopeLock Lock(Mutex);
+        CV.Wait(Mutex, [&] { return Ready; });
+        Observed.store(Value, std::memory_order_release);
+    });
+
+    // Give the consumer time to park, then produce.
+    Threading::Sleep(5);
+    {
+        FFiberScopeLock Lock(Mutex);
+        Value = 42;
+        Ready = true;
+    }
+    CV.NotifyOne();
+
+    Consumer->Wait();
+    EXPECT_EQ(Observed.load(), 42);
+}
+
+// ----------------------------------------------------------------------------
+// Futures / promises
+// ----------------------------------------------------------------------------
+
+TEST(Future, PromiseSetValue_FutureGetsIt)
+{
+    TPromise<int> Promise;
+    TFuture<int> Future = Promise.GetFuture();
+    EXPECT_FALSE(Future.IsReady());
+
+    Promise.SetValue(7);
+    EXPECT_TRUE(Future.IsReady());
+    EXPECT_EQ(Future.Get(), 7);
+}
+
+TEST(Future, WaitIsFiberAware_SetFromAnotherJob)
+{
+    // A worker fiber waits on a future that a sibling job fulfills, exercises the park-on-future path.
+    TPromise<int> Promise;
+    TFuture<int> Future = Promise.GetFuture();
+
+    GTaskSystem->ScheduleLambda(1, 0, [Promise = Move(Promise)](uint32, uint32, uint32) mutable
+    {
+        Threading::Sleep(2);
+        Promise.SetValue(99);
+    });
+
+    EXPECT_EQ(Future.Get(), 99); // blocks (assist-waits) on the main thread until set
+}
+
+TEST(Future, Async_ReturnsResult)
+{
+    TFuture<int> F = Task::Async([] { return 11 * 11; });
+    EXPECT_EQ(F.Get(), 121);
+}
+
+TEST(Future, Then_ChainsValue)
+{
+    TFuture<int> F = Task::Async([] { return 10; })
+        .Then([](int& V) { return V + 5; })
+        .Then([](int& V) { return V * 2; });
+    EXPECT_EQ(F.Get(), 30);
+}
+
+TEST(Future, VoidPromiseAndThen)
+{
+    TPromise<void> Promise;
+    std::atomic<int> Ran{0};
+    TFuture<int> F = Promise.GetFuture().Then([&] { Ran.fetch_add(1); return 5; });
+    Promise.SetValue();
+    EXPECT_EQ(F.Get(), 5);
+    EXPECT_EQ(Ran.load(), 1);
+}
+
+TEST(Future, MakeReadyFuture_IsImmediatelyReady)
+{
+    TFuture<int> F = MakeReadyFuture(3);
+    EXPECT_TRUE(F.IsReady());
+    EXPECT_EQ(F.Get(), 3);
+}
+
+TEST(Future, WhenAll_CompletesAfterAll)
+{
+    TVector<TFuture<int>> Futures;
+    for (int i = 0; i < 16; ++i)
+    {
+        Futures.push_back(Task::Async([i] { Threading::Sleep((i % 4)); return i; }));
+    }
+    TFuture<void> All = WhenAll(Futures);
+    All.Get();
+    for (int i = 0; i < 16; ++i)
+    {
+        EXPECT_TRUE(Futures[i].IsReady()) << "future " << i << " not ready after WhenAll";
     }
 }

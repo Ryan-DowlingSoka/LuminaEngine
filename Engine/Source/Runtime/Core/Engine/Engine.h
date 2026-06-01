@@ -65,7 +65,7 @@ namespace Lumina
         /** Cooked-runtime: mount the .pak + loose overlay so VFS reads work during engine init. */
         RUNTIME_API bool MountCookedRuntime();
 
-        /** Cooked-runtime: post-init half — asset discovery, project DLL, game instance, startup map. */
+        /** Cooked-runtime: post-init half, asset discovery, project DLL, game instance, startup map. */
         RUNTIME_API bool StartCookedGame();
 
         #if WITH_EDITOR

@@ -5,10 +5,13 @@
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/PostProcessComponent.h"
 #include "World/Entity/Components/EntityTags.h"
-#include "World/Subsystems/FCameraManager.h"
 
 namespace Lumina
 {
+    FSystemAccess SCameraSystem::Access = FSystemAccess{}
+        .Write<FResolvedSceneView, FCameraGlobalState, SCameraComponent>()
+        .Read<STransformComponent, SPostProcessComponent>();
+
     float EvaluateCameraBlend(ECameraBlendFunction Function, float Alpha)
     {
         Alpha = Math::Clamp(Alpha, 0.0f, 1.0f);
@@ -62,8 +65,8 @@ namespace Lumina
         Resolved.bHasPostProcess = false;
         Resolved.PostProcessMaterials.clear();
 
-        FCameraManager* CameraManager = Registry.ctx().get<FCameraManager*>();
-        const entt::entity CameraEntity = CameraManager->GetActiveCameraEntity();
+        FCameraGlobalState& CameraState = Registry.ctx().get<FCameraGlobalState>();
+        const entt::entity CameraEntity = CameraState.ActiveCameraEntity;
         if (!Registry.valid(CameraEntity) || !Registry.all_of<SCameraComponent, STransformComponent>(CameraEntity))
         {
             return;
@@ -181,16 +184,24 @@ namespace Lumina
         }
 
         // Drive the camera-to-camera blend: ease from the snapshot toward the live target.
-        CameraManager->TickBlend((float)Context.GetDeltaTime());
+        FCameraGlobalState::FBlendState& Blend = CameraState.Blend;
+        if (Blend.bActive)
+        {
+            Blend.Elapsed += (float)Context.GetDeltaTime();
+            if (Blend.Elapsed >= Blend.Duration)
+            {
+                Blend.bActive = false;
+            }
+        }
 
         FVector3            FinalPosition    = TargetPosition;
         FQuat            FinalRotation    = TargetRotation;
         float                FinalFOV         = TargetFOV;
         SPostProcessSettings FinalPostProcess = ResolvedPostProcess;
 
-        if (CameraManager->IsBlending())
+        if (Blend.bActive)
         {
-            const FCameraManager::FBlendState& B = CameraManager->GetBlend();
+            const FCameraGlobalState::FBlendState& B = Blend;
             const float Alpha = EvaluateCameraBlend(B.Function, B.Duration > 0.0f ? B.Elapsed / B.Duration : 1.0f);
 
             FQuat To = TargetRotation;
@@ -220,6 +231,52 @@ namespace Lumina
         Resolved.bHasView        = true;
         Resolved.bHasPostProcess = true;
 
-        CameraManager->StoreResolvedView(FinalPosition, FinalRotation, FinalFOV, FinalPostProcess);
+        // Record the displayed view so a later switch can blend from it.
+        CameraState.LastViewPosition = FinalPosition;
+        CameraState.LastViewRotation = FinalRotation;
+        CameraState.LastViewFOV      = FinalFOV;
+        CameraState.LastPostProcess  = FinalPostProcess;
+        CameraState.bHasResolvedView = true;
+    }
+
+    void SCameraSystem::SetActiveCamera(entt::registry& Registry, entt::entity Entity, float BlendTime, ECameraBlendFunction Function)
+    {
+        FCameraGlobalState& State = Registry.ctx().get<FCameraGlobalState>();
+
+        // No-op switches keep any running blend intact.
+        if (Entity == State.ActiveCameraEntity)
+        {
+            return;
+        }
+
+        // Snapshot the currently displayed view as the blend source. With no prior
+        // resolved view (first activation) or a zero duration we just snap.
+        if (BlendTime > 0.0f && State.bHasResolvedView)
+        {
+            State.Blend.bActive        = true;
+            State.Blend.Elapsed        = 0.0f;
+            State.Blend.Duration       = BlendTime;
+            State.Blend.Function       = Function;
+            State.Blend.FromPosition   = State.LastViewPosition;
+            State.Blend.FromRotation   = State.LastViewRotation;
+            State.Blend.FromFOV        = State.LastViewFOV;
+            State.Blend.FromPostProcess = State.LastPostProcess;
+        }
+        else
+        {
+            State.Blend.bActive = false;
+        }
+
+        State.ActiveCameraEntity = Entity;
+    }
+
+    entt::entity SCameraSystem::GetActiveCameraEntity(entt::registry& Registry)
+    {
+        return Registry.ctx().get<FCameraGlobalState>().ActiveCameraEntity;
+    }
+
+    SCameraComponent* SCameraSystem::GetActiveCamera(entt::registry& Registry)
+    {
+        return Registry.try_get<SCameraComponent>(GetActiveCameraEntity(Registry));
     }
 }
