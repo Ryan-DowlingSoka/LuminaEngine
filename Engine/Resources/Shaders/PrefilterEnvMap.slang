@@ -1,20 +1,19 @@
+#include "Includes/SceneGlobals.slang"
 #include "Includes/Sky.slang"
 #include "Includes/IBL.slang"
 
 // GGX pre-filtered environment map (Karis 2013 split-sum "first sum"); each mip = a fixed roughness,
 // sampled at runtime as mip = Roughness * (NumMips - 1). Dispatched once per mip with a Roughness push constant.
-
-[[vk::binding(0, 0)]] SamplerCube                              uSrcCube;
-[[vk::binding(1, 0)]] RWTexture2DArray<float4>                 uOutMip;
+// No pass-local set: source cube via bindless cube SRV, output mip via bindless 2D-array UAV.
 
 struct FPushConstants
 {
+    uint  SrcCubeSRV;
+    uint  OutMipUAV;
     float Roughness;
     uint  NumSamples;
-    uint  _Pad0;
-    uint  _Pad1;
 };
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define PREFILTER_TILE 8
 
@@ -22,6 +21,8 @@ struct FPushConstants
 [numthreads(PREFILTER_TILE, PREFILTER_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
+    RWTexture2DArray<float4> uOutMip = uBindlessRWTex2DArray[PC.OutMipUAV];
+
     uint Width, Height, Layers;
     uOutMip.GetDimensions(Width, Height, Layers);
 
@@ -51,7 +52,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         if (NdotL > 0.0)
         {
             // NdotL weighting (UE4 / learnopengl): samples toward N count more, grazing less.
-            Sum    += uSrcCube.SampleLevel(L, 0.0).rgb * NdotL;
+            Sum    += SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb * NdotL;
             Weight += NdotL;
         }
     }

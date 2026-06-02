@@ -26,9 +26,11 @@ float3 LineIntersectionWithZPlane(float3 StartPoint, float3 EndPoint, float ZDis
     return StartPoint + T * Direction;
 }
 
+#define PC (*(FPushConstants*)gPC.PassAddr)
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void ComputeMain(uint3 DispatchID : SV_DispatchThreadID, uniform FPushConstants PC)
+void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
     uint TileIndex  = DispatchID.x;
     uint TotalTiles = PC.GridSize.x * PC.GridSize.y * PC.GridSize.z;

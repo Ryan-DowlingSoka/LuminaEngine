@@ -180,6 +180,8 @@ struct FSSAOSettings
     float  Radius;
     float  Intensity;
     float  Power;
+    uint   _Padding;   // keep Samples 16-aligned (matches C++ FSSAOSettings::Padding); BDA scalar
+                       // layout has no implicit std140 pad, so the float4 array must be padded here.
     float4 Samples[SSAO_KERNEL_SIZE];
 };
 

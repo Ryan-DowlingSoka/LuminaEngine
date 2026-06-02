@@ -22,7 +22,7 @@ struct FPushConstants
     float   ColorA;
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

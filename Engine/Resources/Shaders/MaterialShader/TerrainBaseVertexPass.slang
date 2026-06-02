@@ -1,74 +1,6 @@
-#include "Includes/SceneGlobals.slang"
+#include "Includes/TerrainCommon.slang"
 
-// Keep in sync with FTerrainRenderParams in TerrainRenderTypes.h.
-struct FTerrainRenderParams
-{
-    float2  OriginXZ;
-    float   TileWorldSize;
-    float   MaxHeight;
-
-    int     Resolution;
-    int     ChunkResolution;
-    int     ChunksPerSide;
-    int     LayerCount;
-
-    float3  WorldOriginY;
-    uint    EntityID;
-
-    uint    MaterialIndex;
-    int     MeshletsPerChunkSide;
-    int     MeshletQuadSide;
-    uint    _Pad0;
-};
-
-struct FTerrainChunkInfo
-{
-    float3 BoundsMin;
-    float  _Pad0;
-    float3 BoundsMax;
-    float  _Pad1;
-    int2   ChunkCoord;
-    int2   QuadOrigin;
-    uint   MeshletOffset;
-    uint   MeshletCount;
-    uint   _Pad2;
-    uint   _Pad3;
-};
-
-struct FTerrainMeshletInfo
-{
-    float3 BoundsMin;
-    float  _Pad0;
-    float3 BoundsMax;
-    float  _Pad1;
-    int2   ChunkLocalQuadOrigin;
-    int2   QuadExtent;
-    uint   ChunkIndex;
-    uint   _Pad2;
-    uint   _Pad3;
-    uint   _Pad4;
-};
-
-struct FTerrainVisibleMeshlet
-{
-    uint ChunkIndex;
-    uint MeshletIndex;
-};
-
-[[vk::binding(0, 2)]] Sampler2D                                      uHeightmap;
-[[vk::binding(1, 2)]] Sampler2D                                      uTerrainNormal;
-[[vk::binding(2, 2)]] Sampler2DArray                                 uLayerWeights;
-[[vk::binding(4, 2)]] StructuredBuffer<FTerrainChunkInfo>            uTerrainChunks;
-[[vk::binding(5, 2)]] StructuredBuffer<FTerrainMeshletInfo>          uTerrainMeshlets;
-[[vk::binding(6, 2)]] StructuredBuffer<FTerrainVisibleMeshlet>       uTerrainVisible;
-
-// Pulled from a transient ring slot via buffer device address. Same block
-// declared in TerrainBasePixelPass.slang so VS and PS share the push range.
-struct FTerrainPushConstants
-{
-    ConstBufferPointer<FTerrainRenderParams> Params;
-};
-[[vk::push_constant]] FTerrainPushConstants PC;
+#define PC (*(FTerrainPushConstants*)gPC.PassAddr)
 
 struct VSOutput
 {
@@ -95,9 +27,9 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
 {
     FTerrainRenderParams TerrainParams = PC.Params.get();
 
-    FTerrainVisibleMeshlet Vis     = uTerrainVisible[InstanceID];
-    FTerrainMeshletInfo    Meshlet = uTerrainMeshlets[Vis.MeshletIndex];
-    FTerrainChunkInfo      Chunk   = uTerrainChunks[Meshlet.ChunkIndex];
+    FTerrainVisibleMeshlet Vis     = PC.Visible[InstanceID];
+    FTerrainMeshletInfo    Meshlet = PC.Meshlets[Vis.MeshletIndex];
+    FTerrainChunkInfo      Chunk   = PC.Chunks[Meshlet.ChunkIndex];
 
     const int MeshletQuads = TerrainParams.MeshletQuadSide;
 
@@ -127,7 +59,7 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     SampleY = clamp(SampleY, 0, TerrainParams.Resolution - 1);
 
     float2 HeightUV = (float2(SampleX, SampleY) + 0.5) / float(TerrainParams.Resolution);
-    float  Height   = uHeightmap.SampleLevel(HeightUV, 0).r * TerrainParams.MaxHeight;
+    float  Height   = SampleBindless2DLevel(PC.HeightmapIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0).r * TerrainParams.MaxHeight;
 
     float  Stride = TerrainParams.TileWorldSize / float(TerrainParams.Resolution - 1);
     float3 WorldPos;
@@ -136,7 +68,7 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     WorldPos.y = TerrainParams.WorldOriginY.x + Height;
 
     // Compute pass packs Normal.xz; recover Y from unit length (hardcoding Y=1 tilts toward +Y, flattening slopes).
-    float4 NormalSample = uTerrainNormal.SampleLevel(HeightUV, 0);
+    float4 NormalSample = SampleBindless2DLevel(PC.NormalIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0);
     float  Nx = NormalSample.r * 2.0 - 1.0;
     float  Nz = NormalSample.g * 2.0 - 1.0;
     float  Ny = sqrt(saturate(1.0 - Nx * Nx - Nz * Nz));

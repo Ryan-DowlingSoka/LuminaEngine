@@ -2,10 +2,16 @@
 
 // Post-process material template; fullscreen pass after tone mapping, ping-ponging LDR target and a
 // scratch image so each material reads the previous output via uSceneColor. Returns Material.Emissive.
-
-[[vk::binding(0, 2)]] Sampler2D uSceneColor;       // Current pass input (ping-pong source)
-[[vk::binding(1, 2)]] Sampler2D uSceneDepth;       // Opaque depth (raw NDC z, reverse-Z 0..1)
-[[vk::binding(2, 2)]] Sampler2D uHDRSceneColor;    // Pre-tone-mapping HDR scene color
+// No pass-local set: the three scene inputs are read through the bindless table via push-constant
+// indices. The codegen emits `uSceneColor.Sample(uv)` etc., so each input is a small wrapper that
+// mirrors the Sampler2D interface; FragmentMain builds them from the indices before $MATERIAL_INPUTS.
+struct FSceneTex
+{
+    Texture2D    Tex;
+    SamplerState Smp;
+    float4 Sample(float2 uv)               { return Tex.Sample(Smp, uv); }
+    float4 SampleLevel(float2 uv, float l)  { return Tex.SampleLevel(Smp, uv, l); }
+};
 
 // Raw reverse-Z NDC depth [0,1] -> linear view-space distance (world units along view -Z).
 float LinearizeSceneDepth(float RawDepth)
@@ -24,14 +30,21 @@ struct PSInput
 struct FPostProcessPushConstants
 {
     uint MaterialIndex;
-    uint _Pad0;
-    uint _Pad1;
-    uint _Pad2;
+    uint SceneColorIndex;   // bindless 2D SRV: ping-pong source (linear-clamp)
+    uint SceneDepthIndex;   // bindless 2D SRV: opaque depth (point-clamp)
+    uint HDRIndex;          // bindless 2D SRV: pre-tone-map HDR (linear-clamp)
 };
 
+#define PC (*(FPostProcessPushConstants*)gPC.PassAddr)
+
 [shader("fragment")]
-float4 FragmentMain(PSInput Input, uniform FPostProcessPushConstants PC) : SV_Target0
+float4 FragmentMain(PSInput Input) : SV_Target0
 {
+    // Scene inputs as wrappers named to match the codegen's `uSceneColor.Sample(uv)` references.
+    FSceneTex uSceneColor;    uSceneColor.Tex    = uBindlessTex2D[PC.SceneColorIndex]; uSceneColor.Smp    = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+    FSceneTex uSceneDepth;    uSceneDepth.Tex    = uBindlessTex2D[PC.SceneDepthIndex]; uSceneDepth.Smp    = uBindlessSamplers[SAMPLER_POINT_CLAMP];
+    FSceneTex uHDRSceneColor; uHDRSceneColor.Tex = uBindlessTex2D[PC.HDRIndex];        uHDRSceneColor.Smp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+
     uint   MaterialIndex = PC.MaterialIndex;
     float2 UV0           = Input.UV;
     float4 SceneColor    = uSceneColor.Sample(Input.UV);

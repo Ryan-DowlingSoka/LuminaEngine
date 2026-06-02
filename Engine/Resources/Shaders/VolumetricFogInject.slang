@@ -17,11 +17,12 @@ struct FPushConstants
     uint   NumLocalVolumetric;
     float  Time;
     uint   LocalLightIndices[FROXEL_MAX_LOCAL_LIGHTS];
+    // Pointer placed after the array so its 8-byte alignment lands on a multiple of 8 (offset 96).
+    ConstBufferPointer<FExponentialHeightFogParams> Fog;  // fog params (transient device address)
+    uint   ScatterUAV;   // bindless 3D UAV index of the froxel scatter volume
+    uint   _Pad0;
 };
-[[vk::push_constant]] FPushConstants PC;
-
-[[vk::binding(0, 2)]] RWTexture3D<float4>                          uFroxelScatter;
-[[vk::binding(1, 2)]] ConstantBuffer<FExponentialHeightFogParams>  uFog;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 // Cornette-Shanks: a smoother, energy-normalized HG. Same `G` control, but the
 // lobe isn't as much of a needle.
@@ -127,6 +128,8 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 
     // Sample the slice center. The apply-pass screen-space depth dither + 128 Z slices
     // keep banding down without per-frame jitter (which needs temporal accumulation).
+    FExponentialHeightFogParams uFog = PC.Fog.get();
+
     float3 WorldPos = FroxelToWorld(DispatchID, float3(0.5, 0.5, 0.5));
     float3 ToCam    = normalize(GetCameraPosition() - WorldPos);
 
@@ -194,5 +197,5 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     }
 
     float3 Scatter = SigmaS * InScatter * Intensity;
-    uFroxelScatter[DispatchID] = float4(Scatter, SigmaT);
+    uBindlessRWTex3D[PC.ScatterUAV][DispatchID] = float4(Scatter, SigmaT);
 }

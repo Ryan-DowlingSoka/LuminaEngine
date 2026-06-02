@@ -435,6 +435,63 @@ namespace Lumina
         return Chunk;
     }
 
+    void FUploadManager::CreateFastRing()
+    {
+        FRHIBufferDesc Desc;
+        Desc.Size = kFastRingSliceSize * kFastRingSliceCount;
+        Desc.Usage.SetMultipleFlags(
+            EBufferUsageFlags::CPUWritable,
+            EBufferUsageFlags::StagingBuffer,
+            EBufferUsageFlags::Transient,
+            EBufferUsageFlags::VertexBuffer,
+            EBufferUsageFlags::IndexBuffer);
+        Desc.DebugName = "UploadFastRing";
+
+        FastRingBuffer = Context->CreateBuffer(Desc);
+        FastRingMapped = FastRingBuffer.As<FVulkanBuffer>()->GetMappedMemory();
+        if (FastRingMapped == nullptr)
+        {
+            FastRingBuffer = nullptr;   // no host-visible mapping -> disable; everything stays on the pool
+            return;
+        }
+
+        for (uint32 i = 0; i < kFastRingSliceCount; ++i)
+        {
+            FastRingSliceVersion[i] = 0;
+        }
+        FastRingActive = 0;
+        FastRingOffset = 0;
+        FastRingUsable = true;          // usable immediately for the rest of this recording
+    }
+
+    void FUploadManager::BeginFrame(uint64 CurrentVersion)
+    {
+        if (!FastRingBuffer)
+        {
+            FastRingUsable = false;
+            return;
+        }
+
+        // Rotate to the next slice. It's safe to overwrite once the frame that last wrote it has
+        // retired; with FRAMES_IN_FLIGHT+1 slices that's guaranteed, but gate on GPU completion anyway
+        // so multiple Open/Close cycles in one frame can't clobber an in-flight slice.
+        const uint32 Next      = (FastRingActive + 1) % kFastRingSliceCount;
+        const uint64 Completed = Context->GetQueue(VersionGetQueue(CurrentVersion))->GetCompletedInstance();
+        const uint64 V         = FastRingSliceVersion[Next];
+        const bool   bDrained  = (V == 0) || (VersionGetSubmitted(V) && VersionGetInstance(V) <= Completed);
+
+        if (bDrained)
+        {
+            FastRingActive = Next;
+            FastRingOffset = 0;
+            FastRingUsable = true;
+        }
+        else
+        {
+            FastRingUsable = false;     // slice still in flight -> spill this recording to the pool
+        }
+    }
+
     static uint64 NextPow2_u64(uint64 v)
     {
         if (v <= 1) return 1;
@@ -448,7 +505,7 @@ namespace Lumina
         return v + 1;
     }
 
-    bool FUploadManager::SuballocateBuffer(uint64 Size, FRHIBuffer*& Buffer, uint64& Offset, void*& CpuVA, uint64 CurrentVersion, uint32 Alignment)
+    bool FUploadManager::SuballocateBuffer(uint64 Size, FRHIBuffer*& RESTRICT Buffer, uint64& RESTRICT Offset, void*& RESTRICT CpuVA, uint64 CurrentVersion, uint32 Alignment)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -459,6 +516,32 @@ namespace Lumina
 
         // Alignment must be a power of two; Align<T> produces garbage otherwise.
         ASSERT(Alignment > 0 && (Alignment & (Alignment - 1)) == 0);
+
+        // Fast path: bump-allocate inside the per-frame ring slice (no pool scan / version work).
+        // Restricted to the graphics queue (the persistent frame list, where all per-frame transient
+        // lives); transfer/streaming lists do bulk uploads and stay on the pool. Warms up so short-lived
+        // lists never reserve the ring; misses (too big / slice full) spill to the pool below.
+        if (!bIsScratchBuffer && Size <= kFastRingSliceSize && VersionGetQueue(CurrentVersion) == ECommandQueue::Graphics)
+        {
+            if (!FastRingBuffer && ++FastRingWarmup >= kFastRingWarmup)
+            {
+                CreateFastRing();
+            }
+
+            if (FastRingBuffer && FastRingUsable)
+            {
+                const uint64 Aligned = Align<uint64>(FastRingOffset, Alignment);
+                if (Aligned + Size <= kFastRingSliceSize)
+                {
+                    FastRingOffset = Aligned + Size;
+                    Buffer = FastRingBuffer.GetReference();
+                    Offset = (uint64)FastRingActive * kFastRingSliceSize + Aligned;
+                    CpuVA  = (char*)FastRingMapped + Offset;
+                    return true;
+                }
+                // Slice full -> spill to the chunk pool below.
+            }
+        }
 
         TSharedPtr<FBufferChunk> ChunkToRetire = nullptr;
 
@@ -564,6 +647,7 @@ namespace Lumina
 
         CurrentChunk->Version       = CurrentVersion;
         CurrentChunk->WritePointer  = Size;
+        CurrentChunk->IdleCycles    = 0;   // used this cycle; keeps it out of the idle-reclaim path
 
         Buffer = CurrentChunk->Buffer;
         Offset = 0;
@@ -581,6 +665,13 @@ namespace Lumina
 
     void FUploadManager::SubmitChunks(uint64 CurrentVersion, uint64 SubmittedVersion)
     {
+        // Tag the fast-ring slice this recording used with the submit version so the next rotation
+        // can tell when the GPU has drained it.
+        if (FastRingBuffer && FastRingUsable)
+        {
+            FastRingSliceVersion[FastRingActive] = SubmittedVersion;
+        }
+
         // Age every pooled chunk one submission cycle; the chunk used this cycle
         // (CurrentChunk, pushed below) resets to 0 so only genuinely idle chunks accrue.
         for (const TSharedPtr<FBufferChunk>& Chunk : ChunkPool)
@@ -610,16 +701,17 @@ namespace Lumina
             Chunk->Version = SubmittedVersion;
         }
 
-        static constexpr uint32 kReclaimIdleCycles = 128;
-        const uint64 BaselineSize = Align(NextPow2_u64(DefaultChunkSize), FBufferChunk::GSizeAlignment);
-        const uint64 Completed    = Context->GetQueue(SubmitQueue)->GetCompletedInstance();
+        // Reclaim any GPU-done chunk idle for this many cycles -- regardless of size. The old
+        // "only reclaim oversized chunks" rule never freed baseline chunks, so the pool ratcheted up
+        // to the high-water mark of concurrent demand and never released (unbounded VRAM growth).
+        static constexpr uint32 kReclaimIdleCycles = 64;
+        const uint64 Completed = Context->GetQueue(SubmitQueue)->GetCompletedInstance();
         for (auto It = ChunkPool.begin(); It != ChunkPool.end(); )
         {
             const TSharedPtr<FBufferChunk>& Chunk = *It;
-            const bool bGpuDone = (Chunk->Version == 0)
-                || (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= Completed);
+            const bool bGpuDone = (Chunk->Version == 0) || (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= Completed);
 
-            if (bGpuDone && Chunk->IdleCycles >= kReclaimIdleCycles && Chunk->BufferSize > BaselineSize)
+            if (bGpuDone && Chunk->IdleCycles >= kReclaimIdleCycles)
             {
                 AllocatedMemory -= Chunk->BufferSize;
                 It = ChunkPool.erase(It);

@@ -1,56 +1,82 @@
 #pragma once
 #include "Common.slang"
 
-[[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
-[[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
-[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstance;
-[[vk::binding(3, 0)]] StructuredBuffer<FBoneTransform>              uBoneMatrices;
-[[vk::binding(4, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
-[[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
-[[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
+// ---------------------------------------------------------------------------
+//  Shader param model. The only bound descriptor set is the bindless texture
+//  table (set 0). Scene data is reached by buffer device address through a single
+//  per-frame root (gPC.Root); per-pass constants ride a second transient block at
+//  gPC.PassAddr, accessed via `#define PC (*(FMyPassConstants*)gPC.PassAddr)`. The
+//  field aliases below let shader bodies read uInstance[i] / uSceneData.X directly.
+// ---------------------------------------------------------------------------
+// Device addresses of every scene buffer + bindless indices for the IBL/shadow textures. Must match
+// FSceneRoot in SceneRenderTypes.h (128 B, scalar layout). Reached through gPC.Root below.
+struct FSceneRoot
+{
+    FSceneGlobalData*    SceneData;
+    FLightData*          Lights;
+    FGPUInstance*        Instances;
+    FBoneTransform*      Bones;
+    FCluster*            Clusters;
+    FMaterialUniforms*   Materials;
+    FBillboardInstance*  Billboards;
+    FCullView*           CullViews;
+    FMeshletDraw*        MeshletDrawListPtr;
+    uint*                InstanceMeshletPrefixPtr;
+    FPreSkinnedVertex*   PreSkinnedVerticesPtr;
+    FSkinDescriptor*     SkinDescriptorsPtr;
+    FWidgetInstance*     WidgetsPtr;
+    uint  BRDFLutIndex;          // bindless 2D SRV
+    uint  SkyIrradianceIndex;    // bindless cube SRV
+    uint  SkyPrefilterIndex;     // bindless cube SRV
+    uint  ShadowCascadeIndex;    // bindless 2D SRV (cascade atlas)
+    uint  ShadowAtlasIndex;      // bindless 2D SRV (spot/point atlas)
+    uint  _Pad;
+};
 
-// Cascade/shadow atlas live in the shadow-sampling set (set=3), kept out of set 0 so shadow passes
-// bind set 0 without a shader-read transition on depth targets they write. Slot 9 freed (Hi-Z is bindless).
-[[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
-[[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
+struct FRootConstants
+{
+    ConstBufferPointer<FSceneRoot> Root;   // per-frame scene root (transient)
+    uint64_t                       PassAddr; // per-pass constants block (transient), 0 if none
+};
+[[vk::push_constant]] FRootConstants gPC;
 
-// Bindings 12/14/15 are cull-pass-private (accessed via device buffer address), and 13 lives in
-// ShadowSampling.slang at set 3, so draw/post passes never bind them or pay a state transition.
+// The PC macro must deref (not copy by value): a by-value load of a struct with PhysicalStorageBuffer
+// pointer fields trips spirv-val. gPC.PassAddr is 0 for passes that take no per-pass constants.
 
-// Inclusive per-instance meshlet prefix sum, sized [InstanceNum + 1]; entry [i] is the running
-// meshlet total across instances [0..i). Cull binary-searches it to recover (InstanceID, LocalIdx).
-[[vk::binding(16, 0)]] StructuredBuffer<uint>                        uInstanceMeshletPrefix;
-
-// Pre-integrated BRDF LUT (Karis 2013 split-sum), indexed by (NdotV, Roughness) -> (scale, bias).
-// Sample via SampleBRDFLUT() in IBL.slang. Baked once at scene init.
-[[vk::binding(17, 0)]] Sampler2D                                     uBRDFLut;
-
-// IBL diffuse irradiance cube, indexed by surface normal. Stored as Irradiance / pi --
-// the consumer multiplies by Albedo without an extra /pi.
-[[vk::binding(18, 0)]] SamplerCube                                   uSkyIrradiance;
-
-// IBL pre-filtered specular cube; each mip carries a different GGX roughness (0 = mirror).
-// Sampled at mip = Roughness * (NumMips - 1) and combined with the BRDF LUT.
-[[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
-
-// Skinning compute writes one entry per skinned meshlet-vertex; every draw VS reads from here
-// (indexed by Inst.SkinnedVertexBase + M.VertexOffset + localIdx). uSkinDescriptors drives the dispatch.
-[[vk::binding(20, 0)]] RWStructuredBuffer<FPreSkinnedVertex>          uPreSkinnedVertices;
-[[vk::binding(21, 0)]] StructuredBuffer<FSkinDescriptor>             uSkinDescriptors;
-
-// World-space UI widget quads (CPU-written, shader-read). Sampled by the widget pass.
-[[vk::binding(22, 0)]] StructuredBuffer<FWidgetInstance>             uWidgets;
+// Field aliases so shader bodies read uInstance[i] / uSceneData.X directly. Slang CSEs the repeated
+// Root.get() within a function, so it's one root load per function.
+#define uSceneData             (gPC.Root.get().SceneData[0])
+#define uLightData             (gPC.Root.get().Lights)
+#define uInstance              (gPC.Root.get().Instances)
+#define uBoneMatrices          (gPC.Root.get().Bones)
+#define uClusters              (gPC.Root.get().Clusters)
+#define uMaterialUniforms      (gPC.Root.get().Materials)
+#define uBillboards            (gPC.Root.get().Billboards)
+#define uCullViews             (gPC.Root.get().CullViews)
+#define uMeshletDrawList       (gPC.Root.get().MeshletDrawListPtr)
+#define uInstanceMeshletPrefix (gPC.Root.get().InstanceMeshletPrefixPtr)
+#define uPreSkinnedVertices    (gPC.Root.get().PreSkinnedVerticesPtr)
+#define uSkinDescriptors       (gPC.Root.get().SkinDescriptorsPtr)
+#define uWidgets               (gPC.Root.get().WidgetsPtr)
 
 
-[[vk::binding(0, 1)]] Texture2D                                 uBindlessTex2D[];
-[[vk::binding(0, 1)]] TextureCube                               uBindlessTexCube[];
-[[vk::binding(0, 1)]] Texture3D                                 uBindlessTex3D[];
-[[vk::binding(0, 1)]] Texture2DArray                            uBindlessTex2DArray[];
-[[vk::binding(0, 1)]] RWTexture2D<float4>                       uBindlessRWTex2D[];
+// The bindless table is the ONLY descriptor set scene passes bind, so it lives at set 0.
+[[vk::binding(0, 0)]] Texture2D                                 uBindlessTex2D[];
+[[vk::binding(0, 0)]] TextureCube                               uBindlessTexCube[];
+[[vk::binding(0, 0)]] Texture3D                                 uBindlessTex3D[];
+[[vk::binding(0, 0)]] Texture2DArray                            uBindlessTex2DArray[];
+[[vk::binding(0, 0)]] RWTexture2D<float4>                       uBindlessRWTex2D[];
+[[vk::binding(0, 0)]] RWTexture3D<float4>                       uBindlessRWTex3D[];
+// Cube/cube-array storage images register their UAVs as 2D-array views (cube storage views are
+// illegal in Vulkan), so cube writes index this array at GetMipUAVIndex(mip) with [int3(x,y,face)].
+[[vk::binding(0, 0)]] RWTexture2DArray<float4>                  uBindlessRWTex2DArray[];
 // Coherent alias of the same descriptor array for cross-workgroup hand-offs (SPD mip-5 / mip-11).
 // SPIR-V Coherent is per-OpVariable, so a second variable at this binding rides coherency per-access.
-[[vk::binding(0, 1)]] globallycoherent RWTexture2D<float4>      uBindlessRWTex2DCoherent[];
-[[vk::binding(1, 1)]] SamplerState                              uBindlessSamplers[];
+[[vk::binding(0, 0)]] globallycoherent RWTexture2D<float4>      uBindlessRWTex2DCoherent[];
+[[vk::binding(1, 0)]] SamplerState                              uBindlessSamplers[];
+// Comparison-sampler alias of the same sampler table (VkSampler carries compareEnable; only
+// uBindlessCmpSamplers[SAMPLER_SHADOW] is a comparison sampler, used for shadow SampleCmp).
+[[vk::binding(1, 0)]] SamplerComparisonState                   uBindlessCmpSamplers[];
 
 // Stock sampler indices. Keep in lockstep with EBindlessSampler in
 // Engine/Source/Runtime/Renderer/TextureManager.h.

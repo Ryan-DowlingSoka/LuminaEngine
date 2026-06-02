@@ -131,9 +131,28 @@ namespace Lumina
         uint32  AllocatedMeshletCount = 0;
     };
 
-    /** TerrainCull.slang push constants; frustum lives in scene globals. */
+    /** Shared TerrainBaseVertexPass/PixelPass push block (no descriptor set 2): render params + cull
+        buffers by device address, terrain textures by bindless index. Pointers first (8-byte aligned). */
+    struct FTerrainPushConstants
+    {
+        uint64  ParamsAddr        = 0;   // ConstBufferPointer<FTerrainRenderParams>
+        uint64  ChunksAddr        = 0;   // VS
+        uint64  MeshletsAddr      = 0;   // VS
+        uint64  VisibleAddr       = 0;   // VS
+        uint32  HeightmapIndex    = 0;   // VS bindless 2D
+        uint32  NormalIndex       = 0;   // VS bindless 2D
+        uint32  LayerWeightsIndex = 0;   // PS bindless 2D-array
+        uint32  _Pad0             = 0;
+    };
+
+    /** TerrainCull.slang push constants; frustum lives in scene globals. The four cull buffers are
+        addressed by device pointer (no descriptor set); pointers first to keep 8-byte alignment. */
     struct FTerrainCullPushConstants
     {
+        uint64  ChunksAddr          = 0;
+        uint64  MeshletsAddr        = 0;
+        uint64  VisibleMeshletsAddr = 0;
+        uint64  TerrainIndirectAddr = 0;
         uint32  ChunkCount      = 0u;
         uint32  MeshletCount    = 0u;
         uint32  _Pad0           = 0u;

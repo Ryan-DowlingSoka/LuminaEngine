@@ -12,6 +12,6 @@ struct FPushConstants
 
 [earlydepthstencil]
 [shader("fragment")]
-void FragmentMain(uniform FPushConstants PC)
+void FragmentMain()
 {
 }

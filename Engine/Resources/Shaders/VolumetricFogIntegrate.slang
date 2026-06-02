@@ -1,19 +1,20 @@
+#include "Includes/SceneGlobals.slang"
 #include "Includes/Froxel.slang"
 
 // Froxel volumetric fog integrate pass: one thread per (x,y) column marches Z front-to-back,
 // accumulating transmittance-weighted in-scatter and writing (accum rgb, transmittance) per froxel.
+// No pass-local set: the scatter volume (3D SRV) and integrated volume (3D UAV) are bindless.
 
 struct FPushConstants
 {
     uint3 GridSize;
     float NearPlane;
     float FogRange;
-    float _Pad[3];
+    uint  ScatterSRV;     // bindless 3D SRV: scatter volume (in-scatter rgb, extinction)
+    uint  IntegratedUAV;  // bindless 3D UAV: integrated volume (accum rgb, transmittance)
+    uint  _Pad0;
 };
-[[vk::push_constant]] FPushConstants PC;
-
-[[vk::binding(0, 0)]] Texture3D<float4>   uScatter;       // (in-scatter rgb, extinction)
-[[vk::binding(1, 0)]] RWTexture3D<float4> uIntegrated;    // (accum in-scatter rgb, transmittance)
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -29,7 +30,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 
     for (uint z = 0; z < PC.GridSize.z; ++z)
     {
-        float4 S      = uScatter.Load(int4(int(DispatchID.x), int(DispatchID.y), int(z), 0));
+        float4 S      = uBindlessTex3D[PC.ScatterSRV].Load(int4(int(DispatchID.x), int(DispatchID.y), int(z), 0));
         float  SigmaT = max(S.a, 0.0);
 
         float DNear = Froxel_SliceDistance(float(z),     float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
@@ -43,6 +44,6 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         Accum += Trans * SliceInt;
         Trans *= SliceTrans;
 
-        uIntegrated[int3(int(DispatchID.x), int(DispatchID.y), int(z))] = float4(Accum, Trans);
+        uBindlessRWTex3D[PC.IntegratedUAV][int3(int(DispatchID.x), int(DispatchID.y), int(z))] = float4(Accum, Trans);
     }
 }

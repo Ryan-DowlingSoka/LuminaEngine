@@ -5,18 +5,19 @@
 // Froxel volumetric fog apply pass: sample the integrated volume by depth and composite via
 // (One, InvSrcAlpha) blend (alpha = 1 - transmittance), so the scene HDR is never read back.
 
+// No pass-local set: scene depth (2D) + integrated volume (3D) read via bindless indices, fog params
+// via a device-address pointer, all in the push constant.
 struct FPushConstants
 {
+    ConstBufferPointer<FExponentialHeightFogParams> Fog;
+    uint  DepthIndex;        // bindless 2D SRV: scene depth
+    uint  IntegratedIndex;   // bindless 3D SRV: integrated froxel volume
     uint  GridZ;
     float NearPlane;
     float FogRange;
-    float _Pad;
+    uint  _Pad0;
 };
-[[vk::push_constant]] FPushConstants PC;
-
-[[vk::binding(0, 2)]] Sampler2D                                   uSceneDepth;
-[[vk::binding(1, 2)]] Sampler3D                                   uFroxelIntegrated;
-[[vk::binding(2, 2)]] ConstantBuffer<FExponentialHeightFogParams> uFog;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 struct PSInput
 {
@@ -34,8 +35,10 @@ float IGN(float2 PixelPos)
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
+    FExponentialHeightFogParams uFog = PC.Fog.get();
+
     float2 UV    = Input.UV;
-    float  Depth = uSceneDepth.SampleLevel(UV, 0.0).r;
+    float  Depth = uBindlessTex2D[PC.DepthIndex].SampleLevel(uBindlessSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
 
     // Reverse-Z: Depth == 0 is the far plane (sky) -> full aerial perspective to range.
     float ViewDist;
@@ -54,7 +57,7 @@ float4 FragmentMain(PSInput Input) : SV_Target0
     // fine per-pixel grain instead of visible color steps.
     W = saturate(W + (IGN(Input.Position.xy) - 0.5) / float(PC.GridZ));
 
-    float4 Fog = uFroxelIntegrated.SampleLevel(float3(UV, W), 0.0);
+    float4 Fog = uBindlessTex3D[PC.IntegratedIndex].SampleLevel(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(UV, W), 0.0);
 
     float Transmittance = saturate(Fog.a);
     float Opacity       = min(1.0 - Transmittance, uFog.HeightParams.w);  // clamp by FogMaxOpacity

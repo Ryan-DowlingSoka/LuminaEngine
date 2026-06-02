@@ -27,7 +27,7 @@ struct FPushConstants
     uint   MipUAV[BLOOM_MAX_MIPS];
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 // Ping-pong LDS like DepthPyramidSPD: alternating reductions write to disjoint
 // halves so no slot is read+written across a barrier.

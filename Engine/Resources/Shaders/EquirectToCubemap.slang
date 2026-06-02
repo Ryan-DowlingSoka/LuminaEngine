@@ -1,12 +1,20 @@
 #include "Includes/Common.slang"
+#include "Includes/SceneGlobals.slang"
 #include "Includes/Sky.slang"
 
 // Bakes an HDR equirect panorama into the scene's 6-face cube map (HDRI path; downstream IBL is identical).
 // Addressing (Y up, left-handed +Z fwd): u = 0.5 + atan2(-z, x)/2PI; v = 0.5 - asin(y)/PI. The -z keeps u
 // increasing with camera right-rotation (else the sky mirrors); asin keeps the poles non-singular under bilinear.
 
-[[vk::binding(0, 0)]] Sampler2D                     uEquirect;
-[[vk::binding(1, 0)]] RWTexture2DArray<float4>      uSkyCube;
+// No pass-local set: equirect read via bindless 2D SRV, cube written via bindless 2D-array UAV.
+struct FPushConstants
+{
+    uint EquirectSRV;
+    uint SkyCubeUAV;
+    uint _Pad0;
+    uint _Pad1;
+};
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define EQUIRECT_TILE 8
 
@@ -14,6 +22,8 @@
 [numthreads(EQUIRECT_TILE, EQUIRECT_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
+    RWTexture2DArray<float4> uSkyCube = uBindlessRWTex2DArray[PC.SkyCubeUAV];
+
     uint Width, Height, Layers;
     uSkyCube.GetDimensions(Width, Height, Layers);
 
@@ -30,7 +40,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float u = 0.5 + atan2(-RayDir.z, RayDir.x) * (1.0 / TWO_PI);
     float v = 0.5 - asin(clamp(RayDir.y, -1.0, 1.0)) * INV_PI;
 
-    float3 Color = uEquirect.SampleLevel(float2(u, v), 0.0).rgb;
+    float3 Color = SampleBindless2DLevel(PC.EquirectSRV, SAMPLER_LINEAR_CLAMP, float2(u, v), 0.0).rgb;
 
     uSkyCube[DTid] = float4(Color, 1.0);
 }

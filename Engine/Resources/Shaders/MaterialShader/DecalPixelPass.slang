@@ -21,13 +21,13 @@ struct PSOutput
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    FGPUDecal Decal = uDecals[Input.DecalIndex];
+    FGPUDecal Decal = PC.Decals[Input.DecalIndex];
 
     uint2  ScreenSize = uSceneData.ScreenSize.xy;
     float2 ScreenUV   = Input.Position.xy / float2(ScreenSize);
 
     // Reconstruct the shaded surface world position from opaque depth at this pixel.
-    float RawDepth = uDecalSceneDepth.SampleLevel(ScreenUV, 0.0).r;
+    float RawDepth = SampleDecalSceneDepth(ScreenUV);
     float3 WorldPosition = ReconstructWorldPos(ScreenUV, RawDepth, GetInverseCameraProjection(), GetInverseCameraView());
 
     // Reject the sky / far plane (no geometry to receive the decal).

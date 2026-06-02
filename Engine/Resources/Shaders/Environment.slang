@@ -5,11 +5,16 @@
 // Fullscreen sky pass; switches on Misc.x (SolidColor / Gradient / Dynamic / HDRI). Non-solid modes
 // read uSkyCube, which SkyCubeCapturePass fills once per frame -- one cube fetch/pixel instead of the full sky math.
 
-[[vk::binding(0, 2)]] ConstantBuffer<FEnvironmentParams> uEnvironment;
-// Same SkyCube the IBL pipeline reads (procedural sky or HDRI via EquirectToCubemap).
-[[vk::binding(1, 2)]] SamplerCube                        uSkyCube;
-// Imported HDRI equirect, sampled directly so the visible sky shows full resolution (not the 256 cube).
-[[vk::binding(2, 2)]] Sampler2D                          uEquirect;
+// No pass-local set: env params via a device-address pointer, sky cube + equirect via bindless indices.
+struct FEnvPushConstants
+{
+    ConstBufferPointer<FEnvironmentParams> Env;
+    uint SkyCubeIndex;    // bindless cube SRV (procedural sky, or HDRI-derived cube for IBL)
+    uint EquirectIndex;   // bindless 2D SRV (imported HDRI equirect, sampled full-res)
+    uint _Pad0;
+    uint _Pad1;
+};
+#define PC (*(FEnvPushConstants*)gPC.PassAddr)
 
 struct FragmentInput  { float2 UV : TEXCOORD0; };
 struct FragmentOutput { float4 Color : SV_Target0; };
@@ -29,6 +34,8 @@ float3 GetViewRay(float2 UV)
 [shader("fragment")]
 FragmentOutput FragmentMain(FragmentInput Input)
 {
+    FEnvironmentParams uEnvironment = PC.Env.get();
+
     float3 Color;
     uint SkyMode = asuint(uEnvironment.Misc.x);
     if (SkyMode == SKY_MODE_SOLID)
@@ -47,11 +54,11 @@ FragmentOutput FragmentMain(FragmentInput Input)
             // visible sky lines up with the cube-derived IBL / reflections.
             float u = 0.5 + atan2(-RayDir.z, RayDir.x) * (1.0 / TWO_PI);
             float v = 0.5 - asin(clamp(RayDir.y, -1.0, 1.0)) * INV_PI;
-            Color = uEquirect.SampleLevel(float2(u, v), 0.0).rgb;
+            Color = SampleBindless2DLevel(PC.EquirectIndex, SAMPLER_LINEAR_WRAP, float2(u, v), 0.0).rgb;
         }
         else
         {
-            Color = uSkyCube.SampleLevel(RayDir, 0.0).rgb;
+            Color = SampleBindlessCubeLevel(PC.SkyCubeIndex, SAMPLER_LINEAR_CLAMP, RayDir, 0.0).rgb;
         }
 
         // Per-pixel overlays (Dynamic only): sun/moon/stars are pixel-scale and blocky in a 256 cube,

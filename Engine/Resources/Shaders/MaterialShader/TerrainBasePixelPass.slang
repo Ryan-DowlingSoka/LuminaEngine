@@ -1,39 +1,8 @@
-#include "Includes/SceneGlobals.slang"
+#include "Includes/TerrainCommon.slang"
 #include "Includes/IBLRuntime.slang"
 #include "Includes/ShadowSampling.slang"
 
-// Keep in sync with FTerrainRenderParams in TerrainRenderTypes.h.
-struct FTerrainRenderParams
-{
-    float2  OriginXZ;
-    float   TileWorldSize;
-    float   MaxHeight;
-
-    int     Resolution;
-    int     ChunkResolution;
-    int     ChunksPerSide;
-    int     LayerCount;
-
-    float3  WorldOriginY;
-    uint    EntityID;
-
-    uint    MaterialIndex;
-    int     MeshletsPerChunkSide;
-    int     MeshletQuadSide;
-    uint    _Pad0;
-};
-
-[[vk::binding(0, 2)]] Sampler2D                            uHeightmap;
-[[vk::binding(1, 2)]] Sampler2D                            uTerrainNormal;
-[[vk::binding(2, 2)]] Sampler2DArray                       uLayerWeights;
-
-// Same push-constant block as TerrainBaseVertexPass.slang. Materialised on
-// each access; Slang CSEs repeated reads within one function.
-struct FTerrainPushConstants
-{
-    ConstBufferPointer<FTerrainRenderParams> Params;
-};
-[[vk::push_constant]] FTerrainPushConstants PC;
+#define PC (*(FTerrainPushConstants*)gPC.PassAddr)
 
 struct PSInput
 {
@@ -418,7 +387,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 int   GetTerrainLayerCount()                       { return PC.Params.get().LayerCount; }
 float GetTerrainLayerWeight(float2 HeightUV, int i)
 {
-    return uLayerWeights.Sample(float3(HeightUV, float(i))).r;
+    return uBindlessTex2DArray[PC.LayerWeightsIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
 }
 
 // Hash-to-color for the meshlet debug view; mirrors BasePixelPass so meshes and terrain match.
@@ -448,7 +417,7 @@ float4 GetTerrainLayerWeights4(float2 HeightUV)
     {
         if (i < Count)
         {
-            W[i] = uLayerWeights.Sample(float3(HeightUV, float(i))).r;
+            W[i] = uBindlessTex2DArray[PC.LayerWeightsIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
         }
     }
     float Total = W.x + W.y + W.z + W.w;

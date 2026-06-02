@@ -965,6 +965,9 @@ namespace Lumina
         DeviceFeatures.drawIndirectFirstInstance            = VK_TRUE;
         DeviceFeatures.vertexPipelineStoresAndAtomics       = VK_TRUE; // @TODO See if we need this.
         DeviceFeatures.shaderInt16                          = VK_TRUE;
+        // shaderInt64: lets shaders hold raw 64-bit device addresses (BDA scene-root + per-pass payload
+        // pointers reconstructed in-shader). Standard on desktop GPUs.
+        DeviceFeatures.shaderInt64                          = VK_TRUE;
         DeviceFeatures.independentBlend                     = VK_TRUE;
         DeviceFeatures.pipelineStatisticsQuery              = VK_TRUE;
 

@@ -20,7 +20,12 @@ namespace Lumina
 
     struct RUNTIME_API FCommandListInfo
     {
-        size_t UploadChunkSize = 64 * 1024;
+        // The persistent frame command list funnels all per-frame transient allocations (ImGui/RmlUi
+        // vertex+index buffers, world debug geometry, per-pass constant uploads) through one upload
+        // pool. Chunks only recycle once their GPU submission completes, so with several frames in
+        // flight a too-small chunk forces a fresh vkCreateBuffer every frame at each chunk boundary.
+        // 2 MB holds a typical frame's demand in one/two chunks that then pool + recycle.
+        size_t UploadChunkSize = 2 * 1024 * 1024;
         size_t ScratchChunkSize = 64 * 1024;
         size_t ScratchMaxMemory = 1024 * 1024 * 1024;
         ECommandQueue CommandQueue = ECommandQueue::Graphics;
@@ -129,27 +134,62 @@ namespace Lumina
         // Alive for this submission only -- never persist Cpu/Gpu beyond the command-list scope.
         virtual FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) = 0;
 
-        // Copy a single value into a transient allocation. Returned Gpu is the BDA
-        // ready to be pushed to the shader (e.g. as a push constant).
+        // Typed handle over a transient allocation: write fields straight into Data (mapped host
+        // memory, valid for this submission only), then push Gpu (the BDA) to the shader. This is the
+        // one transient-upload primitive -- AllocTransient reserves, CopyTransient* reserve + copy.
         template<typename T>
-        FTransientAlloc UploadTransient(const T& Data, uint32 Alignment = 16)
+        struct TTransientPtr
         {
-            FTransientAlloc Alloc = AllocateTransient(sizeof(T), Alignment);
-            if (Alloc.IsValid())
+            T*          Data   = nullptr;   // mapped CPU pointer -- write here
+            uint64      Gpu    = 0;         // device address (BDA) for the shader
+            FRHIBuffer* Buffer = nullptr;
+            uint64      Offset = 0;
+            uint64      Count  = 0;
+
+            NODISCARD bool IsValid() const { return Data != nullptr; }
+            explicit operator bool() const { return IsValid(); }
+            T* operator->() const { return Data; }
+            T& operator*()  const { return *Data; }
+            T& operator[](uint64 i) const { return Data[i]; }
+        };
+
+        // Reserve Count contiguous T's in the ring; write into the returned Data pointer directly.
+        // Default alignment 16 is safe for BDA structs with float4 members. THE primary path -- prefer
+        // building data straight into the ring over building a temp and copying.
+        template<typename T>
+        TTransientPtr<T> AllocTransient(uint64 Count = 1, uint32 Alignment = 16)
+        {
+            FTransientAlloc Alloc = AllocateTransient(sizeof(T) * Count, Alignment);
+            TTransientPtr<T> Result;
+            Result.Data   = static_cast<T*>(Alloc.Cpu);
+            Result.Gpu    = Alloc.Gpu;
+            Result.Buffer = Alloc.Buffer;
+            Result.Offset = Alloc.Offset;
+            Result.Count  = Count;
+            return Result;
+        }
+
+        // Reserve + copy a value already built elsewhere (e.g. game-thread FFrameData). Use AllocTransient
+        // instead when you can produce the data in place.
+        template<typename T>
+        TTransientPtr<T> CopyTransient(const T& Data, uint32 Alignment = 16)
+        {
+            TTransientPtr<T> Alloc = AllocTransient<T>(1, Alignment);
+            if (Alloc.Data)
             {
-                Memory::Memcpy(Alloc.Cpu, &Data, sizeof(T));
+                Memory::Memcpy(Alloc.Data, &Data, sizeof(T));
             }
             return Alloc;
         }
 
-        // Copy an array. Stride is sizeof(T); pass tight CPU data.
+        // Reserve + copy a tightly-packed array. Stride is sizeof(T).
         template<typename T>
-        FTransientAlloc UploadTransientArray(const T* Data, uint64 Count, uint32 Alignment = 16)
+        TTransientPtr<T> CopyTransientArray(const T* Data, uint64 Count, uint32 Alignment = 16)
         {
-            FTransientAlloc Alloc = AllocateTransient(sizeof(T) * Count, Alignment);
-            if (Alloc.IsValid() && Count > 0)
+            TTransientPtr<T> Alloc = AllocTransient<T>(Count, Alignment);
+            if (Alloc.Data && Count > 0)
             {
-                Memory::Memcpy(Alloc.Cpu, Data, sizeof(T) * Count);
+                Memory::Memcpy(Alloc.Data, Data, sizeof(T) * Count);
             }
             return Alloc;
         }

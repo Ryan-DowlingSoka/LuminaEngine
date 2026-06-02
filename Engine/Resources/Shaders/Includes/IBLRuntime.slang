@@ -7,24 +7,26 @@
 
 float3 SampleIrradiance(float3 N)
 {
-    return uSkyIrradiance.SampleLevel(N, 0.0).rgb;
+    return SampleBindlessCubeLevel(gPC.Root.get().SkyIrradianceIndex, SAMPLER_LINEAR_CLAMP, N, 0.0).rgb;
 }
 
 // Roughness-driven mip selection. The prefilter cube's mip 0 is mirror,
 // last mip is fully rough (matches the bake at PrefilterEnvMapPass).
 float3 SamplePrefilter(float3 R, float Roughness)
 {
+    uint PrefilterIndex = gPC.Root.get().SkyPrefilterIndex;
     uint Width, Height, NumMips;
-    uSkyPrefilter.GetDimensions(0, Width, Height, NumMips);
+    uBindlessTexCube[PrefilterIndex].GetDimensions(0, Width, Height, NumMips);
 
     float MaxLod = max(float(NumMips) - 1.0, 0.0);
     float Lod    = saturate(Roughness) * MaxLod;
-    return uSkyPrefilter.SampleLevel(R, Lod).rgb;
+    return SampleBindlessCubeLevel(PrefilterIndex, SAMPLER_LINEAR_CLAMP, R, Lod).rgb;
 }
 
 float2 SampleBRDFLUT(float NdotV, float Roughness)
 {
-    return uBRDFLut.SampleLevel(float2(saturate(NdotV), saturate(Roughness)), 0.0).rg;
+    return SampleBindless2DLevel(gPC.Root.get().BRDFLutIndex, SAMPLER_LINEAR_CLAMP,
+                                 float2(saturate(NdotV), saturate(Roughness)), 0.0).rg;
 }
 
 // Frostbite specular occlusion (Lagarde & de Rousiers, "Moving Frostbite to PBR", 2014).

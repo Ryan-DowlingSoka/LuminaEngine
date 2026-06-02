@@ -675,6 +675,42 @@ namespace Lumina
         EGPUSceneSettingFlags Flags;
     };
 
+    // Device addresses of every scene buffer + bindless indices for the IBL/shadow textures. Built into
+    // a per-view transient each frame; its address rides in FRootConstants.RootAddr. Must match
+    // FSceneRoot in SceneGlobals.slang (128 B). No alignas: natural 8-byte packing matches Slang's
+    // scalar field offsets (alignas(16) would pad the tail and break the size check).
+    struct FSceneRoot
+    {
+        uint64 SceneData             = 0;  // FSceneGlobalData (per-view camera/scene)
+        uint64 Lights                = 0;
+        uint64 Instances             = 0;
+        uint64 Bones                 = 0;
+        uint64 Clusters              = 0;  // per-view, GPU-written
+        uint64 Materials             = 0;  // non-dynamic
+        uint64 Billboards            = 0;
+        uint64 CullViews             = 0;
+        uint64 MeshletDrawList       = 0;  // ring, GPU-written
+        uint64 InstanceMeshletPrefix = 0;
+        uint64 PreSkinnedVertices    = 0;  // GPU-written
+        uint64 SkinDescriptors       = 0;
+        uint64 Widgets               = 0;
+        uint32 BRDFLutIndex          = 0;
+        uint32 SkyIrradianceIndex    = 0;
+        uint32 SkyPrefilterIndex     = 0;
+        uint32 ShadowCascadeIndex    = 0;  // bindless 2D SRV (cascade atlas)
+        uint32 ShadowAtlasIndex      = 0;  // bindless 2D SRV (spot/point atlas)
+        uint32 _Pad                  = 0;
+    };
+    static_assert(sizeof(FSceneRoot) == 128, "FSceneRoot must match SceneGlobals.slang");
+
+    // The one engine-wide push constant. RootAddr -> FSceneRoot transient; PassAddr -> per-pass
+    // constants transient (0 if the pass has none). Matches FRootConstants in SceneGlobals.slang.
+    struct FRootConstants
+    {
+        uint64 RootAddr = 0;
+        uint64 PassAddr = 0;
+    };
+
     struct FSceneGlobalData
     {
         FCameraData     CameraData;

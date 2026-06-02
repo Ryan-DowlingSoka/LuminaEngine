@@ -16,11 +16,12 @@ struct VSOutput
     float4 Position : SV_Position;
 };
 
+#define PC (*(FPushConstants*)gPC.PassAddr)
+
 [shader("vertex")]
 VSOutput VertexMain(
     uint VertexIndex   : SV_VulkanVertexID,
-    uint InstanceIndex : SV_VulkanInstanceID,
-    uniform FPushConstants PC)
+    uint InstanceIndex : SV_VulkanInstanceID)
 {
     FMeshletDraw Draw        = uMeshletDrawList[InstanceIndex];
     FGPUInstance Inst        = GetInstance(Draw.InstanceID);

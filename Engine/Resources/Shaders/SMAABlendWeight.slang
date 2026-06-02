@@ -1,22 +1,27 @@
 #pragma once
 
+#include "Includes/Common.slang"
+#include "Includes/SceneGlobals.slang"
+
+// SMAA pass 2 (blend weight). No pass-local binding set: edges / area-LUT / search-LUT are read
+// through the bindless table via indices in the push constant (matches FSMAAPushConstants).
 struct FPushConstants
 {
     float4 RTMetrics;
     float  EdgeThreshold;
     float  DebugMode;
-    float  _Pad0;
-    float  _Pad1;
+    uint   TexIndex0;   // edges
+    uint   TexIndex1;   // area LUT
+    uint   TexIndex2;   // search LUT
+    uint   _Pad0;
+    uint   _Pad1;
+    uint   _Pad2;
 };
 
-[[vk::push_constant]] ConstantBuffer<FPushConstants> PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define SMAA_RT_METRICS (PC.RTMetrics)
 #include "Includes/SMAA.slang"
-
-[[vk::binding(0, 2)]] Sampler2D uEdgesTex;
-[[vk::binding(1, 2)]] Sampler2D uAreaTex;
-[[vk::binding(2, 2)]] Sampler2D uSearchTex;
 
 struct VSOutput
 {
@@ -27,6 +32,14 @@ struct VSOutput
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
+    // Edges/area/search all want bilinear filtering (the search LUT is integer-coded but the
+    // technique relies on the filter); single linear-clamp sampler for all three.
+    SamplerState LinearClamp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+
+    SMAATex edgesTex;  edgesTex.Tex  = uBindlessTex2D[PC.TexIndex0]; edgesTex.Smp  = LinearClamp;
+    SMAATex areaTex;   areaTex.Tex   = uBindlessTex2D[PC.TexIndex1]; areaTex.Smp   = LinearClamp;
+    SMAATex searchTex; searchTex.Tex = uBindlessTex2D[PC.TexIndex2]; searchTex.Smp = LinearClamp;
+
     float2 pixcoord;
     float4 offset[3];
     SMAABlendingWeightCalculationOffsets(Input.UV, pixcoord, offset);
@@ -35,8 +48,8 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
         Input.UV,
         pixcoord,
         offset,
-        uEdgesTex,
-        uAreaTex,
-        uSearchTex,
+        edgesTex,
+        areaTex,
+        searchTex,
         float4(0.0, 0.0, 0.0, 0.0));
 }

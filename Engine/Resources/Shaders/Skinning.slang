@@ -9,7 +9,7 @@ struct FPushConstants
     uint DescriptorCount;
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]

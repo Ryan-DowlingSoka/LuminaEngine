@@ -1,10 +1,31 @@
 #pragma once
+#include "SceneGlobals.slang"
 
-// Shadow sampling textures get their own set (set=3) so shadow-write passes bind SceneBindingSet
-// without the cascade/atlas being SRVs there. An image used as both bound SRV and current depth
-// attachment trips a WAW layout-transition hazard in the validator; this split avoids it.
+// Shadow atlases are reached bindlessly through the scene root (set 3 is gone). The cascade and
+// spot/point atlases are 2D SRVs in the bindless table; comparison sampling uses the comparison
+// alias of the bindless sampler array, point sampling (PCSS blocker) uses a point-clamp sampler.
 
-[[vk::binding(0, 3)]] Sampler2D uShadowCascade;
-[[vk::binding(1, 3)]] Sampler2D uShadowAtlas;
-// Same cascade atlas as binding 0, point-sampler for raw depth (PCSS blocker).
-[[vk::binding(2, 3)]] Sampler2D uShadowCascadePoint;
+struct FShadowTex
+{
+    Texture2D              Tex;
+    SamplerComparisonState Cmp;
+    SamplerState           Pt;
+
+    float  SampleCmp(float2 UV, float Ref)          { return Tex.SampleCmp(Cmp, UV, Ref); }
+    float  SampleCmpLevelZero(float2 UV, float Ref) { return Tex.SampleCmpLevelZero(Cmp, UV, Ref); }
+    float4 SampleLevel(float2 UV, float Lod)        { return Tex.SampleLevel(Pt, UV, Lod); }
+    void   GetDimensions(out uint W, out uint H)    { Tex.GetDimensions(W, H); }
+};
+
+FShadowTex MakeShadowTex(uint Index)
+{
+    FShadowTex S;
+    S.Tex = uBindlessTex2D[Index];
+    S.Cmp = uBindlessCmpSamplers[SAMPLER_SHADOW];
+    S.Pt  = uBindlessSamplers[SAMPLER_POINT_CLAMP];
+    return S;
+}
+
+#define uShadowCascade      MakeShadowTex(gPC.Root.get().ShadowCascadeIndex)
+#define uShadowAtlas        MakeShadowTex(gPC.Root.get().ShadowAtlasIndex)
+#define uShadowCascadePoint MakeShadowTex(gPC.Root.get().ShadowCascadeIndex)

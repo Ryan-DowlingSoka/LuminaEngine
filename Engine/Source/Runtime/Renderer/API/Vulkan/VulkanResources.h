@@ -46,10 +46,13 @@ namespace Lumina
         
         bool SuballocateBuffer(uint64 Size, FRHIBuffer*& Buffer, uint64& Offset, void*& CpuVA, uint64 CurrentVersion, uint32 Alignment = 256);
         void SubmitChunks(uint64 CurrentVersion, uint64 SubmittedVersion);
-        
+        // Rotate the fast-ring to a fresh slice for a new recording. Called once per command-list Open().
+        void BeginFrame(uint64 CurrentVersion);
+
     private:
-        
+
         TSharedPtr<FBufferChunk> CreateChunk(uint64 Size) const;
+        void CreateFastRing();
 
     private:
 
@@ -62,6 +65,23 @@ namespace Lumina
         uint64                                      AllocatedMemory = 0;
         uint64                                      LargestChunkSize = 0;
         bool                                        bIsScratchBuffer = false;
+
+        // Per-frame linear fast path: one persistent buffer sliced FRAMES_IN_FLIGHT+1 ways. Each
+        // recording bump-allocates inside its own slice (no version scan, no VMA churn); BeginFrame
+        // rotates to the next slice, which is GPU-drained (it was last written >FRAMES_IN_FLIGHT
+        // frames ago). Allocations larger than a slice, or a full slice, spill to the chunk pool.
+        // Created lazily once a manager proves it's a small-allocation workload (warmup count), so
+        // big one-shot upload lists (texture/mesh streaming) never reserve the ring.
+        static constexpr uint64 kFastRingSliceSize  = 32ull * 1024 * 1024;
+        static constexpr uint32 kFastRingSliceCount = FRAMES_IN_FLIGHT + 1;
+        static constexpr uint32 kFastRingWarmup     = 64;
+        FRHIBufferRef   FastRingBuffer;
+        void*           FastRingMapped   = nullptr;
+        uint64          FastRingOffset   = 0;
+        uint64          FastRingSliceVersion[kFastRingSliceCount] = {};
+        uint32          FastRingActive   = 0;
+        uint32          FastRingWarmup   = 0;
+        bool            FastRingUsable   = false;
 
     };
     

@@ -1,17 +1,19 @@
+#include "Includes/SceneGlobals.slang"
 #include "Includes/Sky.slang"
 
 // Bakes the procedural sky into a 6-face cubemap for the IBL passes; one thread per texel computes
-// its world-space ray from (face, texel), camera-independent. Written via a Texture2DArray UAV view.
-
-[[vk::binding(0, 0)]] RWTexture2DArray<float4>                uSkyCube;
-[[vk::binding(1, 0)]] ConstantBuffer<FEnvironmentParams>      uEnvironment;
+// its world-space ray from (face, texel), camera-independent. No pass-local set: the cube is written
+// via a bindless 2D-array UAV and the env params via a device-address pointer.
 
 struct FPushConstants
 {
-    float3 SunDirection;
+    ConstBufferPointer<FEnvironmentParams> Env;
+    uint   SkyCubeUAV;     // bindless 2D-array UAV of the sky cube (GetMipUAVIndex(0))
     float  Time;
+    float3 SunDirection;
+    float  _Pad;
 };
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define SKYCAP_TILE 8
 
@@ -19,6 +21,9 @@ struct FPushConstants
 [numthreads(SKYCAP_TILE, SKYCAP_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
+    FEnvironmentParams uEnvironment = PC.Env.get();
+    RWTexture2DArray<float4> uSkyCube = uBindlessRWTex2DArray[PC.SkyCubeUAV];
+
     uint Width, Height, Layers;
     uSkyCube.GetDimensions(Width, Height, Layers);
 

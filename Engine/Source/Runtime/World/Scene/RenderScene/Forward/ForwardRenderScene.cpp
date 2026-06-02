@@ -154,9 +154,6 @@ namespace Lumina
             NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
         }
 
-        // Shared layouts + view-independent sets (shadow sampling, empty set 2).
-        CreateSharedLayouts();
-
         // Reserve so capture-view registration never reallocates SceneViews -- the render
         // thread holds raw FSceneView* (CurrentView) and indexes SceneViews by snapshot.
         SceneViews.reserve(MaxSceneViews);
@@ -178,18 +175,6 @@ namespace Lumina
         View.Viewport   = Viewport;
         View.bIsPrimary = bPrimary;
         View.Size       = Viewport->GetRenderTarget()->GetExtent();
-
-        // Per-view camera UBO (the only per-view constant buffer in set 2).
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FSceneGlobalData);
-            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
-            BufferDesc.DebugName = "Scene Global Data";
-            View.SceneBuffer = GRenderContext->CreateBuffer(BufferDesc);
-        }
 
         // Per-view clustered-lighting grid (built from this view's projection).
         {
@@ -793,8 +778,9 @@ namespace Lumina
                 CurrentCameraEarlyView = Capture.CameraViewIndex;
                 CurrentCameraLateView  = ~0u;   // frustum-only: no late occlusion pass
 
-                // This view's camera UBO (BUF_Dynamic; host-mapped write, no barrier).
-                CmdList.WriteBuffer(View.SceneBuffer, &Capture.SceneGlobalData, sizeof(FSceneGlobalData));
+                // This capture's scene root: shared per-frame addresses + this view's camera (transient)
+                // and clusters/IBL. Passes in RenderCaptureView push CurrentSceneRootAddr.
+                CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, View, CmdList.CopyTransient(Capture.SceneGlobalData).Gpu);
 
                 RenderCaptureView(CmdList);
             }
@@ -825,8 +811,8 @@ namespace Lumina
         // Projects decals into this capture's DBuffer (also clears it, so the base-pass sample is valid).
         DecalPass(CmdList);
         BasePass(CmdList);
-        // Terrain cull is frustum-only (reads this capture's camera from the scene set, no HZB)
-        // and writes per-terrain buffers; running after the primary, barriers order the WAR.
+        // Terrain cull is frustum-only (no HZB) and writes per-terrain buffers; running after the
+        // primary, barriers order the WAR.
         TerrainCullPass(CmdList);
         TerrainDepthPrePass(CmdList);
         TerrainRenderPass(CmdList);
@@ -1628,7 +1614,6 @@ namespace Lumina
         const auto& SimpleVertices       = Frame.Primitives.SimpleVertices;
         const auto& SolidVertices        = Frame.Primitives.SolidVertices;
         const auto& BillboardInstances   = Frame.Primitives.BillboardInstances;
-        const auto& ShadowDataCount      = Frame.Lighting.ShadowDataCount;
         const uint32 TotalMeshletBound   = Frame.Views.TotalMeshletBound;
         const uint32 NumDrawsPerView     = Frame.Views.NumDrawsPerView;
         bool& bIBLDirty                  = Frame.Volumetrics.bIBLDirty;
@@ -1639,31 +1624,12 @@ namespace Lumina
         SceneGlobalData.CullData.NumDraws          = NumDraws;
         SceneGlobalData.CullData.TotalMeshletBound = TotalMeshletBound;
 
+        // Sizes for the persistent per-frame buffers (all other CPU-dynamic data is transient): debug
+        // line/triangle geometry, and the GPU-written pre-skinned vertex buffer.
         const SIZE_T SimpleVertexSize     = SimpleVertices.size() * sizeof(FSimpleElementVertex);
         const SIZE_T SolidVertexSize      = SolidVertices.size() * sizeof(FSimpleElementVertex);
-        const SIZE_T InstanceSize         = Instances.size() * sizeof(FGPUInstance);
-        const SIZE_T BoneDataSize         = BonesData.size() * sizeof(FBoneTransform);
-
-        // GPU pre-skinning: compute-written vertex buffer + CPU-uploaded descriptor list.
         const SIZE_T PreSkinnedSize       = Math::Max<SIZE_T>(sizeof(FPreSkinnedVertex),
                                             (SIZE_T)Frame.Geometry.TotalPreSkinnedVertices * sizeof(FPreSkinnedVertex));
-        const SIZE_T SkinDescriptorSize   = Math::Max<SIZE_T>(sizeof(FSkinDescriptor),
-                                            Frame.Geometry.SkinDescriptors.size() * sizeof(FSkinDescriptor));
-
-        const uint32 ActiveShadowCount = Math::Min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
-        const SIZE_T ShadowsUploadSize = ActiveShadowCount * sizeof(FLightShadowData);
-        // Single contiguous upload (header + all FLight slots + active shadow prefix). Sized to
-        // cover the shadow suffix even with no active shadows so the buffer can hold any shadow count.
-        const SIZE_T LightUploadSize   = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
-        const SIZE_T BillboardSize     = BillboardInstances.size() * sizeof(FBillboardInstance);
-        const SIZE_T WidgetSize        = Frame.Primitives.WidgetInstances.size() * sizeof(FWidgetInstance);
-        // Always at least one stride so the decal-pass binding set has a valid (if unused) buffer.
-        const SIZE_T DecalSize         = Math::Max<SIZE_T>(sizeof(FGPUDecal), Frame.Primitives.DecalExtracts.size() * sizeof(FGPUDecal));
-
-        // Per-instance meshlet prefix sum (one uint per instance + sentinel); cull pass binary-searches.
-        const SIZE_T InstanceMeshletPrefixSize = Math::Max<SIZE_T>(
-            sizeof(uint32),
-            InstanceMeshletPrefix.size() * sizeof(uint32));
 
         // Shared draw list: NumViews * TotalMeshletBound FMeshletDraw; views own disjoint slices via FCullView.DrawListOffset.
         const SIZE_T MeshletDrawListSize = Math::Max<SIZE_T>(
@@ -1675,80 +1641,37 @@ namespace Lumina
             sizeof(FDrawIndirectArguments),
             IndirectArgs.size() * sizeof(FDrawIndirectArguments));
 
-        const SIZE_T CullViewSize = Math::Max<SIZE_T>(
-            sizeof(FCullView),
-            (SIZE_T)NumCullViews * sizeof(FCullView));
-
         // Worst case: every meshlet HZB-occluded in phase 0 (first frame). Stride matches FMeshletDeferred.
         const SIZE_T DeferListSize = Math::Max<SIZE_T>(
             sizeof(uint32) * 4,
             (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
 
-        bool bAnyBufferResized = false;
-        auto Resize = [&](ENamedBuffer Buf, SIZE_T DesiredSize)
-        {
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)Buf], (uint32)DesiredSize, 1.2f, NamedBufferLowUsage[(int)Buf]);
-        };
-        Resize(ENamedBuffer::Instance,              InstanceSize);
-        Resize(ENamedBuffer::SimpleVertex,          SimpleVertexSize);
-        Resize(ENamedBuffer::SolidVertex,           SolidVertexSize);
-        Resize(ENamedBuffer::Bone,                  BoneDataSize);
-        Resize(ENamedBuffer::PreSkinnedVertices,    PreSkinnedSize);
-        Resize(ENamedBuffer::SkinDescriptors,       SkinDescriptorSize);
-        Resize(ENamedBuffer::Light,                 LightUploadSize);
-        Resize(ENamedBuffer::Billboards,            BillboardSize);
-        Resize(ENamedBuffer::Widgets,               WidgetSize);
-        Resize(ENamedBuffer::Decals,                DecalSize);
-        Resize(ENamedBuffer::CullView,              CullViewSize);
+        // These buffers are reached by device address (PreSkinned) or bound directly (vertex/indirect),
+        // not through any persistent descriptor set, so a resize needs no binding-set rebuild.
+        RenderUtils::ResizeBufferIfNeeded(SimpleVertexBuffer,       (uint32)SimpleVertexSize, 1.2f, SimpleVertexLowUsage);
+        RenderUtils::ResizeBufferIfNeeded(SolidVertexBuffer,        (uint32)SolidVertexSize,  1.2f, SolidVertexLowUsage);
+        RenderUtils::ResizeBufferIfNeeded(PreSkinnedVerticesBuffer, (uint32)PreSkinnedSize,   1.2f, PreSkinnedVerticesLowUsage);
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
-        }
-        Resize(ENamedBuffer::InstanceMeshletPrefix, InstanceMeshletPrefixSize);
-
-        if (bAnyBufferResized)
-        {
-            // Shared buffers (Instance/Bone/Light/...) grew; every view's scene binding set
-            // references them, so rebuild each view's sets against the new buffers.
-            for (FSceneView& View : SceneViews)
-            {
-                CreateViewBindingSets(View);
-            }
-            // CreateViewBindingSets left the live members aimed at the last view; restore them.
-            PointAtView(*CurrentView);
+            RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
+            RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
+            RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
         }
 
         {
             LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
-            // Only IndirectArgs and SimpleVertex are non-dynamic uploads; the rest are
-            // BUF_Dynamic (memcpy into a host-mapped slot, no CopyDest transition).
+            // The only CPU uploads left to persistent buffers: indirect args (GPU-consumed) and the
+            // debug vertex buffers. Everything else dynamic goes through the transient ring below.
             CmdList.SetBufferState(GetIndirectArgs(), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
+            CmdList.SetBufferState(GetSimpleVertexBuffer(), EResourceStates::CopyDest);
             if (SolidVertexSize > 0)
             {
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SolidVertex), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetSolidVertexBuffer(), EResourceStates::CopyDest);
             }
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
-            // Primary view's camera UBO (CurrentView is the primary here). Capture views
-            // upload their own SceneBuffer in the per-view capture loop in RenderView.
-            CmdList.WriteBuffer(CurrentView->SceneBuffer, &SceneGlobalData, sizeof(FSceneGlobalData));
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), Instances.data(), InstanceSize);
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
-            if (!Frame.Geometry.SkinDescriptors.empty())
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SkinDescriptors), Frame.Geometry.SkinDescriptors.data(),
-                                    Frame.Geometry.SkinDescriptors.size() * sizeof(FSkinDescriptor));
-            }
-
-            if (!CullViews.empty())
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::CullView), CullViews.data(), CullViews.size() * sizeof(FCullView));
-            }
 
             // FirstInstance pre-seeded so each atomic append in CullMeshlets lands in its own slice.
             if (!IndirectArgs.empty())
@@ -1756,40 +1679,18 @@ namespace Lumina
                 CmdList.WriteBuffer(GetIndirectArgs(), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
             }
 
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
+            CmdList.WriteBuffer(GetSimpleVertexBuffer(), SimpleVertices.data(), SimpleVertexSize);
             if (SolidVertexSize > 0)
             {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SolidVertex), SolidVertices.data(), SolidVertexSize);
+                CmdList.WriteBuffer(GetSolidVertexBuffer(), SolidVertices.data(), SolidVertexSize);
             }
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
-            if (!Frame.Primitives.WidgetInstances.empty())
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Widgets), Frame.Primitives.WidgetInstances.data(), WidgetSize);
-            }
-            if (!Frame.Primitives.DecalExtracts.empty())
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Decals), Frame.Primitives.DecalExtracts.data(),
-                                    Frame.Primitives.DecalExtracts.size() * sizeof(FGPUDecal));
-            }
-
-            // Skip env upload + IBL convolution when nothing they depend on changed.
+            // Env/fog params are uploaded to the transient ring at their pass sites (Environment /
+            // VolumetricFog*); here we only track changes to gate the costly IBL convolution below.
             const bool bEnvParamsChanged = !bEnvironmentParamsUploaded || std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
             if (bEnvParamsChanged)
             {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
                 LastUploadedEnvironmentParams = EnvironmentParams;
                 bEnvironmentParamsUploaded   = true;
-            }
-
-            // Fog params: same memcmp gate; the static-fog common case skips the upload.
-            const FExponentialHeightFogParams& FogParams = Frame.Volumetrics.FogParams;
-            const bool bFogParamsChanged = !bFogParamsUploaded || std::memcmp(&FogParams, &LastUploadedFogParams, sizeof(FExponentialHeightFogParams)) != 0;
-            if (bFogParamsChanged)
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Fog), &FogParams, sizeof(FExponentialHeightFogParams));
-                LastUploadedFogParams = FogParams;
-                bFogParamsUploaded    = true;
             }
 
             const bool bSunChanged =
@@ -1834,12 +1735,31 @@ namespace Lumina
                 bLastConvolvedHasSun           = (LightData.bHasSun != 0);
                 bIBLConvolutionValid           = true;
             }
+            // --- Bindless scene root: transient-upload the per-frame dynamic buffers and capture their
+            // device addresses; GPU-written + CPU-static buffers use their stable GetAddress(). SceneData,
+            // Clusters and the IBL indices are per-view (added by BuildViewSceneRoot). ---
+            SceneRootShared = FSceneRoot{};
+            SceneRootShared.Lights = CmdList.CopyTransient(LightData).Gpu;
+            if (!Instances.empty())
+                SceneRootShared.Instances = CmdList.CopyTransientArray(Instances.data(), Instances.size()).Gpu;
+            if (!BonesData.empty())
+                SceneRootShared.Bones = CmdList.CopyTransientArray(BonesData.data(), BonesData.size()).Gpu;
+            if (!BillboardInstances.empty())
+                SceneRootShared.Billboards = CmdList.CopyTransientArray(BillboardInstances.data(), BillboardInstances.size()).Gpu;
+            if (!CullViews.empty())
+                SceneRootShared.CullViews = CmdList.CopyTransientArray(CullViews.data(), CullViews.size()).Gpu;
+            if (!Frame.Geometry.SkinDescriptors.empty())
+                SceneRootShared.SkinDescriptors = CmdList.CopyTransientArray(Frame.Geometry.SkinDescriptors.data(), Frame.Geometry.SkinDescriptors.size()).Gpu;
+            if (!Frame.Primitives.WidgetInstances.empty())
+                SceneRootShared.Widgets = CmdList.CopyTransientArray(Frame.Primitives.WidgetInstances.data(), Frame.Primitives.WidgetInstances.size()).Gpu;
             if (!InstanceMeshletPrefix.empty())
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix),
-                                    InstanceMeshletPrefix.data(),
-                                    InstanceMeshletPrefix.size() * sizeof(uint32));
-            }
+                SceneRootShared.InstanceMeshletPrefix = CmdList.CopyTransientArray(InstanceMeshletPrefix.data(), InstanceMeshletPrefix.size()).Gpu;
+            SceneRootShared.Materials          = GRenderManager->GetMaterialManager().GetMaterialBuffer()->GetAddress();
+            SceneRootShared.MeshletDrawList    = GetMeshletDrawList()->GetAddress();
+            SceneRootShared.PreSkinnedVertices = GetPreSkinnedVerticesBuffer()->GetAddress();
+            // Primary view's root (CurrentView): its camera UBO + per-view clusters/IBL.
+            CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, *CurrentView, CmdList.CopyTransient(SceneGlobalData).Gpu);
+
             CmdList.EnableAutomaticBarriers();
         }
     }
@@ -4087,14 +4007,12 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(CullShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
         
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(GetNamedImage(ENamedImage::DepthPyramid));
         // Cull-private scratch is bound by device address, not a descriptor set; declaring
@@ -4102,6 +4020,7 @@ namespace Lumina
         State.Writes(GetIndirectArgs());
         State.Writes(GetMeshletDeferList());
         State.Writes(GetDeferCount());
+        State.Writes(GetMeshletDrawList());
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
@@ -4111,7 +4030,7 @@ namespace Lumina
         PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
         PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
         PC.DeferCountAddr      = GetDeferCount()->GetAddress();
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         // Flat thread-per-meshlet; workgroups beyond the 65535 X cap fold into Y.
         const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
@@ -4147,14 +4066,12 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(CullShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Writes(GetNamedImage(ENamedImage::DepthPyramid));
         // Phase 1 reads the defer list/count phase 0 wrote and appends to indirect
@@ -4162,6 +4079,7 @@ namespace Lumina
         State.Writes(GetIndirectArgs());
         State.Writes(GetMeshletDeferList());
         State.Writes(GetDeferCount());
+        State.Writes(GetMeshletDrawList());
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
@@ -4171,7 +4089,7 @@ namespace Lumina
         PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
         PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
         PC.DeferCountAddr      = GetDeferCount()->GetAddress();
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         // Same X/Y fold as CullPassEarly so Vulkan's 65535 per-axis workgroup
         // limit doesn't cap us on very large scenes.
@@ -4202,7 +4120,6 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(SkinShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.DebugName = "Skinning";
 
@@ -4210,13 +4127,12 @@ namespace Lumina
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        // Writable scene set: binding 20 (pre-skinned verts) is a UAV here, SRV in draw passes.
-        State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Writes(GetPreSkinnedVerticesBuffer());
         CmdList.SetComputeState(State);
 
         struct FSkinningPushConstants { uint32 DescriptorCount; } PC{ DescriptorCount };
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         // One workgroup per skinned entity; fold across X/Y past the 65535 per-axis cap.
         constexpr uint32 MaxDispatchAxis = 65535u;
@@ -4243,7 +4159,6 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(PaintShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.DebugName = "TexturePaint";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
@@ -4306,7 +4221,6 @@ namespace Lumina
 
             FComputeState State;
             State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSetReadOnly);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             State.Writes(Target);   // -> UnorderedAccess (and a UAV barrier between same-target ops)
             CmdList.SetComputeState(State);
@@ -4325,7 +4239,7 @@ namespace Lumina
             PC.ColorG        = Op.Color.g;
             PC.ColorB        = Op.Color.b;
             PC.ColorA        = Op.Color.a;
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            PushRootConstants(CmdList, PC);
 
             const uint32 DispatchX = RenderUtils::GetGroupCount((uint32)(MaxX - MinX), 8u);
             const uint32 DispatchY = RenderUtils::GetGroupCount((uint32)(MaxY - MinY), 8u);
@@ -4350,13 +4264,14 @@ namespace Lumina
         const TVector<uint32>& OpaqueOccluderDrawList,
         FRHIImage* DepthImage,
         FRHIImage* SizedToImage,
-        FRHIBindingLayout* SceneBindingLayout,
-        FRHIBindingSet* SceneBindingSetReadOnly,
         const FViewportState& SceneViewportState,
         FRHIBuffer* IndirectArgsBuffer,
         uint32 ViewIndex,
         uint32 NumDrawsPerView,
         bool bClearDepth,
+        uint64 SceneRootAddr,
+        FRHIBuffer* MeshletDrawListBuf,
+        FRHIBuffer* PreSkinnedBuf,
         FRHIImage* DepthResolveImage = nullptr)
     {
         FRenderPassDesc::FAttachment Depth; Depth
@@ -4383,7 +4298,6 @@ namespace Lumina
 
             FGraphicsPipelineDesc Desc; Desc
                 .SetRenderState(RenderState)
-                .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
             if (Batch.bMasked)
@@ -4407,11 +4321,15 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(SceneViewportState);
             GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.SetIndirectParams(IndirectArgsBuffer);
+            // Cull/skinning outputs read via BDA -> declare the UAV->shader-read barrier.
+            GraphicsState.Reads(MeshletDrawListBuf);
+            GraphicsState.Reads(PreSkinnedBuf);
 
             CmdList.SetGraphicsState(GraphicsState);
+            FRootConstants RC; RC.RootAddr = SceneRootAddr; RC.PassAddr = 0;
+            CmdList.SetPushConstants(&RC, sizeof(RC));
             CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
         }
     }
@@ -4436,13 +4354,14 @@ namespace Lumina
             OpaqueOccluderDrawList,
             GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
-            SceneBindingLayout,
-            SceneBindingSetReadOnly,
             SceneViewportState,
             GetIndirectArgs(),
             CurrentCameraEarlyView,
             NumDrawsPerView,
             true,
+            CurrentSceneRootAddr,
+            GetMeshletDrawList(),
+            GetPreSkinnedVerticesBuffer(),
             GetSceneDepthResolve());
     }
 
@@ -4467,13 +4386,14 @@ namespace Lumina
             OpaqueOccluderDrawList,
             GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
-            SceneBindingLayout,
-            SceneBindingSetReadOnly,
             SceneViewportState,
             GetIndirectArgs(),
             CameraLateViewIndex,
             NumDrawsPerView,
             false,
+            CurrentSceneRootAddr,
+            GetMeshletDrawList(),
+            GetPreSkinnedVerticesBuffer(),
             GetSceneDepthResolve());
     }
 
@@ -4504,7 +4424,6 @@ namespace Lumina
 
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
         PipelineDesc.DebugName = "Depth Pyramid SPD";
@@ -4512,7 +4431,6 @@ namespace Lumina
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSetReadOnly);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(DepthSource);
         State.Writes(DepthPyramid);
@@ -4549,7 +4467,7 @@ namespace Lumina
             const uint32 SrcMip = (i < MipCount) ? i : 0u;
             PC.MipUAV[i] = (uint32)DepthPyramid->GetMipUAVIndex(SrcMip);
         }
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         CmdList.Dispatch(DispatchX, DispatchY, 1);
     }
@@ -4595,18 +4513,17 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(ComputeShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Writes(CurrentView->ClusterBuffer);
         CmdList.SetComputeState(State);
 
-        CmdList.SetPushConstants(&ClusterPC, sizeof(FLightClusterPC));
+        PushRootConstants(CmdList, ClusterPC);
             
         constexpr uint32 ClusterBuildGroupSize = 64;
         constexpr uint32 ClusterDispatchGroups = (NumClusters + ClusterBuildGroupSize - 1) / ClusterBuildGroupSize;
@@ -4631,20 +4548,19 @@ namespace Lumina
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(ComputeShader);
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
                 
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
             
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Writes(CurrentView->ClusterBuffer);   // per-cluster light lists
         CmdList.SetComputeState(State);
 
         FMatrix4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
 
-        CmdList.SetPushConstants(&ViewProj, sizeof(FMatrix4));
+        PushRootConstants(CmdList, ViewProj);
         
         constexpr uint32 LightCullGroupSize = 128;
         constexpr uint32 LightCullGroups    = (NumClusters + LightCullGroupSize - 1) / LightCullGroupSize;
@@ -4696,7 +4612,6 @@ namespace Lumina
         FGraphicsPipelineDesc DescTemplate; DescTemplate
             .SetDebugName("Point Light Shadow Pass")
             .SetRenderState(RenderState)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader);
@@ -4766,12 +4681,13 @@ namespace Lumina
                         .SetRenderPass(RenderPass)
                         .SetViewportState(FViewportState(Viewport, Scissor))
                         .SetPipeline(Pipeline)
-                        .AddBindingSet(SceneBindingSetReadOnly)
                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                         .SetIndirectParams(GetIndirectArgs());
 
+                    GraphicsState.Reads(GetMeshletDrawList());
+                    GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
                     CmdList.SetGraphicsState(GraphicsState);
-                    CmdList.SetPushConstants(&PointPush, sizeof(PointPush));
+                    PushRootConstants(CmdList, PointPush);
                     CmdList.DrawIndirect(Batch.DrawCount, (FaceBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
                 }
             }
@@ -4823,7 +4739,6 @@ namespace Lumina
         FGraphicsPipelineDesc PipelineDescTemplate; PipelineDescTemplate
             .SetDebugName("Spot Shadow Pass")
             .SetRenderState(RenderState)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader);
@@ -4886,12 +4801,13 @@ namespace Lumina
                     .SetRenderPass(RenderPass)
                     .SetViewportState(FViewportState(Viewport, Scissor))
                     .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSetReadOnly)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                     .SetIndirectParams(GetIndirectArgs());
 
+                GraphicsState.Reads(GetMeshletDrawList());
+                GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
                 CmdList.SetGraphicsState(GraphicsState);
-                CmdList.SetPushConstants(&SpotPush, sizeof(SpotPush));
+                PushRootConstants(CmdList, SpotPush);
                 CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
@@ -4933,7 +4849,6 @@ namespace Lumina
         FGraphicsPipelineDesc Desc; Desc
             .SetDebugName("Cascaded Shadow Maps")
             .SetRenderState(RenderState)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader);
 
@@ -4988,12 +4903,13 @@ namespace Lumina
                     .SetRenderPass(RenderPass)
                     .SetViewportState(FViewportState(Viewport, Scissor))
                     .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSetReadOnly)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                     .SetIndirectParams(GetIndirectArgs());
 
+                GraphicsState.Reads(GetMeshletDrawList());
+                GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
                 CmdList.SetGraphicsState(GraphicsState);
-                CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
+                PushRootConstants(CmdList, CascadePush);
                 CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
@@ -5061,21 +4977,24 @@ namespace Lumina
         RenderState.SetRasterState(RasterState)
                    .SetDepthStencilState(DepthState)
                    .SetBlendState(BlendState);
-        
-        FBindingLayoutDesc DecalLayoutDesc;
-        DecalLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Vertex)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0))
-            .AddItem(FBindingLayoutItem::Buffer_SD(1));
-        FRHIBindingLayout* DecalLayout = BindingCache.GetOrCreateBindingLayout(DecalLayoutDesc);
 
-        FRHISamplerRef PointClamp = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        // No private descriptor set: the decal array is read by device address and the scene depth by
+        // bindless index, both carried in the push constant (matches FDecalPushConstants in DecalCommon.slang).
+        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
 
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
-        SetDesc.AddItem(FBindingSetItem::BufferSRV(1, GetNamedBuffer(ENamedBuffer::Decals)));
-        FRHIBindingSetRef DecalSet = GRenderContext->CreateBindingSet(SetDesc, DecalLayout);
+        auto DecalAlloc = CmdList.CopyTransientArray(Decals.data(), Decals.size());
+
+        struct FDecalPushConstants
+        {
+            uint64 DecalsAddr;
+            uint32 DepthIndex;
+            uint32 Pad;
+        };
+        static_assert(sizeof(FDecalPushConstants) == 16, "FDecalPushConstants must match the slang push block.");
+
+        FDecalPushConstants PC = {};
+        PC.DecalsAddr = DecalAlloc.Gpu;
+        PC.DepthIndex = (uint32)SceneDepth->GetResourceID();
 
         // One instanced draw per shader batch.
         for (const FFrameData::FDecalBatch& Batch : Frame.Primitives.DecalBatches)
@@ -5090,9 +5009,7 @@ namespace Lumina
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Decal Pass");
             Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
             Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.AddBindingLayout(DecalLayout);
             Desc.SetVertexShader(VS);
             Desc.SetPixelShader(PS);
 
@@ -5100,13 +5017,15 @@ namespace Lumina
 
             FGraphicsState GraphicsState;
             GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.AddBindingSet(DecalSet);
+            // Scene depth is read by bindless index, not a descriptor; declare the access so the tracker
+            // transitions it to shader-read. (The transient decal buffer manages its own ring lifetime.)
+            GraphicsState.Reads(SceneDepth);
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(MakeViewportStateFromImage(DBufferA));
 
             CmdList.SetGraphicsState(GraphicsState);
+            PushRootConstants(CmdList, PC);
 
             CmdList.Draw(36, Batch.Count, 0, Batch.FirstInstance);
         }
@@ -5164,22 +5083,25 @@ namespace Lumina
             .SetRasterState(RasterState)
             .SetDepthStencilState(DepthState);
 
-        // Set 2: DBuffer decal targets (opaque only) -- replaces the empty placeholder so the base pass
-        // composites projected decals before lighting. The DecalPass wrote these earlier this frame.
-        FBindingLayoutDesc DBufferLayoutDesc;
-        DBufferLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0))
-            .AddItem(FBindingLayoutItem::Texture_SRV(1))
-            .AddItem(FBindingLayoutItem::Texture_SRV(2));
-        FRHIBindingLayout* DBufferLayout = BindingCache.GetOrCreateBindingLayout(DBufferLayoutDesc);
+        // DBuffer decal targets (opaque only), written by DecalPass earlier this frame; read here
+        // bindlessly via push-constant indices.
+        FRHIImage* DBufferA = GetNamedImage(ENamedImage::DBufferA);
+        FRHIImage* DBufferB = GetNamedImage(ENamedImage::DBufferB);
+        FRHIImage* DBufferC = GetNamedImage(ENamedImage::DBufferC);
 
-        FRHISamplerRef DBufferSampler = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-        FBindingSetDesc DBufferSetDesc;
-        DBufferSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DBufferA), DBufferSampler));
-        DBufferSetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::DBufferB), DBufferSampler));
-        DBufferSetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::DBufferC), DBufferSampler));
-        FRHIBindingSetRef DBufferSet = GRenderContext->CreateBindingSet(DBufferSetDesc, DBufferLayout);
+        struct FDBufferPushConstants
+        {
+            uint32 DBufferAIndex;
+            uint32 DBufferBIndex;
+            uint32 DBufferCIndex;
+            uint32 _Pad;
+        };
+        static_assert(sizeof(FDBufferPushConstants) == 16, "FDBufferPushConstants must match the slang push block.");
+
+        FDBufferPushConstants DBufferPC = {};
+        DBufferPC.DBufferAIndex = (uint32)DBufferA->GetResourceID();
+        DBufferPC.DBufferBIndex = (uint32)DBufferB->GetResourceID();
+        DBufferPC.DBufferCIndex = (uint32)DBufferC->GetResourceID();
 
         for (uint32 Idx : OpaqueDrawList)
         {
@@ -5190,10 +5112,7 @@ namespace Lumina
                 .SetRenderState(RenderState)
                 .SetVertexShader(Batch.VertexShader)
                 .SetPixelShader(Batch.PixelShader)
-                .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(DBufferLayout)
-                .AddBindingLayout(ShadowSamplingBindingLayout)
                 .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FGraphicsState GraphicsState; GraphicsState
@@ -5201,12 +5120,20 @@ namespace Lumina
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                 .SetIndirectParams(GetIndirectArgs())
-                .AddBindingSet(SceneBindingSetReadOnly)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .AddBindingSet(DBufferSet)
-                .AddBindingSet(ShadowSamplingBindingSet);
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // DBuffer targets, cull/skinning outputs and shadow atlases are read by index; declare
+            // them so the tracker inserts the RT/UAV/depth -> shader-read barriers.
+            GraphicsState.Reads(DBufferA);
+            GraphicsState.Reads(DBufferB);
+            GraphicsState.Reads(DBufferC);
+            GraphicsState.Reads(GetMeshletDrawList());
+            GraphicsState.Reads(CurrentView->ClusterBuffer);
+            GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
+            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
+            GraphicsState.Reads(ShadowAtlas.GetImage());
 
             CmdList.SetGraphicsState(GraphicsState);
+            PushRootConstants(CmdList, DBufferPC);
 
             const uint32 EarlyBase = CameraEarlyViewIndex * NumDrawsPerView;
             CmdList.DrawIndirect(Batch.DrawCount, (EarlyBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
@@ -5590,12 +5517,16 @@ namespace Lumina
         RasterState.EnableDepthClip()
                    .SetCullMode(ERasterCullMode::None);
 
-        FBindingLayoutDesc ParticleLayoutDesc;
-        ParticleLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Vertex)
-            .AddItem(FBindingLayoutItem::Buffer_SRV(0))
-            .AddItem(FBindingLayoutItem::Buffer_CBV(1));
-        FRHIBindingLayout* ParticleLayout = BindingCache.GetOrCreateBindingLayout(ParticleLayoutDesc);
+        // Particle array read by device address; per-emitter render params inlined into the push
+        // constant (matches FParticlePushConstants in ParticleVertex.slang). No pass-local set.
+        struct FParticlePushConstants
+        {
+            uint64   ParticlesAddr;
+            uint32   TextureIndex;
+            uint32   BillboardToCamera;
+            FVector4 Tint;
+        };
+        static_assert(sizeof(FParticlePushConstants) == 32, "FParticlePushConstants must match the slang push block.");
 
         for (const FFrameData::FParticleExtract& Item : Frame.Extracts.ParticleExtracts)
         {
@@ -5617,12 +5548,6 @@ namespace Lumina
             }
 
             const FResolvedParticleParams& Resolved = Item.Resolved;
-
-            FParticleRenderParamsGPU RenderParams{};
-            RenderParams.Flags      = FUIntVector4(Item.TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
-            RenderParams.Tint       = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
-            RenderParams.UVParams   = FVector4(0.0f);
-            CmdList.WriteBuffer(State.RenderParamsBuffer, &RenderParams, sizeof(RenderParams));
 
             FBlendState BlendState;
             BlendState.SetRenderTarget(0, MakeParticleBlendTarget(Resolved.BlendMode));
@@ -5648,28 +5573,28 @@ namespace Lumina
                 .SetRenderState(RenderState)
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(ParticleLayout);
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
             Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-            FBindingSetDesc ParticleSetDesc;
-            ParticleSetDesc.AddItem(FBindingSetItem::BufferSRV(0, State.ParticleBuffer))
-                           .AddItem(FBindingSetItem::BufferCBV(1, State.RenderParamsBuffer));
-            FRHIBindingSetRef ParticleSet = GRenderContext->CreateBindingSet(ParticleSetDesc, ParticleLayout);
-
             FGraphicsState GraphicsState;
             GraphicsState.SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSetReadOnly)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .AddBindingSet(ParticleSet);
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // Particle array read by device address, not a descriptor; declare it for the tracker.
+            GraphicsState.Reads(State.ParticleBuffer);
+
+            FParticlePushConstants PC = {};
+            PC.ParticlesAddr     = State.ParticleBuffer->GetAddress();
+            PC.TextureIndex      = Item.TextureIndex;
+            PC.BillboardToCamera = Resolved.bBillboardToCamera ? 1u : 0u;
+            PC.Tint              = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
 
             CmdList.SetGraphicsState(GraphicsState);
+            PushRootConstants(CmdList, PC);
             CmdList.Draw(6u * State.AllocatedMax, 1u, 0u, 0u);
         }
     }
@@ -6086,7 +6011,7 @@ namespace Lumina
                 NormalParams.TileWorldSize = TerrainItem.TileWorldSize;
                 NormalParams.MaxHeight     = TerrainItem.MaxHeight;
 
-                FTransientAlloc NormalParamsAlloc = CmdList.UploadTransient(NormalParams);
+                auto NormalParamsAlloc = CmdList.CopyTransient(NormalParams);
 
                 FRHISamplerRef ClampSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
@@ -6179,20 +6104,9 @@ namespace Lumina
             return;
         }
 
-        FBindingLayoutDesc CullLayoutDesc;
-        CullLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Compute)
-            .AddItem(FBindingLayoutItem::Buffer_SRV(0))
-            .AddItem(FBindingLayoutItem::Buffer_SRV(1))
-            .AddItem(FBindingLayoutItem::Buffer_UAV(2))
-            .AddItem(FBindingLayoutItem::Buffer_UAV(3));
-        FRHIBindingLayout* CullLayout = BindingCache.GetOrCreateBindingLayout(CullLayoutDesc);
-
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(CullShader)
-                    .AddBindingLayout(SceneBindingLayout)
-                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                    .AddBindingLayout(CullLayout);
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         FRHIComputePipelineRef CullPipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.Extracts.TerrainExtracts)
@@ -6221,25 +6135,24 @@ namespace Lumina
             InitialArgs.StartInstanceLocation = 0u;
             CmdList.WriteBuffer(State.IndirectDrawBuffer, &InitialArgs, sizeof(InitialArgs));
 
-            FBindingSetDesc CullSetDesc;
-            CullSetDesc
-                .AddItem(FBindingSetItem::BufferSRV(0, State.ChunkInfoBuffer))
-                .AddItem(FBindingSetItem::BufferSRV(1, State.MeshletInfoBuffer))
-                .AddItem(FBindingSetItem::BufferUAV(2, State.VisibleMeshletBuffer))
-                .AddItem(FBindingSetItem::BufferUAV(3, State.IndirectDrawBuffer));
-            FRHIBindingSetRef CullSet = GRenderContext->CreateBindingSet(CullSetDesc, CullLayout);
-
             FComputeState ComputeState;
             ComputeState.SetPipeline(CullPipeline)
-                        .AddBindingSet(SceneBindingSetReadOnly)
-                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                        .AddBindingSet(CullSet);
+                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // Buffers read/written by device address, not descriptors; declare for the tracker.
+            ComputeState.Reads(State.ChunkInfoBuffer);
+            ComputeState.Reads(State.MeshletInfoBuffer);
+            ComputeState.Writes(State.VisibleMeshletBuffer);
+            ComputeState.Writes(State.IndirectDrawBuffer);
             CmdList.SetComputeState(ComputeState);
 
             FTerrainCullPushConstants Push{};
+            Push.ChunksAddr          = State.ChunkInfoBuffer->GetAddress();
+            Push.MeshletsAddr        = State.MeshletInfoBuffer->GetAddress();
+            Push.VisibleMeshletsAddr = State.VisibleMeshletBuffer->GetAddress();
+            Push.TerrainIndirectAddr = State.IndirectDrawBuffer->GetAddress();
             Push.ChunkCount   = State.AllocatedChunkCount;
             Push.MeshletCount = State.AllocatedMeshletCount;
-            CmdList.SetPushConstants(&Push, sizeof(Push));
+            PushRootConstants(CmdList, Push);
 
             // One workgroup per chunk, one thread per meshlet; the chunk-level test on
             // thread 0 gates the rest via groupshared.
@@ -6319,7 +6232,7 @@ namespace Lumina
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
             RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
 
-            FTransientAlloc RenderParamsAlloc = CmdList.UploadTransient(RenderParams);
+            auto RenderParamsAlloc = CmdList.CopyTransient(RenderParams);
 
             // First depth writer when there are no meshes; otherwise the mesh
             // depth pre-pass / base pass already populated this view's depth.
@@ -6347,36 +6260,12 @@ namespace Lumina
             RenderState.SetRasterState(RasterState)
                        .SetDepthStencilState(DepthState);
 
-            FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingLayoutDesc TerrainLayoutDesc;
-            TerrainLayoutDesc.SetBindingIndex(2)
-                .SetVisibility(ERHIShaderType::Vertex)
-                .SetVisibility(ERHIShaderType::Fragment)
-                .AddItem(FBindingLayoutItem::Texture_SRV(0))
-                .AddItem(FBindingLayoutItem::Texture_SRV(1))
-                .AddItem(FBindingLayoutItem::Texture_SRV(2))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(4))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(5))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(6));
-            FRHIBindingLayout* TerrainLayout = BindingCache.GetOrCreateBindingLayout(TerrainLayoutDesc);
-
-            FBindingSetDesc TerrainSetDesc;
-            TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
-                          .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::BufferSRV(4, State.ChunkInfoBuffer))
-                          .AddItem(FBindingSetItem::BufferSRV(5, State.MeshletInfoBuffer))
-                          .AddItem(FBindingSetItem::BufferSRV(6, State.VisibleMeshletBuffer));
-            FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
-
+            // No pass-local set: heightmap/normal read bindlessly, cull buffers by device address.
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("TerrainDepth")
                 .SetRenderState(RenderState)
                 .SetVertexShader(VertexShader)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(TerrainLayout);
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
@@ -6384,13 +6273,26 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .AddBindingSet(TerrainSet)
                 .SetIndirectParams(State.IndirectDrawBuffer);
+            // Bindless/BDA reads (the depth VS samples height+normal and walks the cull buffers).
+            GraphicsState.Reads(State.HeightmapTexture);
+            GraphicsState.Reads(State.NormalTexture);
+            GraphicsState.Reads(State.ChunkInfoBuffer);
+            GraphicsState.Reads(State.MeshletInfoBuffer);
+            GraphicsState.Reads(State.VisibleMeshletBuffer);
+
+            FTerrainPushConstants Push{};
+            Push.ParamsAddr        = RenderParamsAlloc.Gpu;
+            Push.ChunksAddr        = State.ChunkInfoBuffer->GetAddress();
+            Push.MeshletsAddr      = State.MeshletInfoBuffer->GetAddress();
+            Push.VisibleAddr       = State.VisibleMeshletBuffer->GetAddress();
+            Push.HeightmapIndex    = (uint32)State.HeightmapTexture->GetResourceID();
+            Push.NormalIndex       = (uint32)State.NormalTexture->GetResourceID();
+            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture->GetResourceID();
 
             CmdList.SetGraphicsState(GraphicsState);
-            CmdList.SetPushConstants(&RenderParamsAlloc.Gpu, sizeof(uint64));
+            PushRootConstants(CmdList, Push);
 
             CmdList.DrawIndirect(1u, 0u);
         }
@@ -6438,9 +6340,8 @@ namespace Lumina
             }
 
 
-            // Terrain pipeline binds set 2 to heightmap/weight/meshlet resources, valid only against a
-            // TERRAIN shader. The extract already enforced the domain + default fallback and ref-held the
-            // shaders (game thread), so the render thread never touches the CMaterial. Null VS/PS => skip.
+            // The extract enforced the terrain domain + default fallback and ref-held the shaders on the
+            // game thread, so the render thread never touches the CMaterial. Null VS/PS => skip.
             FRHIVertexShader* VertexShader = TerrainItem.Shaders.VertexShader;
             FRHIPixelShader*  PixelShader  = TerrainItem.Shaders.PixelShader;
             if (!VertexShader || !PixelShader)
@@ -6474,7 +6375,7 @@ namespace Lumina
 
             // Transient ring upload; shader pulls via buffer-device-address
             // through the push constant set further down.
-            FTransientAlloc RenderParamsAlloc = CmdList.UploadTransient(RenderParams);
+            auto RenderParamsAlloc = CmdList.CopyTransient(RenderParams);
 
             const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
@@ -6518,41 +6419,12 @@ namespace Lumina
             RenderState.SetRasterState(RasterState)
                        .SetDepthStencilState(DepthState);
 
-            FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            // Set 2 = terrain-local resources: slots 0..2 textures, 4..6 chunk/meshlet
-            // metadata + cull-output draw list. RenderParams now sourced via push-constant BDA.
-            FBindingLayoutDesc TerrainLayoutDesc;
-            TerrainLayoutDesc.SetBindingIndex(2)
-                .SetVisibility(ERHIShaderType::Vertex)
-                .SetVisibility(ERHIShaderType::Fragment)
-                .AddItem(FBindingLayoutItem::Texture_SRV(0))
-                .AddItem(FBindingLayoutItem::Texture_SRV(1))
-                .AddItem(FBindingLayoutItem::Texture_SRV(2))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(4))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(5))
-                .AddItem(FBindingLayoutItem::Buffer_SRV(6));
-            FRHIBindingLayout* TerrainLayout = BindingCache.GetOrCreateBindingLayout(TerrainLayoutDesc);
-
-            FBindingSetDesc TerrainSetDesc;
-            TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
-                          .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::BufferSRV(4, State.ChunkInfoBuffer))
-                          .AddItem(FBindingSetItem::BufferSRV(5, State.MeshletInfoBuffer))
-                          .AddItem(FBindingSetItem::BufferSRV(6, State.VisibleMeshletBuffer));
-            FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
-
-            // Sets 0 (scene), 1 (textures), 2 (terrain heightmap/weights/etc.), 3 (shadow sampling).
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Terrain")
                 .SetRenderState(RenderState)
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(TerrainLayout)
-                .AddBindingLayout(ShadowSamplingBindingLayout);
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
@@ -6560,14 +6432,31 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .AddBindingSet(TerrainSet)
-                .AddBindingSet(ShadowSamplingBindingSet)
                 .SetIndirectParams(State.IndirectDrawBuffer);
+            // VS samples height+normal and walks the cull buffers; PS samples layer weights, the
+            // cluster light lists and the shadow atlases -- all by index, so declare them for barriers.
+            GraphicsState.Reads(State.HeightmapTexture);
+            GraphicsState.Reads(State.NormalTexture);
+            GraphicsState.Reads(State.LayerWeightTexture);
+            GraphicsState.Reads(State.ChunkInfoBuffer);
+            GraphicsState.Reads(State.MeshletInfoBuffer);
+            GraphicsState.Reads(State.VisibleMeshletBuffer);
+            GraphicsState.Reads(CurrentView->ClusterBuffer);
+            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
+            GraphicsState.Reads(ShadowAtlas.GetImage());
+
+            FTerrainPushConstants Push{};
+            Push.ParamsAddr        = RenderParamsAlloc.Gpu;
+            Push.ChunksAddr        = State.ChunkInfoBuffer->GetAddress();
+            Push.MeshletsAddr      = State.MeshletInfoBuffer->GetAddress();
+            Push.VisibleAddr       = State.VisibleMeshletBuffer->GetAddress();
+            Push.HeightmapIndex    = (uint32)State.HeightmapTexture->GetResourceID();
+            Push.NormalIndex       = (uint32)State.NormalTexture->GetResourceID();
+            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture->GetResourceID();
 
             CmdList.SetGraphicsState(GraphicsState);
-            CmdList.SetPushConstants(&RenderParamsAlloc.Gpu, sizeof(uint64));
+            PushRootConstants(CmdList, Push);
 
             // Cull populated the single indirect args slot (VertexCount = MeshletQuads^2*6,
             // InstanceCount = surviving meshlets). One GPU-driven draw.
@@ -6635,17 +6524,16 @@ namespace Lumina
             .SetRenderState(RenderState)
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         
         FGraphicsState GraphicsState; GraphicsState
             .SetRenderPass(RenderPass)
             .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSetReadOnly)
             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         
         CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList);
         CmdList.Draw(6, BillboardInstances.size(), 0, 0);   
     }
 
@@ -6697,17 +6585,16 @@ namespace Lumina
             .SetRenderState(RenderState)
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FGraphicsState GraphicsState; GraphicsState
             .SetRenderPass(RenderPass)
             .SetViewportState(MakeViewportStateFromImage(PickerImage))
             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSetReadOnly)
             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
         CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList);
         CmdList.Draw(6, WidgetInstances.size(), 0, 0);
     }
 
@@ -6775,17 +6662,16 @@ namespace Lumina
             .SetRenderState(RenderState)
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader)
-            .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FGraphicsState GraphicsState; GraphicsState
             .SetRenderPass(RenderPass)
             .SetViewportState(MakeViewportStateFromImage(OutputImage))
             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSetReadOnly)
             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
         CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList);
         CmdList.Draw(6, WidgetInstances.size(), 0, 0);
     }
 
@@ -6873,16 +6759,12 @@ namespace Lumina
                        .SetRasterState(RasterState)
                        .SetBlendState(Batch.bAdditive ? AdditiveBlendState : TranslucentBlendState);
 
-            // Sets 0 (scene), 1 (textures), 2 (empty placeholder), 3 (shadow sampling).
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Transparent Pass")
                 .SetRenderState(RenderState)
                 .SetVertexShader(Batch.VertexShader)
                 .SetPixelShader(Batch.PixelShader)
-                .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(EmptySet2Layout)
-                .AddBindingLayout(ShadowSamplingBindingLayout)
                 .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FGraphicsState GraphicsState;
@@ -6890,13 +6772,17 @@ namespace Lumina
                          .SetViewportState(SceneViewportState)
                          .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                          .SetIndirectParams(GetIndirectArgs())
-                         .AddBindingSet(SceneBindingSetReadOnly)
-                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                         .AddBindingSet(EmptySet2BindingSet)
-                         .AddBindingSet(ShadowSamplingBindingSet);
+                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // Cull/skinning outputs + shadow atlases are read by index; declare them so the
+            // tracker inserts the UAV/depth -> shader-read barriers.
+            GraphicsState.Reads(GetMeshletDrawList());
+            GraphicsState.Reads(CurrentView->ClusterBuffer);
+            GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
+            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
+            GraphicsState.Reads(ShadowAtlas.GetImage());
 
             CmdList.SetGraphicsState(GraphicsState);
-            // Camera view (primary or capture) slice of the shared indirect args.
+            PushRootConstants(CmdList);
             CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
         }
     }
@@ -6951,23 +6837,42 @@ namespace Lumina
         RenderState.SetBlendState(BlendState);
 
     
+        FRHIImage* AccumTex     = GetNamedImage(ENamedImage::Accum);
+        FRHIImage* RevealageTex = GetNamedImage(ENamedImage::Revealage);
+
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("OITResolve Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(OITBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
         FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(OITBindingSet);
         GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        // Accum/Revealage read by bindless index, not descriptors; declare for the barrier tracker.
+        GraphicsState.Reads(AccumTex);
+        GraphicsState.Reads(RevealageTex);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(SceneViewportState);
-        
+
+        struct FOITResolvePushConstants
+        {
+            uint32 AccumIndex;
+            uint32 RevealageIndex;
+            uint32 _Pad0;
+            uint32 _Pad1;
+        };
+        static_assert(sizeof(FOITResolvePushConstants) == 16, "FOITResolvePushConstants must match the slang push block.");
+
+        FOITResolvePushConstants PC = {};
+        PC.AccumIndex     = (uint32)AccumTex->GetResourceID();
+        PC.RevealageIndex = (uint32)RevealageTex->GetResourceID();
+
         CmdList.SetGraphicsState(GraphicsState);
-    
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -6984,6 +6889,9 @@ namespace Lumina
             uint32 NumLocalVolumetric;  // <= GFroxelMaxLocalLights
             float  Time;
             uint32 LocalLightIndices[GFroxelMaxLocalLights];
+            uint64 FogAddr;             // fog params UBO (transient device address) -- offset 96, 8-aligned
+            uint32 ScatterUAV;          // bindless 3D UAV index of the scatter volume
+            uint32 _Pad0;
         };
         static_assert(sizeof(FFroxelInjectPushConstants) <= 128, "Froxel inject PC must fit 128B");
 
@@ -6992,16 +6900,22 @@ namespace Lumina
             uint32 GridSize[3];
             float  NearPlane;
             float  FogRange;
-            float  _Pad[3];
+            uint32 ScatterSRV;     // bindless 3D SRV index of the scatter volume
+            uint32 IntegratedUAV;  // bindless 3D UAV index of the integrated volume
+            uint32 _Pad0;
         };
 
         struct FFroxelApplyPushConstants
         {
+            uint64 FogAddr;          // device address of the fog-params UBO (transient)
+            uint32 DepthIndex;       // bindless 2D SRV: scene depth
+            uint32 IntegratedIndex;  // bindless 3D SRV: integrated froxel volume
             uint32 GridZ;
             float  NearPlane;
             float  FogRange;
-            float  _Pad;
+            uint32 _Pad0;
         };
+        static_assert(sizeof(FFroxelApplyPushConstants) == 32, "Froxel apply PC must match the slang push block.");
     }
 
     void FForwardRenderScene::FroxelInjectPass(ICommandList& CmdList)
@@ -7050,42 +6964,28 @@ namespace Lumina
 
         FRHIImage* Scatter = GetNamedImage(ENamedImage::FroxelScatter);
 
-        // Set 2: froxel scatter UAV (0) + fog params CBV (1). Sets 0/1/3 are the scene
-        // globals, bindless table, and shadow-sampling set the inject shader needs.
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Compute)
-            .AddItem(FBindingLayoutItem::Texture_UAV(0))
-            .AddItem(FBindingLayoutItem::Buffer_UD(1));
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureUAV(0, Scatter, EFormat::UNKNOWN,
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
-        SetDesc.AddItem(FBindingSetItem::BufferCBV(1, GetNamedBuffer(ENamedBuffer::Fog)));
-        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
+        // Scatter volume written via bindless 3D UAV; shadow atlases sampled bindlessly.
+        auto FogAlloc = CmdList.CopyTransient(Frame.Volumetrics.FogParams);
 
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.AddBindingLayout(Layout);
-        PipelineDesc.AddBindingLayout(ShadowSamplingBindingLayout);
         PipelineDesc.CS = CS;
         PipelineDesc.DebugName = "Froxel Inject";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSetReadOnly);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.AddBindingSet(Set);
-        State.AddBindingSet(ShadowSamplingBindingSet);
         State.Writes(Scatter);
+        State.Reads(GetNamedImage(ENamedImage::Cascade));   // shadow atlases sampled bindlessly
+        State.Reads(ShadowAtlas.GetImage());
         CmdList.SetComputeState(State);
 
         const float FogRange = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, SceneGlobalData.FarPlane);
 
         FFroxelInjectPushConstants PC = {};
+        PC.FogAddr            = FogAlloc.Gpu;
+        PC.ScatterUAV         = (uint32)Scatter->GetMipUAVIndex(0);
         PC.GridSize[0]        = GFroxelGridX;
         PC.GridSize[1]        = GFroxelGridY;
         PC.GridSize[2]        = GFroxelGridZ;
@@ -7098,7 +6998,7 @@ namespace Lumina
         {
             PC.LocalLightIndices[i] = LocalIndices[i];
         }
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 4),
                          RenderUtils::GetGroupCount(GFroxelGridY, 4),
@@ -7124,30 +7024,16 @@ namespace Lumina
         FRHIImage* Scatter    = GetNamedImage(ENamedImage::FroxelScatter);
         FRHIImage* Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
 
-        // Set 0: scatter SRV (0, fetched by integer coord) + integrated UAV (1).
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.SetBindingIndex(0)
-            .SetVisibility(ERHIShaderType::Compute)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0))
-            .AddItem(FBindingLayoutItem::Texture_UAV(1));
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Scatter, nullptr, EFormat::UNKNOWN,
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
-        SetDesc.AddItem(FBindingSetItem::TextureUAV(1, Integrated, EFormat::UNKNOWN,
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
-        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
-
+        // Scatter read via bindless 3D SRV, integrated written via bindless 3D UAV.
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = CS;
         PipelineDesc.DebugName = "Froxel Integrate";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(Set);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(Scatter);
         State.Writes(Integrated);
         CmdList.SetComputeState(State);
@@ -7155,12 +7041,14 @@ namespace Lumina
         const float FogRange = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
 
         FFroxelIntegratePushConstants PC = {};
-        PC.GridSize[0] = GFroxelGridX;
-        PC.GridSize[1] = GFroxelGridY;
-        PC.GridSize[2] = GFroxelGridZ;
-        PC.NearPlane   = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
-        PC.FogRange    = FogRange;
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PC.GridSize[0]    = GFroxelGridX;
+        PC.GridSize[1]    = GFroxelGridY;
+        PC.GridSize[2]    = GFroxelGridZ;
+        PC.NearPlane      = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange       = FogRange;
+        PC.ScatterSRV     = (uint32)Scatter->GetResourceID();
+        PC.IntegratedUAV  = (uint32)Integrated->GetMipUAVIndex(0);
+        PushRootConstants(CmdList, PC);
 
         // One thread per (x,y) column; each marches the full Z range.
         CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 8),
@@ -7210,24 +7098,7 @@ namespace Lumina
         FBlendState BlendState;
         BlendState.SetRenderTarget(0, OverBlend);
 
-        // Set 2: scene depth SRV (0, point), integrated volume SRV (1, linear 3D), fog CBV (2).
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0))
-            .AddItem(FBindingLayoutItem::Texture_SRV(1))
-            .AddItem(FBindingLayoutItem::Buffer_UD(2));
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
-        FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true,  true,  AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, SceneDepth, PointClamp));
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(1, Integrated, LinearClamp, EFormat::UNKNOWN,
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
-        SetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::Fog)));
-        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
+        auto FogAlloc = CmdList.CopyTransient(Frame.Volumetrics.FogParams);
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(HDR)
@@ -7245,9 +7116,7 @@ namespace Lumina
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Froxel Fog Apply");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(Layout);
         Desc.SetVertexShader(VS);
         Desc.SetPixelShader(PS);
         Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
@@ -7255,20 +7124,24 @@ namespace Lumina
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
         FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(Set);
+        // Depth + integrated volume read by bindless index, not descriptors; declare for the tracker.
+        GraphicsState.Reads(SceneDepth);
+        GraphicsState.Reads(Integrated);
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(SceneViewportState);
 
-        CmdList.SetGraphicsState(GraphicsState);
-
         FFroxelApplyPushConstants PC = {};
-        PC.GridZ     = GFroxelGridZ;
-        PC.NearPlane = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
-        PC.FogRange  = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PC.FogAddr         = FogAlloc.Gpu;
+        PC.DepthIndex      = (uint32)SceneDepth->GetResourceID();
+        PC.IntegratedIndex = (uint32)Integrated->GetResourceID();
+        PC.GridZ           = GFroxelGridZ;
+        PC.NearPlane       = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange        = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+
+        CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList, PC);
 
         CmdList.Draw(3, 1, 0, 0);
     }
@@ -7313,37 +7186,24 @@ namespace Lumina
                 return;
             }
 
-            FBindingLayoutDesc LayoutDesc;
-            LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-            LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
-            LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
             FComputePipelineDesc PipelineDesc;
-            PipelineDesc.AddBindingLayout(Layout);
+            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
             PipelineDesc.CS = ComputeShader;
             PipelineDesc.DebugName = "Equirect To Cubemap";
             FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-            // Clamp: atan2/asin can yield UVs a hair past 1.0 at the wrap seam; clamp
-            // keeps the sample on-texture instead of wrapping to the wrong hemisphere.
-            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(
-                0, EnvironmentMapImage, LinearClamp, EnvironmentMapImage->GetFormat(),
-                FTextureSubresourceSet(0, 1, 0, 1),
-                EImageDimension::Texture2D));
-            SetDesc.AddItem(FBindingSetItem::TextureUAV(
-                1, SkyCube, SkyCube->GetFormat(),
-                FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-                EImageDimension::Texture2DArray));
-            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
             FComputeState State;
-            State.AddBindingSet(Set);
             State.SetPipeline(Pipeline);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            State.Reads(EnvironmentMapImage);
+            State.Writes(SkyCube);
             CmdList.SetComputeState(State);
+
+            struct FEquirectPC { uint32 EquirectSRV; uint32 SkyCubeUAV; uint32 _Pad0; uint32 _Pad1; };
+            FEquirectPC PC = {};
+            PC.EquirectSRV = (uint32)EnvironmentMapImage->GetResourceID();
+            PC.SkyCubeUAV  = (uint32)SkyCube->GetMipUAVIndex(0);
+            PushRootConstants(CmdList, PC);
 
             constexpr uint32 EquirectTile = 8u;
             const uint32 FaceSize = SkyCube->GetSizeX();
@@ -7358,38 +7218,32 @@ namespace Lumina
             return;
         }
 
-        // Cube bound as Texture2DArray UAV (6 layers) for write; IBL passes sample as TextureCube.
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
-        // Buffer_UD: Environment buffer is BUF_Dynamic; layout must declare dynamic to match.
-        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_UD(1));
-        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+        // Cube written via bindless 2D-array UAV (6 layers); IBL passes sample it as a cube SRV.
+        // Env params via transient device address.
+        auto EnvAlloc = CmdList.CopyTransient(Frame.Volumetrics.EnvironmentParams);
 
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
         PipelineDesc.DebugName = "Sky Cube Capture";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureUAV(
-            0, SkyCube, SkyCube->GetFormat(),
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-            EImageDimension::Texture2DArray));
-        SetDesc.AddItem(FBindingSetItem::BufferCBV(1, GetNamedBuffer(ENamedBuffer::Environment)));
-        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
         FComputeState State;
-        State.AddBindingSet(Set);
         State.SetPipeline(Pipeline);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Writes(SkyCube);
         CmdList.SetComputeState(State);
 
         struct FSkyCapturePC
         {
+            uint64   EnvAddr;
+            uint32   SkyCubeUAV;
+            float    Time;
             FVector3 SunDirection;
-            float     Time;
+            float    _Pad;
         } PC = {};
+        PC.EnvAddr    = EnvAlloc.Gpu;
+        PC.SkyCubeUAV = (uint32)SkyCube->GetMipUAVIndex(0);
 
         // Same source EnvironmentPass uses (SunDirection points FROM surface TO sun);
         // falls back to a daytime direction if no sun so the cube still has IBL structure.
@@ -7404,7 +7258,7 @@ namespace Lumina
         // Star twinkle samples Time, but the cube only re-bakes on env/sun change so
         // it effectively freezes (stars blur to nothing in convolution anyway).
         PC.Time = SceneGlobalData.Time;
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         constexpr uint32 SkyCaptureTile = 8u;
         const uint32 FaceSize = SkyCube->GetSizeX();
@@ -7445,39 +7299,26 @@ namespace Lumina
             return;
         }
 
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
-        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
         PipelineDesc.DebugName = "Sky Irradiance Convolution";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-        // Linear-clamp cube sampler. Clamp matches Vulkan cubemap edge
-        // sampling rules and avoids any face-edge bleed on the input cube.
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-        FBindingSetDesc SetDesc;
-        // SkyCube bound as TextureCube SRV: same image, different view type from the
-        // SkyCubeCapturePass UAV write; auto-barriers transition between states.
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(
-            0, SkyCube, LinearClamp, SkyCube->GetFormat(),
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-            EImageDimension::TextureCube));
-        SetDesc.AddItem(FBindingSetItem::TextureUAV(
-            1, IrradianceCube, IrradianceCube->GetFormat(),
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-            EImageDimension::Texture2DArray));
-        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
         FComputeState State;
-        State.AddBindingSet(Set);
         State.SetPipeline(Pipeline);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        // SkyCube read as a bindless cube SRV, irradiance written as a bindless 2D-array UAV;
+        // declare both so the tracker transitions them.
+        State.Reads(SkyCube);
+        State.Writes(IrradianceCube);
         CmdList.SetComputeState(State);
+
+        struct FIrradiancePC { uint32 SrcCubeSRV; uint32 OutCubeUAV; uint32 _Pad0; uint32 _Pad1; };
+        FIrradiancePC PC = {};
+        PC.SrcCubeSRV = (uint32)SkyCube->GetResourceID();
+        PC.OutCubeUAV = (uint32)IrradianceCube->GetMipUAVIndex(0);
+        PushRootConstants(CmdList, PC);
 
         constexpr uint32 IrradianceTile = 8u;
         const uint32 FaceSize = IrradianceCube->GetSizeX();
@@ -7517,26 +7358,18 @@ namespace Lumina
             return;
         }
 
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
-        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
         PipelineDesc.DebugName = "Sky Prefilter Convolution";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
         struct FPrefilterPC
         {
+            uint32 SrcCubeSRV;
+            uint32 OutMipUAV;
             float  Roughness;
             uint32 NumSamples;
-            uint32 _Pad0;
-            uint32 _Pad1;
         };
 
         const uint32 NumMips     = (uint32)PrefilterCube->GetDescription().NumMips;
@@ -7544,33 +7377,26 @@ namespace Lumina
 
         constexpr uint32 PrefilterTile = 8u;
 
-        // One dispatch per mip, each writing a UAV view of just that mip; roughness is
-        // uniform across the dispatch, threaded in via push constant.
+        // One dispatch per mip, each writing a bindless 2D-array UAV view of just that mip; roughness is
+        // uniform across the dispatch, threaded in via push constant. SkyCube read as a bindless cube SRV.
         for (uint32 Mip = 0; Mip < NumMips; ++Mip)
         {
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(
-                0, SkyCube, LinearClamp, SkyCube->GetFormat(),
-                FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-                EImageDimension::TextureCube));
-            SetDesc.AddItem(FBindingSetItem::TextureUAV(
-                1, PrefilterCube, PrefilterCube->GetFormat(),
-                FTextureSubresourceSet(Mip, 1, 0, FTextureSubresourceSet::AllArraySlices),
-                EImageDimension::Texture2DArray));
-            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
             FComputeState State;
-            State.AddBindingSet(Set);
             State.SetPipeline(Pipeline);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            State.Reads(SkyCube);
+            State.Writes(PrefilterCube);
             CmdList.SetComputeState(State);
 
             FPrefilterPC PC = {};
+            PC.SrcCubeSRV = (uint32)SkyCube->GetResourceID();
+            PC.OutMipUAV  = (uint32)PrefilterCube->GetMipUAVIndex(Mip);
             // Roughness even across mips (mip 0 mirror, last fully rough); matches
             // SamplePrefilter()'s runtime mip select.
             PC.Roughness  = (NumMips <= 1u) ? 0.0f
                                             : (float)Mip / (float)(NumMips - 1u);
             PC.NumSamples = GPrefilterSampleCount;
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            PushRootConstants(CmdList, PC);
 
             const uint32 MipFaceSize = eastl::max<uint32>(BaseFaceSize >> Mip, 1u);
             const uint32 GroupsXY    = RenderUtils::GetGroupCount(MipFaceSize, PrefilterTile);
@@ -7608,46 +7434,20 @@ namespace Lumina
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
 
-        // Set 2: env params CB (slot 0), SkyCube (slot 1, gradient/dynamic), HDRI equirect (slot 2).
-        // SkyCube is filled by SkyCubeCapturePass; auto-barriers handle the UAV->SRV transition.
-        FBindingLayoutDesc EnvLayoutDesc;
-        EnvLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Fragment)
-            // Buffer_UD: Environment buffer is BUF_Dynamic; layout must declare dynamic to match.
-            .AddItem(FBindingLayoutItem::Buffer_UD(0))
-            .AddItem(FBindingLayoutItem::Texture_SRV(1))
-            .AddItem(FBindingLayoutItem::Texture_SRV(2));
-        FRHIBindingLayout* EnvLayout = BindingCache.GetOrCreateBindingLayout(EnvLayoutDesc);
-
         FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
         // HDRI background samples the source equirect directly (SkyCube stays the IBL source). The BRDF LUT
-        // is a harmless placeholder in non-HDRI modes, where the shader never reads slot 2.
+        // is a harmless placeholder in non-HDRI modes, where the shader never reads the equirect.
         FRHIImage* Equirect = RenderFrame->Volumetrics.EnvironmentMapImage
             ? RenderFrame->Volumetrics.EnvironmentMapImage
             : GetNamedImage(ENamedImage::BRDFLut);
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-        // Wrap longitude (U), clamp latitude (V): keeps the 360-degree seam
-        // continuous instead of duplicating the edge column.
-        FRHISamplerRef EquirectSampler = TStaticRHISampler<true, true, AM_Wrap, AM_Clamp, AM_Clamp>::GetRHI();
 
-        FBindingSetDesc EnvSetDesc;
-        EnvSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Environment)));
-        EnvSetDesc.AddItem(FBindingSetItem::TextureSRV(
-            1, SkyCube, LinearClamp, SkyCube->GetFormat(),
-            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
-            EImageDimension::TextureCube));
-        EnvSetDesc.AddItem(FBindingSetItem::TextureSRV(
-            2, Equirect, EquirectSampler, Equirect->GetFormat(),
-            FTextureSubresourceSet(0, 1, 0, 1),
-            EImageDimension::Texture2D));
-        FRHIBindingSet* EnvSet = BindingCache.GetOrCreateBindingSet(EnvSetDesc, EnvLayout);
+        // SkyCube is filled by SkyCubeCapturePass; the Reads() below drives its UAV->SRV barrier.
+        auto EnvAlloc = CmdList.CopyTransient(RenderFrame->Volumetrics.EnvironmentParams);
 
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Environment Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(EnvLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
         Desc.SetVariableRateShadingState(MakeWorldShadingRate(RenderFrame->CachedWorldSettings));
@@ -7655,15 +7455,31 @@ namespace Lumina
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
         FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(EnvSet);
+        // Cube + equirect read by bindless index, not descriptors; declare for the barrier tracker.
+        GraphicsState.Reads(SkyCube);
+        GraphicsState.Reads(Equirect);
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(SceneViewportState);
 
-        CmdList.SetGraphicsState(GraphicsState);
+        struct FEnvPushConstants
+        {
+            uint64 EnvAddr;
+            uint32 SkyCubeIndex;
+            uint32 EquirectIndex;
+            uint32 _Pad0;
+            uint32 _Pad1;
+        };
+        static_assert(sizeof(FEnvPushConstants) == 24, "FEnvPushConstants must match the slang push block.");
 
+        FEnvPushConstants PC = {};
+        PC.EnvAddr       = EnvAlloc.Gpu;
+        PC.SkyCubeIndex  = (uint32)SkyCube->GetResourceID();
+        PC.EquirectIndex = (uint32)Equirect->GetResourceID();
+
+        CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -7705,7 +7521,7 @@ namespace Lumina
             .SetDepthAttachment(Depth)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
 
-        FVertexBufferBinding VertexBinding{GetNamedBuffer(ENamedBuffer::SimpleVertex)};
+        FVertexBufferBinding VertexBinding{GetSimpleVertexBuffer()};
 
         FRasterState RasterState; RasterState
             .EnableDepthClip();
@@ -7733,7 +7549,6 @@ namespace Lumina
                 .SetPrimType(EPrimitiveType::LineList)
                 .SetRenderState(RenderState)
                 .SetInputLayout(SimpleVertexLayoutInput)
-                .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader);
@@ -7748,7 +7563,6 @@ namespace Lumina
                 .AddVertexBuffer(VertexBinding)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             return GraphicsState;
         };
@@ -7767,6 +7581,7 @@ namespace Lumina
                 CurrentDepthMode = DepthMode;
             }
             CmdList.SetLineWidth(Batch.Thickness);
+            PushRootConstants(CmdList);
             CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
     }
@@ -7803,7 +7618,7 @@ namespace Lumina
             .SetDepthAttachment(Depth)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
 
-        FVertexBufferBinding VertexBinding{GetNamedBuffer(ENamedBuffer::SolidVertex)};
+        FVertexBufferBinding VertexBinding{GetSolidVertexBuffer()};
 
         // Two-sided so the surface reads from any angle.
         FRasterState RasterState; RasterState
@@ -7842,7 +7657,6 @@ namespace Lumina
                 .SetPrimType(EPrimitiveType::TriangleList)
                 .SetRenderState(RenderState)
                 .SetInputLayout(SimpleVertexLayoutInput)
-                .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader);
@@ -7857,7 +7671,6 @@ namespace Lumina
                 .AddVertexBuffer(VertexBinding)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             return GraphicsState;
         };
@@ -7874,6 +7687,7 @@ namespace Lumina
                 CmdList.SetGraphicsState(Batch.bDepthTest ? DepthTestedState : XRayState);
                 CurrentDepthMode = DepthMode;
             }
+            PushRootConstants(CmdList);
             CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
     }
@@ -7928,7 +7742,7 @@ namespace Lumina
             PC.VignetteIntensity  = 0.0f;
             PC.VignetteSmoothness = 0.5f;
             PC.VignetteRoundness  = 1.0f;
-            PC.TonemapMode        = (uint32)EToneMapper::AGX;
+            PC.TonemapMode        = (uint32)EToneMapper::ACES;
             PC.Time               = Time;
             PC.BloomIntensity     = 0.0f;
             PC.ColorFilter        = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -8056,8 +7870,6 @@ namespace Lumina
             const FVector3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
 
             FComputePipelineDesc PipelineDesc;
-            // Set 0 reserved for SceneBindingSet (compatibility with bindless at set 1).
-            PipelineDesc.AddBindingLayout(SceneBindingLayout);
             PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
             PipelineDesc.CS = DownCS;
             PipelineDesc.DebugName = "Bloom Downsample SPD";
@@ -8065,7 +7877,6 @@ namespace Lumina
 
             FComputeState State;
             State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSetReadOnly);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             State.Reads(HDR);
             State.Writes(Bloom);
@@ -8083,7 +7894,7 @@ namespace Lumina
                 const uint32 SrcMip = (i < BLOOM_MIP_COUNT) ? i : 0u;
                 PC.MipUAV[i] = (uint32)Bloom->GetMipUAVIndex(SrcMip);
             }
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            PushRootConstants(CmdList, PC);
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(Mip0W, BloomSPDTileSize);
             const uint32 GroupsY = RenderUtils::GetGroupCount(Mip0H, BloomSPDTileSize);
@@ -8091,7 +7902,6 @@ namespace Lumina
         }
 
         FComputePipelineDesc UpPipelineDesc;
-        UpPipelineDesc.AddBindingLayout(SceneBindingLayout);
         UpPipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         UpPipelineDesc.CS = UpCS;
         UpPipelineDesc.DebugName = "Bloom Upsample CS";
@@ -8109,7 +7919,6 @@ namespace Lumina
 
             FComputeState State;
             State.SetPipeline(UpPipeline);
-            State.AddBindingSet(SceneBindingSetReadOnly);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             // Per-subresource: only SrcMip is sampled (ShaderResource), only DstMip
             // is written (UnorderedAccess). Other mips' states don't matter here.
@@ -8124,7 +7933,7 @@ namespace Lumina
             PC.DstSize      = FUIntVector2(DstW, DstH);
             PC.DstUAV       = (uint32)Bloom->GetMipUAVIndex(DstMip);
             PC.SrcMip       = (float)SrcMip;
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            PushRootConstants(CmdList, PC);
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(DstW, BloomUpTileSize);
             const uint32 GroupsY = RenderUtils::GetGroupCount(DstH, BloomUpTileSize);
@@ -8170,7 +7979,6 @@ namespace Lumina
         FRHIImage* Adapted = GetNamedImage(ENamedImage::AdaptedLuminance);
 
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = CS;
         PipelineDesc.DebugName = "Auto Exposure";
@@ -8178,7 +7986,6 @@ namespace Lumina
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSetReadOnly);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(HDR);
         State.Writes(Adapted);
@@ -8189,7 +7996,7 @@ namespace Lumina
         PC.AdaptUAV        = (uint32)Adapted->GetMipUAVIndex(0);
         PC.DeltaTime       = Frame.SceneGlobalData.DeltaTime;
         PC.AdaptationSpeed = ActivePostProcess->AutoExposureSpeed;
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PushRootConstants(CmdList, PC);
 
         CmdList.Dispatch(1, 1, 1);
     }
@@ -8236,31 +8043,50 @@ namespace Lumina
         RenderState.SetRasterState(RasterState);
         RenderState.SetDepthStencilState(DepthState);
 
+        FRHIImage* HDRTex     = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* BloomTex   = BloomChain;
+        FRHIImage* AdaptedTex = GetNamedImage(ENamedImage::AdaptedLuminance);
+
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Tone Mapping Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(ComposeBindingLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-        // Stage the constants UBO before the pipeline barrier transitions
-        // it back to ConstantBuffer for the draw.
         FColorGradingConstants Constants = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
-        CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::ColorGrading), &Constants, sizeof(Constants));
+        auto ConstantsAlloc = CmdList.CopyTransient(Constants);
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(ComposeBindingSet);
+        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
+        GraphicsState.Reads(HDRTex);
+        GraphicsState.Reads(BloomTex);
+        GraphicsState.Reads(AdaptedTex);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
+        struct FComposePushConstants
+        {
+            uint64 ConstantsAddr;
+            uint32 HDRIndex;
+            uint32 BloomIndex;
+            uint32 AdaptedLumIndex;
+            uint32 _Pad;
+        };
+        static_assert(sizeof(FComposePushConstants) == 24, "FComposePushConstants must match the slang push block.");
+
+        FComposePushConstants PC = {};
+        PC.ConstantsAddr   = ConstantsAlloc.Gpu;
+        PC.HDRIndex        = (uint32)HDRTex->GetResourceID();
+        PC.BloomIndex      = (uint32)BloomTex->GetResourceID();
+        PC.AdaptedLumIndex = (uint32)AdaptedTex->GetResourceID();
+
         CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -8271,9 +8097,9 @@ namespace Lumina
         struct FPostProcessMaterialPushConstants
         {
             uint32 MaterialIndex;
-            uint32 _Pad0;
-            uint32 _Pad1;
-            uint32 _Pad2;
+            uint32 SceneColorIndex;   // bindless SRV: ping-pong source
+            uint32 SceneDepthIndex;   // bindless SRV: opaque depth
+            uint32 HDRIndex;          // bindless SRV: pre-tone-map HDR
         };
         static_assert(sizeof(FPostProcessMaterialPushConstants) == 16,
             "FPostProcessMaterialPushConstants must match the slang push block.");
@@ -8292,18 +8118,11 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Post Process Material Pass", tracy::Color::Magenta);
 
-        // Set 2 for post-process inputs: chain source (uSceneColor), depth (uSceneDepth),
-        // and pre-tonemap HDR (uHDRSceneColor). Per-material set, shared cached layout.
-        FBindingLayoutDesc PPLayoutDesc;
-        PPLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0))
-            .AddItem(FBindingLayoutItem::Texture_SRV(1))
-            .AddItem(FBindingLayoutItem::Texture_SRV(2));
-        FRHIBindingLayout* PPLayout = BindingCache.GetOrCreateBindingLayout(PPLayoutDesc);
-
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-        FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        // Post-process inputs (chain source, opaque depth, pre-tonemap HDR) are read bindlessly via
+        // push-constant indices -- no pass-local set. Depth's point-clamp vs the linear-clamp others
+        // is selected by sampler index inside the shader.
+        FRHIImage* DepthTex = GetNamedImage(ENamedImage::DepthAttachment);
+        FRHIImage* HDRTex   = GetNamedImage(ENamedImage::HDR);
 
         FRasterState RasterState;
         RasterState.SetCullNone();
@@ -8342,37 +8161,32 @@ namespace Lumina
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Post Process Material");
             Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
             Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.AddBindingLayout(PPLayout);
             Desc.SetVertexShader(VS);
             Desc.SetPixelShader(PS);
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Source, LinearClamp));
-            // Depth uses point sampling: linear filtering across a depth discontinuity
-            // returns in-between garbage that depth-based effects propagate as halos.
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::HDR), LinearClamp));
-            FRHIBindingSetRef PPSet = GRenderContext->CreateBindingSet(SetDesc, PPLayout);
-
             FGraphicsState GraphicsState;
             GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.AddBindingSet(PPSet);
+            // Inputs read by bindless index, not descriptors; declare them for the barrier tracker.
+            GraphicsState.Reads(Source);
+            GraphicsState.Reads(DepthTex);
+            GraphicsState.Reads(HDRTex);
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(MakeViewportStateFromImage(Dest));
-
-            CmdList.SetGraphicsState(GraphicsState);
 
             FPostProcessMaterialPushConstants PC = {};
             // Interface's index (resolved at extract): instances own their own buffer slot where
             // parameter overrides live, so the parent's slot would ignore them.
-            PC.MaterialIndex = PPMaterial.MaterialIndex;
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            PC.MaterialIndex    = PPMaterial.MaterialIndex;
+            PC.SceneColorIndex  = (uint32)Source->GetResourceID();
+            PC.SceneDepthIndex  = (uint32)DepthTex->GetResourceID();
+            PC.HDRIndex         = (uint32)HDRTex->GetResourceID();
+
+            CmdList.SetGraphicsState(GraphicsState);
+            PushRootConstants(CmdList, PC);
             CmdList.Draw(3, 1, 0, 0);
 
             eastl::swap(Source, Dest);
@@ -8399,9 +8213,14 @@ namespace Lumina
         FVector4 RTMetrics;  // x = 1/w, y = 1/h, z = w, w = h
         float     EdgeThreshold;
         float     DebugMode;
-        float     _Pad0;
-        float     _Pad1;
+        uint32    TexIndex0;  // bindless SRV index of the pass's primary input
+        uint32    TexIndex1;  // pass-specific extra input (0 if unused)
+        uint32    TexIndex2;  // pass-specific extra input (0 if unused)
+        uint32    _Pad0;
+        uint32    _Pad1;
+        uint32    _Pad2;
     };
+    static_assert(sizeof(FSMAAPushConstants) == 48, "FSMAAPushConstants must match the slang push block.");
 
     static float GetSMAAEdgeThreshold(ESMAAQuality Quality)
     {
@@ -8423,8 +8242,8 @@ namespace Lumina
         PC.RTMetrics      = FVector4(1.0f / W, 1.0f / H, W, H);
         PC.EdgeThreshold  = GetSMAAEdgeThreshold(Settings.SMAAQuality);
         PC.DebugMode      = 0.0f;
-        PC._Pad0 = 0.0f;
-        PC._Pad1 = 0.0f;
+        PC.TexIndex0 = 0; PC.TexIndex1 = 0; PC.TexIndex2 = 0;
+        PC._Pad0 = 0; PC._Pad1 = 0; PC._Pad2 = 0;
         return PC;
     }
 
@@ -8443,6 +8262,7 @@ namespace Lumina
         }
 
         FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAAEdges);
+        FRHIImage* InputColor  = GetNamedImage(ENamedImage::LDR);
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage)
@@ -8466,9 +8286,7 @@ namespace Lumina
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("SMAA Edge Detection Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(SMAAEdgeBindingLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
@@ -8476,16 +8294,17 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(SMAAEdgeBindingSet);
+        // Input read via bindless index, not a descriptor; declare it for the barrier tracker.
+        GraphicsState.Reads(InputColor);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         CmdList.SetGraphicsState(GraphicsState);
 
         FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PC.TexIndex0 = (uint32)InputColor->GetResourceID();
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -8504,6 +8323,9 @@ namespace Lumina
         }
 
         FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAABlend);
+        FRHIImage* EdgesTex    = GetNamedImage(ENamedImage::SMAAEdges);
+        FRHIImage* AreaTex     = GetNamedImage(ENamedImage::SMAAArea);
+        FRHIImage* SearchTex   = GetNamedImage(ENamedImage::SMAASearch);
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage)
@@ -8527,9 +8349,7 @@ namespace Lumina
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("SMAA Blend Weight Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(SMAABlendWeightBindingLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
@@ -8537,16 +8357,22 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(SMAABlendWeightBindingSet);
+        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
+        // (The area/search LUTs are permanently in ShaderResource, so Reads is a no-op for them.)
+        GraphicsState.Reads(EdgesTex);
+        GraphicsState.Reads(AreaTex);
+        GraphicsState.Reads(SearchTex);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         CmdList.SetGraphicsState(GraphicsState);
 
         FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PC.TexIndex0 = (uint32)EdgesTex->GetResourceID();
+        PC.TexIndex1 = (uint32)AreaTex->GetResourceID();
+        PC.TexIndex2 = (uint32)SearchTex->GetResourceID();
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -8565,6 +8391,8 @@ namespace Lumina
         }
 
         FRHIImage* OutputImage = GetViewOutputTarget();
+        FRHIImage* InputColor  = GetNamedImage(ENamedImage::LDR);
+        FRHIImage* BlendTex    = GetNamedImage(ENamedImage::SMAABlend);
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage);
@@ -8587,9 +8415,7 @@ namespace Lumina
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("SMAA Neighborhood Blend Pass");
         Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(SMAANeighborhoodBindingLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
@@ -8597,46 +8423,28 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(SMAANeighborhoodBindingSet);
+        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
+        GraphicsState.Reads(InputColor);
+        GraphicsState.Reads(BlendTex);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         CmdList.SetGraphicsState(GraphicsState);
 
         FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        CmdList.SetPushConstants(&PC, sizeof(PC));
+        PC.TexIndex0 = (uint32)InputColor->GetResourceID();
+        PC.TexIndex1 = (uint32)BlendTex->GetResourceID();
+        PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
     }
     
     void FForwardRenderScene::InitBuffers()
     {
-        // Scene (camera UBO) and Cluster grid are per-view; created in AddSceneView.
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUInstance);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Buffer";
-            NamedBuffers[(int)ENamedBuffer::Instance] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            // Modest initial size, grown at the upload site; worst-case sizing up front
-            // would multiply by MaxVersions into host-visible memory needlessly.
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FBoneTransform) * 16 * 1024;
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Bone Data Buffer";
-            NamedBuffers[(int)ENamedBuffer::Bone] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+        // Cluster grid is per-view (created in AddSceneView). All CPU-dynamic scene data (instances,
+        // bones, lights, billboards, widgets, cull views, skin descriptors, env/fog params, meshlet
+        // prefix) is uploaded to the command-list transient ring each frame -- no persistent buffer.
+        // What remains persistent: GPU-written rings + pre-skinned vertices, and the debug vertex buffers.
 
         {
             // GPU pre-skinning output: written by Skinning.slang (UAV), read by every draw
@@ -8647,30 +8455,7 @@ namespace Lumina
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Pre-Skinned Vertices";
-            NamedBuffers[(int)ENamedBuffer::PreSkinnedVertices] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            // Per-meshlet skin descriptors, uploaded each frame (one per rendered-LOD meshlet).
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FSkinDescriptor) * 32 * 1024;
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Skin Descriptors";
-            NamedBuffers[(int)ENamedBuffer::SkinDescriptors] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = offsetof(FSceneLightData, Lights);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Light Data Buffer";
-            NamedBuffers[(int)ENamedBuffer::Light] = GRenderContext->CreateBuffer(BufferDesc);
+            PreSkinnedVerticesBuffer = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         {
@@ -8680,7 +8465,7 @@ namespace Lumina
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::VertexBuffer;
             BufferDesc.DebugName = "Simple Element Vertex";
-            NamedBuffers[(int)ENamedBuffer::SimpleVertex] = GRenderContext->CreateBuffer(BufferDesc);
+            SimpleVertexBuffer = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         {
@@ -8690,52 +8475,7 @@ namespace Lumina
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::VertexBuffer;
             BufferDesc.DebugName = "Solid Element Vertex";
-            NamedBuffers[(int)ENamedBuffer::SolidVertex] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FBillboardInstance);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Billboard Data";
-            NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FWidgetInstance);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Widget Data";
-            NamedBuffers[(int)ENamedBuffer::Widgets] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUDecal);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Decal Data";
-            NamedBuffers[(int)ENamedBuffer::Decals] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Per-view cull descriptors: camera, cascades, 6/point, 1/spot.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FCullView);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Cull View Buffer";
-            NamedBuffers[(int)ENamedBuffer::CullView] = GRenderContext->CreateBuffer(BufferDesc);
+            SolidVertexBuffer = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         // Unified meshlet draw list (NumViews * TotalMeshletBound); CullMeshlets appends
@@ -8805,58 +8545,6 @@ namespace Lumina
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
             BufferDesc.DebugName = FString("SPD Counter [") + eastl::to_string(Slot) + "]";
             SpdCounterRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Per-frame environment params consumed by Environment.slang; EnvironmentPass
-        // writes a fresh copy each frame from the active SEnvironmentComponent.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FEnvironmentParams);
-            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
-            BufferDesc.DebugName = "Environment Params";
-            NamedBuffers[(int)ENamedBuffer::Environment] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Per-frame exponential-height-fog params; the height-fog composite and the
-        // volumetric march both read this.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FExponentialHeightFogParams);
-            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
-            BufferDesc.DebugName = "Fog Params";
-            NamedBuffers[(int)ENamedBuffer::Fog] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Per-instance meshlet prefix sum. Initial size is one entry; the
-        // upload site grows it as Instances grows.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Stride = sizeof(uint32);
-            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Meshlet Prefix";
-            NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Color grading constants UBO. 144 B; lives in a buffer rather than
-        // push constants because RDNA's maxPushConstantsSize is 128 B.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = 160; // round up to a 16-byte multiple; struct is 144 B today
-            BufferDesc.Usage.SetFlag(BUF_UniformBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
-            BufferDesc.DebugName = "Color Grading Constants";
-            NamedBuffers[(int)ENamedBuffer::ColorGrading] = GRenderContext->CreateBuffer(BufferDesc);
         }
     }
 
@@ -9271,219 +8959,46 @@ namespace Lumina
         CreateViewBindingSets(Primary);
     }
 
-    void FForwardRenderScene::CreateSharedLayouts()
+    template<typename T>
+    void FForwardRenderScene::PushRootConstants(ICommandList& CmdList, const T& PassData)
     {
-        // Empty set-2 placeholder: BasePass/TransparentPass use sets 0,1,3 but Vulkan
-        // indexes layouts by set, so set 2's slot needs a real (empty) layout.
-        {
-            FBindingSetDesc EmptyDesc;
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, EmptyDesc, EmptySet2Layout, EmptySet2BindingSet);
-        }
+        FRootConstants RC;
+        RC.RootAddr = CurrentSceneRootAddr;
+        RC.PassAddr = CmdList.CopyTransient(PassData).Gpu;
+        CmdList.SetPushConstants(&RC, sizeof(RC));
+    }
 
-        // Set 3 -- shadow textures bound only by passes that SAMPLE shadows, so the cascade/atlas aren't
-        // shader-read in the pass that depth-writes them. Shared across views (view-independent).
-        {
-            FBindingSetDesc ShadowSetDesc;
-            // 0: cascade with comparison sampler, hardware PCF.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(0, NamedImages[(int)ENamedImage::Cascade],
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            // 1: shadow atlas with comparison sampler.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(1, ShadowAtlas.GetImage(),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            // 2: cascade again, with point/standard sampler, PCSS blocker search needs raw depth.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(2, NamedImages[(int)ENamedImage::Cascade],
-                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
+    void FForwardRenderScene::PushRootConstants(ICommandList& CmdList)
+    {
+        FRootConstants RC;
+        RC.RootAddr = CurrentSceneRootAddr;
+        RC.PassAddr = 0;
+        CmdList.SetPushConstants(&RC, sizeof(RC));
+    }
 
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment, ERHIShaderType::Compute);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 3, ShadowSetDesc, ShadowSamplingBindingLayout, ShadowSamplingBindingSet);
-        }
+    uint64 FForwardRenderScene::BuildViewSceneRoot(ICommandList& CmdList, FSceneView& View, uint64 SceneDataAddr)
+    {
+        // Build the per-view root straight into the ring: copy the shared base in, then patch the
+        // per-view fields in place -- no intermediate FSceneRoot temp.
+        auto Root = CmdList.AllocTransient<FSceneRoot>();
+        *Root = SceneRootShared;
+        Root->SceneData          = SceneDataAddr;
+        Root->Clusters           = View.ClusterBuffer->GetAddress();
+        Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut]->GetResourceID();
+        Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance]->GetResourceID();
+        Root->SkyPrefilterIndex  = (uint32)View.Images[(int)ENamedImage::SkyPrefilter]->GetResourceID();
+        Root->ShadowCascadeIndex = (uint32)GetNamedImage(ENamedImage::Cascade)->GetResourceID();
+        Root->ShadowAtlasIndex   = (uint32)ShadowAtlas.GetImage()->GetResourceID();
+        return Root.Gpu;
     }
 
     void FForwardRenderScene::CreateViewBindingSets(FSceneView& View)
     {
-        // One scene set per frame slot, sharing SceneBindingLayout. bReadOnly flips GPU-written buffers
-        // UAV->SRV (IndirectArgs stays UAV). Reads this view's per-view buffers + aliased shared images.
-        auto BuildSceneDesc = [&](uint32 Slot, bool bReadOnly) -> FBindingSetDesc
-        {
-            FRHIBuffer* ClusterBuf  = View.ClusterBuffer;
-            FRHIBuffer* DrawListBuf = MeshletDrawListRing[Slot];
-
-            FBindingSetDesc BindingSetDesc;
-            BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, View.SceneBuffer));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(1, GetNamedBuffer(ENamedBuffer::Light)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::Instance)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::Bone)));
-            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(4, ClusterBuf) : FBindingSetItem::BufferUAV(4, ClusterBuf));
-            // Material uniforms: SRV in both variants. CPU-updated, shader-read only;
-            // UAV-binding churned a spurious barrier on every binding-change pass.
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(6, GetNamedBuffer(ENamedBuffer::Billboards)));
-            // Cascade/Atlas (7,8) on set 3 to dodge a layout-thrash bug; slot 9 (pyramid)
-            // sampled bindless. Cull appends survivors into per-view DrawList/IndirectArgs slices.
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
-            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(11, DrawListBuf) : FBindingSetItem::BufferUAV(11, DrawListBuf));
-            // 12/14/15 (IndirectArgs, DeferList, DeferCount) are cull-private (device address,
-            // tracked via State.Writes), so no pass binds them. 16 = per-instance meshlet prefix.
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(16, GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix)));
-            // Pre-skinned vertices: UAV in the skinning compute pass, SRV for the draw VS.
-            FRHIBuffer* PreSkinnedBuf = GetNamedBuffer(ENamedBuffer::PreSkinnedVertices);
-            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(20, PreSkinnedBuf) : FBindingSetItem::BufferUAV(20, PreSkinnedBuf));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(21, GetNamedBuffer(ENamedBuffer::SkinDescriptors)));
-            // Widget quads (binding 22). MUST be added in binding order: the RHI builds pDynamicOffsets in
-            // insertion order, so an out-of-order BUF_Dynamic shifts every later offset (corrupts the set).
-            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(22, GetNamedBuffer(ENamedBuffer::Widgets)));
-
-            // BRDF LUT (Karis split-sum), linear-clamp: sampled by (NdotV, Roughness) in
-            // [0,1]; clamp matches the half-texel offsets baked into the LUT. (Shared, aliased.)
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(17, View.Images[(int)ENamedImage::BRDFLut],
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI()));
-
-            // IBL cubemaps, linear-clamp: smooth HDR convolutions, and bilinear between
-            // prefilter mips smooths the roughness-step transitions.
-            FRHISamplerRef IBLCubeSampler = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(18, View.Images[(int)ENamedImage::SkyIrradiance], IBLCubeSampler,
-                EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, View.Images[(int)ENamedImage::SkyPrefilter],  IBLCubeSampler,
-                EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
-            return BindingSetDesc;
-        };
-
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
-        {
-            FBindingSetDesc WritableDesc = BuildSceneDesc(Slot, false);
-            if (!SceneBindingLayout)
-            {
-                TBitFlags<ERHIShaderType> Visibility;
-                Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, WritableDesc, SceneBindingLayout, View.SceneBindingSets[Slot]);
-            }
-            else
-            {
-                View.SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(WritableDesc, SceneBindingLayout);
-            }
-
-            FBindingSetDesc ReadOnlyDesc = BuildSceneDesc(Slot, true);
-            View.SceneBindingSetReadOnlys[Slot] = GRenderContext->CreateBindingSet(ReadOnlyDesc, SceneBindingLayout);
-        }
-
-        // Standalone set-2 for ToneMapping: 0=HDR color, 1=Bloom mip 0, 2=color grading UBO
-        // (144 B exceeds RDNA's 128 B push cap). Linear-clamp so CA/bloom can filter.
-        {
-            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc ComposeSetDesc;
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::HDR], LinearClamp));
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.BloomChainImage, LinearClamp,
-                EFormat::UNKNOWN, FTextureSubresourceSet(0, 1, 0, 1)));
-            ComposeSetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::ColorGrading)));
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(3, View.Images[(int)ENamedImage::AdaptedLuminance], LinearClamp));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            if (!ComposeBindingLayout)
-            {
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, View.ComposeBindingSet);
-            }
-            else
-            {
-                View.ComposeBindingSet = GRenderContext->CreateBindingSet(ComposeSetDesc, ComposeBindingLayout);
-            }
-        }
-
-        // SMAA Pass 1 (Edge Detection): reads LDR tonemapped color with point-clamp,
-        // writes 2-channel edges texture.
-        {
-            FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::LDR], PointClamp));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            if (!SMAAEdgeBindingLayout)
-            {
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAAEdgeBindingLayout, View.SMAAEdgeBindingSet);
-            }
-            else
-            {
-                View.SMAAEdgeBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAAEdgeBindingLayout);
-            }
-        }
-
-        // SMAA Pass 2 (Blend Weight): reads edges, AreaTex, SearchTex. SearchTex uses
-        // linear-clamp despite being integer-coded; the technique needs the bilinear filter.
-        {
-            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::SMAAEdges], LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::SMAAArea], LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, View.Images[(int)ENamedImage::SMAASearch], LinearClamp));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            if (!SMAABlendWeightBindingLayout)
-            {
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAABlendWeightBindingLayout, View.SMAABlendWeightBindingSet);
-            }
-            else
-            {
-                View.SMAABlendWeightBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAABlendWeightBindingLayout);
-            }
-        }
-
-        // SMAA Pass 3 (Neighborhood Blend): reads LDR color and blend weights, both linear-clamp.
-        {
-            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::LDR], LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::SMAABlend], LinearClamp));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            if (!SMAANeighborhoodBindingLayout)
-            {
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAANeighborhoodBindingLayout, View.SMAANeighborhoodBindingSet);
-            }
-            else
-            {
-                View.SMAANeighborhoodBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAANeighborhoodBindingLayout);
-            }
-        }
-
-        // Standalone set-0 layout for OITResolve (uAccum at 0, uRevealage at 1).
-        {
-            FBindingSetDesc OITSetDesc;
-            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::Accum]));
-            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::Revealage]));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            if (!OITBindingLayout)
-            {
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, OITSetDesc, OITBindingLayout, View.OITBindingSet);
-            }
-            else
-            {
-                View.OITBindingSet = GRenderContext->CreateBindingSet(OITSetDesc, OITBindingLayout);
-            }
-        }
-
-        // Default the live pointers to this view; RenderView re-points them per view/slot.
-        SceneBindingSet            = View.SceneBindingSets[CurrentFrameSlot];
-        SceneBindingSetReadOnly    = View.SceneBindingSetReadOnlys[CurrentFrameSlot];
-        ComposeBindingSet          = View.ComposeBindingSet;
-        SMAAEdgeBindingSet         = View.SMAAEdgeBindingSet;
-        SMAABlendWeightBindingSet  = View.SMAABlendWeightBindingSet;
-        SMAANeighborhoodBindingSet = View.SMAANeighborhoodBindingSet;
-        OITBindingSet              = View.OITBindingSet;
-        BloomChain                 = View.BloomChainImage;
-        SceneViewportState         = View.ViewportState;
-        SceneViewport              = View.Viewport.GetReference();
+        // Scene data reaches shaders by device address (FSceneRoot) + the bindless texture table, so a
+        // view owns no descriptor sets. Only refresh the live per-view render aliases here.
+        BloomChain         = View.BloomChainImage;
+        SceneViewportState = View.ViewportState;
+        SceneViewport      = View.Viewport.GetReference();
     }
 
     FViewportState FForwardRenderScene::MakeViewportStateFromImage(const FRHIImage* Image)

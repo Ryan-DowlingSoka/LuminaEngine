@@ -1,11 +1,19 @@
+#include "Includes/SceneGlobals.slang"
 #include "Includes/Sky.slang"
 #include "Includes/IBL.slang"
 
 // Diffuse irradiance convolution. Cosine-weighted importance sampling (Malley's method) collapses the
 // estimator to Irradiance(N)/pi = mean(L(omega_i)); baked so runtime does Diffuse = SampleIrradiance(N) * Albedo.
+// No pass-local set: source cube via bindless cube SRV, output via bindless 2D-array UAV.
 
-[[vk::binding(0, 0)]] SamplerCube                              uSrcCube;
-[[vk::binding(1, 0)]] RWTexture2DArray<float4>                 uOutCube;
+struct FPushConstants
+{
+    uint SrcCubeSRV;
+    uint OutCubeUAV;
+    uint _Pad0;
+    uint _Pad1;
+};
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define IRRADIANCE_TILE 8
 
@@ -13,6 +21,8 @@
 [numthreads(IRRADIANCE_TILE, IRRADIANCE_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
+    RWTexture2DArray<float4> uOutCube = uBindlessRWTex2DArray[PC.OutCubeUAV];
+
     uint Width, Height, Layers;
     uOutCube.GetDimensions(Width, Height, Layers);
 
@@ -45,7 +55,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         float3 LocalDir = float3(SinTheta * cos(Phi), SinTheta * sin(Phi), CosTheta);
         float3 L        = normalize(LocalDir.x * Tangent + LocalDir.y * Bitangent + LocalDir.z * N);
 
-        Sum += uSrcCube.SampleLevel(L, 0.0).rgb;
+        Sum += SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb;
     }
 
     uOutCube[DTid] = float4(Sum / float(NumSamples), 1.0);

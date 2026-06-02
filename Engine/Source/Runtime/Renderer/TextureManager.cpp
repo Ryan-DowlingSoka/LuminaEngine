@@ -84,13 +84,20 @@ namespace Lumina::RHI
         const FRHIImageDesc& Desc = InTexture->GetDescription();
         if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage))
         {
+            // Cube/cube-array images can't have a cube-typed storage view (illegal in Vulkan), so their
+            // UAVs are 2D-array views (matches uBindlessRWTex2DArray on the shader side). Everything else
+            // takes its natural dimension (Unknown -> the image's own).
+            const bool bCube = Desc.Dimension == EImageDimension::TextureCube
+                            || Desc.Dimension == EImageDimension::TextureCubeArray;
+            const EImageDimension UAVDimension = bCube ? EImageDimension::Texture2DArray : EImageDimension::Unknown;
+
             TVector<int32>& MipIndices = InTexture->GetMipUAVIndices();
             MipIndices.resize(Desc.NumMips);
             for (uint8 Mip = 0; Mip < Desc.NumMips; ++Mip)
             {
                 FBindingSetItem UAVItem = FBindingSetItem::TextureUAV(
                     ImageBinding, InTexture, Desc.Format,
-                    FTextureSubresourceSet(Mip, 1, 0, FTextureSubresourceSet::AllArraySlices));
+                    FTextureSubresourceSet(Mip, 1, 0, FTextureSubresourceSet::AllArraySlices), UAVDimension);
                 MipIndices[Mip] = static_cast<int32>(DescriptorTableManager.CreateDescriptor(UAVItem));
             }
         }

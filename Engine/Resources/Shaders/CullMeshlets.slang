@@ -17,7 +17,7 @@ struct FPushConstants
     uint*                   DeferCount;
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 // Appends a surviving meshlet into the view's slice; centralized so both phases share the atomic protocol.
 void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocalIdx)

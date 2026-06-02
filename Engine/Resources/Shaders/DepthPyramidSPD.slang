@@ -22,9 +22,9 @@ struct FPushConstants
     uint   MipUAV[SPD_MAX_MIPS];
 };
 
-// Module-scope (not entry-point uniform): a uniform param copies the struct into Function storage,
-// which trips spirv-val on the PhysicalStorageBuffer pointer field. PushConstant storage avoids the copy.
-[[vk::push_constant]] FPushConstants PC;
+// Per-pass constants live in a transient block addressed by gPC.PassAddr. The deref macro keeps PC an
+// lvalue into that BDA memory (no by-value copy, which would trip spirv-val on the pointer field).
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 // Ping-pong LDS: alternating reduction passes write to disjoint halves so no
 // slot is read+written across a barrier.

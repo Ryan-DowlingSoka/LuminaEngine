@@ -174,9 +174,9 @@ namespace Lumina
             ELightType  Type;
             uint32      DesiredPixels;
             float       DistanceToCamera;
-            FVector3   Position;
-            FVector3   Direction;      // Spot only
-            FVector3   Up;             // Spot only
+            FVector3    Position;
+            FVector3    Direction;      // Spot only
+            FVector3    Up;             // Spot only
             float       Attenuation;
             float       OuterFOVDegrees;
         };
@@ -377,60 +377,6 @@ namespace Lumina
             } Extracts;
         };
 
-        enum class ENamedBuffer : uint8
-        {
-            Scene,
-            Light,
-            // Unified per-instance descriptor. Bound at binding 2.
-            Instance,
-            Bone,
-            Cluster,
-            SimpleVertex,
-            Billboards,
-            // World-space UI widget quads (bound at scene-set binding 22).
-            Widgets,
-            // Per-view cull descriptors; one per logical render view
-            // (main camera, each CSM cascade, each point face, each spot).
-            CullView,
-            // Shared meshlet draw list, NumViews * TotalMeshletBound; each view owns a
-            // slice. Ringed per frame-in-flight: use GetMeshletDrawList(), not GetNamedBuffer.
-            MeshletDrawList,
-            // Shared indirect draw args (NumViews * NumDraws); per-view range.
-            // Ringed per frame-in-flight: use GetIndirectArgs(), not GetNamedBuffer.
-            IndirectArgs,
-            // Two-pass cull defer list: phase 0 appends prev-frame-Hi-Z rejects, phase 1
-            // re-tests them. Ringed per frame-in-flight: use GetMeshletDeferList().
-            MeshletDeferList,
-            // Atomic counter paired with MeshletDeferList; reset per frame by ResetPass.
-            // Ringed per frame-in-flight: use GetDeferCount(), not GetNamedBuffer.
-            DeferCount,
-            // SPD atomic counter; last phase-1 workgroup runs phase 2.
-            // Ringed per frame-in-flight: use GetSpdCounter(), not GetNamedBuffer.
-            SpdCounter,
-            // Per-frame environment params read by Environment.slang at binding (2, 0).
-            Environment,
-            // Per-frame exponential-height-fog params; read by the froxel volumetric
-            // fog passes (VolumetricFogInject / VolumetricFogApply).
-            Fog,
-            // Inclusive prefix sum of per-instance SurfaceMeshletCount, sized [InstanceNum+1].
-            // Cull binary-searches it to recover (InstanceID, MeshletLocalIdx) from a flat dispatch.
-            InstanceMeshletPrefix,
-            // Color grading + tone mapping constants. 144 B exceeds AMD RDNA's 128 B
-            // push-constant cap, so it lives in a UBO at (set 2, binding 2).
-            ColorGrading,
-            // GPU pre-skinning: output vertex buffer (binding 20) the skinning compute
-            // writes and draw VS read, plus the per-skinned-entity descriptor list (21).
-            PreSkinnedVertices,
-            SkinDescriptors,
-            // Solid translucent debug triangles (navmesh surface, etc.); same vertex format as SimpleVertex.
-            SolidVertex,
-
-            // Per-frame DBuffer decal records (FGPUDecal), bound at the decal-pass set 2.
-            Decals,
-
-            Num,
-        };
-
         enum class ENamedImage : uint8
         {
             HDR,
@@ -513,20 +459,10 @@ namespace Lumina
             TArray<FRHIImageRef, (int)ENamedImage::Num>     Images = {};
             FRHIImageRef                                    BloomChainImage;
 
-            // Per-view camera UBO + cluster grid -- the only per-camera entries in set 2.
-            FRHIBufferRef                                   SceneBuffer;
+            // Per-view cluster grid (GPU-written, reached by device address via the scene root).
             FRHIBufferRef                                   ClusterBuffer;
-
-            // Scene set (and its read-only twin) per frame slot; reference this view's
-            // SceneBuffer/ClusterBuffer alongside the shared buffers.
-            TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>     SceneBindingSets = {};
-            TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>     SceneBindingSetReadOnlys = {};
-            // Post-chain sets referencing this view's HDR/LDR/Accum/Revealage/Bloom.
-            FRHIBindingSetRef                               ComposeBindingSet;
-            FRHIBindingSetRef                               SMAAEdgeBindingSet;
-            FRHIBindingSetRef                               SMAABlendWeightBindingSet;
-            FRHIBindingSetRef                               SMAANeighborhoodBindingSet;
-            FRHIBindingSetRef                               OITBindingSet;
+            // All scene data (camera, lights, instances, ...) now reaches shaders by device address
+            // through FSceneRoot, so a view owns no descriptor sets.
 
             // Cluster-grid cache: view-space AABBs depend only on this view's projection
             // + RT size, so the build is skipped while those are unchanged.
@@ -558,7 +494,9 @@ namespace Lumina
 
         static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
         
-        FRHIBuffer* GetNamedBuffer(ENamedBuffer Buffer) const { return NamedBuffers[(int)Buffer]; }
+        FRHIBuffer* GetSimpleVertexBuffer() const       { return SimpleVertexBuffer; }
+        FRHIBuffer* GetSolidVertexBuffer() const        { return SolidVertexBuffer; }
+        FRHIBuffer* GetPreSkinnedVerticesBuffer() const { return PreSkinnedVerticesBuffer; }
         // Per-view images route through CurrentView; shared slots are aliased into every view.
         // Falls back to the shared store during Init before any view exists.
         FRHIImage* GetNamedImage(ENamedImage Image) const { return CurrentView ? CurrentView->Images[(int)Image] : NamedImages[(int)Image]; }
@@ -604,8 +542,6 @@ namespace Lumina
         // (Re)builds the primary view's images/buffers/binding sets + viewport state. Called
         // on init and swapchain resize.
         void InitFrameResources();
-        // Shared binding layouts + the view-independent sets (shadow sampling, empty set 2).
-        void CreateSharedLayouts();
         // Per-view binding sets (scene rw/ro per slot, compose, SMAA, OIT) against the
         // shared layouts, referencing this view's per-view buffers/images.
         void CreateViewBindingSets(FSceneView& View);
@@ -627,13 +563,6 @@ namespace Lumina
         void PointAtView(FSceneView& View)
         {
             CurrentView                = &View;
-            SceneBindingSet            = View.SceneBindingSets[CurrentFrameSlot];
-            SceneBindingSetReadOnly    = View.SceneBindingSetReadOnlys[CurrentFrameSlot];
-            ComposeBindingSet          = View.ComposeBindingSet;
-            SMAAEdgeBindingSet         = View.SMAAEdgeBindingSet;
-            SMAABlendWeightBindingSet  = View.SMAABlendWeightBindingSet;
-            SMAANeighborhoodBindingSet = View.SMAANeighborhoodBindingSet;
-            OITBindingSet              = View.OITBindingSet;
             BloomChain                 = View.BloomChainImage;
             SceneViewportState         = View.ViewportState;
             SceneViewport              = View.Viewport.GetReference();
@@ -760,10 +689,20 @@ namespace Lumina
 
     private:
         
-        TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
+        // The only persistent per-frame buffers left. Everything CPU-dynamic (instances/lights/bones/
+        // billboards/widgets/cull views/skin descriptors/env+fog params/meshlet prefix) is uploaded to
+        // the command-list transient ring each frame; the GPU-written cull/draw rings have own members.
+        // Debug line/triangle vertex buffers stay persistent (a transient ring is the wrong home for
+        // large per-frame geometry -- it thrashes the shared chunk pool); pre-skinned vertices are
+        // GPU-written device-local scratch (skinning compute writes, draw VS reads via BDA).
+        FRHIBufferRef                                   SimpleVertexBuffer;
+        FRHIBufferRef                                   SolidVertexBuffer;
+        FRHIBufferRef                                   PreSkinnedVerticesBuffer;
         // Per-buffer hysteresis counters for ResizeBufferIfNeeded's shrink path (consecutive
         // frames of sustained low usage). Persisted so memory is reclaimed after the scene shrinks.
-        TArray<uint32, (int)ENamedBuffer::Num>          NamedBufferLowUsage = {};
+        uint32                                          SimpleVertexLowUsage = 0;
+        uint32                                          SolidVertexLowUsage = 0;
+        uint32                                          PreSkinnedVerticesLowUsage = 0;
         TArray<uint32, FRAMES_IN_FLIGHT>                IndirectArgsRingLowUsage = {};
         TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDrawListRingLowUsage = {};
         TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDeferListRingLowUsage = {};
@@ -821,14 +760,10 @@ namespace Lumina
         bool                                    bLastConvolvedHasSun           = false;
         bool                                    bIBLConvolutionValid           = false;
 
-        // Mirrors last-uploaded EnvironmentParams; a memcmp gate skips the WriteBuffer
+        // Mirrors last-seen EnvironmentParams; a memcmp gate skips the costly IBL convolution
         // for the common static-environment case.
         FEnvironmentParams                      LastUploadedEnvironmentParams = {};
         bool                                    bEnvironmentParamsUploaded    = false;
-
-        // Mirrors last-uploaded FogParams; memcmp gate skips the WriteBuffer while static.
-        FExponentialHeightFogParams             LastUploadedFogParams = {};
-        bool                                    bFogParamsUploaded    = false;
 
         FBindingCache                           BindingCache;
 
@@ -836,14 +771,18 @@ namespace Lumina
         // FFrameData::ActivePostProcessMaterials at the start of Extract.
         TVector<CMaterialInterface*>            PendingPostProcessMaterials;
 
-        // Non-owning view of CurrentView->SceneBindingSets[CurrentFrameSlot], refreshed at
-        // the top of each view; bind sites read through it so they ignore view/slot ringing.
-        FRHIBindingSet*                                                 SceneBindingSet = nullptr;
-        FRHIBindingLayoutRef                                            SceneBindingLayout;
+        // Bindless scene model: shared (per-frame) buffer addresses filled in CompileDrawCommands; the
+        // per-view root (adds this view's camera + clusters + IBL indices) is uploaded to a transient
+        // and its address kept in CurrentSceneRootAddr, which every pass pushes as FRootConstants.RootAddr.
+        FSceneRoot                                                      SceneRootShared = {};
+        uint64                                                          CurrentSceneRootAddr = 0;
+        // Builds the per-view FSceneRoot transient (shared addrs + view camera/clusters/IBL) -> address.
+        uint64 BuildViewSceneRoot(ICommandList& CmdList, FSceneView& View, uint64 SceneDataAddr);
 
-        // Read-only twin of SceneBindingSet (shared layout) binding GPU-written buffers as
-        // SRV; read-only passes use it so the tracker skips the per-pass UAV barrier.
-        FRHIBindingSet*                                                 SceneBindingSetReadOnly = nullptr;
+        // Push the engine-wide root constants for a pass: the current view's scene root + this pass's
+        // own constants (uploaded to a transient). Replaces every per-pass SetPushConstants.
+        template<typename T> void PushRootConstants(ICommandList& CmdList, const T& PassData);
+        void PushRootConstants(ICommandList& CmdList);   // pass with no own constants
 
         // GPU-atomic-written by CullMeshlets, consumed by DrawIndirect, so it can't be
         // BUF_Dynamic (no dynamic offset to vkCmdDrawIndirect). Manual N-buffer ring.
@@ -860,34 +799,6 @@ namespace Lumina
         // RenderView_RenderThread from GRenderManager->GetCurrentFrameIndex().
         uint8                                                           CurrentFrameSlot = 0;
 
-        // Set 3 -- shadow textures bound only by passes that SAMPLE shadows. Kept out of
-        // SceneBindingSet so shadow passes don't shader-read an image they're about to write.
-        FRHIBindingSetRef                       ShadowSamplingBindingSet;
-        FRHIBindingLayoutRef                    ShadowSamplingBindingLayout;
-
-        // Placeholder for set 2 in pipelines that use set 3 but no set 2 (BasePass,
-        // TransparentPass). Vulkan requires pSetLayouts contiguous to the highest set.
-        FRHIBindingSetRef                       EmptySet2BindingSet;
-        FRHIBindingLayoutRef                    EmptySet2Layout;
-
-
-        // Compose/SMAA/OIT sets are per-view (reference this view's HDR/LDR/etc.), so the
-        // sets are live pointers into CurrentView; only the layouts are shared and owned here.
-        FRHIBindingSet*                         ComposeBindingSet = nullptr;
-        FRHIBindingLayoutRef                    ComposeBindingLayout;
-
-        FRHIBindingSet*                         SMAAEdgeBindingSet = nullptr;
-        FRHIBindingLayoutRef                    SMAAEdgeBindingLayout;
-
-        FRHIBindingSet*                         SMAABlendWeightBindingSet = nullptr;
-        FRHIBindingLayoutRef                    SMAABlendWeightBindingLayout;
-
-        FRHIBindingSet*                         SMAANeighborhoodBindingSet = nullptr;
-        FRHIBindingLayoutRef                    SMAANeighborhoodBindingLayout;
-
-        FRHIBindingSet*                         OITBindingSet = nullptr;
-        FRHIBindingLayoutRef                    OITBindingLayout;
-        
         FRHIInputLayoutRef                      SimpleVertexLayoutInput;
 
         FShadowAtlas                            ShadowAtlas;

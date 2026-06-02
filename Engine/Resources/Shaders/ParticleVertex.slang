@@ -17,16 +17,16 @@ struct FGPUParticle
     float   Seed;
 };
 
-// Per-emitter render params fed from the CPU. Keeps the vertex path data-driven.
-struct FParticleRenderParams
+// No pass-local set: the particle array is read by device address and the (tiny) per-emitter render
+// params are inlined into the push constant.
+struct FParticlePushConstants
 {
-    uint4   Flags;      // x=TextureIndex, y=BillboardToCamera, zw=reserved
-    float4  Tint;       // xyz=tint rgb, w=intensity multiplier
-    float4  UVParams;   // xy=scroll rate (not yet used), zw=reserved
+    FGPUParticle* Particles;       // device address of the simulated particle array
+    uint   TextureIndex;           // bindless 2D SRV (0 = default sprite)
+    uint   BillboardToCamera;      // 1 = camera-facing, 0 = world XZ-aligned
+    float4 Tint;                   // xyz tint rgb, w intensity multiplier
 };
-
-[[vk::binding(0, 2)]] StructuredBuffer<FGPUParticle>        Particles;
-[[vk::binding(1, 2)]] ConstantBuffer<FParticleRenderParams> RenderParams;
+#define PC (*(FParticlePushConstants*)gPC.PassAddr)
 
 static const float2 QuadPositions[6] =
 {
@@ -64,7 +64,7 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     uint ParticleIndex = VertexIndex / 6;
     uint QuadIndex     = VertexIndex % 6;
 
-    FGPUParticle P = Particles[ParticleIndex];
+    FGPUParticle P = PC.Particles[ParticleIndex];
 
     VertexOutput Out;
 
@@ -89,7 +89,7 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     // Billboard axes: either camera-facing or world-aligned (XZ plane).
     float3 BillboardRight;
     float3 BillboardUp;
-    if (RenderParams.Flags.y != 0u)
+    if (PC.BillboardToCamera != 0u)
     {
         float4x4 ViewMatrix = GetCameraView();
         BillboardRight =  float3(ViewMatrix[0][0], ViewMatrix[0][1], ViewMatrix[0][2]);
@@ -106,8 +106,8 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
                     + BillboardUp    * Rotated.y;
 
     Out.UV           = QuadUVs[QuadIndex];
-    Out.Color        = P.Color * float4(RenderParams.Tint.rgb * RenderParams.Tint.w, 1.0);
-    Out.TextureIndex = RenderParams.Flags.x;
+    Out.Color        = P.Color * float4(PC.Tint.rgb * PC.Tint.w, 1.0);
+    Out.TextureIndex = PC.TextureIndex;
     Out.Position     = mul(GetCameraProjection(), mul(GetCameraView(), float4(WorldPos, 1.0)));
     return Out;
 }

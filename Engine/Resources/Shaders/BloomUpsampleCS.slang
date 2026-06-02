@@ -19,7 +19,7 @@ struct FPushConstants
     float  SrcMip;          // mip level to sample on the source SRV
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 [shader("compute")]
 [numthreads(TILE_WIDTH, TILE_HEIGHT, 1)]

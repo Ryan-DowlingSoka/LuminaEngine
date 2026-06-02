@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.slang"
+#include "SceneGlobals.slang"
 
 // DBuffer decals (forward-renderer deferred decals). The DecalPass projects decal boxes onto scene
 // depth and writes BaseColor / WorldNormal / Roughness-Metallic-AO into these three unorm targets,
@@ -7,22 +8,26 @@
 // (cleared to a=1, blend RGB = SrcAlpha/InvSrcAlpha, A = Zero/InvSrcAlpha). The base pass composites
 // the surface under the accumulated decal layer: result = surface * transmittance + premultipliedDecal.
 //
-// Bound at the opaque base pass's set 2 (which is otherwise an empty placeholder). Kept out of the
-// scene set so the DecalPass -- which writes these as render targets while binding the scene set -- never
-// references them as SRVs. A pixel untouched by any decal reads a=1, rgb=0, so ApplyDBuffer is a no-op.
-
-[[vk::binding(0, 2)]] Sampler2D uDBufferA;   // rgb: BaseColor,                 a: transmittance
-[[vk::binding(1, 2)]] Sampler2D uDBufferB;   // rg:  WorldNormal (OctEncode01),  a: transmittance
-[[vk::binding(2, 2)]] Sampler2D uDBufferC;   // r:Roughness g:Metallic b:AO,     a: transmittance
+// No pass-local set: the three DBuffer targets are read through the bindless table via indices in this
+// push constant (opaque base pass only). A pixel untouched by any decal reads a=1, rgb=0, so it's a no-op.
+struct FDBufferPushConstants
+{
+    uint DBufferAIndex;   // rgb BaseColor,                a transmittance
+    uint DBufferBIndex;   // rg  WorldNormal (OctEncode01), a transmittance
+    uint DBufferCIndex;   // r Roughness g Metallic b AO,  a transmittance
+    uint _Pad;
+};
+#define gDBufferPC (*(FDBufferPushConstants*)gPC.PassAddr)
 
 // Blend the accumulated decal layer at ScreenUV into the surface material attributes, in place.
 // Call after the material is resolved and BEFORE lighting so decals receive lights/shadows/IBL.
 void ApplyDBuffer(inout float3 Albedo, inout float3 WorldNormal, inout float Roughness,
                   inout float Metallic, inout float AO, float2 ScreenUV)
 {
-    float4 A = uDBufferA.SampleLevel(ScreenUV, 0.0);
-    float4 B = uDBufferB.SampleLevel(ScreenUV, 0.0);
-    float4 C = uDBufferC.SampleLevel(ScreenUV, 0.0);
+    SamplerState Smp = uBindlessSamplers[SAMPLER_POINT_CLAMP];
+    float4 A = uBindlessTex2D[gDBufferPC.DBufferAIndex].SampleLevel(Smp, ScreenUV, 0.0);
+    float4 B = uBindlessTex2D[gDBufferPC.DBufferBIndex].SampleLevel(Smp, ScreenUV, 0.0);
+    float4 C = uBindlessTex2D[gDBufferPC.DBufferCIndex].SampleLevel(Smp, ScreenUV, 0.0);
 
     // BaseColor: standard "over" composite of the decal layer (rgb premultiplied over black) on top of
     // the surface attenuated by the layer transmittance.

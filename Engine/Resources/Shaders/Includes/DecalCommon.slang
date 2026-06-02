@@ -4,8 +4,8 @@
 // Shared bindings/data for the DecalPass (vertex + pixel). Decals are drawn as unit cubes; the pixel
 // shader reconstructs world position from scene depth, projects into decal-local space, and writes the
 // material attributes into the DBuffer. Set 0 (scene) gives camera + material uniforms + bindless
-// textures; set 2 (below) is the decal-pass-private depth + per-decal data. One draw per decal, the
-// push constant selects its record.
+// textures. The pass binds NO private descriptor set: the per-decal array arrives by device address and
+// the scene depth by bindless index, both carried in the push constant below.
 
 struct FGPUDecal
 {
@@ -17,8 +17,22 @@ struct FGPUDecal
     uint     Flags;          // reserved
 };
 
-[[vk::binding(0, 2)]] Sampler2D                        uDecalSceneDepth;   // opaque depth, raw reverse-Z NDC [0,1]
-[[vk::binding(1, 2)]] StructuredBuffer<FGPUDecal>      uDecals;
+// Per-pass constants, identical in VS and PS so they share one push range. The decal *index* still
+// arrives via SV_VulkanInstanceID (the draw's FirstInstance) -- only the array base + depth slot live
+// here. Pointer first so the uint64 device address stays 8-byte aligned.
+struct FDecalPushConstants
+{
+    FGPUDecal* Decals;       // device address of the per-frame decal array, indexed by decal index
+    uint       DepthIndex;   // bindless resource ID of opaque scene depth (raw reverse-Z NDC [0,1])
+    uint       _Pad;
+};
+#define PC (*(FDecalPushConstants*)gPC.PassAddr)
+
+// Opaque scene depth (raw reverse-Z NDC [0,1]) sampled point-clamped from the bindless table.
+float SampleDecalSceneDepth(float2 UV)
+{
+    return uBindlessTex2D[PC.DepthIndex].SampleLevel(uBindlessSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
+}
 
 // Unit cube corner table (12 triangles / 36 verts), local space [-0.5, 0.5]. Indexed by SV_VertexID.
 static const float3 kDecalCubeVerts[36] = {

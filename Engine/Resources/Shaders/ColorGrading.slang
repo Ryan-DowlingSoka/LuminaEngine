@@ -1,11 +1,9 @@
 #pragma once
-#include "Includes/Common.slang"
+#include "Includes/SceneGlobals.slang"
 
 // Fused post-process pass: linear HDR -> color grading -> tone map -> vignette -> gamma encode.
-// Constants live in a UBO (set 2, binding 2) not push constants: AMD RDNA caps push at 128 B.
-
-[[vk::binding(0, 2)]] Sampler2D uHDRSceneColor;
-[[vk::binding(1, 2)]] Sampler2D uBloom;
+// Inputs are bindless (HDR/bloom/adapted-luminance by index); the 160 B grading constants block (over
+// the 128 B push limit) rides the transient ring, reached through a device-address pointer.
 
 #define TONEMAPPER_NONE       0u
 #define TONEMAPPER_ACES       1u
@@ -31,7 +29,7 @@ struct FColorGradingConstants
     float VignetteRoundness;
     uint  TonemapMode;
     float Time;
-    float BloomIntensity;  // 0 == bloom disabled (uBloom not sampled).
+    float BloomIntensity;  // 0 == bloom disabled (bloom not sampled).
 
     // 80 B
     float4 ColorFilter;    // .rgb tint, .a intensity (0..2)
@@ -50,9 +48,16 @@ struct FColorGradingConstants
     float _PadAE;
 };
 
-[[vk::binding(2, 2)]] ConstantBuffer<FColorGradingConstants> PC;
-// Persistent 1x1 adapted scene luminance written by AutoExposure.slang.
-[[vk::binding(3, 2)]] Sampler2D uAdaptedLuminance;
+// Per-pass block: grading constants by device address + bindless indices for the three inputs.
+struct FComposePushConstants
+{
+    ConstBufferPointer<FColorGradingConstants> Constants;
+    uint HDRIndex;          // bindless SRV: pre-tone-map HDR
+    uint BloomIndex;        // bindless SRV: bloom chain mip 0
+    uint AdaptedLumIndex;   // bindless SRV: 1x1 adapted luminance
+    uint _Pad;
+};
+#define Push (*(FComposePushConstants*)gPC.PassAddr)
 
 struct VSOutput
 {
@@ -250,6 +255,10 @@ float3 ApplyFilmGrain(float3 X, float2 PixelPos, float Time, float Intensity, fl
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
+    FColorGradingConstants PC = Push.Constants.get();
+    SamplerState Smp    = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+    Texture2D    HDRTex = uBindlessTex2D[Push.HDRIndex];
+
     // Radial chromatic aberration, applied to the HDR fetch so the lens artifact is graded and
     // tone-mapped with everything else rather than stamped on in display space.
     float3 Color;
@@ -258,19 +267,19 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
     {
         float2 Center = Input.UV - 0.5;
         float2 Offset = Center * CA;
-        Color.r = uHDRSceneColor.Sample(Input.UV + Offset).r;
-        Color.g = uHDRSceneColor.Sample(Input.UV).g;
-        Color.b = uHDRSceneColor.Sample(Input.UV - Offset).b;
+        Color.r = HDRTex.Sample(Smp, Input.UV + Offset).r;
+        Color.g = HDRTex.Sample(Smp, Input.UV).g;
+        Color.b = HDRTex.Sample(Smp, Input.UV - Offset).b;
     }
     else
     {
-        Color = uHDRSceneColor.Sample(Input.UV).rgb;
+        Color = HDRTex.Sample(Smp, Input.UV).rgb;
     }
 
     // Bloom composite (linear HDR space, before grading).
     if (PC.BloomIntensity > 0.0)
     {
-        float3 Bloom = uBloom.Sample(Input.UV).rgb;
+        float3 Bloom = uBindlessTex2D[Push.BloomIndex].SampleLevel(Smp, Input.UV, 0.0).rgb;
         Color += Bloom * PC.BloomTint.rgb * PC.BloomIntensity;
     }
 
@@ -279,7 +288,7 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
     float AEScale = 1.0;
     if (PC.AutoExposureKey > 0.0)
     {
-        float AdaptedLum = uAdaptedLuminance.SampleLevel(float2(0.5, 0.5), 0.0).r;
+        float AdaptedLum = uBindlessTex2D[Push.AdaptedLumIndex].SampleLevel(Smp, float2(0.5, 0.5), 0.0).r;
         AEScale = clamp(PC.AutoExposureKey / max(AdaptedLum, 1e-4),
                         PC.AutoExposureMinMul, PC.AutoExposureMaxMul);
     }
@@ -316,7 +325,7 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
         Color = pow(max(Color, 0.0), float3(1.0 / PC.Gamma));
     }
 
-    // Film grain (display space, pre-OETF). Knobs packed into the LGG triplet's .a slots to keep the block at 144 B.
+    // Film grain (display space, pre-OETF). Knobs packed into the LGG triplet's .a slots to keep the block at 160 B.
     Color = ApplyFilmGrain(Color, Input.Position.xy, PC.Time,
                            PC.Shadows.a, PC.Midtones.a, PC.Highlights.a);
     Color = max(Color, 0.0);

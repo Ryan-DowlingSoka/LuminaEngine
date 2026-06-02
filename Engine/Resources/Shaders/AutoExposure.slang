@@ -17,7 +17,7 @@ struct FPushConstants
     float AdaptationSpeed;  // eye-adaptation rate (per second)
 };
 
-[[vk::push_constant]] FPushConstants PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 groupshared float gLogLum[THREAD_COUNT];
 

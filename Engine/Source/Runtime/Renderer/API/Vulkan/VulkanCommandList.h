@@ -161,7 +161,10 @@ namespace Lumina
         TUniquePtr<FUploadManager>                              UploadManager;
         TUniquePtr<FUploadManager>                              ScratchManager;
         
-        
+        // Last transient-ring chunk referenced this recording.
+        FRHIBuffer*                                             LastTransientChunk = nullptr;
+
+
         FCommandListStatTracker                                 CommandListStats;
         FCommandListStatTracker                                 CommandListStatLastFrame;
         TRefCountPtr<FTrackedCommandBuffer>                     CurrentCommandBuffer;

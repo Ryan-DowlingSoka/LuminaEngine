@@ -58,6 +58,19 @@ void SMAAMovc(bool4 cond, inout float4 variable, float4 value)
     SMAAMovc(cond.zw, variable.zw, value.zw);
 }
 
+// Bindless adapter. The engine's bindless table exposes textures and samplers as SEPARATE arrays
+// (uBindlessTex2D[] / uBindlessSamplers[]), so the helpers below can't take a combined SMAATex.
+// This thin wrapper bundles the two and mirrors the SMAATex.Sample/SampleLevel interface, so the
+// helper bodies are unchanged -- only their parameter type swaps SMAATex -> SMAATex. The including
+// shader builds one per input from bindless indices in the push constant.
+struct SMAATex
+{
+    Texture2D    Tex;
+    SamplerState Smp;
+    float4 Sample(float2 uv)              { return Tex.Sample(Smp, uv); }
+    float4 SampleLevel(float2 uv, float l) { return Tex.SampleLevel(Smp, uv, l); }
+};
+
 // ---------------------------------------------------------------------------
 //  Vertex-shader-side offset generators (called in pixel shader for simplicity).
 // ---------------------------------------------------------------------------
@@ -88,7 +101,7 @@ void SMAANeighborhoodBlendingOffsets(float2 texcoord, out float4 offset)
 // ---------------------------------------------------------------------------
 //  Pass 1: Luma Edge Detection.
 // ---------------------------------------------------------------------------
-float2 SMAALumaEdgeDetectionPS(float2 texcoord, float4 offset[3], Sampler2D colorTex, float thresholdScalar)
+float2 SMAALumaEdgeDetectionPS(float2 texcoord, float4 offset[3], SMAATex colorTex, float thresholdScalar)
 {
     float2 threshold = float2(thresholdScalar, thresholdScalar);
 
@@ -138,7 +151,7 @@ float4 SMAADecodeDiagBilinearAccess(float4 e)
     return round(e);
 }
 
-float2 SMAASearchDiag1(Sampler2D edgesTex, float2 texcoord, float2 dir, out float2 e)
+float2 SMAASearchDiag1(SMAATex edgesTex, float2 texcoord, float2 dir, out float2 e)
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
     float3 t = float3(SMAA_RT_METRICS.xy, 1.0);
@@ -152,7 +165,7 @@ float2 SMAASearchDiag1(Sampler2D edgesTex, float2 texcoord, float2 dir, out floa
     return coord.zw;
 }
 
-float2 SMAASearchDiag2(Sampler2D edgesTex, float2 texcoord, float2 dir, out float2 e)
+float2 SMAASearchDiag2(SMAATex edgesTex, float2 texcoord, float2 dir, out float2 e)
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
     coord.x += 0.25 * SMAA_RT_METRICS.x;
@@ -168,7 +181,7 @@ float2 SMAASearchDiag2(Sampler2D edgesTex, float2 texcoord, float2 dir, out floa
     return coord.zw;
 }
 
-float2 SMAAAreaDiag(Sampler2D areaTex, float2 dist, float2 e, float offset)
+float2 SMAAAreaDiag(SMAATex areaTex, float2 dist, float2 e, float offset)
 {
     float2 texcoord = SMAA_mad(float2(SMAA_AREATEX_MAX_DISTANCE_DIAG, SMAA_AREATEX_MAX_DISTANCE_DIAG), e, dist);
     texcoord = SMAA_mad(SMAA_AREATEX_PIXEL_SIZE, texcoord, 0.5 * SMAA_AREATEX_PIXEL_SIZE);
@@ -177,7 +190,7 @@ float2 SMAAAreaDiag(Sampler2D areaTex, float2 dist, float2 e, float offset)
     return areaTex.SampleLevel(texcoord, 0).rg;
 }
 
-float2 SMAACalculateDiagWeights(Sampler2D edgesTex, Sampler2D areaTex, float2 texcoord, float2 e, float4 subsampleIndices)
+float2 SMAACalculateDiagWeights(SMAATex edgesTex, SMAATex areaTex, float2 texcoord, float2 e, float4 subsampleIndices)
 {
     float2 weights = float2(0.0, 0.0);
 
@@ -235,7 +248,7 @@ float2 SMAACalculateDiagWeights(Sampler2D edgesTex, Sampler2D areaTex, float2 te
 // ---------------------------------------------------------------------------
 //  Horizontal / Vertical search.
 // ---------------------------------------------------------------------------
-float SMAASearchLength(Sampler2D searchTex, float2 e, float offset)
+float SMAASearchLength(SMAATex searchTex, float2 e, float offset)
 {
     float2 scale = SMAA_SEARCHTEX_SIZE * float2(0.5, -1.0);
     float2 bias  = SMAA_SEARCHTEX_SIZE * float2(offset, 1.0);
@@ -249,7 +262,7 @@ float SMAASearchLength(Sampler2D searchTex, float2 e, float offset)
     return searchTex.SampleLevel(SMAA_mad(scale, e, bias), 0).r;
 }
 
-float SMAASearchXLeft(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, float end)
+float SMAASearchXLeft(SMAATex edgesTex, SMAATex searchTex, float2 texcoord, float end)
 {
     float2 e = float2(0.0, 1.0);
     [loop] while (texcoord.x > end && e.g > 0.8281 && e.r == 0.0)
@@ -261,7 +274,7 @@ float SMAASearchXLeft(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, 
     return SMAA_mad(SMAA_RT_METRICS.x, offset, texcoord.x);
 }
 
-float SMAASearchXRight(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, float end)
+float SMAASearchXRight(SMAATex edgesTex, SMAATex searchTex, float2 texcoord, float end)
 {
     float2 e = float2(0.0, 1.0);
     [loop] while (texcoord.x < end && e.g > 0.8281 && e.r == 0.0)
@@ -273,7 +286,7 @@ float SMAASearchXRight(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord,
     return SMAA_mad(-SMAA_RT_METRICS.x, offset, texcoord.x);
 }
 
-float SMAASearchYUp(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, float end)
+float SMAASearchYUp(SMAATex edgesTex, SMAATex searchTex, float2 texcoord, float end)
 {
     float2 e = float2(1.0, 0.0);
     [loop] while (texcoord.y > end && e.r > 0.8281 && e.g == 0.0)
@@ -285,7 +298,7 @@ float SMAASearchYUp(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, fl
     return SMAA_mad(SMAA_RT_METRICS.y, offset, texcoord.y);
 }
 
-float SMAASearchYDown(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, float end)
+float SMAASearchYDown(SMAATex edgesTex, SMAATex searchTex, float2 texcoord, float end)
 {
     float2 e = float2(1.0, 0.0);
     [loop] while (texcoord.y < end && e.r > 0.8281 && e.g == 0.0)
@@ -297,7 +310,7 @@ float SMAASearchYDown(Sampler2D edgesTex, Sampler2D searchTex, float2 texcoord, 
     return SMAA_mad(-SMAA_RT_METRICS.y, offset, texcoord.y);
 }
 
-float2 SMAAArea(Sampler2D areaTex, float2 dist, float e1, float e2, float offset)
+float2 SMAAArea(SMAATex areaTex, float2 dist, float e1, float e2, float offset)
 {
     float2 texcoord = SMAA_mad(float2(SMAA_AREATEX_MAX_DISTANCE, SMAA_AREATEX_MAX_DISTANCE),
                                round(4.0 * float2(e1, e2)), dist);
@@ -309,7 +322,7 @@ float2 SMAAArea(Sampler2D areaTex, float2 dist, float e1, float e2, float offset
 // ---------------------------------------------------------------------------
 //  Corner detection.
 // ---------------------------------------------------------------------------
-void SMAADetectHorizontalCornerPattern(Sampler2D edgesTex, inout float2 weights, float4 texcoord, float2 d)
+void SMAADetectHorizontalCornerPattern(SMAATex edgesTex, inout float2 weights, float4 texcoord, float2 d)
 {
     float2 leftRight = step(d.xy, d.yx);
     float2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
@@ -325,7 +338,7 @@ void SMAADetectHorizontalCornerPattern(Sampler2D edgesTex, inout float2 weights,
     weights *= saturate(factor);
 }
 
-void SMAADetectVerticalCornerPattern(Sampler2D edgesTex, inout float2 weights, float4 texcoord, float2 d)
+void SMAADetectVerticalCornerPattern(SMAATex edgesTex, inout float2 weights, float4 texcoord, float2 d)
 {
     float2 leftRight = step(d.xy, d.yx);
     float2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
@@ -345,7 +358,7 @@ void SMAADetectVerticalCornerPattern(Sampler2D edgesTex, inout float2 weights, f
 //  Pass 2: Blend Weight Calculation.
 // ---------------------------------------------------------------------------
 float4 SMAABlendingWeightCalculationPS(float2 texcoord, float2 pixcoord, float4 offset[3],
-                                       Sampler2D edgesTex, Sampler2D areaTex, Sampler2D searchTex,
+                                       SMAATex edgesTex, SMAATex areaTex, SMAATex searchTex,
                                        float4 subsampleIndices)
 {
     float4 weights = float4(0.0, 0.0, 0.0, 0.0);
@@ -419,7 +432,7 @@ float4 SMAABlendingWeightCalculationPS(float2 texcoord, float2 pixcoord, float4 
 // ---------------------------------------------------------------------------
 //  Pass 3: Neighborhood Blending.
 // ---------------------------------------------------------------------------
-float4 SMAANeighborhoodBlendingPS(float2 texcoord, float4 offset, Sampler2D colorTex, Sampler2D blendTex)
+float4 SMAANeighborhoodBlendingPS(float2 texcoord, float4 offset, SMAATex colorTex, SMAATex blendTex)
 {
     float4 a;
     a.x  = blendTex.Sample(offset.xy).a; // Right

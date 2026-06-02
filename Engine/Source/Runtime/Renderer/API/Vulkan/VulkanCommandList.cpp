@@ -83,6 +83,8 @@ namespace Lumina
 
         VK_CHECK(vkBeginCommandBuffer(CurrentCommandBuffer->CommandBuffer, &BeginInfo));
         CurrentCommandBuffer->ReferencedResources.push_back(this);
+        LastTransientChunk = nullptr;   // re-reference chunks for this fresh recording
+        UploadManager->BeginFrame(MakeVersion(CurrentCommandBuffer->RecordingID, Info.CommandQueue, false));
 
         PendingState.AddPendingState(EPendingCommandState::Recording);
     }
@@ -813,8 +815,13 @@ namespace Lumina
             LOG_ERROR("Failed to suballocate %llu bytes from transient ring", Size);
             return Result;
         }
-        
-        CurrentCommandBuffer->AddReferencedResource(RingBuffer);
+
+        // Keep the chunk alive for the submission, but only once per distinct chunk.
+        if (RingBuffer != LastTransientChunk)
+        {
+            CurrentCommandBuffer->AddReferencedResource(RingBuffer);
+            LastTransientChunk = RingBuffer;
+        }
 
         CommandListStats.NumTransientAllocs++;
 

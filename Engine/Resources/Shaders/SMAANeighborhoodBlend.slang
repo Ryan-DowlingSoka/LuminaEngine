@@ -1,21 +1,27 @@
 #pragma once
 
+#include "Includes/Common.slang"
+#include "Includes/SceneGlobals.slang"
+
+// SMAA pass 3 (neighborhood blend). No pass-local binding set: LDR color + blend weights are read
+// through the bindless table via indices in the push constant (matches FSMAAPushConstants).
 struct FPushConstants
 {
     float4 RTMetrics;
     float  EdgeThreshold;
     float  DebugMode;
-    float  _Pad0;
-    float  _Pad1;
+    uint   TexIndex0;   // LDR color
+    uint   TexIndex1;   // blend weights
+    uint   TexIndex2;
+    uint   _Pad0;
+    uint   _Pad1;
+    uint   _Pad2;
 };
 
-[[vk::push_constant]] ConstantBuffer<FPushConstants> PC;
+#define PC (*(FPushConstants*)gPC.PassAddr)
 
 #define SMAA_RT_METRICS (PC.RTMetrics)
 #include "Includes/SMAA.slang"
-
-[[vk::binding(0, 2)]] Sampler2D uColorTex;
-[[vk::binding(1, 2)]] Sampler2D uBlendTex;
 
 struct VSOutput
 {
@@ -26,14 +32,19 @@ struct VSOutput
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
+    SamplerState LinearClamp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+
+    SMAATex colorTex; colorTex.Tex = uBindlessTex2D[PC.TexIndex0]; colorTex.Smp = LinearClamp;
+    SMAATex blendTex; blendTex.Tex = uBindlessTex2D[PC.TexIndex1]; blendTex.Smp = LinearClamp;
+
     if (PC.DebugMode > 0.5)
     {
-        float4 bw = uBlendTex.Sample(Input.UV);
+        float4 bw = blendTex.Sample(Input.UV);
         return float4(bw.rgb, 1.0);
     }
 
     float4 offset;
     SMAANeighborhoodBlendingOffsets(Input.UV, offset);
 
-    return SMAANeighborhoodBlendingPS(Input.UV, offset, uColorTex, uBlendTex);
+    return SMAANeighborhoodBlendingPS(Input.UV, offset, colorTex, blendTex);
 }
