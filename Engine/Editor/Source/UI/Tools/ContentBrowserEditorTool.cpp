@@ -2,6 +2,8 @@
 
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetRegistry/TextAssetTypes.h"
+#include "Assets/AssetRegistry/TextAssetSidecar.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Assets/Factories/Factory.h"
 #include "Core/Object/Package/Package.h"
@@ -534,7 +536,8 @@ namespace Lumina
 
             VFS::DirectoryIterator(SelectedPath, [&](const VFS::FFileInfo& FileInfo)
             {
-                if (FileInfo.IsHidden() || !PassesFilter(FileInfo))
+                // Hide dot-entries (e.g. the .lmeta identity-sidecar tree) and OS-hidden files.
+                if (FileInfo.IsHidden() || (!FileInfo.Name.empty() && FileInfo.Name[0] == '.') || !PassesFilter(FileInfo))
                 {
                     return;
                 }
@@ -772,7 +775,26 @@ namespace Lumina
 
             if (VFS::IsDirectory(Destroy.PendingDestroy))
             {
+                // Text-asset sidecars live in the hidden .lmeta tree (not under this folder), so collect
+                // contained text files first and drop their identities explicitly after the bulk remove.
+                TVector<FFixedString> TextPaths;
+                VFS::RecursiveDirectoryIterator(Destroy.PendingDestroy, [&](const VFS::FFileInfo& FileInfo)
+                {
+                    if (FileInfo.IsDirectory()) return;
+                    const FStringView Vp(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                    if (TextAsset::IsTextAssetPath(Vp))
+                    {
+                        TextPaths.emplace_back(FileInfo.VirtualPath);
+                    }
+                });
+
                 VFS::RemoveAll(Destroy.PendingDestroy);
+
+                for (const FFixedString& Tp : TextPaths)
+                {
+                    FAssetRegistry::Get().TextAssetDeleted(FStringView(Tp.c_str(), Tp.size()));
+                }
+
                 ImGuiX::Notifications::NotifySuccess("Deleted Directory {0}", Destroy.PendingDestroy);
                 bWroteSomething = true;
                 return;
@@ -810,6 +832,11 @@ namespace Lumina
             // Plain file (script, widget, audio, etc.), disk-level remove only.
             if (VFS::Remove(Destroy.PendingDestroy))
             {
+                // Drop the text-asset identity + its sidecar.
+                if (TextAsset::IsTextAssetPath(Destroy.PendingDestroy))
+                {
+                    FAssetRegistry::Get().TextAssetDeleted(Destroy.PendingDestroy);
+                }
                 ImGuiX::Notifications::NotifySuccess("Deleted {0}", Destroy.PendingDestroy);
                 bWroteSomething = true;
             }
@@ -881,6 +908,9 @@ namespace Lumina
                     FAssetRegistry::Get().AssetRenamed(Entry.OldPath, Entry.NewPath);
                 }
 
+                // Relocate the identities (and sidecars) of every contained text asset.
+                FAssetRegistry::Get().TextAssetFolderRenamed(OldFolder, NewFolder);
+
                 ImGuiX::Notifications::NotifySuccess("Folder Rename Success");
                 bWroteSomething = true;
             }
@@ -891,6 +921,11 @@ namespace Lumina
                 {
                     ImGuiX::Notifications::NotifyError("Rename Failed: {0}", Rename.OldName);
                     return;
+                }
+                // Carry the text-asset identity (sidecar) across the rename so references survive.
+                if (TextAsset::IsTextAssetPath(Rename.OldName) || TextAsset::IsTextAssetPath(Rename.NewName))
+                {
+                    FAssetRegistry::Get().TextAssetRenamed(Rename.OldName, Rename.NewName);
                 }
                 ImGuiX::Notifications::NotifySuccess("Rename Success");
                 bWroteSomething = true;
@@ -1056,13 +1091,49 @@ namespace Lumina
             Entry.Watcher->Watch(DiskRoot, [this, MakeVirtualPath](const FFileEvent& Event)
             {
                 const FFixedString RelativePath = MakeVirtualPath(Event.Path);
+                const FStringView  RelView(RelativePath.c_str(), RelativePath.size());
+
+                // Our own hidden identity sidecars: ignore so writing one doesn't churn the browser.
+                if (TextAssetSidecar::IsSidecarPath(RelView))
+                {
+                    return;
+                }
 
                 // Central content-change signal: subsystems (UI hot-reload, etc.) subscribe and
                 // filter by extension, so none has to run its own watcher or hard-code paths.
-                FCoreDelegates::OnContentFileModified.Broadcast(FStringView(RelativePath.c_str(), RelativePath.size()));
+                FCoreDelegates::OnContentFileModified.Broadcast(RelView);
+
+                // Keep text-asset identities in sync with edits made outside the editor (idempotent for
+                // edits we already handled in-process). Sidecar I/O is marshalled to the main thread so it
+                // can't race the content-browser handler (which also mutates sidecars) -- concurrent
+                // filesystem access on the same sidecar tree caused a sharing-violation crash.
+                if (TextAsset::IsTextAssetPath(RelView))
+                {
+                    const EFileAction Action  = Event.Action;
+                    const FFixedString NewPath = RelativePath;
+                    const FFixedString OldPath = (Action == EFileAction::Renamed) ? MakeVirtualPath(Event.OldPath) : FFixedString();
+
+                    MainThread::Enqueue([Action, NewPath, OldPath]
+                    {
+                        FAssetRegistry& Reg = FAssetRegistry::Get();
+                        const FStringView New(NewPath.c_str(), NewPath.size());
+                        switch (Action)
+                        {
+                        case EFileAction::Added:   Reg.TextAssetCreated(New); break;
+                        case EFileAction::Removed: Reg.TextAssetDeleted(New); break;
+                        case EFileAction::Renamed: Reg.TextAssetRenamed(FStringView(OldPath.c_str(), OldPath.size()), New); break;
+                        default: break;
+                        }
+                    });
+                }
 
                 if (!VFS::HasExtension(Event.Path, ".luau"))
                 {
+                    // Non-script text edits still want a browser refresh for add/remove/rename.
+                    if (TextAsset::IsTextAssetPath(RelView) && Event.Action != EFileAction::Modified)
+                    {
+                        RefreshContentBrowser();
+                    }
                     return;
                 }
 

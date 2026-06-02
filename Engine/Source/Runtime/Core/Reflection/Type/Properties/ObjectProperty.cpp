@@ -25,4 +25,9 @@ namespace Lumina
         Slot.Serialize(Raw);
         *Ptr = Raw;
     }
+
+    void FObjectProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        *static_cast<TObjectPtr<CObject>*>(Dst) = *static_cast<const TObjectPtr<CObject>*>(Src);
+    }
 }

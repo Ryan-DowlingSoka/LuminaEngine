@@ -105,10 +105,14 @@ namespace Lumina
 
         // Executes the bytecode for one frame. DeltaTime advances playback
         // clocks; the resolved skinning matrices are written to OutMatrices.
+        // When bLockRoot is set and RootBoneIndex is valid, the final pose's root bone is pinned to
+        // the bind pose before skinning (root-motion lock); extraction through the graph is not yet supported.
         static void Execute(const CAnimationGraph* Graph,
                             FSkeletonResource* Skeleton,
                             float DeltaTime,
                             FAnimGraphVMState& State,
-                            TVector<FMatrix4>& OutMatrices);
+                            TVector<FMatrix4>& OutMatrices,
+                            bool bLockRoot = false,
+                            int32 RootBoneIndex = INDEX_NONE);
     };
 }

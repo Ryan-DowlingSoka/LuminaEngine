@@ -201,32 +201,41 @@ namespace Lumina::VFS
 
     bool FNativeFileSystem::Exists(FStringView Path) const
     {
-        return std::filesystem::exists(ResolveVirtualPath(Path).c_str());
+        // error_code overload: a transient lock/sharing-violation (e.g. another thread mid-rename) must
+        // not throw and terminate the process; treat any error as "not present".
+        std::error_code Ec;
+        return std::filesystem::exists(ResolveVirtualPath(Path).c_str(), Ec);
     }
 
     bool FNativeFileSystem::IsDirectory(FStringView Path) const
     {
-        return std::filesystem::is_directory(ResolveVirtualPath(Path).c_str());
+        std::error_code Ec;
+        return std::filesystem::is_directory(ResolveVirtualPath(Path).c_str(), Ec);
     }
 
     size_t FNativeFileSystem::Size(FStringView Path) const
     {
-        return std::filesystem::file_size(ResolveVirtualPath(Path).c_str());
+        std::error_code Ec;
+        const auto Sz = std::filesystem::file_size(ResolveVirtualPath(Path).c_str(), Ec);
+        return Ec ? 0 : (size_t)Sz;
     }
 
     bool FNativeFileSystem::CreateDir(FStringView Path)
     {
-        return std::filesystem::create_directories(ResolveVirtualPath(Path).c_str());
+        std::error_code Ec;
+        return std::filesystem::create_directories(ResolveVirtualPath(Path).c_str(), Ec);
     }
 
     bool FNativeFileSystem::Remove(FStringView Path)
     {
-        return std::filesystem::remove(ResolveVirtualPath(Path).c_str());
+        std::error_code Ec;
+        return std::filesystem::remove(ResolveVirtualPath(Path).c_str(), Ec);
     }
 
     bool FNativeFileSystem::RemoveAll(FStringView Path)
     {
-        return std::filesystem::remove_all(ResolveVirtualPath(Path).c_str());
+        std::error_code Ec;
+        return std::filesystem::remove_all(ResolveVirtualPath(Path).c_str(), Ec) != static_cast<std::uintmax_t>(-1);
     }
 
     bool FNativeFileSystem::Rename(FStringView Old, FStringView New)

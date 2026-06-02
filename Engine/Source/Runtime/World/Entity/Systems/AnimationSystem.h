@@ -1,21 +1,22 @@
-﻿#pragma once
+#pragma once
 #include "EntitySystem.h"
 #include "Core/Object/ObjectMacros.h"
-#include "SimpleAnimationSystem.generated.h"
+#include "AnimationSystem.generated.h"
 
 namespace Lumina
 {
     REFLECT(System)
-    struct SSimpleAnimationSystem
+    struct SAnimationSystem
     {
         GENERATED_BODY()
         ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::PrePhysics), RequiresUpdate(EUpdateStage::Paused))
 
     public:
 
-        static FSystemAccess Access;   // W skeletal pose + Lua VM (anim notifies); defined in the .cpp
+        // Union of both passes' access: writes the skeletal pose + (root motion) transforms + Lua VM
+        // (anim notifies); reads the simple-anim / graph / blackboard components. Defined in the .cpp.
+        static FSystemAccess Access;
 
         static void Update(const FSystemContext& SystemContext) noexcept;
-
     };
 }

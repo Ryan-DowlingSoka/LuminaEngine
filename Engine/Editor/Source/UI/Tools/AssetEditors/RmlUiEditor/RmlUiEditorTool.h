@@ -67,6 +67,9 @@ namespace Lumina
 
         FString                     VirtualPath;
         FString                     ParentDir;
+
+        // Retargets VirtualPath when this file is renamed/moved, so a save writes the new file.
+        FDelegateHandle             FileRenamedHandle;
         // .rcss stylesheets are edited the same as .rml, but can't render on
         // their own -- the preview wraps them in a component specimen.
         bool                        bIsStylesheet = false;

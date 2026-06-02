@@ -6,7 +6,7 @@
 #include "Containers/Array.h"
 #include "Containers/String.h"
 #include "World/World.h"
-#include "Scripting/Lua/ScriptPath.h"
+#include "Assets/AssetRef.h"
 #include "EngineSettings.generated.h"
 
 namespace Lumina
@@ -18,9 +18,9 @@ namespace Lumina
         GENERATED_BODY()
     public:
 
-        /** Lua module loaded after the project DLL is loaded. */
-        PROPERTY(Editable, Category = "Scripting")
-        FScriptPath LuaModuleFile;
+        /** Lua module loaded after the project DLL is loaded. Rename-safe (GUID-backed). */
+        PROPERTY(Editable, Category = "Scripting", AssetType = "luau")
+        FAssetRef LuaModuleFile;
 
         /** Reflected CGameInstance subclass to instantiate at runtime. Empty = base CGameInstance. */
         PROPERTY(Editable, Category = "Scripting")

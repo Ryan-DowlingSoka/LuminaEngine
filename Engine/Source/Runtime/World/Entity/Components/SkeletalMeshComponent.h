@@ -45,14 +45,6 @@ namespace Lumina
         PROPERTY(Editable, Category = "Mesh")
         TObjectPtr<CSkeletalMesh> SkeletalMesh;
 
-        /** When true, this mesh writes to the shadow map. */
-        PROPERTY(Editable, Category = "Shadow")
-        bool bCastShadow = true;
-
-        /** When true, this mesh receives shadowing from shadow-casting lights. */
-        PROPERTY(Editable, Category = "Shadow")
-        bool bReceiveShadow = true;
-
         // Sized to the skeleton's bone count by the animation system (0 when unused). The render scene
         // uploads exactly this many matrices; FGPUInstance.BoneOffset references this instance's slice.
         TVector<FMatrix4> BoneTransforms;

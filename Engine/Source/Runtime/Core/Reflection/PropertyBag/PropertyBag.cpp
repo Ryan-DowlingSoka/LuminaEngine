@@ -108,20 +108,6 @@ namespace Lumina
         template<typename T>
         void DestructAt(void* Mem) { static_cast<T*>(Mem)->~T(); }
 
-        // Copy Object fields by assignment: CopyCompleteValue would memcpy the TObjectPtr and
-        // skip add/release, losing strong refs. Everything else goes through CopyCompleteValue.
-        void CopyBagValue(EBagPropertyType Type, FProperty* Property, void* Dst, const void* Src)
-        {
-            if (Type == EBagPropertyType::Object)
-            {
-                *static_cast<TObjectPtr<CObject>*>(Dst) = *static_cast<const TObjectPtr<CObject>*>(Src);
-            }
-            else
-            {
-                Property->CopyCompleteValue(Dst, Src);
-            }
-        }
-
         // Resolved field layout + lifetime; Construct/Destruct null for trivially-relocatable
         // types (buffer zeroed first), real for FString and heap-owning structs.
         using FValueLifecycleFn = void(*)(void*);
@@ -488,7 +474,7 @@ namespace Lumina
             {
                 if (FProperty* OldProp = OldLayout->GetProperty(Field.Name))
                 {
-                    CopyBagValue(Field.Type, NewProp, ValueBuffer + NewProp->Offset, OldBuffer + OldProp->Offset);
+                    NewProp->CopyCompleteValue(ValueBuffer + NewProp->Offset, OldBuffer + OldProp->Offset);
                     continue;
                 }
             }
@@ -500,7 +486,7 @@ namespace Lumina
                 {
                     if (DefProp->GetTypeName() == NewProp->GetTypeName())
                     {
-                        CopyBagValue(Field.Type, NewProp, ValueBuffer + NewProp->Offset, Defaults->ValueBuffer + DefProp->Offset);
+                        NewProp->CopyCompleteValue(ValueBuffer + NewProp->Offset, Defaults->ValueBuffer + DefProp->Offset);
                     }
                 }
             }
@@ -613,7 +599,7 @@ namespace Lumina
             FProperty* SrcProp = Other.Layout->GetProperty(Field.Name);
             if (DstProp != nullptr && SrcProp != nullptr)
             {
-                CopyBagValue(Field.Type, DstProp, ValueBuffer + DstProp->Offset, Other.ValueBuffer + SrcProp->Offset);
+                DstProp->CopyCompleteValue(ValueBuffer + DstProp->Offset, Other.ValueBuffer + SrcProp->Offset);
             }
         }
     }
@@ -672,7 +658,7 @@ namespace Lumina
         {
             if (FProperty* Property = Layout->GetProperty(Field.Name))
             {
-                CopyBagValue(Field.Type, Property,
+                Property->CopyCompleteValue(
                     static_cast<uint8*>(Dst) + Property->Offset,
                     static_cast<const uint8*>(Src) + Property->Offset);
             }
@@ -681,9 +667,11 @@ namespace Lumina
 
     void FPropertyBag::CopyFieldValue(EBagPropertyType Type, FProperty* Property, void* Dst, const void* Src)
     {
+        // Type is now redundant: FObjectProperty::CopyCompleteValue assigns through TObjectPtr.
+        (void)Type;
         if (Property != nullptr && Dst != nullptr && Src != nullptr)
         {
-            CopyBagValue(Type, Property, Dst, Src);
+            Property->CopyCompleteValue(Dst, Src);
         }
     }
 }

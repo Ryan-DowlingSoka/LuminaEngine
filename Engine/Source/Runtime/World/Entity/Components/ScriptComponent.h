@@ -3,7 +3,7 @@
 #include "Containers/Name.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Scripting/Lua/ScriptTypes.h"
-#include "Scripting/Lua/ScriptPath.h"
+#include "Assets/AssetRef.h"
 #include "Scripting/Lua/ScriptPropertyOverrides.h"
 #include "Memory/SmartPtr.h"
 #include "Core/UpdateStage.h"
@@ -24,9 +24,9 @@ namespace Lumina
     {
         GENERATED_BODY()
 
-        /** Path to the Luau script file to execute on this entity. */
-        PROPERTY(Editable)
-        FScriptPath ScriptPath;
+        /** Luau script to execute on this entity. Rename-safe (GUID-backed). */
+        PROPERTY(Editable, AssetType = "luau")
+        FAssetRef ScriptPath;
 
         /** Per-instance overrides for values declared in the script's `type Exports = {...}` alias. */
         PROPERTY(Editable)

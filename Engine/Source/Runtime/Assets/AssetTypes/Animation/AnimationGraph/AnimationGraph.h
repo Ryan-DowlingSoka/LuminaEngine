@@ -153,7 +153,7 @@ namespace Lumina
     };
 
     // Runtime anim-graph asset: compiled bytecode + referenced resources/metadata. Editor compiles a
-    // CAnimationGraphNodeGraph into this; SAnimationGraphSystem runs it each frame via FAnimationGraphVM.
+    // CAnimationGraphNodeGraph into this; SAnimationSystem runs it each frame via FAnimationGraphVM.
     REFLECT()
     class RUNTIME_API CAnimationGraph : public CObject
     {

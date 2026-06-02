@@ -444,7 +444,22 @@ namespace Lumina
     };
 
     static constexpr uint32 WIDGET_FLAG_BILLBOARD = 1u << 0;
-    
+
+    // One projected decal. Drawn as a unit cube; the decal pixel shader reconstructs the surface from
+    // depth, projects into decal-local space, and writes the DBuffer. Must match FGPUDecal in DecalCommon.slang.
+    struct alignas(16) FGPUDecal
+    {
+        FMatrix4    WorldToDecal;       // world -> decal-local ([-0.5,0.5]^3 inside the box)
+        FMatrix4    DecalToWorld;       // decal-local cube -> world (entity transform)
+        float       FadeAngleCos;       // cos(max angle) of surface normal vs decal forward; below => fades out
+        float       Opacity;            // master coverage multiplier
+        uint32      MaterialIndex;      // slot into the material uniform buffer
+        uint32      Flags;              // reserved
+    };
+
+    static_assert(sizeof(FGPUDecal) == 144, "FGPUDecal layout must match DecalCommon.slang");
+    VERIFY_SSBO_ALIGNMENT(FGPUDecal)
+
     struct alignas(16) FCluster
     {
         FVector4 MinPoint;
@@ -511,7 +526,8 @@ namespace Lumina
     };
     static_assert(sizeof(FPreSkinnedVertex) == 28, "FPreSkinnedVertex must match shader");
 
-    // One per skinned entity; drives the skinning compute dispatch (one workgroup each).
+    // One per rendered-LOD meshlet; drives the skinning compute dispatch (one workgroup each).
+    // Flattened from per-entity so every meshlet skins concurrently (no serial meshlet loop).
     struct FSkinDescriptor
     {
         uint64      MeshletHeaderAddress;   // FMeshletHeader* (BDA)
@@ -519,10 +535,8 @@ namespace Lumina
         // Combined base = (compacted slice base) - (vertex span start), so that
         // SkinnedVertexBase + M.VertexOffset lands in the compacted slice (uint wraps).
         uint32      SkinnedVertexBase;
-        // Only the meshlets of the rendered LODs (surface + shadow span) are skinned, not
-        // the whole mesh -- so distant entities at low LODs cost a fraction of the storage.
-        uint32      SkinMeshletStart;
-        uint32      SkinMeshletCount;
+        uint32      MeshletIndex;           // index into Header.Meshlets (one descriptor per meshlet)
+        uint32      Pad;
     };
     static_assert(sizeof(FSkinDescriptor) == 24, "FSkinDescriptor must match shader");
 

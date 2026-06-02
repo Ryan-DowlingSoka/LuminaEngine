@@ -80,6 +80,9 @@ namespace Lumina
 
         FSharedRenderResources              SharedRenderResources;
 
+        // Reused each frame so its FUploadManager transient chunk pool persists and recycles.
+        FRHICommandListRef                  FrameCommandList;
+
         uint8                               CurrentFrameIndex = 0;
     };
 

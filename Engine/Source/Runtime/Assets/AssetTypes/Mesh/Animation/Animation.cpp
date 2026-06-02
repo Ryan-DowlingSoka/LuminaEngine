@@ -312,4 +312,34 @@ namespace Lumina
             OutPose.Scales[i]       = S;
         }
     }
+
+    void CAnimation::SampleBoneLocal(float Time, FSkeletonResource* RESTRICT InSkeleton, int32 BoneIndex,
+                                     FVector3& OutT, FQuat& OutR, FVector3& OutS) const
+    {
+        Detail::FastDecomposeTRS(InSkeleton->GetBone(BoneIndex).LocalTransform, OutT, OutR, OutS);
+
+        const FName& BoneName = InSkeleton->GetBone(BoneIndex).Name;
+        for (const FAnimationChannel& Channel : AnimationResource->Channels)
+        {
+            if (Channel.TargetBone != BoneName)
+            {
+                continue;
+            }
+
+            switch (Channel.TargetPath)
+            {
+            case FAnimationChannel::ETargetPath::Translation:
+                OutT = Detail::SampleVec3(Channel.Timestamps, Channel.Translations, Time);
+                break;
+            case FAnimationChannel::ETargetPath::Rotation:
+                OutR = Detail::SampleQuat(Channel.Timestamps, Channel.Rotations, Time);
+                break;
+            case FAnimationChannel::ETargetPath::Scale:
+                OutS = Detail::SampleVec3(Channel.Timestamps, Channel.Scales, Time);
+                break;
+            default:
+                break;
+            }
+        }
+    }
 }

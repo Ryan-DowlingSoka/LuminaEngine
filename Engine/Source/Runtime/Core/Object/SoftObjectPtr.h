@@ -117,7 +117,10 @@ namespace Lumina
             static_assert(eastl::is_base_of_v<CObject, T>, "TSoftObjectPtr<T>: T must derive from CObject");
             Inner.LoadAsync([Callback](CObject* Obj)
             {
-                if (Callback) Callback(static_cast<T*>(Obj));
+                if (Callback)
+                {
+                    Callback(static_cast<T*>(Obj));
+                }
             });
         }
 

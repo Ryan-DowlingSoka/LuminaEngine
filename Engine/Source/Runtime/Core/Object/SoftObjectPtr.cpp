@@ -40,7 +40,7 @@ namespace Lumina
         }
 
         // Serialize the GUID write so concurrent first-resolvers can't tear the 16-byte FGuid.
-        std::lock_guard<std::mutex> Lock(ResolveMutex());
+        std::scoped_lock Lock(ResolveMutex());
         if (!CachedGUID.IsValid())
         {
             CachedGUID = Data->AssetGUID;
@@ -56,25 +56,33 @@ namespace Lumina
         }
         // Soft paths are FString (deep package paths); narrow to FFixedString here,
         // the load rejects oversize paths via its own bounds check.
-        return FAssetManager::Get().LoadAssetSynchronous(
-            FFixedString(Path.c_str(), Path.size()), CachedGUID);
+        return FAssetManager::Get().LoadAssetSynchronous(FFixedString(Path.c_str(), Path.size()), CachedGUID);
     }
 
     void FSoftObjectPath::LoadAsync(const TFunction<void(CObject*)>& Callback) const
     {
         if (!TryResolve())
         {
-            if (Callback) Callback(nullptr);
+            if (Callback)
+            {
+                Callback(nullptr);
+            }
             return;
         }
         FAssetHandle Handle = FAssetManager::Get().LoadAssetAsync(
             FFixedString(Path.c_str(), Path.size()), CachedGUID);
         if (!Handle.IsValid())
         {
-            if (Callback) Callback(nullptr);
+            if (Callback)
+            {
+                Callback(nullptr);
+            }
             return;
         }
-        if (Callback) Handle.Then([Callback](CObject*& Obj) { Callback(Obj); });
+        if (Callback)
+        {
+            Handle.Then([Callback](CObject*& Obj) { Callback(Obj); });
+        }
     }
 
     FArchive& operator<<(FArchive& Ar, FSoftObjectPath& Self)
@@ -83,7 +91,7 @@ namespace Lumina
         // it into the ImportTable as a Soft edge for the cook graph.
         if (Ar.IsWriting() && !Self.Path.empty() && !Self.CachedGUID.IsValid())
         {
-            Self.TryResolve();
+            (void)Self.TryResolve();
         }
 
         Ar << Self.Path;

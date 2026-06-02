@@ -18,6 +18,10 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Assign through TObjectPtr; a raw memcpy (base impl) would skip the strong-ref
+        // add/release and corrupt the refcount (crash on a later release).
+        RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
+
         RUNTIME_API CClass* GetPropertyClass() const { return ObjectClass; }
         
     private:

@@ -23,6 +23,12 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Storage holds an FString; a raw memcpy (base impl) would share the heap buffer between
+        // Dst and Src (double-free), and a byte memcmp would compare heap pointers + CachedGUID
+        // instead of the path. Route through FSoftObjectPath's assignment / path-only equality.
+        RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
+        RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
+
         RUNTIME_API CClass* GetPropertyClass() const { return ObjectClass; }
 
     private:

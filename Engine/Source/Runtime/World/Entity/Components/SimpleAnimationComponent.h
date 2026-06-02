@@ -1,4 +1,6 @@
 #pragma once
+#include "Animation/RootMotion.h"
+#include "Animation/RootMotionTypes.h"
 #include "Containers/Array.h"
 #include "Containers/Name.h"
 #include "Core/Object/ObjectMacros.h"
@@ -46,6 +48,14 @@ namespace Lumina
         PROPERTY(Script, Editable, Category = "Animation")
         bool bPlaying = true;
 
+        /** Overrides the active animation asset's root-motion lock for this entity (see ERootMotionLockMode). */
+        PROPERTY(Script, Editable, Category = "Animation")
+        ERootMotionLockMode RootMotionLock = ERootMotionLockMode::FromAsset;
+
+        // Root-motion delta extracted this frame in the parallel pass; applied to the entity transform
+        // in the serial pass (transform writes mutate the registry and aren't ParallelFor-safe). Transient.
+        FRootMotionDelta PendingRootMotion;
+
         /**
          * Set by the animation system the frame after a non-looping animation
          * completes. Stays true until the next PlayAnimation() call. Lets game
@@ -59,7 +69,7 @@ namespace Lumina
         bool bDirty = true;
 
         // AnimNotify runtime state (transient): mirrors the cached-FRef pattern on SScriptComponent --
-        // gameplay binds Lua callbacks by notify name; SSimpleAnimationSystem fires them on playhead crossings.
+        // gameplay binds Lua callbacks by notify name; SAnimationSystem fires them on playhead crossings.
 
         // CurrentTime before this frame's advance, used to detect playhead crossings.
         float PreviousTime = 0.0f;

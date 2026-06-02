@@ -45,7 +45,7 @@ namespace Lumina
 
 		{
 			auto ListenerView = SystemContext.CreateView<SAudioListenerComponent>();
-			ListenerView.each([&](FEntity Entity, const SAudioListenerComponent&)
+			ListenerView.each([&](FEntity Entity)
 			{
 				const STransformComponent& Transform = XFormStorage.get(Entity);
 				GAudioContext->UpdateListenerPosition(Transform.GetWorldLocation(), Transform.GetWorldRotation());

@@ -58,20 +58,40 @@ namespace Lumina
 
     void FRHIResourceList::Track(IRHIResource* Resource)
     {
-        FRecursiveScopeLock Lock(Mutex);
-        ResourceList.emplace(Resource);
+        FShard& Shard = Shards[ShardIndex(Resource)];
+        bool bInserted;
+        {
+            FScopeLock Lock(Shard.Mutex);
+            bInserted = Shard.Set.insert(Resource).second;
+        }
+        if (bInserted)
+        {
+            LiveCount.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     void FRHIResourceList::Untrack(IRHIResource* Resource)
     {
-        FRecursiveScopeLock Lock(Mutex);
-        ResourceList.erase(Resource);
+        FShard& Shard = Shards[ShardIndex(Resource)];
+        size_t Removed;
+        {
+            FScopeLock Lock(Shard.Mutex);
+            Removed = Shard.Set.erase(Resource);
+        }
+        if (Removed != 0)
+        {
+            LiveCount.fetch_sub(1, std::memory_order_relaxed);
+        }
     }
 
     void FRHIResourceList::Clear()
     {
-        FRecursiveScopeLock Lock(Mutex);
-        ResourceList.clear();
+        for (FShard& Shard : Shards)
+        {
+            FScopeLock Lock(Shard.Mutex);
+            Shard.Set.clear();
+        }
+        LiveCount.store(0, std::memory_order_relaxed);
     }
 
     FRHIResourceList& FRHIResourceList::Get()
@@ -102,24 +122,33 @@ namespace Lumina
 
     void IRHIResource::ReleaseAllRHIResources()
     {
-        FRecursiveScopeLock Lock(FRHIResourceList::Get().Mutex);
+        FRHIResourceList& List = FRHIResourceList::Get();
 
         TVector<IRHIResource*> ResourcesSnapshot;
+        const int64 Live = List.LiveCount.load(std::memory_order_relaxed);
+        if (Live > 0)
+        {
+            ResourcesSnapshot.reserve((size_t)Live);
+        }
 
-        ResourcesSnapshot.assign(FRHIResourceList::Get().ResourceList.begin(), FRHIResourceList::Get().ResourceList.end());
+        for (FRHIResourceList::FShard& Shard : List.Shards)
+        {
+            FScopeLock Lock(Shard.Mutex);
+            ResourcesSnapshot.insert(ResourcesSnapshot.end(), Shard.Set.begin(), Shard.Set.end());
+        }
 
+        // No shard lock held: each ~IRHIResource re-enters Untrack and locks its own shard.
         for (IRHIResource* Resource : ResourcesSnapshot)
         {
             Memory::Delete(Resource);
         }
 
-        ASSERT(FRHIResourceList::Get().ResourceList.empty());
+        ASSERT(List.LiveCount.load(std::memory_order_relaxed) == 0);
     }
-    
+
     uint32 IRHIResource::GetNumberRHIResources()
     {
-        FRecursiveScopeLock Lock(FRHIResourceList::Get().Mutex);
-        return (uint32)FRHIResourceList::Get().ResourceList.size();
+        return (uint32)FRHIResourceList::Get().LiveCount.load(std::memory_order_relaxed);
     }
 
     const char* GetRHIResourceTypeName(ERHIResourceType Type)
@@ -315,35 +344,35 @@ namespace Lumina
         RenderTarget = RenderContext->CreateImage(Desc);
     }
 
-    FTextureSlice FTextureSlice::Resolve(const FRHIImageDesc& desc) const
+    FTextureSlice FTextureSlice::Resolve(const FRHIImageDesc& Desc) const
     {
-        FTextureSlice ret(*this);
+        FTextureSlice Ret(*this);
 
-        assert(MipLevel < desc.NumMips);
+        ASSERT(MipLevel < Desc.NumMips);
 
-        if (X == uint32(0))
+        if (X == static_cast<uint32>(0))
         {
-            ret.X = std::max((uint32)desc.Extent.x >> MipLevel, 1u);
+            Ret.X = Math::Max((uint32)Desc.Extent.x >> MipLevel, 1u);
         }
 
-        if (Y == uint32(0))
+        if (Y == static_cast<uint32>(0))
         {
-            ret.Y = std::max((uint32)desc.Extent.y >> MipLevel, 1u);
+            Ret.Y = Math::Max((uint32)Desc.Extent.y >> MipLevel, 1u);
         }
 
-        if (Z == uint32(0))
+        if (Z == static_cast<uint32>(0))
         {
-            if (desc.Dimension == EImageDimension::Texture3D)
+            if (Desc.Dimension == EImageDimension::Texture3D)
             {
-                ret.Z = std::max((uint32)desc.Depth >> MipLevel, 1u);
+                Ret.Z = Math::Max((uint32)Desc.Depth >> MipLevel, 1u);
             }
             else
             {
-                ret.Z = 1;
+                Ret.Z = 1;
             }
         }
 
-        return ret;
+        return Ret;
     }
 
     FTextureSubresourceSet FTextureSubresourceSet::Resolve(const FRHIImageDesc& Desc, bool bSingleMipLevel) const

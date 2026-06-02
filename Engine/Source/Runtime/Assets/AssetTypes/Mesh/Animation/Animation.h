@@ -125,6 +125,10 @@ namespace Lumina
         /** Samples the clip into a local-space TRS pose; bones without channels keep their bind-pose local transform. */
         void SampleLocalPose(float Time, FSkeletonResource* RESTRICT InSkeleton, FPose& RESTRICT OutPose) const;
 
+        /** Samples a single bone's local TRS at Time, falling back to its bind-pose value for untouched channels. */
+        void SampleBoneLocal(float Time, FSkeletonResource* RESTRICT InSkeleton, int32 BoneIndex,
+                             FVector3& OutT, FQuat& OutR, FVector3& OutS) const;
+
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }
 
@@ -134,7 +138,22 @@ namespace Lumina
 
         PROPERTY(Editable, Category = "Skeleton")
         TObjectPtr<CSkeleton> Skeleton;
-        
+
+        /**
+         * Extract the root bone's motion each frame and use it to drive the owning entity's transform; the
+         * root is stripped from the in-place pose so the mesh stays centered. Ignored when the root is locked.
+         */
+        PROPERTY(Editable, Category = "Root Motion")
+        bool bEnableRootMotion = false;
+
+        /** Pin the root bone to its bind pose so the mesh never drifts (in-place). Wins over bEnableRootMotion. */
+        PROPERTY(Editable, Category = "Root Motion")
+        bool bLockRootMotion = false;
+
+        /** Bone driving root motion; empty resolves to the first root bone (ParentIndex < 0). */
+        PROPERTY(Editable, Category = "Root Motion")
+        FName RootBoneName;
+
     private:
         
         TUniquePtr<FAnimationResource> AnimationResource;

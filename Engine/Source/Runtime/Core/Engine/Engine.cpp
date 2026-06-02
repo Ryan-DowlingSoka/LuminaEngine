@@ -660,8 +660,8 @@ namespace Lumina
 
         FAssetRegistry::Get().RunInitialDiscovery();
 
-        const FString& ModuleFile = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
-        LoadProjectScript(ModuleFile);
+        const FStringView ModuleView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
+        LoadProjectScript(FString(ModuleView.data(), ModuleView.size()));
 
         // Must run after GConfig->LoadPath but before any OnReady script body.
         FInputActionMap::Get().LoadFromConfig();
@@ -981,10 +981,10 @@ namespace Lumina
             LOG_DISPLAY("FEngine::LoadCookedRuntime: asset discovery complete.");
         }
 
-        const FString& ScriptPath = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
-        if (!ScriptPath.empty())
+        const FStringView ScriptView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
+        if (!ScriptView.empty())
         {
-            LoadProjectScript(ScriptPath);
+            LoadProjectScript(FString(ScriptView.data(), ScriptView.size()));
         }
 
         FInputActionMap::Get().LoadFromConfig();

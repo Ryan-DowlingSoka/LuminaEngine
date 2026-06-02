@@ -1990,31 +1990,6 @@ namespace Lumina
         ImGui::PopStyleVar();
     }
 
-    void FSceneEditorTool::DrawSharedAddComponentPopup(entt::entity Entity)
-    {
-        if (ImGui::BeginPopup("##AddComponentPopup"))
-        {
-            ImGui::SetNextItemWidth(300.0f);
-            AddComponentFilter.Draw(LE_ICON_BRIEFCASE_SEARCH " Search Components...", 300.0f);
-
-            const float ChildHeight = ImGui::GetTextLineHeightWithSpacing() * 14.0f;
-            if (ImGui::BeginChild("##AddCompList", ImVec2(0, ChildHeight), true))
-            {
-                entt::meta_type       PickedMetaType;
-                CStruct*              PickedStruct = nullptr;
-                CEntityComponentType* PickedRuntime = nullptr;
-                if (DrawAddableComponentList(AddComponentFilter, PickedMetaType, PickedStruct, PickedRuntime))
-                {
-                    ApplyAddComponentToTargets(GetComponentEditTargets(Entity), PickedMetaType, PickedRuntime);
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::EndPopup();
-        }
-    }
-
     void FSceneEditorTool::DrawEntityProperties(entt::entity Entity)
     {
         const bool bMultiSelect = SelectedEntities.size() > 1 && IsEntitySelected(Entity);
@@ -2076,10 +2051,10 @@ namespace Lumina
 
             if (ImGui::Button(LE_ICON_PLUS, ActionSize))
             {
-                AddComponentFilter.Clear();
-                ImGui::OpenPopup("##AddComponentPopup");
+                AddEntityComponentFilter.Clear();
+                ImGui::OpenPopup("AddToEntityMenu");
             }
-            DrawSharedAddComponentPopup(Entity);
+            DrawAddToEntityOrWorldPopup(Entity);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             {
                 ImGui::SetTooltip("Add Component");

@@ -1,6 +1,7 @@
 #include "RmlUiEditorTool.h"
 
 #include "Config/Config.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/ObjectCore.h"
 #include "Settings/EditorSettings.h"
 #include "FileSystem/FileSystem.h"
@@ -418,6 +419,18 @@ namespace Lumina
         CodeEditor.SetPostRenderCallback([this] { DrawInlineColorSwatches(); });
         LoadFromDisk();
 
+        // Retarget our path when the file is renamed/moved so a later save hits the new file.
+        FileRenamedHandle = FCoreDelegates::OnContentFileRenamed.AddLambda([this](FStringView Old, FStringView New)
+        {
+            if (Old != FStringView(VirtualPath.c_str(), VirtualPath.size()))
+            {
+                return;
+            }
+            VirtualPath.assign(New.data(), New.size());
+            const FStringView ParentView = VFS::Parent(New, true);
+            ParentDir.assign(ParentView.data(), ParentView.size());
+        });
+
         char NameBuf[96];
         std::snprintf(NameBuf, sizeof(NameBuf), "rml_editor_%p", static_cast<void*>(this));
 
@@ -497,6 +510,7 @@ namespace Lumina
 
     void FRmlUiEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
+        FCoreDelegates::OnContentFileRenamed.Remove(FileRenamedHandle);
         FileWatcher.Stop();
         TearDownPreview();
     }

@@ -5,6 +5,7 @@
 #include "Tools/Import/ImportHelpers.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/CharacterComponent.h"
+#include "World/Entity/Components/DecalComponent.h"
 #include "world/entity/components/lightcomponent.h"
 #include "world/entity/components/physicscomponent.h"
 #include "World/Entity/Components/TransformComponent.h"
@@ -249,5 +250,27 @@ namespace Lumina
         // Reverse-Z Vulkan NDC: near plane is z=1, far plane is z=0.
         PDI->DrawFrustum(Volume.GetViewProjectionMatrix(), 1.0f, 0.0f, FColor::White, 4.0f);
         PDI->DrawArrow(Location, Forward, 3.5f, FColor::Green, 4.0f);
+    }
+
+    CStruct* CComponentVisualizer_Decal::GetSupportedComponentType() const
+    {
+        return SDecalComponent::StaticStruct();
+    }
+
+    void CComponentVisualizer_Decal::Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity)
+    {
+        const SDecalComponent& Decal         = Registry.get<SDecalComponent>(Entity);
+        const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
+
+        const FVector3 Location  = Transform.GetWorldLocationCached();
+        const FQuat    Rotation  = Transform.GetWorldRotationCached();
+        const FVector3 HalfExtent = Decal.Size * 0.5f * Transform.GetWorldScaleCached();
+
+        // Projection volume + the -Z axis the material projects along.
+        const FVector4 BoxColor(1.0f, 0.2f, 0.8f, 1.0f);
+        PDI->DrawBox(Location, HalfExtent, Rotation, BoxColor, 2.5f, true, 0.0f);
+
+        const FVector3 ProjectDir = Rotation * FVector3(0.0f, 0.0f, -1.0f);
+        PDI->DrawArrow(Location, ProjectDir, HalfExtent.z, FVector4(1.0f, 0.85f, 0.2f, 1.0f), 3.0f);
     }
 }

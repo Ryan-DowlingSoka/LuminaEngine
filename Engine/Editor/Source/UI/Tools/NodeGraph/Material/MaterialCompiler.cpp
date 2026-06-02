@@ -93,10 +93,12 @@ namespace Lumina
 		const bool bIsTerrain     = (MaterialType == EMaterialType::Terrain);
 		const bool bIsPostProcess = (MaterialType == EMaterialType::PostProcess);
 		const bool bIsUI          = (MaterialType == EMaterialType::UI);
+		const bool bIsDecal       = (MaterialType == EMaterialType::Decal);
 		const FString PixelPath  = bIsPostProcess ? (BasePath + "PostProcessPixelPass.slang")
 		                                          : (bIsUI ? BasePath + "UIPixelPass.slang"
+		                                                   : (bIsDecal ? BasePath + "DecalPixelPass.slang"
 		                                                   : (bIsTerrain ? BasePath + "TerrainBasePixelPass.slang"
-		                                                                 : BasePath + "BasePixelPass.slang"));
+		                                                                 : BasePath + "BasePixelPass.slang")));
 
 		// Pixel: output node declares FMaterialPixelInputs Material; only append body + assignments.
 		OutPixelShader.clear();
@@ -117,6 +119,18 @@ namespace Lumina
 			if (!FileHelper::LoadFileIntoString(OutVertexShader, FullscreenQuadPath))
 			{
 				LOG_ERROR("Failed to find {}!", FullscreenQuadPath);
+			}
+			return;
+		}
+
+		// Decal: fixed unit-cube vertex stage; the box is projected onto scene depth in the pixel stage, so no WPO.
+		if (bIsDecal)
+		{
+			OutVertexShader.clear();
+			const FString DecalVertexPath = BasePath + "DecalVertexPass.slang";
+			if (!FileHelper::LoadFileIntoString(OutVertexShader, DecalVertexPath))
+			{
+				LOG_ERROR("Failed to find {}!", DecalVertexPath);
 			}
 			return;
 		}

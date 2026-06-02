@@ -58,6 +58,10 @@ namespace Lumina
         // teardown would otherwise run after GRenderContext is deleted below.
         SharedRenderResources.Reset();
 
+        // Same: release the reused frame command list (and its upload chunks) before
+        // GRenderContext->Deinitialize() force-releases every tracked RHI resource.
+        FrameCommandList.SafeRelease();
+
         FGPUProfiler::Get().Shutdown();
 
         GRenderContext->Deinitialize();
@@ -124,9 +128,12 @@ namespace Lumina
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
             
-            FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-            CmdList->Open();
-            ICommandList& CL = *CmdList;
+            if (!FrameCommandList)
+            {
+                FrameCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            }
+            FrameCommandList->Open();
+            ICommandList& CL = *FrameCommandList;
 
             {
                 GPU_PROFILE_SCOPE_COLOR(&CL, "World Render", FColor(0.20f, 0.55f, 0.90f));

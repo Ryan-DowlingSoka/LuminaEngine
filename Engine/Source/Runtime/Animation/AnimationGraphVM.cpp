@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "AnimationGraphVM.h"
 
+#include "Animation/RootMotion.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Memory/Memcpy.h"
@@ -118,7 +119,7 @@ namespace Lumina
         State.bInitialized = true;
     }
 
-    void FAnimationGraphVM::Execute(const CAnimationGraph* Graph, FSkeletonResource* Skeleton, float DeltaTime, FAnimGraphVMState& State, TVector<FMatrix4>& OutMatrices)
+    void FAnimationGraphVM::Execute(const CAnimationGraph* Graph, FSkeletonResource* Skeleton, float DeltaTime, FAnimGraphVMState& State, TVector<FMatrix4>& OutMatrices, bool bLockRoot, int32 RootBoneIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -552,6 +553,10 @@ namespace Lumina
                 const uint16 Src = Reader.Read<uint16>();
                 if (Src < NumPose && State.PoseRegisters[Src].IsValid())
                 {
+                    if (bLockRoot && RootBoneIndex != INDEX_NONE)
+                    {
+                        RootMotion::PinRootToBindPose(State.PoseRegisters[Src], Skeleton, RootBoneIndex);
+                    }
                     AnimPose::ToSkinningMatrices(State.PoseRegisters[Src], Skeleton, OutMatrices);
                     bOutputWritten = true;
                 }

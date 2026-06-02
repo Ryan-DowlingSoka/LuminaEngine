@@ -61,7 +61,5 @@ namespace Lumina
 	struct RUNTIME_API SAudioListenerComponent
 	{
 		GENERATED_BODY()
-
-		uint8 Foobar;
 	};
 }

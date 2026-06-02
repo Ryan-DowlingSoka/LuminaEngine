@@ -396,7 +396,7 @@ namespace Lumina
                     const FString NewPath(DroppedPath.c_str(), DroppedPath.size());
                     PendingMutation = [ScriptComponent, NewPath]
                     {
-                        ScriptComponent->ScriptPath.Path = NewPath;
+                        ScriptComponent->ScriptPath.SetPath(NewPath);
                         if (ScriptComponent->World)
                         {
                             ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
@@ -450,7 +450,7 @@ namespace Lumina
                             const FString NewPath(VirtualPath.c_str(), VirtualPath.size());
                             PendingMutation = [ScriptComponent, NewPath]
                             {
-                                ScriptComponent->ScriptPath.Path = NewPath;
+                                ScriptComponent->ScriptPath.SetPath(NewPath);
                                 if (ScriptComponent->World)
                                 {
                                     ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);

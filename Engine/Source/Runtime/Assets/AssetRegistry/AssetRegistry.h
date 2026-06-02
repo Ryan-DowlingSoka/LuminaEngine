@@ -1,9 +1,11 @@
 #pragma once
 
 #include "AssetData.h"
+#include "TextAssetTypes.h"
 #include "Core/Delegates/Delegate.h"
 #include "Core/Threading/Thread.h"
 #include "Memory/SmartPtr.h"
+#include "GUID/GUID.h"
 
 
 DECLARE_MULTICAST_DELEGATE(FAssetRegistryUpdatedDelegate);
@@ -50,6 +52,33 @@ namespace Lumina
 
 	using FAssetDataMap = THashSet<TUniquePtr<FAssetData>, FAssetDataPtrHash, FAssetDataPtrEqual>;
 
+	// Lightweight identity record for a loose text asset (.luau/.rml/.rcss). Lives in a map entirely
+	// separate from FAssetData / the .lasset cook dependency graph. GUID sourced from the file's sidecar.
+	struct FTextAssetData
+	{
+		FGuid          Guid;
+		FFixedString   Path;
+		FName          Name;
+		ETextAssetKind Kind          = ETextAssetKind::None;
+		FName          OwningPlugin;
+		int64          SourceMTimeNs = 0;
+	};
+
+	struct FTextAssetPtrHash
+	{
+		size_t operator()(const TUniquePtr<FTextAssetData>& A) const noexcept { return Hash::GetHash(A->Guid); }
+	};
+	struct FTextAssetPtrEqual
+	{
+		bool operator()(const TUniquePtr<FTextAssetData>& A, const TUniquePtr<FTextAssetData>& B) const noexcept { return A->Guid == B->Guid; }
+	};
+	struct FTextAssetGuidEqual
+	{
+		bool operator()(const TUniquePtr<FTextAssetData>& A, const FGuid& G) const noexcept { return A->Guid == G; }
+	};
+
+	using FTextAssetMap = THashSet<TUniquePtr<FTextAssetData>, FTextAssetPtrHash, FTextAssetPtrEqual>;
+
 
 	class RUNTIME_API FAssetRegistry final
 	{
@@ -70,6 +99,27 @@ namespace Lumina
 		FAssetData* GetAssetByGUID(const FGuid& GUID) const;
 		FAssetData* GetAssetByPath(FStringView Path) const;
 		TVector<FAssetData*> FindByPredicate(const TFunction<bool(const FAssetData&)>& Predicate);
+
+		// --- Text assets (.luau/.rml/.rcss): GUID identity sourced from hidden .lmeta sidecars. ---
+
+		// Editor-only: walk content roots, read-or-mint a sidecar GUID per text file, rebuild the map.
+		// Not called in cooked runtime (the shipped registry already carries the table).
+		void RunTextAssetDiscovery();
+
+		// Resolve/mint a single text asset (used on create + first-touch). Returns its stable GUID.
+		FGuid EnsureTextAsset(FStringView Path);
+
+		FTextAssetData* GetTextAssetByGUID(const FGuid& GUID) const;
+		FTextAssetData* GetTextAssetByPath(FStringView Path) const;
+		TVector<FTextAssetData*> GetTextAssetsOfKind(ETextAssetKind Kind) const;
+
+		void TextAssetCreated(FStringView Path);
+		void TextAssetRenamed(FStringView OldPath, FStringView NewPath);
+		void TextAssetDeleted(FStringView Path);
+		// Remap every tracked text file under OldDir to NewDir after a folder move/rename.
+		void TextAssetFolderRenamed(FStringView OldDir, FStringView NewDir);
+
+		const FTextAssetMap& GetTextAssets() const { return TextAssets; }
 
 		// Every asset listing GUID in its Dependencies; O(1) avg via a reverse map built lazily after change.
 		TVector<FAssetData*> GetReferencersOf(const FGuid& GUID) const;
@@ -114,6 +164,9 @@ namespace Lumina
 
 		mutable FSharedMutex			AssetsMutex;
 		FAssetDataMap 					Assets;
+
+		mutable FSharedMutex			TextAssetsMutex;
+		FTextAssetMap					TextAssets;
 
 		mutable FSharedMutex			FailedAssetsMutex;
 		TVector<FString>				FailedAssets;

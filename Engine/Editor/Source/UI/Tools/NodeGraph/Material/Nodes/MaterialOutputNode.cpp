@@ -35,20 +35,23 @@ namespace Lumina
 
         const bool bPostProcess = MaterialType == EMaterialType::PostProcess;
         const bool bUI          = MaterialType == EMaterialType::UI;
+        const bool bDecal       = MaterialType == EMaterialType::Decal;
 
         // PostProcess/UI: surface attributes inert, WPO meaningless; UI keeps Opacity (brush alpha), PostProcess does not.
         const bool bFullscreen = bPostProcess || bUI;
+        // Decal writes BaseColor/Normal/Roughness/Metallic/AO into the DBuffer; Opacity is its coverage.
+        // No DBuffer slot for Specular, and WPO/Emissive don't apply to a projected decal (v1).
         if (BaseColorPin)            BaseColorPin->SetDisabled(bFullscreen);
         if (MetallicPin)             MetallicPin->SetDisabled(bFullscreen);
         if (RoughnessPin)            RoughnessPin->SetDisabled(bFullscreen);
-        if (SpecularPin)             SpecularPin->SetDisabled(bFullscreen);
+        if (SpecularPin)             SpecularPin->SetDisabled(bFullscreen || bDecal);
         if (AOPin)                   AOPin->SetDisabled(bFullscreen);
         if (NormalPin)               NormalPin->SetDisabled(bFullscreen);
         if (OpacityPin)              OpacityPin->SetDisabled(bPostProcess);
-        if (WorldPositionOffsetPin)  WorldPositionOffsetPin->SetDisabled(bFullscreen);
+        if (WorldPositionOffsetPin)  WorldPositionOffsetPin->SetDisabled(bFullscreen || bDecal);
 
-        // Emissive is the fullscreen output color; always enabled.
-        if (EmissivePin)             EmissivePin->SetDisabled(false);
+        // Emissive is the fullscreen output color (PostProcess/UI); decals have no emissive DBuffer slot in v1.
+        if (EmissivePin)             EmissivePin->SetDisabled(bDecal);
 
         Super::DrawNodeTitleBar();
     }

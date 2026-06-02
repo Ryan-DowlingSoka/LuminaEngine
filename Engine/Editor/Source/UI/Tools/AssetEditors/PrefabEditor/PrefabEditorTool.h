@@ -101,8 +101,7 @@ namespace Lumina
     private:
 
         // Component property tables + the Scene Graph panel/engine (OutlinerListView/OutlinerContext/
-        // EntityToTreeNode/EntityFilterState), EntityDestroyRequests, and AddComponentFilter now live
-        // in FSceneEditorTool.
+        // EntityToTreeNode/EntityFilterState) and EntityDestroyRequests now live in FSceneEditorTool.
 
         // Track when a prefab-owning entity is destroyed mid-frame so we can mark the package
         // dirty exactly once even when several entities go down in the same batch.

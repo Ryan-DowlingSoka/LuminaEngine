@@ -13,6 +13,9 @@ namespace Lumina
     {
         bool bGenerateReflectionData = true;
         TVector<FString> MacroDefinitions;
+        // Human-readable name for this shader: used as the Slang source path (so crash dumps / Aftermath
+        // map to "<DebugName>.slang:line" instead of the generic "RawShader") and the registered debug name.
+        FString DebugName = "RawShader";
     };
     
     

@@ -72,6 +72,7 @@
 #include "Properties/Customizations/CustomPrimitiveDataCustomization.h"
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleParameterCustomization.h"
 #include "Properties/Customizations/ScriptComponentCustomization.h"
+#include "Properties/Customizations/AssetRefPropertyCustomization.h"
 #include "Renderer/CustomPrimitiveData.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderDocImpl.h"
@@ -426,7 +427,12 @@ namespace Lumina
         });
         PropertyCustomizationRegistry->RegisterPropertyCustomization(SScriptComponent::StaticStruct()->GetName(), []
         {
-           return FScriptComponentPropertyCustomization::MakeInstance(); 
+           return FScriptComponentPropertyCustomization::MakeInstance();
+        });
+
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(FAssetRef::StaticStruct()->GetName(), []
+        {
+           return FAssetRefPropertyCustomization::MakeInstance();
         });
         
         PropertyCustomizationRegistry->RegisterPropertyCustomization(SCustomPrimitiveData::StaticStruct()->GetName(), []
@@ -2025,8 +2031,8 @@ namespace Lumina
         {
             if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Reload Project Module"))
             {
-                const FString& ModuleFile = GetDefault<CProjectSettings>()->LuaModuleFile.Path;
-                GEngine->LoadProjectScript(ModuleFile);
+                const FStringView ModuleView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
+                GEngine->LoadProjectScript(FString(ModuleView.data(), ModuleView.size()));
             }
         }
 

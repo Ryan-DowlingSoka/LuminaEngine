@@ -3,6 +3,7 @@
 #include "Core/Math/Math.h"
 #include "Containers/String.h"
 #include "Core/Object/ObjectMacros.h"
+#include "Assets/AssetRef.h"
 #include "Renderer/RenderResource.h"
 #include "WidgetComponent.generated.h"
 
@@ -44,9 +45,9 @@ namespace Lumina
     {
         GENERATED_BODY()
 
-        /** RML document to display, e.g. "/Game/UI/MyWidget.rml". Empty = nothing drawn. */
-        PROPERTY(Editable, Category = "Widget")
-        FString DocumentPath;
+        /** RML document to display, e.g. "/Game/UI/MyWidget.rml". Empty = nothing drawn. Rename-safe. */
+        PROPERTY(Editable, Category = "Widget", AssetType = "rml")
+        FAssetRef DocumentPath;
 
         /** Offscreen render-target resolution the document is laid out at (pixels). */
         PROPERTY(Editable, Category = "Widget")

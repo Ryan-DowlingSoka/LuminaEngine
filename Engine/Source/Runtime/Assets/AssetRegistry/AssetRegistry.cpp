@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "AssetRegistry.h"
 
+#include "TextAssetSidecar.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Core/Math/Hash/Hash.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Plugin/Plugin.h"
@@ -20,7 +22,9 @@ namespace Lumina
 {
     // Tag both the on-disk .assetdb cache AND the cooked-runtime registry
     // blob bundled into the PAK. Same wire format both directions.
-    static constexpr uint32 kAssetRegistryCacheTag     = 0xA55E1DB1; // 'AssetIDB1'
+    // v2 appends the text-asset (.luau/.rml/.rcss) identity table; bumping the
+    // tag invalidates pre-text caches/PAKs so they rebuild cleanly.
+    static constexpr uint32 kAssetRegistryCacheTag     = 0xA55E1DB2; // 'AssetIDB2'
 
     FAssetRegistry& FAssetRegistry::Get()
     {
@@ -140,6 +144,10 @@ namespace Lumina
         LastDiscoveryWalkedRoots  = WalkedRoots;
         LastDiscoveryVisitedPaths = PackagePaths;
         eastl::sort(LastDiscoveryVisitedPaths.begin(), LastDiscoveryVisitedPaths.end());
+
+        // Text assets (.luau/.rml/.rcss) are rebuilt synchronously from their durable sidecars; cheap and
+        // independent of the async .lasset extraction below.
+        RunTextAssetDiscovery();
 
         const uint32 NumPackages = (uint32)PackagePaths.size();
         if (NumPackages == 0)
@@ -341,6 +349,230 @@ namespace Lumina
         }
 
         return Datas;
+    }
+
+    // --- Text assets -------------------------------------------------------------------------------
+
+    void FAssetRegistry::RunTextAssetDiscovery()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        TVector<FFixedString> Roots;
+        Roots.emplace_back(FFixedString("/Engine/Resources/Content"));
+        Roots.emplace_back(FFixedString("/Game"));
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled())        continue;
+            if (!Plugin->IsContentMounted()) continue;
+            Roots.emplace_back(FFixedString(Plugin->GetMountAlias().c_str()));
+        }
+
+        FTextAssetMap Rebuilt;
+
+        auto Callback = [&](const VFS::FFileInfo& File)
+        {
+            if (File.IsDirectory()) return;
+            const FStringView Vp(File.VirtualPath.c_str(), File.VirtualPath.size());
+            if (TextAssetSidecar::IsSidecarPath(Vp)) return;
+
+            const ETextAssetKind Kind = TextAsset::KindFromPath(Vp);
+            if (Kind == ETextAssetKind::None) return;
+
+            const FGuid Guid = TextAssetSidecar::ReadOrMint(Vp, Kind);
+            if (!Guid.IsValid()) return;
+
+            auto Data = MakeUnique<FTextAssetData>();
+            Data->Guid          = Guid;
+            Data->Path          .assign_convert(Vp);
+            Data->Name          = VFS::FileName(Vp, true);
+            Data->Kind          = Kind;
+            Data->OwningPlugin  = ExtractOwningPlugin(Vp);
+            Data->SourceMTimeNs = FileMTimeNanos(Vp);
+
+            // Two files sharing a stale GUID (e.g. a copy-paste before re-discovery) would collide; the
+            // first one wins and the duplicate gets re-minted next pass once its sidecar is regenerated.
+            if (Rebuilt.find_as(Guid, FGuidHash(), FTextAssetGuidEqual()) == Rebuilt.end())
+            {
+                Rebuilt.emplace(Move(Data));
+            }
+        };
+
+        for (const FFixedString& Root : Roots)
+        {
+            VFS::RecursiveDirectoryIterator(FStringView(Root.c_str(), Root.size()), Callback);
+        }
+
+        FWriteScopeLock Lock(TextAssetsMutex);
+        TextAssets = Move(Rebuilt);
+    }
+
+    FGuid FAssetRegistry::EnsureTextAsset(FStringView Path)
+    {
+        if (FTextAssetData* Existing = GetTextAssetByPath(Path))
+        {
+            return Existing->Guid;
+        }
+
+        const ETextAssetKind Kind = TextAsset::KindFromPath(Path);
+        if (Kind == ETextAssetKind::None)
+        {
+            return FGuid();
+        }
+
+        const FGuid Guid = TextAssetSidecar::ReadOrMint(Path, Kind);
+        if (!Guid.IsValid())
+        {
+            return FGuid();
+        }
+
+        auto Data = MakeUnique<FTextAssetData>();
+        Data->Guid          = Guid;
+        Data->Path          .assign_convert(Path);
+        Data->Name          = VFS::FileName(Path, true);
+        Data->Kind          = Kind;
+        Data->OwningPlugin  = ExtractOwningPlugin(Path);
+        Data->SourceMTimeNs = FileMTimeNanos(Path);
+
+        FWriteScopeLock Lock(TextAssetsMutex);
+        if (TextAssets.find_as(Guid, FGuidHash(), FTextAssetGuidEqual()) == TextAssets.end())
+        {
+            TextAssets.emplace(Move(Data));
+        }
+        return Guid;
+    }
+
+    FTextAssetData* FAssetRegistry::GetTextAssetByGUID(const FGuid& GUID) const
+    {
+        FReadScopeLock Lock(TextAssetsMutex);
+        auto It = TextAssets.find_as(GUID, FGuidHash(), FTextAssetGuidEqual());
+        return It == TextAssets.end() ? nullptr : It->get();
+    }
+
+    FTextAssetData* FAssetRegistry::GetTextAssetByPath(FStringView Path) const
+    {
+        FReadScopeLock Lock(TextAssetsMutex);
+        const FStringView PathNoExt = VFS::RemoveExtension(Path);
+        auto It = eastl::find_if(TextAssets.begin(), TextAssets.end(), [&](const TUniquePtr<FTextAssetData>& Data)
+        {
+            return VFS::RemoveExtension(FStringView(Data->Path.c_str(), Data->Path.size())) == PathNoExt;
+        });
+        return It == TextAssets.end() ? nullptr : It->get();
+    }
+
+    TVector<FTextAssetData*> FAssetRegistry::GetTextAssetsOfKind(ETextAssetKind Kind) const
+    {
+        FReadScopeLock Lock(TextAssetsMutex);
+        TVector<FTextAssetData*> Out;
+        for (const TUniquePtr<FTextAssetData>& Data : TextAssets)
+        {
+            if (Kind == ETextAssetKind::None || Data->Kind == Kind)
+            {
+                Out.push_back(Data.get());
+            }
+        }
+        return Out;
+    }
+
+    void FAssetRegistry::TextAssetCreated(FStringView Path)
+    {
+        EnsureTextAsset(Path);
+        GetOnAssetRegistryUpdated().Broadcast();
+    }
+
+    void FAssetRegistry::TextAssetRenamed(FStringView OldPath, FStringView NewPath)
+    {
+        // Relocate the sidecar first so the GUID travels with the file.
+        TextAssetSidecar::Move(OldPath, NewPath);
+
+        bool bRenamed = false;
+        {
+            FWriteScopeLock Lock(TextAssetsMutex);
+
+            auto It = eastl::find_if(TextAssets.begin(), TextAssets.end(), [&](const TUniquePtr<FTextAssetData>& Data)
+            {
+                return FStringView(Data->Path.c_str(), Data->Path.size()) == OldPath;
+            });
+            if (It == TextAssets.end())
+            {
+                return;
+            }
+
+            // Drop a stale entry already sitting at NewPath with a different GUID.
+            const FGuid RenamedGuid = (*It)->Guid;
+            auto Colliding = eastl::find_if(TextAssets.begin(), TextAssets.end(), [&](const TUniquePtr<FTextAssetData>& Data)
+            {
+                return Data->Guid != RenamedGuid && FStringView(Data->Path.c_str(), Data->Path.size()) == NewPath;
+            });
+            if (Colliding != TextAssets.end())
+            {
+                TextAssets.erase(Colliding);
+                It = eastl::find_if(TextAssets.begin(), TextAssets.end(), [&](const TUniquePtr<FTextAssetData>& Data)
+                {
+                    return FStringView(Data->Path.c_str(), Data->Path.size()) == OldPath;
+                });
+                if (It == TextAssets.end()) return;
+            }
+
+            const TUniquePtr<FTextAssetData>& Data = *It;
+            Data->Path.assign_convert(NewPath);
+            Data->Name         = VFS::FileName(NewPath, true);
+            Data->Kind         = TextAsset::KindFromPath(NewPath);
+            Data->OwningPlugin = ExtractOwningPlugin(NewPath);
+            bRenamed = true;
+        }
+
+        if (bRenamed)
+        {
+            // Outside the lock: subscribers (open file editors) may read the registry back.
+            FCoreDelegates::OnContentFileRenamed.Broadcast(OldPath, NewPath);
+            GetOnAssetRegistryUpdated().Broadcast();
+        }
+    }
+
+    void FAssetRegistry::TextAssetDeleted(FStringView Path)
+    {
+        TextAssetSidecar::Delete(Path);
+
+        {
+            FWriteScopeLock Lock(TextAssetsMutex);
+            auto It = eastl::find_if(TextAssets.begin(), TextAssets.end(), [&](const TUniquePtr<FTextAssetData>& Data)
+            {
+                return FStringView(Data->Path.c_str(), Data->Path.size()) == Path;
+            });
+            if (It != TextAssets.end())
+            {
+                TextAssets.erase(It);
+            }
+        }
+
+        GetOnAssetRegistryUpdated().Broadcast();
+    }
+
+    void FAssetRegistry::TextAssetFolderRenamed(FStringView OldDir, FStringView NewDir)
+    {
+        // Snapshot the affected (old) paths first; mutate sidecars + entries outside the iteration.
+        TVector<FFixedString> OldPaths;
+        {
+            FReadScopeLock Lock(TextAssetsMutex);
+            for (const TUniquePtr<FTextAssetData>& Data : TextAssets)
+            {
+                const FStringView P(Data->Path.c_str(), Data->Path.size());
+                if (VFS::IsUnderDirectory(OldDir, P))
+                {
+                    OldPaths.emplace_back(Data->Path);
+                }
+            }
+        }
+
+        for (const FFixedString& Old : OldPaths)
+        {
+            const FStringView OldView(Old.c_str(), Old.size());
+            // new = NewDir + (Old - OldDir)
+            FStringView Tail = OldView.substr(OldDir.size());
+            FFixedString NewPath(NewDir.data(), NewDir.size());
+            NewPath.append(Tail.data(), Tail.size());
+            TextAssetRenamed(OldView, FStringView(NewPath.c_str(), NewPath.size()));
+        }
     }
 
     void FAssetRegistry::ReapStaleEntries()
@@ -595,6 +827,11 @@ namespace Lumina
         Assets.clear();
 
         {
+            FWriteScopeLock TextLock(TextAssetsMutex);
+            TextAssets.clear();
+        }
+
+        {
             FWriteScopeLock RLock(ReverseMapMutex);
             ReverseDepMap.clear();
             bReverseMapDirty = false;
@@ -639,6 +876,21 @@ namespace Lumina
 
             Ar << const_cast<FName&>(Data->OwnerChunk);
             Ar << const_cast<FName&>(Data->OwningPlugin);
+        }
+
+        // Text-asset identity table (v2+).
+        FReadScopeLock TextLock(TextAssetsMutex);
+        uint32 TextCount = (uint32)TextAssets.size();
+        Ar << TextCount;
+        for (const TUniquePtr<FTextAssetData>& Data : TextAssets)
+        {
+            Ar << const_cast<FGuid&>(Data->Guid);
+            Ar << const_cast<FFixedString&>(Data->Path);
+            Ar << const_cast<FName&>(Data->Name);
+            uint8 Kind = (uint8)Data->Kind;
+            Ar << Kind;
+            Ar << const_cast<FName&>(Data->OwningPlugin);
+            Ar << const_cast<int64&>(Data->SourceMTimeNs);
         }
     }
 
@@ -686,6 +938,33 @@ namespace Lumina
             Ar << Data->OwningPlugin;
 
             Assets.emplace(Move(Data));
+        }
+
+        // Text-asset identity table (v2+).
+        {
+            FWriteScopeLock TextLock(TextAssetsMutex);
+            TextAssets.clear();
+
+            uint32 TextCount = 0;
+            Ar << TextCount;
+            TextAssets.reserve(TextCount);
+            for (uint32 i = 0; i < TextCount; ++i)
+            {
+                auto Data = MakeUnique<FTextAssetData>();
+                Ar << Data->Guid;
+                Ar << Data->Path;
+                Ar << Data->Name;
+                uint8 Kind = 0;
+                Ar << Kind;
+                Data->Kind = (ETextAssetKind)Kind;
+                Ar << Data->OwningPlugin;
+                Ar << Data->SourceMTimeNs;
+
+                if (TextAssets.find_as(Data->Guid, FGuidHash(), FTextAssetGuidEqual()) == TextAssets.end())
+                {
+                    TextAssets.emplace(Move(Data));
+                }
+            }
         }
 
         {

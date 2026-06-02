@@ -554,8 +554,13 @@ namespace Lumina
         
             Slang::ComPtr<slang::IBlob> Diagnostics;
         
+            // Name the in-memory module after the caller's DebugName so crash dumps / Aftermath map source
+            // lines to "<DebugName>.slang" instead of the generic "RawShader".
+            const FString& RawName    = CompileOptions.DebugName.empty() ? FString("RawShader") : CompileOptions.DebugName;
+            const FString  SourcePath = RawName + ".slang";
+
             Slang::ComPtr<slang::IModule> SlangModule;
-            SlangModule = Session->loadModuleFromSourceString("RawShader", "RawShader.slang", ShaderString.c_str(), Diagnostics.writeRef());
+            SlangModule = Session->loadModuleFromSourceString(RawName.c_str(), SourcePath.c_str(), ShaderString.c_str(), Diagnostics.writeRef());
 
             if (Diagnostics)
             {
@@ -639,7 +644,7 @@ namespace Lumina
             }
         
             FShaderHeader Shader;
-            Shader.DebugName = "RawShader";
+            Shader.DebugName = RawName;
             Shader.Hash      = Hash::GetHash64(Binaries);
             Shader.Binaries  = Move(Binaries);
             Shader.Defines   = CompileOptions.MacroDefinitions;

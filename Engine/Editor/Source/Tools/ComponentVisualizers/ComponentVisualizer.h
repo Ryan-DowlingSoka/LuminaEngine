@@ -150,10 +150,21 @@ namespace Lumina
     {
         GENERATED_BODY()
     public:
-        
+
         CStruct* GetSupportedComponentType() const override;
-        
+
         void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
-        
+
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_Decal : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+
+        CStruct* GetSupportedComponentType() const override;
+
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
 }

@@ -1,6 +1,7 @@
 #include "LuaEditorTool.h"
 
 #include "Config/Config.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/ObjectCore.h"
 #include "Settings/EditorSettings.h"
 #include "FileSystem/FileSystem.h"
@@ -320,6 +321,18 @@ namespace Lumina
             bExternalChangePending = true;
         });
 
+        // Retarget our path when the file is renamed/moved so a later save hits the new file.
+        FileRenamedHandle = FCoreDelegates::OnContentFileRenamed.AddLambda([this](FStringView Old, FStringView New)
+        {
+            if (Old != FStringView(VirtualPath.c_str(), VirtualPath.size()))
+            {
+                return;
+            }
+            VirtualPath.assign(New.data(), New.size());
+            const FStringView ParentView = VFS::Parent(New, true);
+            ParentDir.assign(ParentView.data(), ParentView.size());
+        });
+
         // Runtime component type created/removed (or any global change) -> re-harvest symbols. Mark
         // dirty here; Update coalesces bursts into a single rebuild.
         GlobalsChangedHandle = SC.OnGlobalsChanged.AddLambda([this]
@@ -486,6 +499,7 @@ namespace Lumina
         SC.OnScriptCompileSuccess.Remove(CompileSuccessHandle);
         SC.OnScriptLoaded.Remove(ScriptLoadedHandle);
         SC.OnGlobalsChanged.Remove(GlobalsChangedHandle);
+        FCoreDelegates::OnContentFileRenamed.Remove(FileRenamedHandle);
     }
 
     void FLuaEditorTool::ApplyCompileError(int Line, const FString& Message)

@@ -3,6 +3,7 @@
 #include "Platform/GenericPlatform.h"
 #include <Core/Math/Hash/Hash.h>
 #include <Renderer/RHIFwd.h>
+#include <Renderer/RenderResource.h>
 
 
 namespace Lumina
@@ -10,6 +11,15 @@ namespace Lumina
 	class FRHIInputLayout;
 	class FRHIBuffer;
 	class CMaterialInterface;
+
+	// RHI shaders resolved from a material on the GAME thread and held by ref. The render thread
+	// uses these instead of dereferencing a (possibly deleted) CMaterial: the refcount keeps the
+	// shaders alive for the frame even after the owning material asset is destroyed.
+	struct FRenderMaterialShaders
+	{
+		FRHIVertexShaderRef VertexShader;
+		FRHIPixelShaderRef  PixelShader;
+	};
 
 
 	struct FDrawKey
@@ -62,15 +72,16 @@ namespace Lumina
 		return Seed;
 	}
 
-	// All data needed for one mesh draw call; cached in the scene.
+	// All data needed for one mesh draw call; cached in the scene. Shaders are ref-held (resolved
+	// on the game thread) so a deleted material asset can't dangle the render thread's pointers.
 	struct FMeshDrawCommand
 	{
-		FRHIVertexShader*					VertexShader = nullptr;
-		FRHIPixelShader*					PixelShader = nullptr;
+		FRHIVertexShaderRef					VertexShader;
+		FRHIPixelShaderRef					PixelShader;
 		// Per-material depth-prepass / shadow VS, populated only for WPO materials so prepass
 		// depth matches the base pass. Null means fall back to the global library shader.
-		FRHIVertexShader*					DepthVertexShader = nullptr;
-		FRHIVertexShader*					ShadowVertexShader = nullptr;
+		FRHIVertexShaderRef					DepthVertexShader;
+		FRHIVertexShaderRef					ShadowVertexShader;
 		uint32                      		IndirectDrawOffset = 0;
 		uint32                      		DrawCount = 0;
 		uint32                      		bDrawInDepthPass : 1;

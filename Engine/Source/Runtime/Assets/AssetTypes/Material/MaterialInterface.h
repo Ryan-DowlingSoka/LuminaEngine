@@ -24,6 +24,7 @@ namespace Lumina
         PostProcess,
         UI,
         Terrain,
+        Decal,
     };
 
     REFLECT()

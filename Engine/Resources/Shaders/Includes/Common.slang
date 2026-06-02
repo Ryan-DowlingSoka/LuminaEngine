@@ -280,14 +280,14 @@ float3 GetMeshGridStep(FMeshletHeader* H, uint LOD)
     }
 }
 
-// Mirror of Lumina::FSkinDescriptor. One per skinned entity; drives the skinning dispatch.
+// Mirror of Lumina::FSkinDescriptor. One per rendered-LOD meshlet; drives the skinning dispatch.
 struct FSkinDescriptor
 {
     FMeshletHeader* MeshletHeader;
     uint            BoneOffset;
     uint            SkinnedVertexBase;  // combined: compacted base - vertex span start
-    uint            SkinMeshletStart;   // skin only the rendered-LOD meshlet span
-    uint            SkinMeshletCount;
+    uint            MeshletIndex;       // index into Header.Meshlets (one descriptor per meshlet)
+    uint            Pad;
 };
 
 // Mirror of Lumina::FBoneTransform: a skinning matrix with the always-(0,0,0,1) last row
@@ -602,6 +602,29 @@ uint PackTangent(float4 t)
         Packed |= (1u << 30);
     }
     return Packed;
+}
+
+// Octahedral unit-normal <-> [0,1]^2 (for storage in unorm render targets, e.g. the DBuffer normal slot).
+// Distinct from PackNormal/UnpackNormal (which pack into a single uint); these keep the two oct coords
+// as floats so they survive alpha blending. Approximate under blending but adequate for decal normals.
+float2 OctEncode01(float3 N)
+{
+    N = normalize(N);
+    float2 e = N.xy * (1.0 / (abs(N.x) + abs(N.y) + abs(N.z)));
+    if (N.z < 0.0)
+    {
+        e = (1.0 - abs(float2(e.y, e.x))) * float2(e.x >= 0.0 ? 1.0 : -1.0, e.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return e * 0.5 + 0.5;
+}
+
+float3 OctDecode01(float2 Enc)
+{
+    float2 e = Enc * 2.0 - 1.0;
+    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = max(-n.z, 0.0);
+    n.xy -= float2(n.x >= 0.0 ? t : -t, n.y >= 0.0 ? t : -t);
+    return normalize(n);
 }
 
 float3 UnpackMeshletPosition(uint Packed, int3 LoInt, float3 MeshOrigin, float3 GridStep)

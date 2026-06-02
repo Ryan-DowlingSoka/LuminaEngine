@@ -32,7 +32,9 @@ namespace Lumina
     struct SSkeletalMeshComponent;
     struct STransformComponent;
     struct STerrainComponent;
+    struct SDecalComponent;
     class CMaterialInterface;
+    class CMaterial;
 
     /** Scene rendering via Clustered Forward Rendering. */
     class FForwardRenderScene : public IRenderScene
@@ -183,71 +185,15 @@ namespace Lumina
         // game thread writes one in Extract, render thread reads it in RenderView.
         struct FFrameData
         {
-            FViewVolume                      ViewVolume = {};
-            FSceneGlobalData                 SceneGlobalData = {};
-            SDefaultWorldSettings            CachedWorldSettings = {};
-            float                            CachedWorldDeltaTime = 0.0f;
-            // False = shader compiler still warming up; RenderView no-ops.
-            bool                             bExtractedThisFrame = false;
+            struct FDecalBatch
+            {
+                // Ref-held shaders (not the live CMaterial*) so a deleted decal asset can't dangle
+                // the render thread; the refcount keeps the shaders alive past the material's death.
+                FRenderMaterialShaders Shaders;
+                uint32      FirstInstance;
+                uint32      Count;
+            };
 
-            TVector<FGPUInstance>            Instances;
-            TVector<FBoneTransform>          BonesData;   // 48B/bone (last row dropped)
-            // One descriptor per skinned entity; drives the skinning compute dispatch.
-            TVector<FSkinDescriptor>         SkinDescriptors;
-            uint32                           TotalPreSkinnedVertices = 0;
-            TVector<FMeshDrawCommand>        DrawCommands;
-            TVector<uint32>                  OpaqueDrawList;
-            TVector<uint32>                  OpaqueOccluderDrawList;
-            TVector<uint32>                  TranslucentDrawList;
-            TVector<FRHIBufferRef>           PinnedMeshBuffersThisFrame;
-            FSceneCullContext                SceneCullContext;
-
-            TVector<FCullView>               CullViews;
-            TVector<FDrawIndirectArguments>  IndirectArgs;
-            TVector<uint32>                  DrawMeshletStartOffsets;
-            TVector<uint32>                  InstanceMeshletPrefix;
-            uint32                           TotalMeshletBound   = 0;
-            uint32                           NumDrawsPerView     = 0;
-            uint32                           CameraLateViewIndex = ~0u;
-            uint32                           CascadeViewBase     = ~0u;
-            TVector<uint32>                  PointShadowCullViewBases;
-            TVector<uint32>                  SpotShadowCullViewBases;
-
-            FSceneLightData                  LightData = {};
-            TArray<TVector<FLightShadow>, (uint32)ELightType::Num> PackedShadows = {};
-            TAtomic<uint32>                  ShadowDataCount = 0;
-            TVector<FShadowRequest>          ShadowRequests;
-            FMutex                           ShadowRequestMutex;
-            // Per-slot copy of FShadowAtlas::Tiles -- render passes index this.
-            TVector<FShadowTile>             AtlasTiles;
-
-            FEnvironmentParams               EnvironmentParams = {};
-            FRHIImage*                       EnvironmentMapImage = nullptr;
-
-            // Exponential height fog (analytic composite + volumetric coupling).
-            FExponentialHeightFogParams      FogParams           = {};
-            bool                             bHasFog             = false;
-            bool                             bVolumetricFog      = false;
-            uint32                           VolumetricStepCount = 16;
-
-            bool                             bIBLDirty            = false;
-            bool                             bIBLConvolutionDirty = false;
-            SPostProcessSettings             ActivePostProcessStorage = {};
-            bool                             bHasActivePostProcess = false;
-            TVector<CMaterialInterface*>     ActivePostProcessMaterials;
-
-            // Render-target paint/clear ops drained from the world this frame; replayed as
-            // compute dispatches by TexturePaintPass before the geometry passes sample them.
-            TVector<FTexturePaintOp>         PaintOps;
-
-            TVector<FSimpleElementVertex>    SimpleVertices;
-            TVector<FLineBatch>              LineBatches;
-            TVector<FSimpleElementVertex>    SolidVertices;
-            TVector<FSolidBatch>             SolidBatches;
-            TVector<FBillboardInstance>      BillboardInstances;
-            TVector<FWidgetInstance>         WidgetInstances;
-            TVector<FRHIImageRef>            PinnedWidgetRTs;
-            
             // Per-frame snapshot of one terrain; render passes read ONLY this. GPU resources live in
             // TerrainGPUStates keyed by Entity, so the render thread never dereferences the component.
             struct FTerrainExtract
@@ -261,7 +207,10 @@ namespace Lumina
                 float               TileWorldSize   = 0.0f;
                 float               MaxHeight       = 0.0f;
                 int32               LayerCount       = 0;
-                CMaterialInterface* Material        = nullptr;   // resolved on the game thread
+                // Shaders resolved + ref-held on the game thread (never the live CMaterial*) so a
+                // deleted terrain material can't dangle the render thread. Null VS => skip this terrain.
+                FRenderMaterialShaders Shaders;
+                uint32              MaterialIndex   = 0;
                 bool                bCastShadow     = true;
                 bool                bReceiveShadow  = true;
 
@@ -285,11 +234,6 @@ namespace Lumina
                 TVector<FTerrainChunkInfo>   Chunks;
                 TVector<FTerrainMeshletInfo> Meshlets;
             };
-            TVector<FTerrainExtract>         TerrainExtracts;
-
-            // Every entity with STerrainComponent this frame, including disabled ones (excluded from
-            // TerrainExtracts). Render thread prunes TerrainGPUStates absent here, preserving disabled terrains.
-            TVector<entt::entity>            LiveTerrainEntities;
 
             // Per-frame snapshot of one emitter; render passes read ONLY this. GPU + sim state lives in
             // ParticleGPUStates keyed by Entity, so the render thread never dereferences the component.
@@ -316,13 +260,6 @@ namespace Lumina
                 FRHIComputeShaderRef    CustomComputeShader;          // set iff bUsesCustomShader
                 uint32                  TextureIndex        = 0u;     // bindless slot, resolved game-side
             };
-            TVector<FParticleExtract>        ParticleExtracts;
-
-            // Every entity with SParticleSystemComponent this frame, including disabled ones (excluded from
-            // ParticleExtracts). Render thread prunes ParticleGPUStates absent here, preserving disabled emitters.
-            TVector<entt::entity>            LiveParticleEntities;
-
-            FSceneRenderStats                FrameStats = {};
 
             // Per-frame snapshot of enabled capture views, in registration order. The shared cull fills
             // each view's slice; RenderView shades each into SceneViews[SceneViewIndex] after the primary.
@@ -333,7 +270,111 @@ namespace Lumina
                 uint32              CameraViewIndex = ~0u;   // its cull-view index (frustum-only)
                 int32               SceneViewIndex  = -1;    // index into FForwardRenderScene::SceneViews
             };
-            TVector<FCaptureViewData>        CaptureViews;
+
+            FViewVolume                      ViewVolume = {};
+            FSceneGlobalData                 SceneGlobalData = {};
+            SDefaultWorldSettings            CachedWorldSettings = {};
+            float                            CachedWorldDeltaTime = 0.0f;
+            // False = shader compiler still warming up; RenderView no-ops.
+            bool                             bExtractedThisFrame = false;
+            FSceneRenderStats                FrameStats = {};
+
+            struct FGeometry
+            {
+                TVector<FGPUInstance>            Instances;
+                TVector<FBoneTransform>          BonesData;   // 48B/bone (last row dropped)
+                // One descriptor per skinned entity; drives the skinning compute dispatch.
+                TVector<FSkinDescriptor>         SkinDescriptors;
+                uint32                           TotalPreSkinnedVertices = 0;
+                TVector<FMeshDrawCommand>        DrawCommands;
+                TVector<uint32>                  OpaqueDrawList;
+                TVector<uint32>                  OpaqueOccluderDrawList;
+                TVector<uint32>                  TranslucentDrawList;
+                TVector<FRHIBufferRef>           PinnedMeshBuffersThisFrame;
+                FSceneCullContext                SceneCullContext;
+                TVector<uint32>                  DrawMeshletStartOffsets;
+                TVector<uint32>                  InstanceMeshletPrefix;
+            } Geometry;
+
+            struct FViews
+            {
+                TVector<FCullView>               CullViews;
+                TVector<FDrawIndirectArguments>  IndirectArgs;
+                uint32                           TotalMeshletBound   = 0;
+                uint32                           NumDrawsPerView     = 0;
+                uint32                           CameraLateViewIndex = ~0u;
+                uint32                           CascadeViewBase     = ~0u;
+                TVector<uint32>                  PointShadowCullViewBases;
+                TVector<uint32>                  SpotShadowCullViewBases;
+                TVector<FCaptureViewData>        CaptureViews;
+            } Views;
+
+            struct FLighting
+            {
+                FSceneLightData                  LightData = {};
+                TArray<TVector<FLightShadow>, (uint32)ELightType::Num> PackedShadows = {};
+                TAtomic<uint32>                  ShadowDataCount = 0;
+                TVector<FShadowRequest>          ShadowRequests;
+                FMutex                           ShadowRequestMutex;
+                // Per-slot copy of FShadowAtlas::Tiles -- render passes index this.
+                TVector<FShadowTile>             AtlasTiles;
+            } Lighting;
+
+            struct FPrimitives
+            {
+                TVector<FSimpleElementVertex>    SimpleVertices;
+                TVector<FLineBatch>              LineBatches;
+                TVector<FSimpleElementVertex>    SolidVertices;
+                TVector<FSolidBatch>             SolidBatches;
+                TVector<FBillboardInstance>      BillboardInstances;
+                TVector<FGPUDecal>               DecalExtracts;
+                TVector<FDecalBatch>             DecalBatches;
+                TVector<FWidgetInstance>         WidgetInstances;
+                TVector<FRHIImageRef>            PinnedWidgetRTs;
+            } Primitives;
+
+            struct FVolumetrics
+            {
+                FEnvironmentParams               EnvironmentParams = {};
+                FRHIImage*                       EnvironmentMapImage = nullptr;
+                // Exponential height fog (analytic composite + volumetric coupling).
+                FExponentialHeightFogParams      FogParams           = {};
+                bool                             bHasFog             = false;
+                bool                             bVolumetricFog      = false;
+                uint32                           VolumetricStepCount = 16;
+                bool                             bIBLDirty            = false;
+                bool                             bIBLConvolutionDirty = false;
+            } Volumetrics;
+
+            // Post-process material resolved + ref-held on the game thread; the render thread reads
+            // these instead of dereferencing a (possibly deleted) CMaterial.
+            struct FPostProcessMaterial
+            {
+                FRenderMaterialShaders Shaders;
+                uint32                 MaterialIndex = 0;
+            };
+
+            struct FPostProcess
+            {
+                SPostProcessSettings             ActivePostProcessStorage = {};
+                bool                             bHasActivePostProcess = false;
+                TVector<FPostProcessMaterial>    ActivePostProcessMaterials;
+            } PostProcess;
+
+            struct FExtracts
+            {
+                TVector<FTerrainExtract>         TerrainExtracts;
+                // Every entity with STerrainComponent this frame, including disabled ones (excluded from
+                // TerrainExtracts). Render thread prunes TerrainGPUStates absent here, preserving disabled terrains.
+                TVector<entt::entity>            LiveTerrainEntities;
+                TVector<FParticleExtract>        ParticleExtracts;
+                // Every entity with SParticleSystemComponent this frame, including disabled ones (excluded from
+                // ParticleExtracts). Render thread prunes ParticleGPUStates absent here, preserving disabled emitters.
+                TVector<entt::entity>            LiveParticleEntities;
+                // Render-target paint/clear ops drained from the world this frame; replayed as
+                // compute dispatches by TexturePaintPass before the geometry passes sample them.
+                TVector<FTexturePaintOp>         PaintOps;
+            } Extracts;
         };
 
         enum class ENamedBuffer : uint8
@@ -384,9 +425,12 @@ namespace Lumina
             // Solid translucent debug triangles (navmesh surface, etc.); same vertex format as SimpleVertex.
             SolidVertex,
 
+            // Per-frame DBuffer decal records (FGPUDecal), bound at the decal-pass set 2.
+            Decals,
+
             Num,
         };
-        
+
         enum class ENamedImage : uint8
         {
             HDR,
@@ -404,6 +448,12 @@ namespace Lumina
             Picker,
             Accum,
             Revealage,
+
+            // DBuffer decal targets (RGBA8). A = transmittance (cleared to 1). A: BaseColor, B: WorldNormal
+            // (OctEncode01 in rg), C: Roughness/Metallic/AO. Sampled+composited by the base pass before lighting.
+            DBufferA,
+            DBufferB,
+            DBufferC,
 
             // Persistent 1x1 R32F eye-adapted luminance (AutoExposure writes, ColorGrading reads).
             // Not ring-buffered: adaptation feedback reads its own previous value.
@@ -627,6 +677,9 @@ namespace Lumina
         void PointShadowPass(ICommandList& CmdList);
         void SpotShadowPass(ICommandList& CmdList);
         void CascadedShowPass(ICommandList& CmdList);
+        // Projects DBuffer decals onto opaque depth between the depth prepass and the base pass.
+        // Always clears the DBuffer (so the base pass reads a no-op when no decals are present).
+        void DecalPass(ICommandList& CmdList);
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
         void WidgetPass(ICommandList& CmdList);
@@ -862,6 +915,10 @@ namespace Lumina
         TVector<uint32>                         MergeDrawInstanceOffsets;
         TVector<uint32>                         MergeDrawCursor;
         TVector<uint32>                         MergeThreadBoneBase;
+
+        struct FDecalSortEntry { CMaterial* ShaderOwner; int32 SortOrder; FGPUDecal Gpu; };
+        TVector<FDecalSortEntry>                DecalSortScratch;
+        THashMap<CMaterial*, int32>             DecalGroupMinSort;
 
         // Per-worker draw-gather scratch, persisted so outer storage keeps capacity;
         // arena-backed members are reset each frame (ResetForFrame) to avoid aliasing.

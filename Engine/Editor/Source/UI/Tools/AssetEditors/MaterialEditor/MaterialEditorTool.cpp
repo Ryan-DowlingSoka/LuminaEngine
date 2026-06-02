@@ -187,6 +187,13 @@ namespace Lumina
                 LOG_WARN("[MaterialEditor] UI material preview: no registry path (save the asset first).");
             }
         }
+        else if (MaterialType == EMaterialType::Decal)
+        {
+            // Decal materials project through the DBuffer pass; their vertex shader is the decal-box VS,
+            // not a mesh VS, so they can't be surface-shaded on the preview mesh (doing so reads the decal
+            // buffer from an unbound slot and faults the GPU). Leave the sphere on its default material.
+            StaticMeshComponent.MaterialOverrides.clear();
+        }
         else
         {
             StaticMeshComponent.MaterialOverrides.push_back(MaterialInterface);
@@ -639,7 +646,11 @@ namespace Lumina
 
             IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
 
+            // Crash-dump-friendly shader names: "<MaterialName> [Stage]" instead of the generic "RawShader".
+            const FString MatName = Material->GetName().c_str();
+
             FShaderCompileOptions Options;
+            Options.DebugName = MatName + " [PS]";
             if (Material->GetBlendMode() == EBlendMode::Translucent)
             {
                 Options.MacroDefinitions.emplace_back("TRANSLUCENT");
@@ -649,7 +660,10 @@ namespace Lumina
                 Options.MacroDefinitions.emplace_back("UNLIT");
             }
 
-            ShaderCompiler->CompilerShaderRaw(VertexSource, {}, [this](const FShaderHeader& Header) mutable
+            FShaderCompileOptions VSOptions;
+            VSOptions.DebugName = MatName + " [VS]";
+
+            ShaderCompiler->CompilerShaderRaw(VertexSource, Move(VSOptions), [this](const FShaderHeader& Header) mutable
             {
                 CMaterial* Material = Cast<CMaterial>(Asset.Get());
                 FRHIVertexShaderRef VertexShader = GRenderContext->CreateVertexShader(Header);
@@ -677,7 +691,10 @@ namespace Lumina
                 const FString DepthSource  = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "DepthPrePass.slang");
                 const FString ShadowSource = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "ShadowMappingVert.slang");
 
-                ShaderCompiler->CompilerShaderRaw(DepthSource, {}, [this](const FShaderHeader& Header) mutable
+                FShaderCompileOptions DepthOptions;  DepthOptions.DebugName  = MatName + " [DepthVS]";
+                FShaderCompileOptions ShadowOptions; ShadowOptions.DebugName = MatName + " [ShadowVS]";
+
+                ShaderCompiler->CompilerShaderRaw(DepthSource, Move(DepthOptions), [this](const FShaderHeader& Header) mutable
                 {
                     CMaterial* M = Cast<CMaterial>(Asset.Get());
                     FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);
@@ -685,7 +702,7 @@ namespace Lumina
                     M->DepthPrepassVertexShader = VS;
                     GRenderContext->OnShaderCompiled(VS, false, true);
                 });
-                ShaderCompiler->CompilerShaderRaw(ShadowSource, {}, [this](const FShaderHeader& Header) mutable
+                ShaderCompiler->CompilerShaderRaw(ShadowSource, Move(ShadowOptions), [this](const FShaderHeader& Header) mutable
                 {
                     CMaterial* M = Cast<CMaterial>(Asset.Get());
                     FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);

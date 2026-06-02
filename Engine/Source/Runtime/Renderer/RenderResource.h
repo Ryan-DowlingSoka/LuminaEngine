@@ -8,6 +8,7 @@
 #include "Core/Math/Color.h"
 #include "Core/Math/Hash/CoreHashTypes.h"
 #include "Core/Serialization/Archiver.h"
+#include "Core/Threading/Atomic.h"
 #include "Core/Threading/Thread.h"
 #include "Core/Variant/Variant.h"
 #include "Memory/RefCounted.h"
@@ -262,7 +263,7 @@ namespace Lumina
 	public:
 
 		friend class IRHIResource;
-		
+
 		void Track(IRHIResource* Resource);
 
 		void Untrack(IRHIResource* Resource);
@@ -274,20 +275,39 @@ namespace Lumina
 		static void ForEach(TCallable&& Callable)
 		{
 			FRHIResourceList& List = Get();
-			
-			FRecursiveScopeLock Lock(List.Mutex);
-			for (IRHIResource* Resource : List.ResourceList)
+			for (FShard& Shard : List.Shards)
 			{
-				eastl::invoke(Callable, Resource);
+				FScopeLock Lock(Shard.Mutex);
+				for (IRHIResource* Resource : Shard.Set)
+				{
+					eastl::invoke(Callable, Resource);
+				}
 			}
 		}
-		
+
 	private:
 
 		static FRHIResourceList& Get();
 
-		FRecursiveMutex Mutex;
-		TFixedHashSet<IRHIResource*, 1> ResourceList;
+		// Pointer-hashed shards: a resource ctor/dtor locks one shard, not a global lock.
+		static constexpr uint32 kShardCount = 64;
+		static_assert((kShardCount & (kShardCount - 1)) == 0 && kShardCount <= 256, "kShardCount must be a power of two <= 256");
+
+		struct alignas(64) FShard
+		{
+			FMutex                      Mutex;
+			THashSet<IRHIResource*>     Set;
+		};
+
+		static uint32 ShardIndex(const IRHIResource* Resource)
+		{
+			uintptr_t P = reinterpret_cast<uintptr_t>(Resource);
+			P *= 0x9E3779B97F4A7C15ull;
+			return (uint32)((P >> 56) & (kShardCount - 1));
+		}
+
+		FShard          Shards[kShardCount];
+		TAtomic<int64>  LiveCount = 0;
 	};
 
 	// Free-threaded, atomically ref-counted; may be deleted from any thread.

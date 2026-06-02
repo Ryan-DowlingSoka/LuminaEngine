@@ -31,4 +31,14 @@ namespace Lumina
             Slot.Serialize(PathStr);
         }
     }
+
+    bool FSoftObjectProperty::Identical(const void* ValueA, const void* ValueB) const
+    {
+        return *static_cast<const FSoftObjectPath*>(ValueA) == *static_cast<const FSoftObjectPath*>(ValueB);
+    }
+
+    void FSoftObjectProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        *static_cast<FSoftObjectPath*>(Dst) = *static_cast<const FSoftObjectPath*>(Src);
+    }
 }

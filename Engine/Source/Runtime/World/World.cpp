@@ -1954,12 +1954,13 @@ namespace Lumina
         ScriptComponent.Entity = Entity;
         ScriptComponent.World  = this;
         
-        if (ScriptComponent.ScriptPath.Path.empty())
+        const FStringView ResolvedScriptPath = ScriptComponent.ScriptPath.ResolvePath();
+        if (ResolvedScriptPath.empty())
         {
             return;
         }
-        
-        ScriptComponent.Script = Lua::FScriptingContext::Get().LoadUniqueScriptPath(ScriptComponent.ScriptPath.Path);
+
+        ScriptComponent.Script = Lua::FScriptingContext::Get().LoadUniqueScriptPath(ResolvedScriptPath);
         if (ScriptComponent.Script == nullptr || !ScriptComponent.Script->Reference.IsValid())
         {
             return;
@@ -2165,7 +2166,7 @@ namespace Lumina
         for (entt::entity Entity : View)
         {
             SScriptComponent& Component = View.get<SScriptComponent>(Entity);
-            if (FStringView(Component.ScriptPath.Path.c_str(), Component.ScriptPath.Path.size()) == Path)
+            if (Component.ScriptPath.ResolvePath() == Path)
             {
                 ReloadScriptForComponent(Entity, Component);
             }

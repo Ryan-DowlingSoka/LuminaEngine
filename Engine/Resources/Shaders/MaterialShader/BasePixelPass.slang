@@ -2,6 +2,12 @@
 #include "Includes/IBLRuntime.slang"
 #include "Includes/ShadowSampling.slang"
 
+// DBuffer decals are an opaque-only input bound at set 2. The translucent variant uses set 2 as an empty
+// placeholder (TransparentPass), so only declare the bindings here when not building that variant.
+#ifndef TRANSLUCENT
+#include "Includes/DBuffer.slang"
+#endif
+
 struct PSInput
 {
     float4 Color        : COLOR;
@@ -584,6 +590,15 @@ PSOutput FragmentMain(PSInput Input)
 
     float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
+
+    // DBuffer decals: composite projected decal attributes into the surface BEFORE lighting so they
+    // receive lights/shadows/IBL. No-op on pixels no decal touched. Opaque base pass only.
+#ifndef TRANSLUCENT
+    {
+        float2 DBufferUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
+        ApplyDBuffer(Albedo, N, Roughness, Metallic, AO, DBufferUV);
+    }
+#endif
 
     // Dielectric F0 = 0.08 * Specular (UE4 convention; default 0.5 -> 0.04). Metals override F0 with albedo.
     float3 F0_DIELECTRIC = float3(0.08 * Material.Specular);

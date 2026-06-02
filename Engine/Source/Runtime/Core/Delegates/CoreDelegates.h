@@ -26,5 +26,9 @@ namespace Lumina
         // Fired by editor file watchers on content change (arg = VFS path); subscribers
         // filter by extension. Editor-only in practice.
         RUNTIME_API static TMulticastDelegate<void, FStringView>     OnContentFileModified;
+
+        // Fired when a tracked text asset (.luau/.rml/.rcss) is renamed/moved (args = old VFS path,
+        // new VFS path). Open file editors retarget their path so a later save writes the new file.
+        RUNTIME_API static TMulticastDelegate<void, FStringView, FStringView> OnContentFileRenamed;
     };
 }

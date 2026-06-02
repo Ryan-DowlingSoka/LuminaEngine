@@ -205,7 +205,7 @@ namespace Lumina
         VkCommandPoolCreateInfo PoolInfo = {};
         PoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         PoolInfo.queueFamilyIndex = QueueFamilyIndex;
-        PoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        PoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
         VkCommandPool Pool = VK_NULL_HANDLE;
         VK_CHECK(vkCreateCommandPool(Device->GetDevice(), &PoolInfo, VK_ALLOC_CALLBACK, &Pool));

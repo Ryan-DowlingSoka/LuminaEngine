@@ -5,6 +5,7 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetRegistry/AssetData.h"
 #include "Assets/AssetRegistry/CookRoot.h"
+#include "Assets/AssetRegistry/TextAssetSidecar.h"
 #include "Config/Config.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Object/Object.h"
@@ -36,6 +37,13 @@ namespace Lumina
 
         bool BundleVfsFile(FPakWriter& Writer, FStringView VirtualPath, const TFunction<void(FStringView)>& LogFunc)
         {
+            // Hidden text-asset identity sidecars are editor-only; the cooked AssetRegistry.bin carries the
+            // GUID<->path table, so never ship the .lmeta tree.
+            if (TextAssetSidecar::IsSidecarPath(VirtualPath))
+            {
+                return false;
+            }
+
             TVector<uint8> Bytes;
             if (!VFS::ReadFile(Bytes, VirtualPath))
             {

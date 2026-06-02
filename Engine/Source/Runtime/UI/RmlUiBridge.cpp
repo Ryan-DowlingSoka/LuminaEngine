@@ -694,8 +694,12 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            const int64 CurrentWriteTime = GetDocumentWriteTime(Comp.DocumentPath);
-            const bool  bPathChanged     = (R.LoadedPath != Comp.DocumentPath);
+            // Resolve the rename-safe ref to its current virtual path (GUID-first).
+            const FStringView DocView = Comp.DocumentPath.ResolvePath();
+            const FString     DocPath(DocView.data(), DocView.size());
+
+            const int64 CurrentWriteTime = GetDocumentWriteTime(DocPath);
+            const bool  bPathChanged     = (R.LoadedPath != DocPath);
             const bool  bFileChanged     = (R.Document != nullptr && CurrentWriteTime != 0 && CurrentWriteTime != R.DocWriteTime);
 
             if (bPathChanged || bFileChanged)
@@ -710,10 +714,10 @@ namespace Lumina::RmlUi
 
                 R.Context->UnloadAllDocuments();
                 R.Document   = nullptr;
-                R.LoadedPath = Comp.DocumentPath;
-                if (!Comp.DocumentPath.empty())
+                R.LoadedPath = DocPath;
+                if (!DocPath.empty())
                 {
-                    R.Document = R.Context->LoadDocument(Rml::String(Comp.DocumentPath.c_str()));
+                    R.Document = R.Context->LoadDocument(Rml::String(DocPath.c_str()));
                     if (R.Document != nullptr)
                     {
                         R.Document->SetProperty("width", "100%");
@@ -722,7 +726,7 @@ namespace Lumina::RmlUi
                     }
                     else
                     {
-                        LOG_WARN("[RmlUi] Widget failed to load document '{}'.", Comp.DocumentPath.c_str());
+                        LOG_WARN("[RmlUi] Widget failed to load document '{}'.", DocPath.c_str());
                     }
                 }
                 R.DocWriteTime = CurrentWriteTime;

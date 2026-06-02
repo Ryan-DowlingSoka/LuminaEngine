@@ -161,6 +161,10 @@ namespace Lumina
         bool                bExternalChangePending = false;
         FDelegateHandle     ScriptLoadedHandle;
 
+        // Retargets VirtualPath when this file is renamed/moved in the content browser, so a
+        // subsequent save writes the new file instead of recreating the old path.
+        FDelegateHandle     FileRenamedHandle;
+
         // Selected stack frame for the debugger panel; re-clamped each pause so a deeper
         // prior call stack doesn't index out of range when the new one is shorter.
         int                 DebuggerSelectedFrame = 0;

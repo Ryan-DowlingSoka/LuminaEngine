@@ -272,8 +272,6 @@ namespace Lumina
         // The panel header (name + add-component + delete) and component list for one entity.
         void DrawEntityProperties(entt::entity Entity);
         void DrawEmptyState();
-        // Inline "+" add-component popup (shared categorized list, applied across the selection).
-        void DrawSharedAddComponentPopup(entt::entity Entity);
 
         // Hook: whether Entity may be deleted from the panel (prefab forbids the root).
         virtual bool CanDeleteEntity(entt::entity Entity) const { return true; }
@@ -283,7 +281,6 @@ namespace Lumina
         virtual void DrawDetailsExtraSections(entt::entity Entity) {}
 
         TQueue<entt::entity> EntityDestroyRequests;
-        ImGuiTextFilter      AddComponentFilter;
         bool                bImGuizmoUsedOnce = false;
         bool                bGuizmoSnapEnabled = true;
         float               GuizmoSnapTranslate = 0.1f;

@@ -2566,7 +2566,7 @@ namespace Lumina
         // emplace fires on_construct with an empty path (a no-op); we then set the path and run
         // the real load through OnScriptComponentCreated, mirroring ScriptComponentCustomization.
         SScriptComponent& ScriptComponent = Registry.emplace<SScriptComponent>(Entity);
-        ScriptComponent.ScriptPath.Path = VirtualPath;
+        ScriptComponent.ScriptPath.SetPath(VirtualPath);
         World->OnScriptComponentCreated(Entity, ScriptComponent, true);
         EndTransaction("Attach Script");
 
