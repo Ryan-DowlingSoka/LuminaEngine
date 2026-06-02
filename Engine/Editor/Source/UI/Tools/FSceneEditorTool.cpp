@@ -1813,6 +1813,7 @@ namespace Lumina
                         { ERenderSceneDebugFlags::LightComplexity, "Light Complexity" },
                         { ERenderSceneDebugFlags::ClusterGrid,     "Light Clusters"   },
                         { ERenderSceneDebugFlags::ShadowCascades,  "Shadow Cascades"  },
+                        { ERenderSceneDebugFlags::ShadowPenumbra,  "Shadow Penumbra"  },
                     };
 
                     auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)
@@ -1831,11 +1832,11 @@ namespace Lumina
 
                     DrawGroup("Shading", Shading, sizeof(Shading) / sizeof(Shading[0]));
                     ImGui::Spacing();
-                    DrawGroup("Buffers", Buffers, sizeof(Buffers) / sizeof(Buffers[0]));
+                    DrawGroup("Buffers", Buffers, std::size(Buffers));
                     ImGui::Spacing();
-                    DrawGroup("Geometry", Geometry, sizeof(Geometry) / sizeof(Geometry[0]));
+                    DrawGroup("Geometry", Geometry, std::size(Geometry));
                     ImGui::Spacing();
-                    DrawGroup("Lighting", Lighting, sizeof(Lighting) / sizeof(Lighting[0]));
+                    DrawGroup("Lighting", Lighting, std::size(Lighting));
 
                     ImGui::EndMenu();
                 }

@@ -2,6 +2,9 @@
 #include "ThumbnailScene.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
+#include "Assets/AssetTypes/Mesh/Animation/Animation.h"
+#include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
+#include "Assets/AssetTypes/Mesh/Skeleton/Skeleton.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
 #include "Core/Object/Cast.h"
@@ -19,6 +22,7 @@
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/PostProcessComponent.h"
+#include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Scene/RenderScene/SceneMeshes.h"
 
@@ -49,7 +53,37 @@ namespace Lumina
             Registry.emplace<SSkyLightComponent>(Light);
         };
 
-        RegisterThumbnailRenderer(CStaticMesh::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
+        // Bounding-sphere framing so wide-flat and tall-narrow meshes frame the same as cubes.
+        auto FrameBounds = [](FThumbnailScene& Scene, const FAABB& Bounds)
+        {
+            const FVector3 Center  = Bounds.GetCenter();
+            const float    Radius  = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);
+            const FVector3 Dir     = Math::Normalize(FVector3(1.0f, 0.6f, 1.0f));
+            const FVector3 CamPos  = Center + Dir * (Radius * kMeshFramingScale);
+            Scene.SetCameraTransform(CamPos, Center, kThumbnailFOV);
+        };
+
+        // Populate the scene with a skeletal mesh in bind pose (the render path falls back to identity
+        // bones when no animation drives it). Shared by skeletal-mesh/skeleton/animation thumbnails.
+        auto RenderSkeletalMesh = [SetupStudioLighting, FrameBounds](FThumbnailScene& Scene, CSkeletalMesh* Mesh)
+        {
+            if (Mesh == nullptr)
+            {
+                return;
+            }
+
+            CWorld* World = Scene.GetWorld();
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+
+            SetupStudioLighting(World);
+
+            entt::entity MeshEntity = World->ConstructEntity("SkeletalMesh");
+            Registry.emplace<SSkeletalMeshComponent>(MeshEntity).SkeletalMesh = Mesh;
+
+            FrameBounds(Scene, Mesh->GetAABB());
+        };
+
+        RegisterThumbnailRenderer(CStaticMesh::StaticClass(), [SetupStudioLighting, FrameBounds](FThumbnailScene& Scene, CObject* Asset)
             {
                 CStaticMesh* Mesh = Cast<CStaticMesh>(Asset);
                 if (Mesh == nullptr)
@@ -65,14 +99,34 @@ namespace Lumina
                 entt::entity MeshEntity = World->ConstructEntity("Mesh");
                 Registry.emplace<SStaticMeshComponent>(MeshEntity).StaticMesh = Mesh;
 
-                // Bounding-sphere radius so wide-flat and tall-narrow meshes frame the same as cubes.
-                const FAABB Bounds   = Mesh->GetAABB();
-                const FVector3 Cen  = Bounds.GetCenter();
-                const float Radius   = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);
-                const FVector3 Dir  = Math::Normalize(FVector3(1.0f, 0.6f, 1.0f));
-                const FVector3 CamPos = Cen + Dir * (Radius * kMeshFramingScale);
+                FrameBounds(Scene, Mesh->GetAABB());
+            });
 
-                Scene.SetCameraTransform(CamPos, Cen, kThumbnailFOV);
+        RegisterThumbnailRenderer(CSkeletalMesh::StaticClass(), [RenderSkeletalMesh](FThumbnailScene& Scene, CObject* Asset)
+            {
+                RenderSkeletalMesh(Scene, Cast<CSkeletalMesh>(Asset));
+            });
+
+        // A skeleton shows its preview mesh (the only renderable it carries).
+        RegisterThumbnailRenderer(CSkeleton::StaticClass(), [RenderSkeletalMesh](FThumbnailScene& Scene, CObject* Asset)
+            {
+                CSkeleton* Skeleton = Cast<CSkeleton>(Asset);
+                if (Skeleton == nullptr)
+                {
+                    return;
+                }
+                RenderSkeletalMesh(Scene, Skeleton->PreviewMesh.Get());
+            });
+
+        // An animation shows its skeleton's preview mesh in bind pose (posing would need the anim system ticked).
+        RegisterThumbnailRenderer(CAnimation::StaticClass(), [RenderSkeletalMesh](FThumbnailScene& Scene, CObject* Asset)
+            {
+                CAnimation* Animation = Cast<CAnimation>(Asset);
+                if (Animation == nullptr || !Animation->Skeleton.IsValid())
+                {
+                    return;
+                }
+                RenderSkeletalMesh(Scene, Animation->Skeleton->PreviewMesh.Get());
             });
 
         RegisterThumbnailRenderer(CMaterialInterface::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)

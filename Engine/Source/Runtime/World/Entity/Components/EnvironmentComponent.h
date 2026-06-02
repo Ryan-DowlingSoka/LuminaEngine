@@ -24,6 +24,25 @@ namespace Lumina
         HDRI,
     };
 
+    /** IBL bake resolution tier. Sets sky-cube + specular-prefilter face sizes; higher = sharper
+        reflections at more VRAM. Cost is paid only when the sky changes (the bake is gated), so this
+        adds no per-frame overhead -- just a one-time bake spike on change. */
+    REFLECT()
+    enum class EIBLQuality : uint8
+    {
+        // 256 cube / 128 prefilter. Softest reflections, lowest VRAM.
+        Low,
+
+        // 512 cube / 256 prefilter.
+        Medium,
+
+        // 1024 cube / 256 prefilter. Crisp reflections that read as the source HDRI.
+        High,
+
+        // 2048 cube / 512 prefilter. Near-mirror; highest VRAM + bake cost.
+        Ultra,
+    };
+
     /** Singleton-style environment component; only one enabled instance per frame is read. */
     REFLECT(Component, Category = "Environment")
     struct RUNTIME_API SEnvironmentComponent
@@ -134,5 +153,10 @@ namespace Lumina
         /** HDR equirect for IBL irradiance/prefilter. Texture must use ColorSpace = Environment. */
         PROPERTY(Editable, Category = "Sky|HDRI")
         TObjectPtr<CTexture> EnvironmentMap;
+
+        /** Reflection/IBL bake resolution. Higher tiers sharpen reflections at more VRAM; only re-baked
+            on sky change, so no per-frame cost. */
+        PROPERTY(Editable, Category = "Environment|Quality")
+        EIBLQuality IBLQuality = EIBLQuality::High;
     };
 }

@@ -535,12 +535,12 @@ namespace Lumina
                             "  + /Engine/AssetRegistry.bin (cooked, %zu bytes, %zu live entries)",
                             Bytes.size(), LiveCount).c_str());
                     }
-                    // Only warn at zero (fresh projects have few assets); zero means discovery never ran or wiped the registry, fix by deleting the .assetdb cache + restart.
+                    // Only warn at zero (fresh projects have few assets); zero means discovery never ran or wiped the registry, fix by deleting the .json cache + restart.
                     if (LiveCount == 0)
                     {
                         Log(LogFunc, FString().sprintf(
                             "  [warn] live registry has 0 entries, Shipping runtime will not find anything. "
-                            "Delete <EngineInstall>/Intermediates/AssetRegistry.assetdb and restart the editor "
+                            "Delete <EngineInstall>/Intermediates/AssetRegistry.json and restart the editor "
                             "to force a fresh discovery, then re-cook.").c_str());
                     }
                 }

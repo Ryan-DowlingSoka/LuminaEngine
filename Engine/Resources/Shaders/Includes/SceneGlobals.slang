@@ -30,7 +30,7 @@ struct FSceneRoot
     uint  SkyPrefilterIndex;     // bindless cube SRV
     uint  ShadowCascadeIndex;    // bindless 2D SRV (cascade atlas)
     uint  ShadowAtlasIndex;      // bindless 2D SRV (spot/point atlas)
-    uint  _Pad;
+    uint  SkyCubeIndex;          // bindless cube SRV (full-res sky; sharp near-mirror reflections)
 };
 
 struct FRootConstants
@@ -119,6 +119,36 @@ float4 SampleBindless3D(uint ResourceID, uint SamplerIndex, float3 UVW)
 {
     return uBindlessTex3D[ResourceID].Sample(uBindlessSamplers[SamplerIndex], UVW);
 }
+
+// HDR environment panoramas carry +Inf / NaN texels (half-float overflow of very bright suns or LED
+// lights). Left unguarded they poison the IBL cubes -- Inf*weight and Inf-Inf produce NaN, which the BRDF
+// renders as black/white texel blocks, and a single NaN reaching bloom spreads white across the screen.
+// Drop non-finite channels to 0 and clamp into the R11G11B10 finite range so the convolution stays stable.
+float SanitizeRadianceChannel(float X)
+{
+    if (!isfinite(X)) return 0.0;       // x != x catches NaN; |x| == inf caught by isfinite
+    return clamp(X, 0.0, 64000.0);
+}
+
+float3 SanitizeRadiance(float3 C)
+{
+    return float3(SanitizeRadianceChannel(C.r),
+                  SanitizeRadianceChannel(C.g),
+                  SanitizeRadianceChannel(C.b));
+}
+
+float Luminance(float3 C)
+{
+    return dot(C, float3(0.2126, 0.7152, 0.0722));
+}
+
+// Karis "tone map then average" firefly suppression for importance-sampled IBL convolution. A lone very
+// bright texel (a city light, the sun) hit by only a few GGX samples otherwise produces high-variance
+// blocky/sparkly reflections. Weighting by 1/(1+luma) in tonemapped space and un-tonemapping the mean
+// preserves energy while killing the variance. Identity for a single sample, so mirror reflections are
+// untouched -- only multi-sample (rough) gathers get smoothed.
+float3 FireflyTonemap(float3 C)   { return C / (1.0 + Luminance(C)); }
+float3 FireflyUntonemap(float3 C) { return C / max(1.0 - Luminance(C), 1e-4); }
 
 // Vertex loaders.
 

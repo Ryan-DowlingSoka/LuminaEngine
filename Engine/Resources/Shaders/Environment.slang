@@ -10,8 +10,8 @@ struct FEnvPushConstants
 {
     ConstBufferPointer<FEnvironmentParams> Env;
     uint SkyCubeIndex;    // bindless cube SRV (procedural sky, or HDRI-derived cube for IBL)
-    uint EquirectIndex;   // bindless 2D SRV (imported HDRI equirect, sampled full-res)
-    uint _Pad0;
+    uint EquirectIndex;   // bindless 2D SRV (imported HDRI equirect, sampled with a screen-derivative LOD)
+    uint EquirectWidth;   // equirect base width in texels; drives the anti-aliasing LOD
     uint _Pad1;
 };
 #define PC (*(FEnvPushConstants*)gPC.PassAddr)
@@ -54,7 +54,19 @@ FragmentOutput FragmentMain(FragmentInput Input)
             // visible sky lines up with the cube-derived IBL / reflections.
             float u = 0.5 + atan2(-RayDir.z, RayDir.x) * (1.0 / TWO_PI);
             float v = 0.5 - asin(clamp(RayDir.y, -1.0, 1.0)) * INV_PI;
-            Color = SampleBindless2DLevel(PC.EquirectIndex, SAMPLER_LINEAR_WRAP, float2(u, v), 0.0).rgb;
+
+            // Screen-derivative LOD from the ray footprint. RayDir is continuous (no equirect seam,
+            // unlike u), so its derivatives give a clean per-pixel angular footprint. Selecting a mip
+            // from that stops the sky shimmering when many equirect texels collapse under one pixel
+            // (toward the horizon / at distance). SkyMode is uniform, so these derivatives are safe.
+            float3 dRdx = ddx(RayDir);
+            float3 dRdy = ddy(RayDir);
+            float pixelAngle      = max(length(dRdx), length(dRdy));   // radians/pixel (chord ~= angle)
+            float texelsPerRadian = float(PC.EquirectWidth) * (1.0 / TWO_PI);
+            float lod             = log2(max(pixelAngle * texelsPerRadian, 1.0));
+            // Sanitize: a half-float-overflow Inf texel (bright sun/lights) sampled straight into the HDR
+            // target blows out bloom and flashes the screen white.
+            Color = SanitizeRadiance(SampleBindless2DLevel(PC.EquirectIndex, SAMPLER_LINEAR_WRAP, float2(u, v), lod).rgb);
         }
         else
         {

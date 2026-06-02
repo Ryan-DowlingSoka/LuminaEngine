@@ -390,7 +390,11 @@ namespace Lumina
     {
         for (auto& [buffer, tracking] : BufferStates)
         {
-            if (buffer->DescRef.bKeepInitialState && !buffer->PermanentState && !buffer->DescRef.Usage.IsFlagSet(EBufferUsageFlags::Dynamic) &&!tracking->bPermanentTransition)
+            // Skip when already in the initial state: RequireBufferState would otherwise still emit a
+            // UAV barrier (bEnableUavBarriers) for a UAV->UAV "restore" that guards nothing -- there's
+            // no work after Close, and next frame's first use re-issues its own hazard barrier.
+            if (buffer->DescRef.bKeepInitialState && !buffer->PermanentState && !buffer->DescRef.Usage.IsFlagSet(EBufferUsageFlags::Dynamic) && !tracking->bPermanentTransition
+                && tracking->State != buffer->DescRef.InitialState)
             {
                 RequireBufferState(buffer, buffer->DescRef.InitialState);
             }
@@ -401,10 +405,21 @@ namespace Lumina
     {
         for (auto& [texture, tracking] : TextureStates)
         {
-            if (texture->DescRef.bKeepInitialState && !texture->PermanentState && !tracking->bPermanentTransition)
+            const bool bEligible = texture->DescRef.bKeepInitialState && !texture->PermanentState && !tracking->bPermanentTransition;
+            if (!bEligible)
             {
-                RequireTextureState(texture, AllSubresources, texture->DescRef.InitialState);
+                continue;
             }
+
+            // Whole-resource and already in the initial state: skip the no-op restore (would still emit
+            // a UAV barrier for UAV->UAV). Subresource-tracked textures (State == Unknown) still go
+            // through Require, which coalesces/handles them per-range.
+            if (tracking->SubresourceStates.empty() && tracking->State == texture->DescRef.InitialState)
+            {
+                continue;
+            }
+
+            RequireTextureState(texture, AllSubresources, texture->DescRef.InitialState);
         }
     }
 

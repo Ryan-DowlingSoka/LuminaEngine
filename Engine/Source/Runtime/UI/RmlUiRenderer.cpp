@@ -33,9 +33,10 @@ namespace Lumina
 {
     struct FRmlUiPushConstants
     {
-        uint64 DrawsAddress;
+        uint64 DrawsAddress;    // per-draw FUiDraw array (transient)
+        uint64 VertexAddress;   // resident batch vertex buffer (vertex pulling)
     };
-    static_assert(sizeof(FRmlUiPushConstants) == 8, "Push-constant must be a single device address.");
+    static_assert(sizeof(FRmlUiPushConstants) == 16, "Must match RmlUiCommon.slang::FRmlUiPushConstants.");
     static_assert(sizeof(FRmlUiPushConstants) <= MaxPushConstantSize, "Push-constants exceed RHI cap.");
 
     struct FUIMaterialBrushPush
@@ -125,34 +126,13 @@ namespace Lumina
         MaterialBufferLayout.SafeRelease();
         MaterialBufferCached = nullptr;
         Pipeline.SafeRelease();
-        InputLayout.SafeRelease();
         bInitialized = false;
     }
 
     bool FRmlUiRenderer::CreatePipeline()
     {
-        static_assert(sizeof(FUiVertex) == 24, "FUiVertex must match RmlUiVert.slang input layout (stride 24).");
+        static_assert(sizeof(FUiVertex) == 24, "FUiVertex must match RmlUiCommon.slang::FUiVertex (stride 24).");
         static_assert(sizeof(FUiDraw) == 96,   "FUiDraw must match RmlUiCommon.slang::FUiDraw (std430).");
-
-        // Matches FUiVertex (stride 24): pos(8) colour(4) uv(8) drawIndex(4).
-        FVertexAttributeDesc Attribs[4];
-        Attribs[0].Format       = EFormat::RG32_FLOAT;     // POSITION
-        Attribs[0].BufferIndex  = 0;
-        Attribs[0].Offset       = 0;
-        Attribs[0].ElementStride= sizeof(FUiVertex);
-        Attribs[1].Format       = EFormat::RGBA8_UNORM;    // COLOR
-        Attribs[1].BufferIndex  = 0;
-        Attribs[1].Offset       = 8;
-        Attribs[1].ElementStride= sizeof(FUiVertex);
-        Attribs[2].Format       = EFormat::RG32_FLOAT;     // TEXCOORD0
-        Attribs[2].BufferIndex  = 0;
-        Attribs[2].Offset       = 12;
-        Attribs[2].ElementStride= sizeof(FUiVertex);
-        Attribs[3].Format       = EFormat::R32_UINT;       // TEXCOORD1 (draw index)
-        Attribs[3].BufferIndex  = 0;
-        Attribs[3].Offset       = 20;
-        Attribs[3].ElementStride= sizeof(FUiVertex);
-        InputLayout = GRenderContext->CreateInputLayout(Attribs, 4);
 
         if (GRenderManager == nullptr || GRenderManager->GetTextureManager().GetLayout() == nullptr)
         {
@@ -205,10 +185,10 @@ namespace Lumina
                   .SetLoadOp(ERenderLoadOp::Load);
         PassDesc.AddColorAttachment(Attachment).SetRenderArea(TargetImage->GetExtent());
 
+        // No input layout: the VS pulls FUiVertex from PC.Vertices by device address.
         FGraphicsPipelineDesc PipelineDesc;
         PipelineDesc.SetDebugName("RmlUiPipeline")
                     .SetPrimType(EPrimitiveType::TriangleList)
-                    .SetInputLayout(InputLayout)
                     .SetVertexShader(VS)
                     .SetPixelShader(PS)
                     .SetRenderState(RenderState)
@@ -373,11 +353,12 @@ namespace Lumina
     {
         if (!Batch.VertexBuffer)
         {
+            // Storage buffer read by device address in the VS (vertex pulling); rests in ShaderResource.
             FRHIBufferDesc Desc;
             Desc.Size              = Math::Max<uint32>(VertexBytes, 4096);
-            Desc.Usage.SetFlag(BUF_VertexBuffer);
+            Desc.Usage.SetFlag(BUF_StorageBuffer);
             Desc.bKeepInitialState = true;
-            Desc.InitialState      = EResourceStates::VertexBuffer;
+            Desc.InitialState      = EResourceStates::ShaderResource;
             Desc.DebugName         = "RmlUiVertex";
             Batch.VertexBuffer     = GRenderContext->CreateBuffer(Desc);
         }
@@ -562,18 +543,22 @@ namespace Lumina
         {
             Memory::Memcpy(DBAlloc.Cpu, Batch.Draws.data(), DBytes);
 
+            // Vertices are pulled by device address; declare the read so the tracker barriers the resident
+            // buffer to ShaderResource (it rests there, so this is a no-op on unchanged frames). Index buffer
+            // stays bound for the indexed draw.
             FGraphicsState State;
             State.SetPipeline(Pipeline);
             State.SetRenderPass(CurrentPassDesc);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(Batch.VertexBuffer).SetSlot(0).SetOffset(0));
+            State.Reads(Batch.VertexBuffer, EResourceStates::ShaderResource);
             State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(Batch.IndexBuffer).SetFormat(EFormat::R32_UINT).SetOffset(0));
             State.AddViewport(FViewport(0.0f, FullW, 0.0f, FullH, 0.0f, 1.0f));
             State.AddScissor(FRect(0, int(CurrentSize.x), 0, int(CurrentSize.y)));
             CmdList.SetGraphicsState(State);
 
             FRmlUiPushConstants PC;
-            PC.DrawsAddress = DBAlloc.Gpu;
+            PC.DrawsAddress  = DBAlloc.Gpu;
+            PC.VertexAddress = Batch.VertexBuffer->GetAddress();
             CmdList.SetPushConstants(&PC, sizeof(PC));
 
             CmdList.DrawIndexed(Batch.IndexCount, 1, 0, 0, 0);

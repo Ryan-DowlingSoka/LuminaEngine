@@ -1,15 +1,8 @@
-// RmlUi vertex shader (fully-bindless, single-draw path). Each vertex carries a draw index into the
-// device-address buffer (see RmlUiCommon); the shader just transforms by the per-draw MVP.
+// RmlUi vertex shader (fully-bindless, single-draw path). Vertices are pulled from the resident batch
+// buffer by device address (PC.Vertices); each carries a draw index into the per-draw device-address
+// buffer (see RmlUiCommon), so the shader just transforms by the per-draw MVP.
 #pragma once
 #include "Includes/RmlUiCommon.slang"
-
-struct VSInput
-{
-    float2 Position  : POSITION;
-    float4 Colour    : COLOR;       // premultiplied RGBA8
-    float2 UV        : TEXCOORD0;
-    uint   DrawIndex : TEXCOORD1;   // R32_UINT vertex attribute
-};
 
 struct VSOutput
 {
@@ -20,14 +13,19 @@ struct VSOutput
 };
 
 [shader("vertex")]
-VSOutput VertexMain(VSInput Input)
+VSOutput VertexMain(uint VertexID : SV_VulkanVertexID)
 {
-    FUiDraw Draw = PC.Draws[Input.DrawIndex];
+    // Indices are rebased to VertexOffset 0, so SV_VulkanVertexID indexes the concatenated batch array.
+    FUiVertex V    = PC.Vertices[VertexID];
+    FUiDraw   Draw = PC.Draws[V.DrawIndex];
 
     VSOutput Output;
-    Output.Position  = mul(Draw.MVP, float4(Input.Position, 0.0, 1.0));
-    Output.Colour    = Input.Colour;
-    Output.UV        = Input.UV;
-    Output.DrawIndex = Input.DrawIndex;
+    Output.Position  = mul(Draw.MVP, float4(V.Position, 0.0, 1.0));
+    Output.Colour    = float4( (V.Colour        & 0xFFu),
+                               ((V.Colour >>  8) & 0xFFu),
+                               ((V.Colour >> 16) & 0xFFu),
+                               ((V.Colour >> 24) & 0xFFu)) / 255.0;
+    Output.UV        = V.UV;
+    Output.DrawIndex = V.DrawIndex;
     return Output;
 }

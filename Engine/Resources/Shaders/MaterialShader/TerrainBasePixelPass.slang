@@ -116,9 +116,12 @@ float2 TerrainCascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 Casca
 #define PCSS_BLOCKER_SEARCH_TAPS   16
 static const float PCSS_BlockerSearchRadius = 0.0035;
 static const float PCSS_LightSize           = 0.05;
-static const float PCSS_MinFilterRadius     = 0.00001;
-static const float PCSS_MaxFilterRadius     = 0.0018;
+// Filter radius bounds in shadow texels (per-cascade); see BasePixelPass.slang. Floor = smooth near
+// contact edges, ceiling = gap-free far penumbra. Texel units self-scale across cascades.
+static const float PCSS_MinFilterTexels     = 1.5;
+static const float PCSS_MaxFilterTexels     = 8.0;
 static const float PCSS_BlockerDepthBias    = 0.0004;
+static const float PCSS_MaxPlaneDepthBias   = 0.01;    // Cap on the receiver-plane prediction (silhouette-edge guard)
 
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
 {
@@ -128,6 +131,13 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
+
+    // Screen-space derivatives of shadow-space depth/UV, before the Inside early-out (quad coherence).
+    // Feed the receiver-plane prediction in the blocker search below; see BasePixelPass.slang.
+    float2 dUVdx = ddx(ProjectionUV);
+    float2 dUVdy = ddy(ProjectionUV);
+    float  dDdx  = ddx(CurrentDepth);
+    float  dDdy  = ddy(CurrentDepth);
 
     Inside = !(any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
                CurrentDepth < 0.0 || CurrentDepth > 1.0);
@@ -141,12 +151,25 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float RefDepth = CurrentDepth - Bias;
 
-    float CascadeScale = 1.0 + 1.5 * float(CascadeIndex);
+    // Normalized by cascade count so the outermost cascade keeps consistent softness (~4x) as the count
+    // changes; see BasePixelPass.slang.
+    float CascadeScale = 1.0 + 3.0 * float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1));
 
     float BlockerDepthSum = 0.0;
     int   NumBlockers     = 0;
 
     float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
+
+    // Receiver-plane depth slope (invert the 2x2 [dUV/dscreen] Jacobian) so a sloped receiver isn't
+    // misread as an occluder across the wide far-cascade search. See BasePixelPass.slang.
+    float  Det = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
+    float2 DepthSlopeUV = float2(0.0, 0.0);
+    if (abs(Det) > 1e-12)
+    {
+        float InvDet = 1.0 / Det;
+        DepthSlopeUV.x = ( dUVdy.y * dDdx - dUVdx.y * dDdy) * InvDet;
+        DepthSlopeUV.y = (-dUVdy.x * dDdx + dUVdx.x * dDdy) * InvDet;
+    }
 
     // Fixed rotation so the blocker (lit/shadow) decision is spatially coherent
     // and doesn't stipple across thin-occluder penumbras. Matches BasePixelPass.
@@ -158,7 +181,12 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 AtlasUV  = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
         float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
 
-        if (Depth < CurrentDepth - PCSS_BlockerDepthBias)
+        // Expected receiver depth at this offset along its own plane (clamped against silhouette-edge
+        // gradient runaway). Only depths in front of the predicted plane count as occluders.
+        float PlaneDelta    = clamp(dot(DepthSlopeUV, Offset), -PCSS_MaxPlaneDepthBias, PCSS_MaxPlaneDepthBias);
+        float ReceiverDepth = CurrentDepth + PlaneDelta;
+
+        if (Depth < ReceiverDepth - PCSS_BlockerDepthBias)
         {
             BlockerDepthSum += Depth;
             NumBlockers     += 1;
@@ -171,21 +199,28 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     }
 
     float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
+
+    // Filter bounds in shadow texels (per-cascade): floor for smooth near edges, ceiling the max tap
+    // count covers gap-free. Texel units self-scale across cascades; see BasePixelPass.slang.
+    float CascadeTexelUV = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float MinRadius      = PCSS_MinFilterTexels * CascadeTexelUV;
+    float MaxRadius      = PCSS_MaxFilterTexels * CascadeTexelUV;
+
     float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    // Per-light penumbra softness (PCSS light size); PCSS_LightSize is the default.
     float Penumbra        = DepthDelta * uLightData[0].ShadowParams.z;
-    float MaxRadius       = PCSS_MaxFilterRadius * CascadeScale;
-    float FilterRadius    = clamp(Penumbra, PCSS_MinFilterRadius, MaxRadius);
+    float FilterRadius    = clamp(Penumbra, MinRadius, MaxRadius);
 
+    // Pull in slightly for partial occlusion, but never below the texel floor (keeps contact edges smooth).
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
-    FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
+    FilterRadius = max(FilterRadius * lerp(0.75, 1.0, BlockerCoverage), MinRadius);
 
-    // Scale tap count with penumbra width so wide soft shadows keep their
-    // sample density and don't dither. Matches BasePixelPass.
+    // Scale tap count with penumbra width so density stays ~constant; at MaxRadius this reaches
+    // SHADOW_MAX_SAMPLE_COUNT -> ~1-texel Vogel spacing, gap-free. Matches BasePixelPass.
     int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
+
     float Shadow = 0.0;
     [loop]
     for (int i = 0; i < SampleCount; ++i)

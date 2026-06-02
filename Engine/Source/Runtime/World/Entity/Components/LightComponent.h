@@ -127,9 +127,10 @@ namespace Lumina
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
         float CascadeSplitLambda = 0.85f;
 
-        /** Maximum view distance that receives cascaded shadows; shadows fade out before this. */
+        /** Maximum view distance that receives cascaded shadows; shadows fade out before this. Lower values
+        concentrate the 4 cascades over less ground for sharper shadows; raise it for long-vista scenes. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f, Units = "m")
-        float ShadowMaxDistance = 1000.0f;
+        float ShadowMaxDistance = 500.0f;
 
         /** Distance the light eye is pushed behind each cascade so off-screen occluders still cast.
         Low sun angles need larger values or tall casters clip at the ortho near plane and shadows go hollow. */
@@ -144,9 +145,10 @@ namespace Lumina
         PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.01f, Delta = 0.0001f)
         float ShadowDepthBias = 0.0f;
 
-        /** Penumbra softness (PCSS light size); 0 = hard edges, larger = softer distant shadows. */
-        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.5f, Delta = 0.005f)
-        float ShadowSoftness = 0.05f;
+        /** Penumbra softness (PCSS light size); 0 = hard edges, larger = softer distant shadows. Above
+        ~0.01 an elevated caster's penumbra saturates the far-cascade filter cap and stipples/goes blocky. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.5f, Delta = 0.001f)
+        float ShadowSoftness = 0.005f;
 
         /** PCF taps per cascade sample; higher = smoother penumbra (less dither grain) at higher GPU cost. */
         PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 1, ClampMax = 64)

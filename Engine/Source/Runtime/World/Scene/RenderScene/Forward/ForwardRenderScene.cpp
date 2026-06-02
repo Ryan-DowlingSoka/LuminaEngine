@@ -34,6 +34,7 @@
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/DecalComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
+#include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/SkyLightComponent.h"
 #include "world/entity/components/staticmeshcomponent.h"
 #include "World/Entity/Components/TerrainComponent.h"
@@ -116,19 +117,6 @@ namespace Lumina
         const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
         MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
 
-        {
-            FVertexAttributeDesc VertexDesc[2];
-            VertexDesc[0].SetElementStride(sizeof(FSimpleElementVertex));
-            VertexDesc[0].SetOffset(offsetof(FSimpleElementVertex, Position));
-            VertexDesc[0].Format = EFormat::RGBA32_FLOAT;
-
-            VertexDesc[1].SetElementStride(sizeof(FSimpleElementVertex));
-            VertexDesc[1].SetOffset(offsetof(FSimpleElementVertex, Color));
-            VertexDesc[1].Format = EFormat::R32_UINT;
-
-            SimpleVertexLayoutInput = GRenderContext->CreateInputLayout(VertexDesc, eastl::size(VertexDesc));
-        }
-
         // Shared (view-independent) buffers + images first; the per-view binding sets
         // built in AddSceneView reference these.
         InitBuffers();
@@ -137,8 +125,11 @@ namespace Lumina
         InitSharedResources();
 
         // Sky cube allocated before any binding set; contents filled per-frame by SkyCubeCapturePass().
-        InitSkyCube();
-        InitIBLConvolutionTargets();
+        // Allocated at the cheap baseline; SyncIBLResolution rebuilds to the active environment's tier
+        // (e.g. High) on the first rendered frame, so env-less scenes never pay for big cubes.
+        AppliedIBLResolution = FIBLBakeResolution{};
+        InitSkyCube(AppliedIBLResolution.SkyCube);
+        InitIBLConvolutionTargets(AppliedIBLResolution);
 
         // Cascade shadow atlas: shared across all views. Capture (preview) cameras reuse the
         // primary camera's CSM cascades rather than fitting their own, so it's created once here.
@@ -494,6 +485,10 @@ namespace Lumina
         }
 
         CurrentFrameSlot        = Slot;
+
+        // Recreate the IBL cubes if the active environment's quality tier changed (rare, WaitIdle-guarded)
+        // before any pass reads them this frame. The matching bIBLDirty was set on the same change.
+        SyncIBLResolution(Frame.Volumetrics.IBLResolution);
 
         // Shared passes (cull/skinning/shadows/sky) run once with CurrentView = primary; the
         // primary's full two-pass sequence then runs below, and capture views are shaded after.
@@ -867,6 +862,20 @@ namespace Lumina
             Slot.bPending = false;
         }
         #endif
+    }
+
+    // Maps the authored IBL quality tier to concrete cube/prefilter resolutions. The Mips counts keep
+    // roughness=1 on the smallest face >= 8px so the GGX lobe stays well sampled.
+    static FIBLBakeResolution ResolveIBLQuality(EIBLQuality Quality)
+    {
+        switch (Quality)
+        {
+            case EIBLQuality::Low:    return FIBLBakeResolution{ 256u,  128u, 5u, 32u };
+            case EIBLQuality::Medium: return FIBLBakeResolution{ 512u,  256u, 6u, 32u };
+            case EIBLQuality::Ultra:  return FIBLBakeResolution{ 2048u, 512u, 7u, 64u };
+            case EIBLQuality::High:
+            default:                  return FIBLBakeResolution{ 1024u, 256u, 6u, 32u };
+        }
     }
 
     void FForwardRenderScene::CompileDrawCommands_GameThread()
@@ -1491,6 +1500,12 @@ namespace Lumina
                     EnvironmentParams.MoonDirection = FVector4(Env.MoonDirection, 0.0f);
                     EnvironmentParams.GalaxyParams  = FVector4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
                 });
+
+                // Resolve the IBL bake resolution; the render thread rebuilds the cubes when it changes
+                // (handled alongside the dirty-flag bookkeeping below). Keep the last tier if no env.
+                Frame.Volumetrics.IBLResolution = ActiveEnv
+                    ? ResolveIBLQuality(ActiveEnv->IBLQuality)
+                    : LastExtractedIBLResolution;
             }
 
             // Skylight (ambient fill + IBL scale). Last enabled SSkyLightComponent wins.
@@ -1611,8 +1626,6 @@ namespace Lumina
         const auto& LightData            = Frame.Lighting.LightData;
         const auto& EnvironmentParams    = Frame.Volumetrics.EnvironmentParams;
         FRHIImage* EnvironmentMapImage   = Frame.Volumetrics.EnvironmentMapImage;
-        const auto& SimpleVertices       = Frame.Primitives.SimpleVertices;
-        const auto& SolidVertices        = Frame.Primitives.SolidVertices;
         const auto& BillboardInstances   = Frame.Primitives.BillboardInstances;
         const uint32 TotalMeshletBound   = Frame.Views.TotalMeshletBound;
         const uint32 NumDrawsPerView     = Frame.Views.NumDrawsPerView;
@@ -1624,10 +1637,8 @@ namespace Lumina
         SceneGlobalData.CullData.NumDraws          = NumDraws;
         SceneGlobalData.CullData.TotalMeshletBound = TotalMeshletBound;
 
-        // Sizes for the persistent per-frame buffers (all other CPU-dynamic data is transient): debug
-        // line/triangle geometry, and the GPU-written pre-skinned vertex buffer.
-        const SIZE_T SimpleVertexSize     = SimpleVertices.size() * sizeof(FSimpleElementVertex);
-        const SIZE_T SolidVertexSize      = SolidVertices.size() * sizeof(FSimpleElementVertex);
+        // Sizes for the persistent per-frame buffers (all other CPU-dynamic data is transient): the
+        // GPU-written pre-skinned vertex buffer. Debug line/triangle geometry is ring-allocated at draw time.
         const SIZE_T PreSkinnedSize       = Math::Max<SIZE_T>(sizeof(FPreSkinnedVertex),
                                             (SIZE_T)Frame.Geometry.TotalPreSkinnedVertices * sizeof(FPreSkinnedVertex));
 
@@ -1646,10 +1657,8 @@ namespace Lumina
             sizeof(uint32) * 4,
             (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
 
-        // These buffers are reached by device address (PreSkinned) or bound directly (vertex/indirect),
+        // These buffers are reached by device address (PreSkinned) or bound directly (indirect),
         // not through any persistent descriptor set, so a resize needs no binding-set rebuild.
-        RenderUtils::ResizeBufferIfNeeded(SimpleVertexBuffer,       (uint32)SimpleVertexSize, 1.2f, SimpleVertexLowUsage);
-        RenderUtils::ResizeBufferIfNeeded(SolidVertexBuffer,        (uint32)SolidVertexSize,  1.2f, SolidVertexLowUsage);
         RenderUtils::ResizeBufferIfNeeded(PreSkinnedVerticesBuffer, (uint32)PreSkinnedSize,   1.2f, PreSkinnedVerticesLowUsage);
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
@@ -1661,14 +1670,10 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
-            // The only CPU uploads left to persistent buffers: indirect args (GPU-consumed) and the
-            // debug vertex buffers. Everything else dynamic goes through the transient ring below.
+            // The only CPU upload left to a persistent buffer: indirect args (GPU-consumed). Debug
+            // line/triangle geometry is ring-allocated at its draw site; everything else dynamic goes
+            // through the transient ring below.
             CmdList.SetBufferState(GetIndirectArgs(), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetSimpleVertexBuffer(), EResourceStates::CopyDest);
-            if (SolidVertexSize > 0)
-            {
-                CmdList.SetBufferState(GetSolidVertexBuffer(), EResourceStates::CopyDest);
-            }
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
@@ -1679,11 +1684,6 @@ namespace Lumina
                 CmdList.WriteBuffer(GetIndirectArgs(), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
             }
 
-            CmdList.WriteBuffer(GetSimpleVertexBuffer(), SimpleVertices.data(), SimpleVertexSize);
-            if (SolidVertexSize > 0)
-            {
-                CmdList.WriteBuffer(GetSolidVertexBuffer(), SolidVertices.data(), SolidVertexSize);
-            }
             // Env/fog params are uploaded to the transient ring at their pass sites (Environment /
             // VolumetricFog*); here we only track changes to gate the costly IBL convolution below.
             const bool bEnvParamsChanged = !bEnvironmentParamsUploaded || std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
@@ -1693,14 +1693,16 @@ namespace Lumina
                 bEnvironmentParamsUploaded   = true;
             }
 
-            const bool bSunChanged =
-                LastIBLSunDirection != LightData.SunDirection ||
-                bLastIBLHasSun       != (LightData.bHasSun != 0);
-            const bool bMapChanged =
-                LastIBLEnvironmentMap != EnvironmentMapImage;
+            const bool bSunChanged = LastIBLSunDirection != LightData.SunDirection || bLastIBLHasSun != (LightData.bHasSun != 0);
+            const bool bMapChanged = LastIBLEnvironmentMap != EnvironmentMapImage;
+            
+            // Quality-tier change forces a full re-bake into the freshly-sized cubes (recreated on
+            // the render thread by SyncIBLResolution before SkyCubeCapturePass runs).
+            const bool bResChanged = Frame.Volumetrics.IBLResolution != LastExtractedIBLResolution; 
+            LastExtractedIBLResolution = Frame.Volumetrics.IBLResolution;
 
             if (RenderSettings.bHasEnvironment &&
-                (!bIBLValid || bEnvParamsChanged || bSunChanged || bMapChanged))
+                (!bIBLValid || bEnvParamsChanged || bSunChanged || bMapChanged || bResChanged))
             {
                 bIBLDirty                  = true;
                 LastIBLEnvironmentParams   = EnvironmentParams;
@@ -1720,13 +1722,12 @@ namespace Lumina
                 SunCos = Math::Dot(LastConvolvedSunDirection, LightData.SunDirection);
             }
             const bool bConvSunChanged = bConvHasSunChanged || (SunCos < SunCosThreshold);
-            const bool bConvParamsChanged =
-                std::memcmp(&LastConvolvedEnvironmentParams, &EnvironmentParams, sizeof(FEnvironmentParams)) != 0;
+            const bool bConvParamsChanged = std::memcmp(&LastConvolvedEnvironmentParams, &EnvironmentParams, sizeof(FEnvironmentParams)) != 0;
             const bool bConvMapChanged =
                 LastConvolvedEnvironmentMap != EnvironmentMapImage;
 
             if (RenderSettings.bHasEnvironment &&
-                (!bIBLConvolutionValid || bConvParamsChanged || bConvSunChanged || bConvMapChanged))
+                (!bIBLConvolutionValid || bConvParamsChanged || bConvSunChanged || bConvMapChanged || bResChanged))
             {
                 bIBLConvolutionDirty           = true;
                 LastConvolvedEnvironmentParams = EnvironmentParams;
@@ -1741,19 +1742,34 @@ namespace Lumina
             SceneRootShared = FSceneRoot{};
             SceneRootShared.Lights = CmdList.CopyTransient(LightData).Gpu;
             if (!Instances.empty())
+            {
                 SceneRootShared.Instances = CmdList.CopyTransientArray(Instances.data(), Instances.size()).Gpu;
+            }
             if (!BonesData.empty())
+            {
                 SceneRootShared.Bones = CmdList.CopyTransientArray(BonesData.data(), BonesData.size()).Gpu;
+            }
             if (!BillboardInstances.empty())
+            {
                 SceneRootShared.Billboards = CmdList.CopyTransientArray(BillboardInstances.data(), BillboardInstances.size()).Gpu;
+            }
             if (!CullViews.empty())
+            {
                 SceneRootShared.CullViews = CmdList.CopyTransientArray(CullViews.data(), CullViews.size()).Gpu;
+            }
             if (!Frame.Geometry.SkinDescriptors.empty())
+            {
                 SceneRootShared.SkinDescriptors = CmdList.CopyTransientArray(Frame.Geometry.SkinDescriptors.data(), Frame.Geometry.SkinDescriptors.size()).Gpu;
+            }
             if (!Frame.Primitives.WidgetInstances.empty())
+            {
                 SceneRootShared.Widgets = CmdList.CopyTransientArray(Frame.Primitives.WidgetInstances.data(), Frame.Primitives.WidgetInstances.size()).Gpu;
+            }
             if (!InstanceMeshletPrefix.empty())
+            {
                 SceneRootShared.InstanceMeshletPrefix = CmdList.CopyTransientArray(InstanceMeshletPrefix.data(), InstanceMeshletPrefix.size()).Gpu;
+            }
+            
             SceneRootShared.Materials          = GRenderManager->GetMaterialManager().GetMaterialBuffer()->GetAddress();
             SceneRootShared.MeshletDrawList    = GetMeshletDrawList()->GetAddress();
             SceneRootShared.PreSkinnedVertices = GetPreSkinnedVerticesBuffer()->GetAddress();
@@ -2633,7 +2649,6 @@ namespace Lumina
                         FGPUInstance& Out = Instances[WriteIdx];
                         Out.Transform                  = Entity.Transform;
                         Out.SphereBounds               = Entity.SphereBounds;
-                        Out.VBAddress                  = 0ull;
                         Out.ShadowMeshletOffset        = Item.ShadowMeshletOffset;
                         Out.ShadowMeshletCount         = Item.ShadowMeshletCount;
                         Out.MeshletHeaderAddress       = Entity.MeshletHeaderAddress;
@@ -4927,12 +4942,24 @@ namespace Lumina
         // Cleared to transmittance = 1 (alpha) / zero color, so the base pass reads a no-op where no decal lands.
         const FVector4 ClearVal(0.0f, 0.0f, 0.0f, 1.0f);
 
-        // No decals: still clear so the base pass DBuffer sample is a guaranteed no-op.
+        // No decals: still clear so the base pass DBuffer sample is a guaranteed no-op. Clear via a
+        // LoadOp::Clear render pass rather than ClearImageFloat (vkCmdClearColorImage): the latter forces
+        // the targets through CopyDst (RT->CopyDst->SRV = 6 barriers + 3 transfer clears), whereas a
+        // clear-only pass leaves them in RenderTarget so the base pass needs only one RT->SRV each.
         if (Decals.empty())
         {
-            CmdList.ClearImageFloat(DBufferA, AllSubresources, ClearVal);
-            CmdList.ClearImageFloat(DBufferB, AllSubresources, ClearVal);
-            CmdList.ClearImageFloat(DBufferC, AllSubresources, ClearVal);
+            FRenderPassDesc::FAttachment C0; C0.SetImage(DBufferA).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
+            FRenderPassDesc::FAttachment C1; C1.SetImage(DBufferB).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
+            FRenderPassDesc::FAttachment C2; C2.SetImage(DBufferC).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
+
+            FRenderPassDesc ClearPass;
+            ClearPass.AddColorAttachment(C0)
+                     .AddColorAttachment(C1)
+                     .AddColorAttachment(C2)
+                     .SetRenderArea(DBufferA->GetExtent());
+
+            CmdList.BeginRenderPass(ClearPass);
+            CmdList.EndRenderPass();
             return;
         }
 
@@ -7146,8 +7173,7 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
-    // 5 mips: roughness M/(NumMips-1) = {0, 0.25, 0.5, 0.75, 1.0}. Standard PBR choice.
-    static constexpr uint32 GSkyPrefilterMipCount = 5;
+    // Prefilter mip count is per-tier (FIBLBakeResolution::Mips); the pass reads it from the cube.
     // GGX samples per prefilter texel. 256 is the readable/cost compromise vs Karis 1024.
     static constexpr uint32 GPrefilterSampleCount = 256;
 
@@ -7468,7 +7494,7 @@ namespace Lumina
             uint64 EnvAddr;
             uint32 SkyCubeIndex;
             uint32 EquirectIndex;
-            uint32 _Pad0;
+            uint32 EquirectWidth;   // HDRI mode: drives the screen-derivative LOD that anti-aliases the sky.
             uint32 _Pad1;
         };
         static_assert(sizeof(FEnvPushConstants) == 24, "FEnvPushConstants must match the slang push block.");
@@ -7477,10 +7503,18 @@ namespace Lumina
         PC.EnvAddr       = EnvAlloc.Gpu;
         PC.SkyCubeIndex  = (uint32)SkyCube->GetResourceID();
         PC.EquirectIndex = (uint32)Equirect->GetResourceID();
+        PC.EquirectWidth = Equirect->GetSizeX();
 
         CmdList.SetGraphicsState(GraphicsState);
         PushRootConstants(CmdList, PC);
         CmdList.Draw(3, 1, 0, 0);
+    }
+
+    namespace
+    {
+        // Mirrors FSimpleElementPass in SimpleElementVertex.slang: device address of the transient debug
+        // vertex array, passed through the per-pass constants block (gPC.PassAddr).
+        struct FSimpleElementPassData { uint64 Vertices = 0; };
     }
 
     void FForwardRenderScene::BatchedLineDraw(ICommandList& CmdList)
@@ -7521,8 +7555,6 @@ namespace Lumina
             .SetDepthAttachment(Depth)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
 
-        FVertexBufferBinding VertexBinding{GetSimpleVertexBuffer()};
-
         FRasterState RasterState; RasterState
             .EnableDepthClip();
 
@@ -7544,11 +7576,11 @@ namespace Lumina
                 .SetRasterState(RasterState)
                 .SetDepthStencilState(DepthState);
 
+            // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName(bDepthTest ? "Batched Line Draw (Depth)" : "Batched Line Draw (XRay)")
                 .SetPrimType(EPrimitiveType::LineList)
                 .SetRenderState(RenderState)
-                .SetInputLayout(SimpleVertexLayoutInput)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader);
@@ -7560,7 +7592,6 @@ namespace Lumina
         {
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
-                .AddVertexBuffer(VertexBinding)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(Pipeline)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
@@ -7569,6 +7600,9 @@ namespace Lumina
 
         FGraphicsState DepthTestedState = BuildLineState(BuildLinePipeline(true));
         FGraphicsState XRayState        = BuildLineState(BuildLinePipeline(false));
+
+        // Vertices live in the transient ring for this submission; the VS reads them by device address.
+        const FSimpleElementPassData VertsPass{ CmdList.CopyTransientArray(SimpleVertices.data(), SimpleVertices.size()).Gpu };
 
         // Re-bind only when the depth mode changes between consecutive batches.
         int CurrentDepthMode = -1;
@@ -7581,8 +7615,17 @@ namespace Lumina
                 CurrentDepthMode = DepthMode;
             }
             CmdList.SetLineWidth(Batch.Thickness);
-            PushRootConstants(CmdList);
-            CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
+            PushRootConstants(CmdList, VertsPass);
+
+            // Draw args built straight into the ring; DrawIndirect reads them by VkBuffer+offset, with no
+            // persistent indirect buffer and no IndirectArgument transition. StartVertexLocation feeds
+            // SV_VertexID so the VS indexes into the full vertex array.
+            auto Args = CmdList.AllocTransient<FDrawIndirectArguments>();
+            Args.Data->VertexCount           = Batch.VertexCount;
+            Args.Data->InstanceCount          = 1;
+            Args.Data->StartVertexLocation    = Batch.StartVertex;
+            Args.Data->StartInstanceLocation  = 0;
+            CmdList.DrawIndirect(Args.Buffer, Args.Offset, 1, sizeof(FDrawIndirectArguments));
         }
     }
 
@@ -7618,8 +7661,6 @@ namespace Lumina
             .SetDepthAttachment(Depth)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
 
-        FVertexBufferBinding VertexBinding{GetSolidVertexBuffer()};
-
         // Two-sided so the surface reads from any angle.
         FRasterState RasterState; RasterState
             .EnableDepthClip()
@@ -7652,11 +7693,11 @@ namespace Lumina
                 .SetDepthStencilState(DepthState)
                 .SetBlendState(BlendState);
 
+            // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName(bDepthTest ? "Batched Triangle Draw (Depth)" : "Batched Triangle Draw (XRay)")
                 .SetPrimType(EPrimitiveType::TriangleList)
                 .SetRenderState(RenderState)
-                .SetInputLayout(SimpleVertexLayoutInput)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader);
@@ -7668,7 +7709,6 @@ namespace Lumina
         {
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
-                .AddVertexBuffer(VertexBinding)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(Pipeline)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
@@ -7677,6 +7717,8 @@ namespace Lumina
 
         FGraphicsState DepthTestedState = BuildState(BuildPipeline(true));
         FGraphicsState XRayState        = BuildState(BuildPipeline(false));
+
+        const FSimpleElementPassData VertsPass{ CmdList.CopyTransientArray(SolidVertices.data(), SolidVertices.size()).Gpu };
 
         int CurrentDepthMode = -1;
         for (const FSolidBatch& Batch : SolidBatches)
@@ -7687,8 +7729,14 @@ namespace Lumina
                 CmdList.SetGraphicsState(Batch.bDepthTest ? DepthTestedState : XRayState);
                 CurrentDepthMode = DepthMode;
             }
-            PushRootConstants(CmdList);
-            CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
+            PushRootConstants(CmdList, VertsPass);
+
+            auto Args = CmdList.AllocTransient<FDrawIndirectArguments>();
+            Args.Data->VertexCount            = Batch.VertexCount;
+            Args.Data->InstanceCount          = 1;
+            Args.Data->StartVertexLocation    = Batch.StartVertex;
+            Args.Data->StartInstanceLocation  = 0;
+            CmdList.DrawIndirect(Args.Buffer, Args.Offset, 1, sizeof(FDrawIndirectArguments));
         }
     }
 
@@ -8444,7 +8492,8 @@ namespace Lumina
         // Cluster grid is per-view (created in AddSceneView). All CPU-dynamic scene data (instances,
         // bones, lights, billboards, widgets, cull views, skin descriptors, env/fog params, meshlet
         // prefix) is uploaded to the command-list transient ring each frame -- no persistent buffer.
-        // What remains persistent: GPU-written rings + pre-skinned vertices, and the debug vertex buffers.
+        // What remains persistent: GPU-written rings + pre-skinned vertices. Debug line/triangle geometry
+        // is ring-allocated at its draw site and pulled by device address (see BatchedLineDraw).
 
         {
             // GPU pre-skinning output: written by Skinning.slang (UAV), read by every draw
@@ -8456,26 +8505,6 @@ namespace Lumina
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Pre-Skinned Vertices";
             PreSkinnedVerticesBuffer = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FSimpleElementVertex);
-            BufferDesc.Usage.SetFlag(BUF_VertexBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::VertexBuffer;
-            BufferDesc.DebugName = "Simple Element Vertex";
-            SimpleVertexBuffer = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FSimpleElementVertex);
-            BufferDesc.Usage.SetFlag(BUF_VertexBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::VertexBuffer;
-            BufferDesc.DebugName = "Solid Element Vertex";
-            SolidVertexBuffer = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         // Unified meshlet draw list (NumViews * TotalMeshletBound); CullMeshlets appends
@@ -8889,14 +8918,13 @@ namespace Lumina
         return BRDFLut;
     }
 
-    void FForwardRenderScene::InitSkyCube()
+    void FForwardRenderScene::InitSkyCube(uint32 FaceSize)
     {
-        // 256 per face: bilinear filtering supplies per-pixel detail, so the cube needn't
-        // match screen size. Keeps sun/moon sharp while cutting bake work 16x vs 1024.
-        constexpr uint32 SkyCubeFaceSize = 256u;
-
+        // Face size drives the IBL source resolution and (in HDRI mode) the angular detail the
+        // visible sky reflects. Bilinear filtering still supplies per-pixel sky detail, so the cube
+        // need not match screen size. Set by the active environment's IBLQuality tier.
         FRHIImageDesc ImageDesc;
-        ImageDesc.Extent            = FUIntVector2(SkyCubeFaceSize, SkyCubeFaceSize);
+        ImageDesc.Extent            = FUIntVector2(FaceSize, FaceSize);
         ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
         ImageDesc.Dimension         = EImageDimension::TextureCube;
         ImageDesc.ArraySize         = 6;
@@ -8909,13 +8937,11 @@ namespace Lumina
         NamedImages[(int)ENamedImage::SkyCube] = GRenderContext->CreateImage(ImageDesc);
     }
 
-    void FForwardRenderScene::InitIBLConvolutionTargets()
+    void FForwardRenderScene::InitIBLConvolutionTargets(const FIBLBakeResolution& Resolution)
     {
         {
-            constexpr uint32 IrradianceFaceSize = 32u;
-
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(IrradianceFaceSize, IrradianceFaceSize);
+            ImageDesc.Extent            = FUIntVector2(Resolution.Irradiance, Resolution.Irradiance);
             ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
             ImageDesc.Dimension         = EImageDimension::TextureCube;
             ImageDesc.ArraySize         = 6;
@@ -8928,17 +8954,15 @@ namespace Lumina
             NamedImages[(int)ENamedImage::SkyIrradiance] = GRenderContext->CreateImage(ImageDesc);
         }
 
-        // Pre-filtered specular: 128 base, 5 mips. Smallest mip = fully rough; the
-        // roughness=1 GGX lobe is wide enough that 8 per face suffices.
+        // Pre-filtered specular: roughness spread evenly across mips. Smallest mip = fully rough;
+        // the roughness=1 GGX lobe is wide enough that a tiny face suffices.
         {
-            constexpr uint32 PrefilterFaceSize = 128u;
-
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(PrefilterFaceSize, PrefilterFaceSize);
+            ImageDesc.Extent            = FUIntVector2(Resolution.Prefilter, Resolution.Prefilter);
             ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
             ImageDesc.Dimension         = EImageDimension::TextureCube;
             ImageDesc.ArraySize         = 6;
-            ImageDesc.NumMips           = (uint8)GSkyPrefilterMipCount;
+            ImageDesc.NumMips           = (uint8)Resolution.Mips;
             ImageDesc.InitialState      = EResourceStates::ShaderResource;
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
@@ -8946,6 +8970,36 @@ namespace Lumina
 
             NamedImages[(int)ENamedImage::SkyPrefilter] = GRenderContext->CreateImage(ImageDesc);
         }
+    }
+
+    void FForwardRenderScene::SyncIBLResolution(const FIBLBakeResolution& Resolution)
+    {
+        if (Resolution == AppliedIBLResolution)
+        {
+            return;
+        }
+
+        // Rare (editor-driven quality change). Drain the GPU so no in-flight frame still reads the old
+        // cubes through their bindless slots, then recreate them. The bake passes read sizes dynamically
+        // (GetSizeX / NumMips), so they adapt with no further changes.
+        GRenderContext->WaitIdle();
+
+        InitSkyCube(Resolution.SkyCube);
+        InitIBLConvolutionTargets(Resolution);
+
+        // Views snapshot the shared images (InitViewImages: View.Images = NamedImages); repoint the three
+        // IBL slots in every view so GetNamedImage / BuildViewSceneRoot pick up the new cubes.
+        for (FSceneView& View : SceneViews)
+        {
+            View.Images[(int)ENamedImage::SkyCube]      = NamedImages[(int)ENamedImage::SkyCube];
+            View.Images[(int)ENamedImage::SkyIrradiance] = NamedImages[(int)ENamedImage::SkyIrradiance];
+            View.Images[(int)ENamedImage::SkyPrefilter]  = NamedImages[(int)ENamedImage::SkyPrefilter];
+        }
+
+        // The freshly-sized cubes have undefined contents, but the game thread set bIBLDirty +
+        // bIBLConvolutionDirty on this same resolution change (bResChanged), so the bake refills them
+        // this frame. Don't touch bIBL*Valid here -- those are game-thread-owned (avoids a data race).
+        AppliedIBLResolution = Resolution;
     }
 
     void FForwardRenderScene::InitFrameResources()
@@ -8987,6 +9041,7 @@ namespace Lumina
         Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut]->GetResourceID();
         Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance]->GetResourceID();
         Root->SkyPrefilterIndex  = (uint32)View.Images[(int)ENamedImage::SkyPrefilter]->GetResourceID();
+        Root->SkyCubeIndex       = (uint32)View.Images[(int)ENamedImage::SkyCube]->GetResourceID();
         Root->ShadowCascadeIndex = (uint32)GetNamedImage(ENamedImage::Cascade)->GetResourceID();
         Root->ShadowAtlasIndex   = (uint32)ShadowAtlas.GetImage()->GetResourceID();
         return Root.Gpu;

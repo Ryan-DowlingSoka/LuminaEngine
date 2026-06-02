@@ -344,6 +344,8 @@ namespace Lumina
                 uint32                           VolumetricStepCount = 16;
                 bool                             bIBLDirty            = false;
                 bool                             bIBLConvolutionDirty = false;
+                // Resolved from SEnvironmentComponent::IBLQuality; render thread rebuilds the IBL cubes on change.
+                FIBLBakeResolution               IBLResolution        = {};
             } Volumetrics;
 
             // Post-process material resolved + ref-held on the game thread; the render thread reads
@@ -494,8 +496,6 @@ namespace Lumina
 
         static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
         
-        FRHIBuffer* GetSimpleVertexBuffer() const       { return SimpleVertexBuffer; }
-        FRHIBuffer* GetSolidVertexBuffer() const        { return SolidVertexBuffer; }
         FRHIBuffer* GetPreSkinnedVerticesBuffer() const { return PreSkinnedVerticesBuffer; }
         // Per-view images route through CurrentView; shared slots are aliased into every view.
         // Falls back to the shared store during Init before any view exists.
@@ -575,10 +575,15 @@ namespace Lumina
         // Bakes the BRDF integration LUT and returns it (no NamedImages assignment).
         FRHIImageRef BakeBRDFLUT();
         
-        void InitSkyCube();
-        
-        void InitIBLConvolutionTargets();
-        
+        void InitSkyCube(uint32 FaceSize);
+
+        void InitIBLConvolutionTargets(const FIBLBakeResolution& Resolution);
+
+        // Render thread: recreate the sky/irradiance/prefilter cubes when the active environment's
+        // IBL quality changes. WaitIdle-guarded (rare, editor-driven); patches every view's shared-image
+        // snapshot and forces a re-bake. No-op when Resolution already matches AppliedIBLResolution.
+        void SyncIBLResolution(const FIBLBakeResolution& Resolution);
+
         //~ Begin Render Passes
         // Game thread: clear per-frame CPU scene state before the parallel gather repopulates.
         void ResetPass_GameThread();
@@ -692,16 +697,11 @@ namespace Lumina
         // The only persistent per-frame buffers left. Everything CPU-dynamic (instances/lights/bones/
         // billboards/widgets/cull views/skin descriptors/env+fog params/meshlet prefix) is uploaded to
         // the command-list transient ring each frame; the GPU-written cull/draw rings have own members.
-        // Debug line/triangle vertex buffers stay persistent (a transient ring is the wrong home for
-        // large per-frame geometry -- it thrashes the shared chunk pool); pre-skinned vertices are
-        // GPU-written device-local scratch (skinning compute writes, draw VS reads via BDA).
-        FRHIBufferRef                                   SimpleVertexBuffer;
-        FRHIBufferRef                                   SolidVertexBuffer;
+        // Pre-skinned vertices are GPU-written device-local scratch (skinning compute writes, draw VS reads
+        // via BDA). Debug line/triangle geometry is ring-allocated at its draw site, no persistent buffer.
         FRHIBufferRef                                   PreSkinnedVerticesBuffer;
         // Per-buffer hysteresis counters for ResizeBufferIfNeeded's shrink path (consecutive
         // frames of sustained low usage). Persisted so memory is reclaimed after the scene shrinks.
-        uint32                                          SimpleVertexLowUsage = 0;
-        uint32                                          SolidVertexLowUsage = 0;
         uint32                                          PreSkinnedVerticesLowUsage = 0;
         TArray<uint32, FRAMES_IN_FLIGHT>                IndirectArgsRingLowUsage = {};
         TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDrawListRingLowUsage = {};
@@ -760,6 +760,12 @@ namespace Lumina
         bool                                    bLastConvolvedHasSun           = false;
         bool                                    bIBLConvolutionValid           = false;
 
+        // Currently-allocated IBL cube resolution (render thread). SyncIBLResolution rebuilds the cubes
+        // when the extracted FVolumetrics::IBLResolution differs. Init() allocates at this default (High).
+        FIBLBakeResolution                      AppliedIBLResolution           = {};
+        // Game-thread last-extracted resolution; a change forces bIBLDirty so the new cubes get baked.
+        FIBLBakeResolution                      LastExtractedIBLResolution     = {};
+
         // Mirrors last-seen EnvironmentParams; a memcmp gate skips the costly IBL convolution
         // for the common static-environment case.
         FEnvironmentParams                      LastUploadedEnvironmentParams = {};
@@ -798,8 +804,6 @@ namespace Lumina
         // Frame slot index for ringed scene resources. Set at the top of
         // RenderView_RenderThread from GRenderManager->GetCurrentFrameIndex().
         uint8                                                           CurrentFrameSlot = 0;
-
-        FRHIInputLayoutRef                      SimpleVertexLayoutInput;
 
         FShadowAtlas                            ShadowAtlas;
 

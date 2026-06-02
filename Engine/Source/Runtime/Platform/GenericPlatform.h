@@ -17,3 +17,12 @@ using int64  = signed long long;
 using ANSICHAR = char;
 using WIDECHAR = wchar_t;
 using TCHAR = WIDECHAR; // Switchable character; either ANSICHAR or WIDECHAR.
+
+// Encoding-intent aliases. The engine treats narrow char buffers (ANSICHAR/UTF8CHAR) as UTF-8 and
+// wide buffers (WIDECHAR/TCHAR) as UTF-16 on Windows. See PlatformString.h / StringCast.
+using UTF8CHAR  = char;
+using UTF16CHAR = char16_t;
+using UTF32CHAR = char32_t;
+
+// Width of a single WIDECHAR in bytes: 2 on Windows (UTF-16), 4 on most Unix platforms (UTF-32).
+#define PLATFORM_WIDECHAR_SIZE sizeof(WIDECHAR)

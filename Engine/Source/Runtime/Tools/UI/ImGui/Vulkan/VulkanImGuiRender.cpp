@@ -37,15 +37,16 @@ namespace Lumina
         FUIntVector2        Size = {0, 0};
     };
 
-    // 24 B push block; must mirror Includes/ImGuiCommon.slang::FImGuiPushConstants.
+    // 32 B push block; must mirror Includes/ImGuiCommon.slang::FImGuiPushConstants.
     struct FImGuiPushConstants
     {
         float  Scale[2];
         float  Translate[2];
         uint32 TextureID;
         uint32 SamplerIndex;
+        uint64 VertexAddr;     // device address of the transient ImDrawVert array (vertex pulling)
     };
-    static_assert(sizeof(FImGuiPushConstants) == 24, "Must match ImGuiCommon.slang::FImGuiPushConstants.");
+    static_assert(sizeof(FImGuiPushConstants) == 32, "Must match ImGuiCommon.slang::FImGuiPushConstants.");
     static_assert(sizeof(FImGuiPushConstants) <= MaxPushConstantSize, "ImGui push constants exceed RHI cap.");
 
     // ImGui samples with bilinear + wrap (matches the stock backend's repeat
@@ -79,22 +80,9 @@ namespace Lumina
         IO.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // ImTextureData create/update/destroy path
         IO.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;  // we drive secondary-window swapchains
 
-        // Native ImDrawVert layout (pos float2 @0, uv float2 @8, col RGBA8 @16), stride 20.
-        static_assert(sizeof(ImDrawVert) == 20, "ImDrawVert layout drifted; ImGui input layout must be updated.");
-        FVertexAttributeDesc Attribs[3];
-        Attribs[0].Format        = EFormat::RG32_FLOAT;   // POSITION
-        Attribs[0].BufferIndex   = 0;
-        Attribs[0].Offset        = offsetof(ImDrawVert, pos);
-        Attribs[0].ElementStride = sizeof(ImDrawVert);
-        Attribs[1].Format        = EFormat::RG32_FLOAT;   // TEXCOORD0
-        Attribs[1].BufferIndex   = 0;
-        Attribs[1].Offset        = offsetof(ImDrawVert, uv);
-        Attribs[1].ElementStride = sizeof(ImDrawVert);
-        Attribs[2].Format        = EFormat::RGBA8_UNORM;  // COLOR
-        Attribs[2].BufferIndex   = 0;
-        Attribs[2].Offset        = offsetof(ImDrawVert, col);
-        Attribs[2].ElementStride = sizeof(ImDrawVert);
-        InputLayout = GRenderContext->CreateInputLayout(Attribs, 3);
+        // The VS pulls ImDrawVert from the transient ring by device address (PC.VertexAddr), so there's no
+        // input layout. Layout still pinned here since the shader hard-codes the field offsets.
+        static_assert(sizeof(ImDrawVert) == 20, "ImDrawVert layout drifted; ImGuiVert.slang must be updated.");
 
         ImGuiPlatformIO& PlatformIO   = ImGui::GetPlatformIO();
         PlatformIO.Renderer_CreateWindow  = &FVulkanImGuiRender::OnRendererCreateWindow;
@@ -117,7 +105,6 @@ namespace Lumina
         FRecursiveScopeLock Lock(Mutex);
 
         PipelinesByFormat.clear();
-        InputLayout.SafeRelease();
 
         // Release custom subresource SRVs registered in the bindless table.
         if (GRenderManager != nullptr)
@@ -222,9 +209,9 @@ namespace Lumina
         PassDesc.AddColorAttachment(Attachment);
 
         FGraphicsPipelineDesc PipelineDesc;
+        // No input layout: the VS pulls vertices from PC.VertexAddr.
         PipelineDesc.SetDebugName("ImGuiPipeline")
                     .SetPrimType(EPrimitiveType::TriangleList)
-                    .SetInputLayout(InputLayout)
                     .SetVertexShader(VS)
                     .SetPixelShader(PS)
                     .SetRenderState(RenderState)
@@ -284,6 +271,7 @@ namespace Lumina
         {
             return;
         }
+        PC.VertexAddr = VB.Gpu;   // VS pulls ImDrawVert from here
 
         ImDrawVert* VtxDst = static_cast<ImDrawVert*>(VB.Cpu);
         ImDrawIdx*  IdxDst = static_cast<ImDrawIdx*>(IB.Cpu);
@@ -305,7 +293,6 @@ namespace Lumina
         State.SetPipeline(Pipeline);
         State.SetRenderPass(Pass);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(VB.Buffer).SetSlot(0).SetOffset(VB.Offset));
         State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(IB.Buffer).SetFormat(EFormat::R16_UINT).SetOffset(IB.Offset));
         State.AddViewport(FViewport(0.0f, FBW, 0.0f, FBH, 0.0f, 1.0f));
         State.AddScissor(FRect(0, (int)FBW, 0, (int)FBH));
@@ -852,12 +839,12 @@ namespace Lumina
             PC.Scale[0]     = Cap.ScaleX;     PC.Scale[1]     = Cap.ScaleY;
             PC.Translate[0] = Cap.TranslateX; PC.Translate[1] = Cap.TranslateY;
             PC.SamplerIndex = GImGuiSamplerIndex;
+            PC.VertexAddr   = VB.Gpu;   // VS pulls ImDrawVert from here
 
             FGraphicsState State;
             State.SetPipeline(Pipeline);
             State.SetRenderPass(Pass);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(VB.Buffer).SetSlot(0).SetOffset(VB.Offset));
             State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(IB.Buffer).SetFormat(EFormat::R16_UINT).SetOffset(IB.Offset));
             State.AddViewport(FViewport(0.0f, ImgW, 0.0f, ImgH, 0.0f, 1.0f));
             State.AddScissor(FRect(0, (int)ImgW, 0, (int)ImgH));

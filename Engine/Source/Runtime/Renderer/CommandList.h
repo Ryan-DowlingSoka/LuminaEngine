@@ -250,8 +250,29 @@ namespace Lumina
 
         virtual void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) = 0;
         virtual void DrawIndexed(uint32 IndexCount, uint32 InstanceCount = 1, uint32 FirstIndex = 1, int32 VertexOffset = 0, uint32 FirstInstance = 0) = 0;
+
+        // Indirect draws against the buffer bound in FGraphicsState::IndirectParams (a tracked, GPU-written
+        // args buffer -- gets the IndirectArgument barrier). Offset is in bytes; stride is the arg-struct size.
         virtual void DrawIndirect(uint32 DrawCount, uint64 Offset) = 0;
         virtual void DrawIndexedIndirect(uint32 DrawCount, uint64 Offset) = 0;
+
+        // Indirect draws against an explicit args buffer -- the path for transient (ring-allocated) args.
+        // No IndirectParams binding and no state transition: a host-visible ring chunk is made visible to
+        // VK_ACCESS_INDIRECT_COMMAND_READ by the queue-submit host-write guarantee, same as transient vertex
+        // pulling. Pass a ring chunk via the FTransientAlloc helper below.
+        virtual void DrawIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride) = 0;
+        virtual void DrawIndexedIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride) = 0;
+
+        // Draw FDrawIndirectArguments / FDrawIndexedIndirectArguments built straight into the transient ring
+        // (e.g. via AllocTransient<FDrawIndirectArguments>(DrawCount)). Stride is the arg-struct size.
+        void DrawIndirect(const FTransientAlloc& Args, uint32 DrawCount)
+        {
+            DrawIndirect(Args.Buffer, Args.Offset, DrawCount, sizeof(FDrawIndirectArguments));
+        }
+        void DrawIndexedIndirect(const FTransientAlloc& Args, uint32 DrawCount)
+        {
+            DrawIndexedIndirect(Args.Buffer, Args.Offset, DrawCount, sizeof(FDrawIndexedIndirectArguments));
+        }
 
         virtual void SetComputeState(const FComputeState& State) = 0;
         virtual void Dispatch(uint32 GroupCountX, uint32 GroupCountY, uint32 GroupCountZ) = 0;

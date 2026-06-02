@@ -27,18 +27,21 @@
 #define VERIFY_SSBO_ALIGNMENT(Type) \
 static_assert(sizeof(Type) % 16 == 0, #Type " must be 16-byte aligned");
 
-constexpr int NumCascades = 3;
+constexpr int NumCascades = 4;
 constexpr int ClusterGridSizeX = 16;
 constexpr int ClusterGridSizeY = 9;
 constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-constexpr int GCSMCascadeSizes[3]       = { 4096, 2048, 1024 };
-constexpr int GCSMAtlasWidth            = 6144;
-constexpr int GCSMAtlasHeight           = 4096;
-constexpr int GCSMCascadeOriginX[3]     = { 0,    4096, 4096 };
-constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    2048 };
+// 4 equal cascades in a 4096x4096 atlas (2x2). Equal resolution avoids starving the far cascades that
+// cover the most ground; total D32 atlas is 67MB (vs the old 6144x4096 = 100MB with a 4096/2048/1024
+// geometric falloff that spent most of the budget on the near cascade).
+constexpr int GCSMCascadeSizes[NumCascades]   = { 2048, 2048, 2048, 2048 };
+constexpr int GCSMAtlasWidth                  = 4096;
+constexpr int GCSMAtlasHeight                 = 4096;
+constexpr int GCSMCascadeOriginX[NumCascades] = { 0,    2048, 0,    2048 };
+constexpr int GCSMCascadeOriginY[NumCascades] = { 0,    0,    2048, 2048 };
 
 constexpr int GShadowAtlasResolution    = 4096;
 
@@ -76,7 +79,8 @@ namespace Lumina
         LightComplexity     = 11,
         ClusterGrid         = 12,
         ShadowCascades      = 13,
-        Num                 = 14,
+        ShadowPenumbra      = 14,
+        Num                 = 15,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
@@ -97,6 +101,7 @@ namespace Lumina
             case ERenderSceneDebugFlags::LightComplexity:   return "Light Complexity";
             case ERenderSceneDebugFlags::ClusterGrid:       return "Light Clusters";
             case ERenderSceneDebugFlags::ShadowCascades:    return "Shadow Cascades";
+            case ERenderSceneDebugFlags::ShadowPenumbra:    return "Shadow Penumbra";
             default:                                        return "Lit";
         }
     }
@@ -486,8 +491,6 @@ namespace Lumina
         FMatrix4     Transform;
         FVector4       SphereBounds;
 
-        uint64          VBAddress;
-
         uint32          ShadowMeshletOffset;
         uint32          ShadowMeshletCount;
         uint64          MeshletHeaderAddress;
@@ -498,18 +501,16 @@ namespace Lumina
         uint32          CustomData;
 
         // Full 32-bit bone index (was packed into 16 bits with MaterialIndex, which capped
-        // the scene at 64k total bones). Pad keeps the SSBO stride 16-byte aligned.
+        // the scene at 64k total bones).
         uint32          BoneOffset;
         uint32          MaterialIndex;
         uint32          EntityID;
         // Base index into the pre-skinned vertex buffer; the skinning pass writes there, the draw VS
         // reads instead of re-skinning. 0 for static instances.
         uint32          SkinnedVertexBase;
-        uint32          _Pad1;
-        uint32          _Pad2;
     };
 
-    static_assert(sizeof(FGPUInstance) == 144, "FGPUInstance layout must match shader");
+    static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
 
     // One per skinned vertex, produced by the skinning pass and read by every draw VS. Holds the COMPLETE
@@ -699,7 +700,7 @@ namespace Lumina
         uint32 SkyPrefilterIndex     = 0;
         uint32 ShadowCascadeIndex    = 0;  // bindless 2D SRV (cascade atlas)
         uint32 ShadowAtlasIndex      = 0;  // bindless 2D SRV (spot/point atlas)
-        uint32 _Pad                  = 0;
+        uint32 SkyCubeIndex          = 0;  // bindless cube SRV (full-res sky; sharp near-mirror reflections)
     };
     static_assert(sizeof(FSceneRoot) == 128, "FSceneRoot must match SceneGlobals.slang");
 

@@ -23,40 +23,192 @@ namespace Lumina
 
     namespace
     {
+        // Legacy single-stream container (still read for packages saved before chunking landed).
         struct FCompressedPackageHeader
         {
             uint64 UncompressedSize;
             uint64 CompressedSize;
         };
 
-        // Deflate at MZ_BEST_SPEED, prefixed with sizes for the loader.
-        bool CompressPackageBinary(const TVector<uint8>& In, TVector<uint8>& Out)
+        // Chunked container: the uncompressed binary is split into fixed-size slices, each deflated
+        // independently so compression fans out across worker threads. A texture package's single
+        // multi-megabyte deflate was the dominant cost of saving large assets.
+        //
+        // Layout: [magic u32][version u32][uncompressedSize u64][chunkSize u32][numChunks u32]
+        //         [compressedSize u32 * numChunks][deflate bytes, concatenated]
+        constexpr uint32 kPackageChunkMagic   = 0x32435A4C; // 'LZC2'
+        constexpr uint32 kPackageChunkVersion = 1;
+        constexpr uint32 kPackageChunkSize    = 4u * 1024 * 1024; // 4 MiB uncompressed per chunk
+
+        bool DeflateChunk(const uint8* Src, size_t Len, TVector<uint8>& Out)
         {
-            mz_ulong Bound = mz_compressBound((mz_ulong)In.size());
-            Out.resize(sizeof(FCompressedPackageHeader) + (size_t)Bound);
-
+            mz_ulong Bound = mz_compressBound((mz_ulong)Len);
+            Out.resize((size_t)Bound);
             mz_ulong OutLen = Bound;
-            int Ret = mz_compress2(Out.data() + sizeof(FCompressedPackageHeader), &OutLen,
-                In.data(), (mz_ulong)In.size(), MZ_DEFAULT_LEVEL);
-
+            const int Ret = mz_compress2(Out.data(), &OutLen, Src, (mz_ulong)Len, MZ_DEFAULT_LEVEL);
             if (Ret != MZ_OK)
             {
-                LOG_ERROR("CompressPackageBinary: compress failed (ret={})", Ret);
                 Out.clear();
                 return false;
             }
+            Out.resize((size_t)OutLen);
+            return true;
+        }
 
-            FCompressedPackageHeader CHeader;
-            CHeader.UncompressedSize = In.size();
-            CHeader.CompressedSize   = OutLen;
-            std::memcpy(Out.data(), &CHeader, sizeof(CHeader));
+        // Deflate In into the chunked container; chunks compress in parallel (one task each).
+        bool CompressPackageBinary(const TVector<uint8>& In, TVector<uint8>& Out)
+        {
+            LUMINA_PROFILE_SCOPE();
 
-            Out.resize(sizeof(FCompressedPackageHeader) + (size_t)OutLen);
+            const uint64 Total     = In.size();
+            const uint32 NumChunks = (Total == 0) ? 1u : (uint32)((Total + kPackageChunkSize - 1) / kPackageChunkSize);
+
+            TVector<TVector<uint8>> ChunkBytes(NumChunks);
+            TVector<uint8>          ChunkOk(NumChunks, 0);
+
+            auto CompressOne = [&](uint32 i)
+            {
+                const size_t Start = (size_t)i * kPackageChunkSize;
+                const size_t Len   = (size_t)((Total - Start) < kPackageChunkSize ? (Total - Start) : kPackageChunkSize);
+                ChunkOk[i] = DeflateChunk(In.data() + Start, Len, ChunkBytes[i]) ? 1 : 0;
+            };
+
+            if (NumChunks <= 1)
+            {
+                CompressOne(0);
+            }
+            else
+            {
+                Task::ParallelFor(NumChunks, CompressOne, 1);
+            }
+
+            for (uint32 i = 0; i < NumChunks; ++i)
+            {
+                if (ChunkOk[i] == 0)
+                {
+                    LOG_ERROR("CompressPackageBinary: chunk {} failed to compress", i);
+                    Out.clear();
+                    return false;
+                }
+            }
+
+            size_t TotalCompressed = 0;
+            for (const TVector<uint8>& Chunk : ChunkBytes)
+            {
+                TotalCompressed += Chunk.size();
+            }
+
+            const size_t HeaderBytes = sizeof(uint32) * 2 + sizeof(uint64) + sizeof(uint32) * 2
+                                     + (size_t)NumChunks * sizeof(uint32);
+            Out.resize(HeaderBytes + TotalCompressed);
+
+            uint8* P = Out.data();
+            auto WriteU32 = [&P](uint32 V) { std::memcpy(P, &V, sizeof(V)); P += sizeof(V); };
+            auto WriteU64 = [&P](uint64 V) { std::memcpy(P, &V, sizeof(V)); P += sizeof(V); };
+
+            WriteU32(kPackageChunkMagic);
+            WriteU32(kPackageChunkVersion);
+            WriteU64(Total);
+            WriteU32(kPackageChunkSize);
+            WriteU32(NumChunks);
+            for (const TVector<uint8>& Chunk : ChunkBytes)
+            {
+                WriteU32((uint32)Chunk.size());
+            }
+            for (const TVector<uint8>& Chunk : ChunkBytes)
+            {
+                std::memcpy(P, Chunk.data(), Chunk.size());
+                P += Chunk.size();
+            }
+
+            return true;
+        }
+
+        bool DecompressChunkedPackage(const TVector<uint8>& Raw, TVector<uint8>& Out)
+        {
+            const uint8*  P     = Raw.data();
+            const size_t  Size  = Raw.size();
+            size_t        Off   = 0;
+
+            const size_t FixedHeader = sizeof(uint32) * 2 + sizeof(uint64) + sizeof(uint32) * 2;
+            if (Size < FixedHeader)
+            {
+                LOG_ERROR("DecompressChunkedPackage: truncated header");
+                return false;
+            }
+
+            auto ReadU32 = [&]() { uint32 V; std::memcpy(&V, P + Off, sizeof(V)); Off += sizeof(V); return V; };
+            auto ReadU64 = [&]() { uint64 V; std::memcpy(&V, P + Off, sizeof(V)); Off += sizeof(V); return V; };
+
+            const uint32 Magic     = ReadU32();
+            const uint32 Version   = ReadU32();
+            const uint64 Total     = ReadU64();
+            const uint32 ChunkSize = ReadU32();
+            const uint32 NumChunks = ReadU32();
+
+            if (Magic != kPackageChunkMagic || Version != kPackageChunkVersion || ChunkSize == 0)
+            {
+                LOG_ERROR("DecompressChunkedPackage: bad header (magic/version/chunkSize)");
+                return false;
+            }
+
+            if (Size < FixedHeader + (size_t)NumChunks * sizeof(uint32))
+            {
+                LOG_ERROR("DecompressChunkedPackage: truncated size table");
+                return false;
+            }
+
+            TVector<uint32> Sizes(NumChunks);
+            TVector<size_t> Offsets(NumChunks);
+            size_t DataOff = FixedHeader + (size_t)NumChunks * sizeof(uint32);
+            for (uint32 i = 0; i < NumChunks; ++i)
+            {
+                Sizes[i]   = ReadU32();
+                Offsets[i] = DataOff;
+                DataOff   += Sizes[i];
+            }
+            if (DataOff > Size)
+            {
+                LOG_ERROR("DecompressChunkedPackage: chunk data overruns file");
+                return false;
+            }
+
+            Out.resize((size_t)Total);
+
+            // Sequential per-chunk inflate: no task-system dependency, so this path is valid in any
+            // context (shipping runtime, registry discovery) without nested-parallelism concerns.
+            for (uint32 i = 0; i < NumChunks; ++i)
+            {
+                const size_t OutStart = (size_t)i * ChunkSize;
+                const size_t Expected = (size_t)(((uint64)OutStart + ChunkSize <= Total) ? ChunkSize : (Total - OutStart));
+                mz_ulong OutLen = (mz_ulong)Expected;
+                const int Ret = mz_uncompress(Out.data() + OutStart, &OutLen, P + Offsets[i], (mz_ulong)Sizes[i]);
+                if (Ret != MZ_OK || OutLen != Expected)
+                {
+                    LOG_ERROR("DecompressChunkedPackage: chunk {} inflate failed (ret={}, got={}, expected={})",
+                        i, Ret, (uint64)OutLen, (uint64)Expected);
+                    Out.clear();
+                    return false;
+                }
+            }
+
             return true;
         }
 
         bool DecompressPackageBinary(const TVector<uint8>& Raw, TVector<uint8>& Out)
         {
+            // Distinguish the chunked container by its leading magic; everything else is legacy
+            // single-stream (whose first bytes are an uncompressed-size that can't collide with the magic).
+            if (Raw.size() >= sizeof(uint32))
+            {
+                uint32 Magic;
+                std::memcpy(&Magic, Raw.data(), sizeof(Magic));
+                if (Magic == kPackageChunkMagic)
+                {
+                    return DecompressChunkedPackage(Raw, Out);
+                }
+            }
+
             if (Raw.size() < sizeof(FCompressedPackageHeader))
             {
                 LOG_ERROR("DecompressPackageBinary: file too small ({} bytes)", Raw.size());

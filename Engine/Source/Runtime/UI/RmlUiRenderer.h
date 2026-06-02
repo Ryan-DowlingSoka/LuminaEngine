@@ -96,12 +96,13 @@ namespace Lumina
             Rml::Rectanglei             Scissor;
         };
 
-        // GPU vertex for the batched path (pos/color/uv + per-draw index); matches RmlUiVert.slang (stride 24).
+        // GPU vertex for the batched path (pos/uv/color + per-draw index); matches RmlUiVert.slang (stride 24).
+        // The two float2s stay adjacent so neither straddles a 16-byte boundary under BDA layout rules.
         struct FUiVertex
         {
             float  Position[2];
-            uint32 Colour;        // premultiplied RGBA8
             float  UV[2];
+            uint32 Colour;        // premultiplied RGBA8
             uint32 DrawIndex;
         };
 
@@ -145,7 +146,6 @@ namespace Lumina
         void                        RevalidateBrushes(ICommandList& CmdList);
         bool                        EnsureMaterialBufferSet();
 
-        FRHIInputLayoutRef          InputLayout;
         FRHIGraphicsPipelineRef     Pipeline;
         FRHIImageRef                DefaultWhiteImage;
         int32                       DefaultWhiteResourceID = -1;

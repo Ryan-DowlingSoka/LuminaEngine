@@ -55,8 +55,10 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         float3 LocalDir = float3(SinTheta * cos(Phi), SinTheta * sin(Phi), CosTheta);
         float3 L        = normalize(LocalDir.x * Tangent + LocalDir.y * Bitangent + LocalDir.z * N);
 
-        Sum += SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb;
+        // Tonemapped accumulation suppresses fireflies from bright point sources (same as the prefilter).
+        Sum += FireflyTonemap(SanitizeRadiance(SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb));
     }
 
-    uOutCube[DTid] = float4(Sum / float(NumSamples), 1.0);
+    float3 Irradiance = FireflyUntonemap(Sum / float(NumSamples));
+    uOutCube[DTid] = float4(SanitizeRadiance(Irradiance), 1.0);
 }

@@ -40,7 +40,9 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float u = 0.5 + atan2(-RayDir.z, RayDir.x) * (1.0 / TWO_PI);
     float v = 0.5 - asin(clamp(RayDir.y, -1.0, 1.0)) * INV_PI;
 
-    float3 Color = SampleBindless2DLevel(PC.EquirectSRV, SAMPLER_LINEAR_CLAMP, float2(u, v), 0.0).rgb;
+    // Sanitize here: this is the gate between the raw HDR panorama (which may hold Inf/NaN) and the IBL
+    // cube the convolutions read, so a finite cube keeps the whole downstream chain stable.
+    float3 Color = SanitizeRadiance(SampleBindless2DLevel(PC.EquirectSRV, SAMPLER_LINEAR_CLAMP, float2(u, v), 0.0).rgb);
 
     uSkyCube[DTid] = float4(Color, 1.0);
 }

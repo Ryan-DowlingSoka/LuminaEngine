@@ -52,7 +52,9 @@ namespace Lumina
     private:
 
         TSharedPtr<FBufferChunk> CreateChunk(uint64 Size) const;
-        void CreateFastRing();
+        // (Re)create the fast ring at NewSliceSize per slice. Recreating drops our ref to the old buffer;
+        // in-flight slices stay alive via the command buffers that referenced them, so the swap is hazard-free.
+        bool CreateOrResizeFastRing(uint64 NewSliceSize);
 
     private:
 
@@ -65,23 +67,31 @@ namespace Lumina
         uint64                                      AllocatedMemory = 0;
         uint64                                      LargestChunkSize = 0;
         bool                                        bIsScratchBuffer = false;
-
-        // Per-frame linear fast path: one persistent buffer sliced FRAMES_IN_FLIGHT+1 ways. Each
-        // recording bump-allocates inside its own slice (no version scan, no VMA churn); BeginFrame
-        // rotates to the next slice, which is GPU-drained (it was last written >FRAMES_IN_FLIGHT
-        // frames ago). Allocations larger than a slice, or a full slice, spill to the chunk pool.
-        // Created lazily once a manager proves it's a small-allocation workload (warmup count), so
-        // big one-shot upload lists (texture/mesh streaming) never reserve the ring.
-        static constexpr uint64 kFastRingSliceSize  = 32ull * 1024 * 1024;
+        
         static constexpr uint32 kFastRingSliceCount = FRAMES_IN_FLIGHT + 1;
         static constexpr uint32 kFastRingWarmup     = 64;
+        // Adaptive slice sizing: the slice is grown to the measured per-recording demand (so a heavy scene
+        // keeps hitting the fast path) and shrunk back when demand subsides (so we don't pin VRAM for an
+        // idle UI). kFastRingMaxSlice caps the per-slice size -- total ring VRAM is this x kFastRingSliceCount.
+        static constexpr uint64 kFastRingMinSlice   = 8ull   * 1024 * 1024;   // floor; pow2
+        static constexpr uint64 kFastRingMaxSlice   = 1024ull * 1024 * 1024;  // cap per slice; pow2
+        static constexpr uint32 kFastRingEvalWindow = 64;                     // recordings between re-sizings (shrink cadence)
         FRHIBufferRef   FastRingBuffer;
         void*           FastRingMapped   = nullptr;
+        uint64          FastRingSliceSize = kFastRingMinSlice;   // current per-slice size (runtime, adaptive)
         uint64          FastRingOffset   = 0;
         uint64          FastRingSliceVersion[kFastRingSliceCount] = {};
         uint32          FastRingActive   = 0;
         uint32          FastRingWarmup   = 0;
         bool            FastRingUsable   = false;
+
+        // Demand tracking for adaptive sizing. FastRingFrameDemand is a "virtual" bump offset that ignores
+        // slice capacity, so it captures the true bytes a recording needed (including any that spilled to the
+        // pool). Rolled into FastRingWindowPeak at each rotation; the peak over kFastRingEvalWindow recordings
+        // drives the resize.
+        uint64          FastRingFrameDemand = 0;
+        uint64          FastRingWindowPeak  = 0;
+        uint32          FastRingWindowCount = 0;
 
     };
     

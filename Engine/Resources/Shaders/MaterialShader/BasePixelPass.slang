@@ -183,11 +183,15 @@ float2 CascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
 // PCSS tuning: scale the PCF radius by receiver-to-blocker depth so the kernel collapses to a
 // near-point sample at contact and opens to a soft penumbra at distance.
 #define PCSS_BLOCKER_SEARCH_TAPS   16
-static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search
+static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search (scaled by CascadeScale)
 static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
-static const float PCSS_MinFilterRadius     = 0.00001; // Near-point sample at contact
-static const float PCSS_MaxFilterRadius     = 0.0018;  // Cap so far shadows don't over-blur
+// Filter radius bounds in SHADOW TEXELS (per-cascade), not UV: a floor so contact shadows still get
+// multi-tap PCF (smooth near edges, not blocky), and a ceiling the max tap count covers gap-free (no far
+// stipple). Texel units keep softening screen-consistent across cascades without an explicit CascadeScale.
+static const float PCSS_MinFilterTexels     = 1.5;
+static const float PCSS_MaxFilterTexels     = 8.0;     // ~sqrt(SHADOW_MAX_SAMPLE_COUNT) -> coverable at max taps
 static const float PCSS_BlockerDepthBias    = 0.0004;  // Bias for blocker classification
+static const float PCSS_MaxPlaneDepthBias   = 0.01;    // Cap on the receiver-plane prediction (silhouette-edge guard)
 
 // PCSS-filtered sample of one directional cascade. Returns 1.0 (and Inside=false) when the fragment
 // is outside the cascade's projected range so the caller can fall back to another cascade or fully-lit.
@@ -201,6 +205,13 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
+
+    // Screen-space derivatives of the shadow-space depth/UV, taken before the Inside early-out so the
+    // quad stays coherent. Used below to predict the receiver's own depth across the blocker search.
+    float2 dUVdx = ddx(ProjectionUV);
+    float2 dUVdy = ddy(ProjectionUV);
+    float  dDdx  = ddx(CurrentDepth);
+    float  dDdy  = ddy(CurrentDepth);
 
     Inside = !(any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
                CurrentDepth < 0.0 || CurrentDepth > 1.0);
@@ -216,7 +227,9 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     // Outer cascades cover more world per texel, so scale the search and filter cap to keep the
     // penumbra scene-proportional (smaller = sharper but blockier, larger = softer but loses contact).
-    float CascadeScale = 1.0 + 1.5 * float(CascadeIndex);
+    // Normalized by cascade count so the outermost cascade keeps the same softness (~4x) whether there
+    // are 3 or 4 cascades -- a raw 1+1.5*index would over-blur the far cascade as cascade count grows.
+    float CascadeScale = 1.0 + 3.0 * float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1));
 
     // Stage 1: blocker search through the point sampler for raw texel depths (the comparison sampler
     // would return a PCF result, useless for classification). No occluder taps -> fully lit, early out.
@@ -224,6 +237,19 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     int   NumBlockers     = 0;
 
     float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
+
+    // Receiver-plane depth slope in shadow-UV space, recovered by inverting the 2x2 [dUV/dscreen] Jacobian.
+    // The far-cascade search disk spans many world units, so a sloped receiver (ground at a grazing angle)
+    // changes its own depth across it; predicting that per tap stops the surface from being misread as an
+    // occluder and spraying false penumbra noise. Degenerate Jacobian -> flat plane (zero slope).
+    float  Det = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
+    float2 DepthSlopeUV = float2(0.0, 0.0);
+    if (abs(Det) > 1e-12)
+    {
+        float InvDet = 1.0 / Det;
+        DepthSlopeUV.x = ( dUVdy.y * dDdx - dUVdx.y * dDdy) * InvDet;
+        DepthSlopeUV.y = (-dUVdy.x * dDdx + dUVdx.x * dDdy) * InvDet;
+    }
 
     // Fixed (non per-pixel) rotation for the blocker search: per-pixel rotation of this sparse pattern
     // stipples thin-occluder penumbras; a shared angle keeps the lit/shadow boundary coherent. PCF below still rotates.
@@ -235,7 +261,12 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 AtlasUV  = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
         float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
 
-        if (Depth < CurrentDepth - PCSS_BlockerDepthBias)
+        // Expected receiver depth at this offset along its own plane (clamped so a runaway gradient at a
+        // silhouette edge can't invert the test). Only depths in front of the predicted plane are occluders.
+        float PlaneDelta    = clamp(dot(DepthSlopeUV, Offset), -PCSS_MaxPlaneDepthBias, PCSS_MaxPlaneDepthBias);
+        float ReceiverDepth = CurrentDepth + PlaneDelta;
+
+        if (Depth < ReceiverDepth - PCSS_BlockerDepthBias)
         {
             BlockerDepthSum += Depth;
             NumBlockers     += 1;
@@ -249,25 +280,31 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
 
-    // Stage 2: penumbra estimate. For an ortho light it grows linearly with receiver-to-blocker depth
-    // (NDC-z delta); at contact the delta collapses and the filter shrinks to PCSS_MinFilterRadius.
+    // Filter bounds in shadow texels (per-cascade): a floor so contact shadows still get multi-tap PCF
+    // (smooth near edges), and a ceiling the max tap count covers gap-free (no far stipple). Texel units
+    // keep softening screen-consistent across cascades, so no explicit CascadeScale is needed here.
+    float CascadeTexelUV = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float MinRadius      = PCSS_MinFilterTexels * CascadeTexelUV;
+    float MaxRadius      = PCSS_MaxFilterTexels * CascadeTexelUV;
+
+    // Stage 2: penumbra grows with receiver-to-blocker depth (ortho NDC-z delta) scaled by per-light
+    // softness (ShadowParams.z), clamped between the texel floor and ceiling.
     float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    // Per-light penumbra softness (PCSS light size); PCSS_LightSize is the default value.
     float Penumbra     = DepthDelta * uLightData[0].ShadowParams.z;
-    float MaxRadius    = PCSS_MaxFilterRadius * CascadeScale;
-    float FilterRadius = clamp(Penumbra, PCSS_MinFilterRadius, MaxRadius);
+    float FilterRadius = clamp(Penumbra, MinRadius, MaxRadius);
 
-    // Low blocker coverage means partial occlusion, so pull the filter in
-    // slightly to keep penumbra stable across cascades.
+    // Low blocker coverage means partial occlusion, so pull the filter in slightly -- but never below
+    // the texel floor, or contact-hardened edges go blocky again.
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
-    FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
+    FilterRadius = max(FilterRadius * lerp(0.75, 1.0, BlockerCoverage), MinRadius);
 
-    // Stage 3: PCF with contact-hardened radius. Scale the tap count (base = ShadowParams2.y) with
-    // penumbra width so density stays roughly constant -- a fixed count grains out on wide penumbras.
+    // Stage 3: scale tap count with penumbra width so sample density (and thus smoothness) stays roughly
+    // constant; at MaxRadius this reaches SHADOW_MAX_SAMPLE_COUNT -> ~1-texel Vogel spacing, gap-free.
     int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
+
     float Shadow = 0.0;
     [loop]
     for (int i = 0; i < SampleCount; ++i)
@@ -497,6 +534,85 @@ float3 CascadeDebugColor(float3 FragmentPos, float3 ViewPosition, float3 ShadedB
         Color *= 0.35;
     }
     return Color;
+}
+
+// Penumbra diagnostic for the "Shadow Penumbra" view. Re-runs the cascade pick + PCSS blocker search
+// (matching SampleDirectionalCascade) and paints the filter behavior directly:
+//   R = FilterRadius / uncapped MaxRadius   (1.0 -> penumbra is pinned at the per-cascade cap)
+//   G = FilterRadius in shadow texels / 32  (absolute world-texel width -> what makes it blocky)
+//   B = NumBlockers / blocker taps          (blocker-search coverage / stability)
+// Black = fully lit (no blockers found); dark gray = no sun or outside every cascade.
+float3 ShadowPenumbraDebug(float3 FragmentPos, float3 ViewPosition, float2 ScreenPos)
+{
+    int SunShadowIdx = FindSunShadowDataIndex();
+    if (SunShadowIdx == INDEX_NONE)
+        return float3(0.08, 0.08, 0.08);
+
+    int CascadeIndex = 0;
+    for (int i = 0; i < NUM_CASCADES; ++i)
+        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+            CascadeIndex = i + 1;
+    if (CascadeIndex >= NUM_CASCADES)
+        return float3(0.15, 0.15, 0.15);
+
+    float4x4 CascadeVP  = GetShadowViewProjection(SunShadowIdx, CascadeIndex);
+    float4 ShadowCoord  = mul(CascadeVP, float4(FragmentPos, 1.0));
+    float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
+    float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
+    float  CurrentDepth = ProjCoords.z;
+    if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) || CurrentDepth < 0.0 || CurrentDepth > 1.0)
+        return float3(0.15, 0.15, 0.15);
+
+    float CascadeScale = 1.0 + 3.0 * float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1));
+    float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
+
+    float2 dUVdx = ddx(ProjectionUV);
+    float2 dUVdy = ddy(ProjectionUV);
+    float  dDdx  = ddx(CurrentDepth);
+    float  dDdy  = ddy(CurrentDepth);
+    float  Det   = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
+    float2 DepthSlopeUV = float2(0.0, 0.0);
+    if (abs(Det) > 1e-12)
+    {
+        float InvDet = 1.0 / Det;
+        DepthSlopeUV.x = ( dUVdy.y * dDdx - dUVdx.y * dDdy) * InvDet;
+        DepthSlopeUV.y = (-dUVdy.x * dDdx + dUVdx.x * dDdy) * InvDet;
+    }
+
+    float BlockerDepthSum = 0.0;
+    int   NumBlockers     = 0;
+    [unroll]
+    for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
+    {
+        float2 Offset    = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
+        float2 SampleUV  = clamp(ProjectionUV + Offset, 0.001, 0.999);
+        float2 AtlasUV   = CascadeAtlasUV(SunShadowIdx, CascadeIndex, SampleUV);
+        float  Depth     = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
+        float  PlaneDelta = clamp(dot(DepthSlopeUV, Offset), -PCSS_MaxPlaneDepthBias, PCSS_MaxPlaneDepthBias);
+        if (Depth < CurrentDepth + PlaneDelta - PCSS_BlockerDepthBias)
+        {
+            BlockerDepthSum += Depth;
+            NumBlockers     += 1;
+        }
+    }
+
+    if (NumBlockers == 0)
+        return float3(0.0, 0.0, 0.0);
+
+    float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
+    float CascadeTexelUV  = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float MinRadius       = PCSS_MinFilterTexels * CascadeTexelUV;
+    float MaxRadius       = PCSS_MaxFilterTexels * CascadeTexelUV;
+    float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
+    float Penumbra        = DepthDelta * uLightData[0].ShadowParams.z;
+    float FilterRadius    = clamp(Penumbra, MinRadius, MaxRadius);
+    float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
+    FilterRadius          = max(FilterRadius * lerp(0.75, 1.0, BlockerCoverage), MinRadius);
+
+    float FilterTexels = FilterRadius / CascadeTexelUV;
+    return float3(saturate(FilterRadius / max(MaxRadius, 1e-6)),
+                  saturate(FilterTexels / 32.0),
+                  BlockerCoverage);
 }
 
 
@@ -742,6 +858,9 @@ PSOutput FragmentMain(PSInput Input)
             }
             case DEBUG_MODE_SHADOW_CASCADES:
                 Color = CascadeDebugColor(WorldPosition, ViewPosition, Color);
+                break;
+            case DEBUG_MODE_SHADOW_PENUMBRA:
+                Color = ShadowPenumbraDebug(WorldPosition, ViewPosition, Input.Position.xy);
                 break;
         }
     }

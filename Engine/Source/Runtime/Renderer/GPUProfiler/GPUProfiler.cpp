@@ -25,6 +25,8 @@ namespace Lumina
         TotalStats = {};
         NumBufferBarriers = 0;
         NumImageBarriers = 0;
+        Barriers.clear();
+        NumDroppedBarriers = 0;
         State = EGPUFrameState::Idle;
     }
 
@@ -128,6 +130,33 @@ namespace Lumina
             FGPUProfileScope& Scope = Frame.Scopes[Frame.ScopeStack.back()];
             Scope.NumBufferBarriers += NumBuffer;
             Scope.NumImageBarriers  += NumImage;
+        }
+    }
+
+    void FGPUProfiler::AddBarrierRecords(const FGPUBarrierRecord* Records, uint32 Count)
+    {
+        if (Count == 0 || Records == nullptr || !IsEnabled())
+        {
+            return;
+        }
+
+        FScopeLock Lock(Mutex);
+        FGPUProfileFrame& Frame = Frames[RecordingSlot];
+
+        // Every barrier in one commit shares the innermost open scope.
+        const int32 ScopeIndex = Frame.ScopeStack.empty() ? -1 : Frame.ScopeStack.back();
+
+        for (uint32 i = 0; i < Count; ++i)
+        {
+            if (Frame.Barriers.size() >= MaxBarrierRecordsPerFrame)
+            {
+                Frame.NumDroppedBarriers += (Count - i);
+                break;
+            }
+
+            FGPUBarrierRecord Record = Records[i];
+            Record.ScopeIndex = ScopeIndex;
+            Frame.Barriers.push_back(Move(Record));
         }
     }
 

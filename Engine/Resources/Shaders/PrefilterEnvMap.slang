@@ -52,11 +52,15 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         if (NdotL > 0.0)
         {
             // NdotL weighting (UE4 / learnopengl): samples toward N count more, grazing less.
-            Sum    += SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb * NdotL;
+            // Sanitize per-sample so one Inf texel can't turn the whole accumulator into Inf/NaN.
+            float3 Radiance = SanitizeRadiance(SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb);
+            // Accumulate in tonemapped space so a tiny bright source (city light, sun) hit by only a few
+            // samples can't produce a blocky/sparkly firefly in the prefiltered mip.
+            Sum    += FireflyTonemap(Radiance) * NdotL;
             Weight += NdotL;
         }
     }
 
-    Sum /= max(Weight, 1e-4);
-    uOutMip[DTid] = float4(Sum, 1.0);
+    Sum = FireflyUntonemap(Sum / max(Weight, 1e-4));
+    uOutMip[DTid] = float4(SanitizeRadiance(Sum), 1.0);
 }

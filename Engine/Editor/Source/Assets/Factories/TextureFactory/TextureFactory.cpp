@@ -14,6 +14,7 @@
 #include "Renderer/RenderTypes.h"
 #include "Renderer/RHIGlobals.h"
 #include "Tools/Import/ImportHelpers.h"
+#include "Thumbnails/ThumbnailUtils.h"
 #include "Core/Math/Math.h"
 
 namespace Lumina
@@ -23,7 +24,41 @@ namespace Lumina
         return NewObject<CTexture>(Package, Name);
     }
 
-    // HDR/Environment cook: bypasses Basis (LDR-only) and stores RGBA16F. No mips; the cube prefilter chain owns mip generation.
+    // Box-downsamples an RGBA-float32 image to half dimensions (min 1px). Plain 2x2 average in linear
+    // radiance, which is correct for HDR -- no gamma to undo.
+    static void DownsampleEnvironmentMip(const TVector<float>& Src, uint32 SrcW, uint32 SrcH,
+                                         TVector<float>& Dst, uint32& DstW, uint32& DstH)
+    {
+        DstW = Math::Max(SrcW >> 1, 1u);
+        DstH = Math::Max(SrcH >> 1, 1u);
+        Dst.resize((size_t)DstW * DstH * 4);
+
+        for (uint32 y = 0; y < DstH; ++y)
+        {
+            const uint32 sy0 = Math::Min(y * 2u, SrcH - 1u);
+            const uint32 sy1 = Math::Min(sy0 + 1u, SrcH - 1u);
+            for (uint32 x = 0; x < DstW; ++x)
+            {
+                const uint32 sx0 = Math::Min(x * 2u, SrcW - 1u);
+                const uint32 sx1 = Math::Min(sx0 + 1u, SrcW - 1u);
+
+                const float* P00 = &Src[((size_t)sy0 * SrcW + sx0) * 4];
+                const float* P01 = &Src[((size_t)sy0 * SrcW + sx1) * 4];
+                const float* P10 = &Src[((size_t)sy1 * SrcW + sx0) * 4];
+                const float* P11 = &Src[((size_t)sy1 * SrcW + sx1) * 4];
+
+                float* D = &Dst[((size_t)y * DstW + x) * 4];
+                for (int c = 0; c < 4; ++c)
+                {
+                    D[c] = (P00[c] + P01[c] + P10[c] + P11[c]) * 0.25f;
+                }
+            }
+        }
+    }
+
+    // HDR/Environment cook: bypasses Basis (LDR-only) and stores RGBA16F with a full box-filtered mip
+    // chain. The mips let the visible-sky pass sample a screen-derivative LOD so the equirect stops
+    // shimmering; the IBL cube prefilter still owns its own roughness chain.
     static bool CookEnvironmentTexture(CTexture* Texture, const Import::Textures::FTextureImportResult& Source)
     {
         const uint32 Width  = Source.Dimensions.x;
@@ -50,24 +85,35 @@ namespace Lumina
 
         const float* SrcFloats = reinterpret_cast<const float*>(Source.Pixels.data());
 
-        // RGBA16F: two uint32 per pixel; (R,G) low half, (B,A) high half. 8 bytes per pixel.
-        TVector<uint32> Halves(NumTexels * 2);
+        // Radiance values above half-float max (65504) pack to +Inf, and Inf/NaN texels poison the IBL
+        // convolution downstream (black/white reflection blocks + bloom flashes). Drop non-finite to 0 and
+        // clamp into a finite, format-safe range so the stored panorama is well-conditioned.
+        auto Sanitize = [](float X) -> float
+        {
+            if (!std::isfinite(X)) return 0.0f;
+            return Math::Clamp(X, 0.0f, 64000.0f);
+        };
+
+        // Mip 0 as a packed RGBA-float32 working buffer; each subsequent mip box-downsamples the prior.
+        TVector<float> MipFloat((size_t)NumTexels * 4);
         for (uint64 i = 0; i < NumTexels; ++i)
         {
             const float* Src = SrcFloats + i * SrcChannels;
-            const float R = SrcChannels >= 1 ? Src[0] : 0.0f;
-            const float G = SrcChannels >= 2 ? Src[1] : 0.0f;
-            const float B = SrcChannels >= 3 ? Src[2] : 0.0f;
-            const float A = SrcChannels >= 4 ? Src[3] : 1.0f;
-            Halves[i * 2 + 0] = Math::PackHalf2x16(FVector2(R, G));
-            Halves[i * 2 + 1] = Math::PackHalf2x16(FVector2(B, A));
+            float* D = &MipFloat[i * 4];
+            D[0] = Sanitize(SrcChannels >= 1 ? Src[0] : 0.0f);
+            D[1] = Sanitize(SrcChannels >= 2 ? Src[1] : 0.0f);
+            D[2] = Sanitize(SrcChannels >= 3 ? Src[2] : 0.0f);
+            D[3] = SrcChannels >= 4 ? Src[3] : 1.0f;
         }
+
+        const uint32 MaxDim  = Math::Max(Width, Height);
+        const uint32 NumMips = (uint32)std::floor(std::log2((float)MaxDim)) + 1u;
 
         FRHIImageDesc ImageDescription;
         ImageDescription.Format            = EFormat::RGBA16_FLOAT;
         ImageDescription.Extent            = FUIntVector2(Width, Height);
         ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
-        ImageDescription.NumMips           = 1;
+        ImageDescription.NumMips           = (uint8)NumMips;
         ImageDescription.InitialState      = EResourceStates::ShaderResource;
         ImageDescription.bKeepInitialState = true;
 
@@ -78,29 +124,55 @@ namespace Lumina
 
         Texture->TextureResource->ImageDescription = ImageDescription;
         Texture->TextureResource->Mips.clear();
-        Texture->TextureResource->Mips.resize(1);
+        Texture->TextureResource->Mips.resize(NumMips);
 
         FRHIImageRef RHIImage = GRenderContext->CreateImage(ImageDescription);
         Texture->TextureResource->RHIImage = RHIImage;
 
-        const uint32 BytesPerPixel = 8u;
-        const uint32 RowPitch      = Width * BytesPerPixel;
-        const uint32 SlicePitch    = RowPitch * Height;
-
         FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
         CommandList->Open();
-        CommandList->WriteImage(RHIImage, 0, 0, Halves.data(), RowPitch, 1);
+
+        uint32 MipW = Width, MipH = Height;
+        TVector<float> NextFloat;
+        for (uint32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
+        {
+            const uint64 MipTexels = (uint64)MipW * MipH;
+
+            // RGBA16F: two uint32 per pixel; (R,G) low half, (B,A) high half. 8 bytes per pixel.
+            TVector<uint32> Halves(MipTexels * 2);
+            for (uint64 i = 0; i < MipTexels; ++i)
+            {
+                const float* P = &MipFloat[i * 4];
+                Halves[i * 2 + 0] = Math::PackHalf2x16(FVector2(P[0], P[1]));
+                Halves[i * 2 + 1] = Math::PackHalf2x16(FVector2(P[2], P[3]));
+            }
+
+            const uint32 RowPitch   = MipW * 8u;
+            const uint32 SlicePitch = RowPitch * MipH;
+
+            CommandList->WriteImage(RHIImage, 0, MipIndex, Halves.data(), RowPitch, 1);
+
+            FTextureResource::FMip& Mip = Texture->TextureResource->Mips[MipIndex];
+            Mip.Width      = MipW;
+            Mip.Height     = MipH;
+            Mip.RowPitch   = RowPitch;
+            Mip.Depth      = 1;
+            Mip.SlicePitch = SlicePitch;
+            Mip.Pixels.assign(reinterpret_cast<uint8*>(Halves.data()),
+                              reinterpret_cast<uint8*>(Halves.data()) + SlicePitch);
+
+            if (MipIndex + 1u < NumMips)
+            {
+                uint32 NextW, NextH;
+                DownsampleEnvironmentMip(MipFloat, MipW, MipH, NextFloat, NextW, NextH);
+                MipFloat = Move(NextFloat);
+                MipW = NextW;
+                MipH = NextH;
+            }
+        }
+
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
-
-        FTextureResource::FMip& Mip = Texture->TextureResource->Mips[0];
-        Mip.Width      = Width;
-        Mip.Height     = Height;
-        Mip.RowPitch   = RowPitch;
-        Mip.Depth      = 1;
-        Mip.SlicePitch = SlicePitch;
-        Mip.Pixels.assign(reinterpret_cast<uint8*>(Halves.data()),
-                          reinterpret_cast<uint8*>(Halves.data()) + SlicePitch);
 
         return true;
     }
@@ -297,56 +369,76 @@ namespace Lumina
     }
     
 #if USING(WITH_EDITOR)
-    static void CreatePackageThumbnail(CTexture* Texture, const uint8* RawPixels, uint32 SourceWidth, uint32 SourceHeight)
+    // Narkowicz 2015 ACES filmic fit, then sRGB OETF + quantize. Tonemaps one linear-HDR channel to 8-bit.
+    static uint8 HdrChannelToSRGB8(float Linear)
     {
-        CPackage* AssetPackage = Texture->GetPackage();
+        constexpr float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+        const float Mapped = Math::Clamp((Linear * (a * Linear + b)) / (Linear * (c * Linear + d) + e), 0.0f, 1.0f);
+        const float Srgb = (Mapped <= 0.0031308f) ? (12.92f * Mapped)
+                                                  : (1.055f * std::pow(Mapped, 1.0f / 2.4f) - 0.055f);
+        return (uint8)Math::Clamp((int32)std::lround(Srgb * 255.0f), 0, 255);
+    }
 
-        constexpr uint32 ThumbWidth    = 256;
-        constexpr uint32 ThumbHeight   = 256;
-        constexpr uint32 BytesPerPixel = 4;
-
-        AssetPackage->GetPackageThumbnail()->ImageWidth  = ThumbWidth;
-        AssetPackage->GetPackageThumbnail()->ImageHeight = ThumbHeight;
-        AssetPackage->GetPackageThumbnail()->ImageData.resize(ThumbWidth * ThumbHeight * BytesPerPixel);
-    
-        const uint32 SourceRowPitch = SourceWidth * BytesPerPixel;
-        const uint8* SourceData     = RawPixels;
-        uint8*       DestData       = AssetPackage->GetPackageThumbnail()->ImageData.data();
-    
-        const float ScaleX = static_cast<float>(SourceWidth)  / ThumbWidth;
-        const float ScaleY = static_cast<float>(SourceHeight) / ThumbHeight;
-    
-        for (uint32 DestY = 0; DestY < ThumbHeight; ++DestY)
+    // Builds an RGBA8 thumbnail from the imported source. Float (HDR) sources are tonemapped so they no
+    // longer clip to white; 8-bit sources pass through. The shared helper does the downsample + flip.
+    static void CreatePackageThumbnail(CTexture* Texture, const Import::Textures::FTextureImportResult& Source)
+    {
+        const uint32 Width  = Source.Dimensions.x;
+        const uint32 Height = Source.Dimensions.y;
+        if (Width == 0 || Height == 0 || Source.Pixels.empty())
         {
-            for (uint32 DestX = 0; DestX < ThumbWidth; ++DestX)
-            {
-                const float SrcX = DestX * ScaleX;
-                const float SrcY = DestY * ScaleY;
-    
-                const uint32 X0 = static_cast<uint32>(SrcX);
-                const uint32 Y0 = static_cast<uint32>(SrcY);
-                const uint32 X1 = Math::Min(X0 + 1, SourceWidth  - 1);
-                const uint32 Y1 = Math::Min(Y0 + 1, SourceHeight - 1);
-    
-                const float FracX = SrcX - X0;
-                const float FracY = SrcY - Y0;
-    
-                const uint8* P00 = SourceData + (Y0 * SourceRowPitch) + (X0 * BytesPerPixel);
-                const uint8* P10 = SourceData + (Y0 * SourceRowPitch) + (X1 * BytesPerPixel);
-                const uint8* P01 = SourceData + (Y1 * SourceRowPitch) + (X0 * BytesPerPixel);
-                const uint8* P11 = SourceData + (Y1 * SourceRowPitch) + (X1 * BytesPerPixel);
-    
-                const uint32 FlippedDestY = ThumbHeight - 1 - DestY;
-                uint8* DestPixel = DestData + (FlippedDestY * ThumbWidth + DestX) * BytesPerPixel;
-    
-                for (uint32 Channel = 0; Channel < BytesPerPixel; ++Channel)
-                {
-                    const float Top    = Math::Lerp(static_cast<float>(P00[Channel]), static_cast<float>(P10[Channel]), FracX);
-                    const float Bottom = Math::Lerp(static_cast<float>(P01[Channel]), static_cast<float>(P11[Channel]), FracX);
-                    DestPixel[Channel] = static_cast<uint8>(std::lround(Math::Lerp(Top, Bottom, FracY)));
-                }
-            }
+            return;
         }
+
+        uint32 FloatChannels = 0;
+        switch (Source.Format)
+        {
+            case EFormat::R32_FLOAT:    FloatChannels = 1; break;
+            case EFormat::RG32_FLOAT:   FloatChannels = 2; break;
+            case EFormat::RGB32_FLOAT:  FloatChannels = 3; break;
+            case EFormat::RGBA32_FLOAT: FloatChannels = 4; break;
+            default:                    FloatChannels = 0; break;
+        }
+
+        const uint8* RGBA8Source = nullptr;
+        TVector<uint8> Converted;
+
+        if (FloatChannels > 0)
+        {
+            if (Source.Pixels.size() < (size_t)Width * Height * FloatChannels * sizeof(float))
+            {
+                return;
+            }
+
+            const float* Src = reinterpret_cast<const float*>(Source.Pixels.data());
+            Converted.resize((size_t)Width * Height * 4);
+            for (size_t i = 0; i < (size_t)Width * Height; ++i)
+            {
+                const float* P = Src + i * FloatChannels;
+                const float R = P[0];
+                const float G = (FloatChannels >= 2) ? P[1] : P[0];
+                const float B = (FloatChannels >= 3) ? P[2] : P[0];
+
+                uint8* Dst = Converted.data() + i * 4;
+                Dst[0] = HdrChannelToSRGB8(R);
+                Dst[1] = HdrChannelToSRGB8(G);
+                Dst[2] = HdrChannelToSRGB8(B);
+                Dst[3] = 255;
+            }
+            RGBA8Source = Converted.data();
+        }
+        else
+        {
+            // LDR import path already produced RGBA8.
+            if (Source.Pixels.size() < (size_t)Width * Height * 4)
+            {
+                return;
+            }
+            RGBA8Source = Source.Pixels.data();
+        }
+
+        ThumbnailUtils::StoreDownsampledRGBA(*Texture->GetPackage()->GetPackageThumbnail(),
+            RGBA8Source, Width, Height, (size_t)Width * 4);
     }
 #endif
 
@@ -407,11 +499,8 @@ namespace Lumina
         }
 
 #if USING(WITH_EDITOR)
-        // Thumbnail generator assumes RGBA8; skip for HDR.
-        if (NewTexture->ColorSpace != ETextureColorSpace::Environment)
-        {
-            CreatePackageThumbnail(NewTexture, Result.Pixels.data(), Result.Dimensions.x, Result.Dimensions.y);
-        }
+        // HDR (Environment) sources are tonemapped inside; all texture types get a thumbnail.
+        CreatePackageThumbnail(NewTexture, Result);
 #endif
 
         // Persist source path for Recook; bytes-only imports leave it empty.

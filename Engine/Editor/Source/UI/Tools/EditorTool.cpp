@@ -13,6 +13,7 @@
 #include "Core/Serialization/MemoryArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "Thumbnails/ThumbnailManager.h"
+#include "Thumbnails/ThumbnailUtils.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/EditorAssetDropHandlers.h"
 #include "Core/Application/Application.h"
@@ -86,67 +87,13 @@ namespace Lumina
         {
             return;
         }
-        
-        Package->GetPackageThumbnail()->LoadState.store(FPackageThumbnail::EState::None, std::memory_order_relaxed);
-    
+
         const uint32 SourceWidth  = RenderTarget->GetDescription().Extent.x;
         const uint32 SourceHeight = RenderTarget->GetDescription().Extent.y;
-        
-    
-        // Thumbnail dimensions
-        constexpr uint32 ThumbWidth = 256;
-        constexpr uint32 ThumbHeight = 256;
-        
-        Package->GetPackageThumbnail()->ImageWidth = ThumbWidth;
-        Package->GetPackageThumbnail()->ImageHeight = ThumbHeight;
 
-        constexpr size_t BytesPerPixel = 4;
-        constexpr size_t TotalBytes = ThumbWidth * ThumbHeight * BytesPerPixel;
-        
-        Package->GetPackageThumbnail()->ImageData.resize(TotalBytes);
-        
-        const uint8* SourceData = static_cast<const uint8*>(MappedMemory);
-        uint8* DestData = Package->GetPackageThumbnail()->ImageData.data();
-        
-        // Downsample with bilinear filtering
-        const float ScaleX = static_cast<float>(SourceWidth) / ThumbWidth;
-        const float ScaleY = static_cast<float>(SourceHeight) / ThumbHeight;
-        
-        for (uint32 DestY = 0; DestY < ThumbHeight; ++DestY)
-        {
-            const uint32 FlippedDestY = ThumbHeight - 1 - DestY;
-    
-            for (uint32 DestX = 0; DestX < ThumbWidth; ++DestX)
-            {
-                const float SrcX = DestX * ScaleX;
-                const float SrcY = DestY * ScaleY;
+        ThumbnailUtils::StoreDownsampledRGBA(*Package->GetPackageThumbnail(),
+            static_cast<const uint8*>(MappedMemory), SourceWidth, SourceHeight, RowPitch);
 
-                const uint32 X0 = static_cast<uint32>(SrcX);
-                const uint32 Y0 = static_cast<uint32>(SrcY);
-                const uint32 X1 = Math::Min(X0 + 1, SourceWidth - 1);
-                const uint32 Y1 = Math::Min(Y0 + 1, SourceHeight - 1);
-
-                const float FracX = SrcX - X0;
-                const float FracY = SrcY - Y0;
-
-                const uint8* P00 = SourceData + (Y0 * RowPitch) + (X0 * BytesPerPixel);
-                const uint8* P10 = SourceData + (Y0 * RowPitch) + (X1 * BytesPerPixel);
-                const uint8* P01 = SourceData + (Y1 * RowPitch) + (X0 * BytesPerPixel);
-                const uint8* P11 = SourceData + (Y1 * RowPitch) + (X1 * BytesPerPixel);
-
-                uint8* DestPixel = DestData + (FlippedDestY * ThumbWidth * BytesPerPixel) + (DestX * BytesPerPixel);
-
-                for (uint32 Channel = 0; Channel < BytesPerPixel; ++Channel)
-                {
-                    const float Top     = Math::Lerp(static_cast<float>(P00[Channel]), static_cast<float>(P10[Channel]), FracX);
-                    const float Bottom  = Math::Lerp(static_cast<float>(P01[Channel]), static_cast<float>(P11[Channel]), FracX);
-                    const float Result  = Math::Lerp(Top, Bottom, FracY);
-
-                    DestPixel[Channel] = static_cast<uint8>(Result + 0.5f);
-                }
-            }
-        }
-        
         GRenderContext->UnMapStagingTexture(StagingImage);
     }
 

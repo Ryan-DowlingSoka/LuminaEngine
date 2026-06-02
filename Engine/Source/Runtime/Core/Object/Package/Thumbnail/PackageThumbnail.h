@@ -23,17 +23,14 @@ namespace Lumina
         FRHIImageRef LoadedImage;
 
         TAtomic<EState> LoadState{EState::None};
-        
+
         bool IsReadyForRender() const
         {
             return LoadState.load(std::memory_order_acquire) == EState::Loaded;
         }
-        
-        void Serialize(FArchive& Ar)
-        {
-            Ar << ImageWidth;
-            Ar << ImageHeight;
-            Ar << ImageData;
-        }
+
+        // ImageData is raw RGBA8 in memory; on disk it is PNG-compressed (lossless) to keep packages small.
+        // Backward-compatible with legacy uncompressed thumbnails. Impl in PackageThumbnail.cpp.
+        RUNTIME_API void Serialize(FArchive& Ar);
     };
 }

@@ -64,7 +64,9 @@ namespace Lumina
         SampleInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo SampleAlloc = {};
-        SampleAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+        // PREFER_DEVICE: pick a DEVICE_LOCAL|HOST_VISIBLE (ReBAR) memory type when present so chunk
+        // uploads are VRAM-resident for GPU reads; falls back to host-visible system RAM otherwise.
+        SampleAlloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         SampleAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
         uint32_t MemoryTypeIndex = UINT32_MAX;
@@ -160,7 +162,10 @@ namespace Lumina
         if (Result != VK_SUCCESS)
         {
             VmaAllocationCreateInfo Info = {};
-            Info.usage = VMA_MEMORY_USAGE_AUTO;
+            // PREFER_DEVICE so the GPU reads from VRAM (the DEVICE_LOCAL|HOST_VISIBLE / ReBAR heap) when
+            // available; HOST_ACCESS keeps it mappable, VMA falls back to system-RAM host-visible if no
+            // such heap exists. Upload data is GPU-read directly via BDA, so VRAM-resident matters.
+            Info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             Info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                        | VMA_ALLOCATION_CREATE_MAPPED_BIT
                        | VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
@@ -169,6 +174,22 @@ namespace Lumina
         }
 
         DEBUG_ASSERT(Allocation, "Vulkan failed to allocate upload buffer memory!");
+
+        // TEMP: confirm upload memory is VRAM-resident (DEVICE_LOCAL), not system RAM over PCIe.
+        {
+            static bool sLogged = false;
+            if (!sLogged)
+            {
+                sLogged = true;
+                VkMemoryPropertyFlags MemFlags = 0;
+                vmaGetAllocationMemoryProperties(Allocator, Allocation, &MemFlags);
+                LOG_WARN("[UploadMem] DEVICE_LOCAL={} HOST_VISIBLE={} HOST_COHERENT={} HOST_CACHED={}",
+                    (MemFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0,
+                    (MemFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
+                    (MemFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0,
+                    (MemFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0);
+            }
+        }
 
     #if LE_DEBUG
         if (AllocationName)

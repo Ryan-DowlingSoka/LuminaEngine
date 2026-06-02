@@ -9,6 +9,7 @@
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
+#include "Thumbnails/ThumbnailUtils.h"
 
 namespace Lumina
 {
@@ -103,73 +104,33 @@ namespace Lumina
                 return;
             }
 
-            constexpr uint32 ThumbWidth    = 256;
-            constexpr uint32 ThumbHeight   = 256;
-            constexpr uint32 BytesPerPixel = 4;
-
-            FPackageThumbnail* Thumbnail = Package->GetPackageThumbnail();
-            Thumbnail->ImageWidth  = ThumbWidth;
-            Thumbnail->ImageHeight = ThumbHeight;
-            Thumbnail->ImageData.resize(ThumbWidth * ThumbHeight * BytesPerPixel);
-            Thumbnail->LoadState.store(FPackageThumbnail::EState::None, std::memory_order_relaxed);
-
-            uint8* DestData = Thumbnail->ImageData.data();
-
-            const float ScaleX = static_cast<float>(SourceWidth)  / ThumbWidth;
-            const float ScaleY = static_cast<float>(SourceHeight) / ThumbHeight;
-
-            auto SampleTexel = [&](uint32 X, uint32 Y, float OutRGBA[4])
+            // The shared helper expects RGBA8. RGBA8 maps pass through with their row pitch; RGBA16F render
+            // targets are clamped to [0,1] and packed to RGBA8 first (display-range RTs, no tonemap needed).
+            const uint8* RGBA8Source = SourceData;
+            size_t       SourcePitch = RowPitch;
+            TVector<uint8> Converted;
+            if (bIsHalf)
             {
-                const uint8* Row = SourceData + static_cast<size_t>(Y) * RowPitch;
-                if (bIsHalf)
+                Converted.resize(static_cast<size_t>(SourceWidth) * SourceHeight * 4);
+                for (uint32 Y = 0; Y < SourceHeight; ++Y)
                 {
-                    const uint16* Px = reinterpret_cast<const uint16*>(Row) + static_cast<size_t>(X) * 4;
-                    for (uint32 Channel = 0; Channel < 4; ++Channel)
+                    const uint16* Row = reinterpret_cast<const uint16*>(SourceData + static_cast<size_t>(Y) * RowPitch);
+                    uint8* Dst = Converted.data() + static_cast<size_t>(Y) * SourceWidth * 4;
+                    for (uint32 X = 0; X < SourceWidth; ++X)
                     {
-                        OutRGBA[Channel] = Math::Clamp(HalfToFloat(Px[Channel]), 0.0f, 1.0f) * 255.0f;
+                        for (uint32 Channel = 0; Channel < 4; ++Channel)
+                        {
+                            const float V = Math::Clamp(HalfToFloat(Row[X * 4 + Channel]), 0.0f, 1.0f);
+                            Dst[X * 4 + Channel] = static_cast<uint8>(V * 255.0f + 0.5f);
+                        }
                     }
                 }
-                else
-                {
-                    const uint8* Px = Row + static_cast<size_t>(X) * BytesPerPixel;
-                    for (uint32 Channel = 0; Channel < 4; ++Channel)
-                    {
-                        OutRGBA[Channel] = static_cast<float>(Px[Channel]);
-                    }
-                }
-            };
-
-            for (uint32 DestY = 0; DestY < ThumbHeight; ++DestY)
-            {
-                const uint32 FlippedDestY = ThumbHeight - 1 - DestY;
-                for (uint32 DestX = 0; DestX < ThumbWidth; ++DestX)
-                {
-                    const float SrcX = DestX * ScaleX;
-                    const float SrcY = DestY * ScaleY;
-
-                    const uint32 X0 = static_cast<uint32>(SrcX);
-                    const uint32 Y0 = static_cast<uint32>(SrcY);
-                    const uint32 X1 = Math::Min(X0 + 1, SourceWidth  - 1);
-                    const uint32 Y1 = Math::Min(Y0 + 1, SourceHeight - 1);
-
-                    const float FracX = SrcX - X0;
-                    const float FracY = SrcY - Y0;
-
-                    float P00[4], P10[4], P01[4], P11[4];
-                    SampleTexel(X0, Y0, P00);
-                    SampleTexel(X1, Y0, P10);
-                    SampleTexel(X0, Y1, P01);
-                    SampleTexel(X1, Y1, P11);
-
-                    uint8* DestPixel = DestData + (static_cast<size_t>(FlippedDestY) * ThumbWidth + DestX) * BytesPerPixel;
-                    for (uint32 Channel = 0; Channel < 4; ++Channel)
-                    {
-                        const float Top    = Math::Lerp(P00[Channel], P10[Channel], FracX);
-                        const float Bottom = Math::Lerp(P01[Channel], P11[Channel], FracX);
-                        DestPixel[Channel] = static_cast<uint8>(Math::Clamp(Math::Lerp(Top, Bottom, FracY) + 0.5f, 0.0f, 255.0f));
-                    }
-                }
+                RGBA8Source = Converted.data();
+                SourcePitch = static_cast<size_t>(SourceWidth) * 4;
             }
+
+            ThumbnailUtils::StoreDownsampledRGBA(*Package->GetPackageThumbnail(),
+                RGBA8Source, SourceWidth, SourceHeight, SourcePitch);
 
             GRenderContext->UnMapStagingTexture(Staging);
         }

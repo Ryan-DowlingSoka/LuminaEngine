@@ -62,7 +62,6 @@ namespace Lumina
 
         FVulkanRenderContext*       VulkanRenderContext = nullptr;
 
-        FRHIInputLayoutRef          InputLayout;
         // Not owned: the engine bindless texture-table layout.
         FRHIBindingLayout*          BindlessLayout = nullptr;
         THashMap<uint32, FRHIGraphicsPipelineRef> PipelinesByFormat;

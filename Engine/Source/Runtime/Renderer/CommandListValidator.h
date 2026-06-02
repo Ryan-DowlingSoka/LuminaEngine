@@ -78,6 +78,10 @@ namespace Lumina
         void DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance) override;
         void DrawIndirect(uint32 DrawCount, uint64 Offset) override;
         void DrawIndexedIndirect(uint32 DrawCount, uint64 Offset) override;
+        void DrawIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride) override;
+        void DrawIndexedIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride) override;
+        using ICommandList::DrawIndirect;
+        using ICommandList::DrawIndexedIndirect;
 
         void SetComputeState(const FComputeState& State) override;
         void Dispatch(uint32 GroupCountX, uint32 GroupCountY, uint32 GroupCountZ) override;

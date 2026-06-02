@@ -38,6 +38,36 @@ namespace Lumina
         Resolved,
     };
 
+    // Why a barrier was committed. Lets the profiler separate genuine per-pass
+    // transitions from the end-of-frame keep-initial-state restores (which fire
+    // with no scope open and are otherwise invisible).
+    enum class EGPUBarrierPhase : uint8
+    {
+        Pass,                   // emitted by a draw/dispatch's Reads/Writes declaration
+        RestoreInitialState,    // end-of-list KeepInitialStates() restore
+        Copy,                   // copy/blit/resolve transition
+        Clear,                  // clear transition
+        Other,
+    };
+
+    // One committed image- or buffer-memory barrier, captured for inspection.
+    // Strings are pre-formatted at capture time so the UI does no work.
+    struct RUNTIME_API FGPUBarrierRecord
+    {
+        FFixedString        ResourceName;
+        FFixedString        Before;
+        FFixedString        After;
+        int32               ScopeIndex      = -1;   // innermost open scope at commit, -1 = unscoped
+        uint16              Mip             = 0;
+        uint16              ArraySlice      = 0;
+        uint16              NumMips         = 1;
+        uint16              NumArraySlices  = 1;
+        EGPUBarrierPhase    Phase           = EGPUBarrierPhase::Pass;
+        bool                bImage          = false;
+        bool                bEntireResource = true;
+        bool                bRedundant      = false; // before == after (pure execution/UAV barrier)
+    };
+
     struct RUNTIME_API FGPUProfileFrame
     {
         TVector<FGPUProfileScope>               Scopes;
@@ -53,6 +83,10 @@ namespace Lumina
         // can be watched independently from image layout transitions.
         uint32                                  NumBufferBarriers   = 0;
         uint32                                  NumImageBarriers    = 0;
+        // Per-barrier detail, captured only while the profiler is enabled. Bounded
+        // by MaxBarrierRecordsPerFrame; NumDroppedBarriers tracks overflow.
+        TVector<FGPUBarrierRecord>              Barriers;
+        uint32                                  NumDroppedBarriers  = 0;
         EGPUFrameState                          State               = EGPUFrameState::Idle;
 
         void Reset();
@@ -62,9 +96,10 @@ namespace Lumina
     {
     public:
 
-        static constexpr uint32 MaxFramesInFlight    = 4;
-        static constexpr uint32 MaxScopesPerFrame    = 128;
-        static constexpr uint32 FrameHistorySize     = 240;
+        static constexpr uint32 MaxFramesInFlight        = 4;
+        static constexpr uint32 MaxScopesPerFrame        = 128;
+        static constexpr uint32 FrameHistorySize         = 240;
+        static constexpr uint32 MaxBarrierRecordsPerFrame= 1024;
 
         static FGPUProfiler& Get();
 
@@ -89,6 +124,11 @@ namespace Lumina
         // Accumulate barriers emitted this frame; called from RHI barrier commit on whatever thread
         // records the list (atomic). EndFrame snapshots + resets these into the recording frame.
         void AddBarriers(uint32 NumBuffer, uint32 NumImage);
+
+        // Capture per-barrier detail for one commit. All records in a single commit share the
+        // innermost open scope, resolved here under the lock. No-op unless the profiler is enabled.
+        // Cheap to call with Count == 0.
+        void AddBarrierRecords(const FGPUBarrierRecord* Records, uint32 Count);
 
         const FGPUProfileFrame* GetLatestResolvedFrame() const;
 

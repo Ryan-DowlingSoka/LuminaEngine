@@ -18,6 +18,25 @@ namespace Lumina
     // no EnvironmentMap bound falls back to a black sky (documented in SEnvironmentComponent).
     constexpr uint32 GSkyMode_HDRI       = 3u;
 
+    // Resolved IBL bake resolution, mapped from SEnvironmentComponent::IBLQuality during extraction.
+    // The render thread recreates the sky/irradiance/prefilter cubes whenever this changes; comparison
+    // gates that (rare, WaitIdle-guarded) rebuild. The default is the cheap (Low) baseline so scenes
+    // without an environment (e.g. thumbnail scenes) stay small; the active env's tier bumps it on the
+    // first rendered frame.
+    struct FIBLBakeResolution
+    {
+        uint32 SkyCube    = 256u;   // sky-cube face size (IBL source + procedural sky)
+        uint32 Prefilter  = 128u;   // specular prefilter base face size
+        uint32 Mips       = 5u;     // specular prefilter mip count (roughness levels)
+        uint32 Irradiance = 32u;    // diffuse irradiance face size
+
+        bool operator==(const FIBLBakeResolution& O) const
+        {
+            return SkyCube == O.SkyCube && Prefilter == O.Prefilter && Mips == O.Mips && Irradiance == O.Irradiance;
+        }
+        bool operator!=(const FIBLBakeResolution& O) const { return !(*this == O); }
+    };
+
     // CPU mirror of the per-frame environment CB; layout must match FEnvironmentParams in Environment.slang.
     // EnvironmentPass uploads one per frame; the shader switches on Misc.x (sky mode).
     struct alignas(16) FEnvironmentParams

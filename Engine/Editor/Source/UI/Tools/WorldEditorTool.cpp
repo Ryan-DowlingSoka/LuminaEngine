@@ -21,7 +21,6 @@
 #include "Core/Object/Package/Package.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
-#include "Core/Serialization/JsonArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
 #include "Input/InputContext.h"

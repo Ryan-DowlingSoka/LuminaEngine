@@ -1,11 +1,20 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-struct VSInput
+// Debug line/triangle vertices are pulled from a transient ring slice by device address (gPC.PassAddr)
+// instead of a bound vertex buffer -- no input layout, no persistent vertex buffer. Layout matches
+// FSimpleElementVertex in Vertex.h (float3 + packed uint, 16 B).
+struct FSimpleElementVertex
 {
-    float3 Position : POSITION;
-    uint   Color    : COLOR;
+    float3 Position;
+    uint   Color;
 };
+
+struct FSimpleElementPass
+{
+    FSimpleElementVertex* Vertices;
+};
+#define PC (*(FSimpleElementPass*)gPC.PassAddr)
 
 struct VSOutput
 {
@@ -14,10 +23,14 @@ struct VSOutput
 };
 
 [shader("vertex")]
-VSOutput VertexMain(VSInput Input)
+VSOutput VertexMain(uint VertexID : SV_VulkanVertexID)
 {
+    // SV_VulkanVertexID is the raw gl_VertexIndex (firstVertex + i), so a per-batch StartVertexLocation
+    // indexes straight into the whole transient vertex array.
+    FSimpleElementVertex V = PC.Vertices[VertexID];
+
     VSOutput Output;
-    Output.Position = mul(GetCameraProjection(), mul(GetCameraView(), float4(Input.Position, 1.0f)));
-    Output.Color    = UnpackColor(Input.Color);
+    Output.Position = mul(GetCameraProjection(), mul(GetCameraView(), float4(V.Position, 1.0f)));
+    Output.Color    = UnpackColor(V.Color);
     return Output;
 }

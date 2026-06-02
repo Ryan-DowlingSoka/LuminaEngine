@@ -343,6 +343,18 @@ namespace Lumina
         Inner->DrawIndexedIndirect(DrawCount, Offset);
     }
 
+    void FCommandListValidator::DrawIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride)
+    {
+        ASSERT(ArgsBuffer != nullptr);
+        Inner->DrawIndirect(ArgsBuffer, Offset, DrawCount, Stride);
+    }
+
+    void FCommandListValidator::DrawIndexedIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride)
+    {
+        ASSERT(ArgsBuffer != nullptr);
+        Inner->DrawIndexedIndirect(ArgsBuffer, Offset, DrawCount, Stride);
+    }
+
     void FCommandListValidator::SetComputeState(const FComputeState& State)
     {
         ASSERT(State.Pipeline != nullptr);

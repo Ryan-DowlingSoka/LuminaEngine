@@ -124,8 +124,9 @@ namespace Lumina
 		// Every asset listing GUID in its Dependencies; O(1) avg via a reverse map built lazily after change.
 		TVector<FAssetData*> GetReferencersOf(const FGuid& GUID) const;
 
-		// Serialize the live registry (same wire format as the .assetdb cache); the cooker bundles a
-		// pre-baked registry into the PAK so the runtime skips the filesystem rescan at start.
+		// Serialize the live registry to compact binary; the cooker bundles a pre-baked registry into
+		// the PAK so the runtime skips the filesystem rescan at start. (The editor cache is JSON instead;
+		// see SaveCache/LoadCache.)
 		void WriteToArchive(FArchive& Ar) const;
 		bool LoadFromArchive(FArchive& Ar);
 

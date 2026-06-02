@@ -14,17 +14,24 @@
 #include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "Core/Serialization/Structured/JsonStructuredArchive.h"
+
+#include "nlohmann/json.hpp"
 
 #include <chrono>
 #include <filesystem>
 
 namespace Lumina
 {
-    // Tag both the on-disk .assetdb cache AND the cooked-runtime registry
-    // blob bundled into the PAK. Same wire format both directions.
+    // Tag for the cooked-runtime registry blob bundled into the PAK (compact
+    // binary; shipping wants size/speed, not inspectability).
     // v2 appends the text-asset (.luau/.rml/.rcss) identity table; bumping the
-    // tag invalidates pre-text caches/PAKs so they rebuild cleanly.
+    // tag invalidates pre-text PAKs so they rebuild cleanly.
     static constexpr uint32 kAssetRegistryCacheTag     = 0xA55E1DB2; // 'AssetIDB2'
+
+    // Schema version for the human-readable on-disk editor cache (AssetRegistry.json).
+    // Bump on any field add/remove so stale caches are dropped and rebuilt.
+    static constexpr int32 kAssetRegistryJsonVersion   = 2;
 
     FAssetRegistry& FAssetRegistry::Get()
     {
@@ -39,7 +46,7 @@ namespace Lumina
             const FString& Install = Paths::GetEngineInstallDirectory();
             if (Install.empty()) return {};
             FString Out = Install;
-            Out += "/Intermediates/AssetRegistry.assetdb";
+            Out += "/Intermediates/AssetRegistry.json";
             return Out;
         }
 
@@ -975,6 +982,94 @@ namespace Lumina
         return true;
     }
 
+    // The editor cache is JSON (inspectable/diffable by hand) driven through the engine's
+    // FJsonStructuredArchive; the cooked PAK registry stays compact binary (see WriteToArchive).
+    // The leaf archive handles primitives/FName/FString directly; FGuid and FFixedString have no
+    // leaf overload, so they round-trip through an FString (GUID as text, path as a plain string).
+    namespace
+    {
+        void SerializeGuidField(FArchiveRecord& Rec, FName Field, FGuid& Guid, bool bLoading)
+        {
+            FArchiveSlot Slot = Rec.EnterField(Field);
+            if (bLoading)
+            {
+                FString S;
+                Slot.Serialize(S);
+                Guid = FGuid();
+                if (auto Parsed = FGuid::TryParse(FStringView(S.c_str(), S.size())))
+                {
+                    Guid = *Parsed;
+                }
+            }
+            else
+            {
+                FString S = Guid.ToString();
+                Slot.Serialize(S);
+            }
+        }
+
+        void SerializePathField(FArchiveRecord& Rec, FName Field, FFixedString& Path, bool bLoading)
+        {
+            FArchiveSlot Slot = Rec.EnterField(Field);
+            if (bLoading)
+            {
+                FString S;
+                Slot.Serialize(S);
+                Path.assign_convert(FStringView(S.c_str(), S.size()));
+            }
+            else
+            {
+                FString S(Path.c_str());
+                Slot.Serialize(S);
+            }
+        }
+
+        void SerializeAssetEntry(FArchiveRecord& Rec, FAssetData& Data, bool bLoading)
+        {
+            SerializeGuidField(Rec, "guid", Data.AssetGUID, bLoading);
+            SerializePathField(Rec, "path", Data.Path, bLoading);
+            Rec << StructuredArchive::TNamedValue<FName>("name", Data.AssetName);
+            Rec << StructuredArchive::TNamedValue<FName>("class", Data.AssetClass);
+            Rec << StructuredArchive::TNamedValue<uint64>("contentHash", Data.ContentHash);
+            Rec << StructuredArchive::TNamedValue<int64>("mtime", Data.SourceMTimeNs);
+
+            uint32 Flags = (uint32)Data.Flags;
+            Rec << StructuredArchive::TNamedValue<uint32>("flags", Flags);
+            if (bLoading) Data.Flags = (EAssetFlags)Flags;
+
+            Rec << StructuredArchive::TNamedValue<FName>("ownerChunk", Data.OwnerChunk);
+            Rec << StructuredArchive::TNamedValue<FName>("owningPlugin", Data.OwningPlugin);
+
+            FArchiveSlot DepsSlot = Rec.EnterField("dependencies");
+            int32 DepCount = (int32)Data.Dependencies.size();
+            FArchiveArray DepArray = DepsSlot.EnterArray(DepCount);
+            if (bLoading) Data.Dependencies.resize(DepCount);
+            for (int32 i = 0; i < DepCount; ++i)
+            {
+                FArchiveSlot ElementSlot = DepArray.EnterElement();
+                FArchiveRecord DepRec = ElementSlot.EnterRecord();
+                SerializeGuidField(DepRec, "guid", Data.Dependencies[i].TargetGUID, bLoading);
+                uint8 Type = (uint8)Data.Dependencies[i].Type;
+                DepRec << StructuredArchive::TNamedValue<uint8>("type", Type);
+                if (bLoading) Data.Dependencies[i].Type = (EDependencyType)Type;
+            }
+        }
+
+        void SerializeTextEntry(FArchiveRecord& Rec, FTextAssetData& Data, bool bLoading)
+        {
+            SerializeGuidField(Rec, "guid", Data.Guid, bLoading);
+            SerializePathField(Rec, "path", Data.Path, bLoading);
+            Rec << StructuredArchive::TNamedValue<FName>("name", Data.Name);
+
+            uint8 Kind = (uint8)Data.Kind;
+            Rec << StructuredArchive::TNamedValue<uint8>("kind", Kind);
+            if (bLoading) Data.Kind = (ETextAssetKind)Kind;
+
+            Rec << StructuredArchive::TNamedValue<FName>("owningPlugin", Data.OwningPlugin);
+            Rec << StructuredArchive::TNamedValue<int64>("mtime", Data.SourceMTimeNs);
+        }
+    }
+
     void FAssetRegistry::SaveCache() const
     {
         const FString CachePath = AssetDbPath();
@@ -984,9 +1079,46 @@ namespace Lumina
         std::filesystem::create_directories(
             std::filesystem::path(CachePath.c_str()).parent_path(), Ec);
 
+        nlohmann::json Root = nlohmann::json::object();
+        {
+            FJsonStructuredArchive Archive(Root, /*bLoading*/ false);
+            FArchiveRecord RootRecord = Archive.Open().EnterRecord();
+
+            int32 Version = kAssetRegistryJsonVersion;
+            RootRecord << StructuredArchive::TNamedValue<int32>("version", Version);
+
+            {
+                FReadScopeLock Lock(AssetsMutex);
+                FArchiveSlot AssetsSlot = RootRecord.EnterField("assets");
+                int32 Count = (int32)Assets.size();
+                FArchiveArray AssetsArray = AssetsSlot.EnterArray(Count);
+                for (const TUniquePtr<FAssetData>& Data : Assets)
+                {
+                    FArchiveSlot ElementSlot = AssetsArray.EnterElement();
+                    FArchiveRecord EntryRecord = ElementSlot.EnterRecord();
+                    SerializeAssetEntry(EntryRecord, *Data, /*bLoading*/ false);
+                }
+            }
+
+            {
+                FReadScopeLock TextLock(TextAssetsMutex);
+                FArchiveSlot TextSlot = RootRecord.EnterField("textAssets");
+                int32 Count = (int32)TextAssets.size();
+                FArchiveArray TextArray = TextSlot.EnterArray(Count);
+                for (const TUniquePtr<FTextAssetData>& Data : TextAssets)
+                {
+                    FArchiveSlot ElementSlot = TextArray.EnterElement();
+                    FArchiveRecord EntryRecord = ElementSlot.EnterRecord();
+                    SerializeTextEntry(EntryRecord, *Data, /*bLoading*/ false);
+                }
+            }
+        }
+
+        const std::string Dumped = Root.dump(2);
         TVector<uint8> Bytes;
-        FMemoryWriter Writer(Bytes);
-        WriteToArchive(Writer);
+        Bytes.assign(
+            reinterpret_cast<const uint8*>(Dumped.data()),
+            reinterpret_cast<const uint8*>(Dumped.data() + Dumped.size()));
 
         if (!FileHelper::SaveArrayToFile(Bytes, CachePath))
         {
@@ -1008,13 +1140,70 @@ namespace Lumina
 
         TVector<uint8> Bytes;
         if (!FileHelper::LoadFileToArray(Bytes, CachePath)) return false;
-        if (Bytes.size() < sizeof(uint32)) return false;
+        if (Bytes.empty()) return false;
 
-        FMemoryReader Reader(Bytes);
-        if (!LoadFromArchive(Reader))
+        const char* Begin = reinterpret_cast<const char*>(Bytes.data());
+        nlohmann::json Root = nlohmann::json::parse(Begin, Begin + Bytes.size(), nullptr, /*allow_exceptions*/ false);
+        if (Root.is_discarded() || !Root.is_object())
         {
-            LOG_INFO("AssetRegistry: cache at {} is stale (tag mismatch); rebuilding from scratch", CachePath);
+            LOG_INFO("AssetRegistry: cache at {} is malformed JSON; rebuilding from scratch", CachePath);
             return false;
+        }
+
+        FJsonStructuredArchive Archive(Root, /*bLoading*/ true);
+        FArchiveRecord RootRecord = Archive.Open().EnterRecord();
+
+        int32 Version = 0;
+        RootRecord << StructuredArchive::TNamedValue<int32>("version", Version);
+        if (Version != kAssetRegistryJsonVersion)
+        {
+            LOG_INFO("AssetRegistry: cache at {} is stale (version {} != {}); rebuilding from scratch", CachePath, Version, kAssetRegistryJsonVersion);
+            return false;
+        }
+
+        {
+            FWriteScopeLock Lock(AssetsMutex);
+            Assets.clear();
+
+            FArchiveSlot AssetsSlot = RootRecord.EnterField("assets");
+            int32 Count = 0;
+            FArchiveArray AssetsArray = AssetsSlot.EnterArray(Count);
+            Assets.reserve(Count);
+            for (int32 i = 0; i < Count; ++i)
+            {
+                FArchiveSlot ElementSlot = AssetsArray.EnterElement();
+                FArchiveRecord EntryRecord = ElementSlot.EnterRecord();
+                auto Data = MakeUnique<FAssetData>();
+                SerializeAssetEntry(EntryRecord, *Data, /*bLoading*/ true);
+                Assets.emplace(Move(Data));
+            }
+        }
+
+        {
+            FWriteScopeLock TextLock(TextAssetsMutex);
+            TextAssets.clear();
+
+            FArchiveSlot TextSlot = RootRecord.EnterField("textAssets");
+            int32 Count = 0;
+            FArchiveArray TextArray = TextSlot.EnterArray(Count);
+            TextAssets.reserve(Count);
+            for (int32 i = 0; i < Count; ++i)
+            {
+                FArchiveSlot ElementSlot = TextArray.EnterElement();
+                FArchiveRecord EntryRecord = ElementSlot.EnterRecord();
+                auto Data = MakeUnique<FTextAssetData>();
+                SerializeTextEntry(EntryRecord, *Data, /*bLoading*/ true);
+
+                if (TextAssets.find_as(Data->Guid, FGuidHash(), FTextAssetGuidEqual()) == TextAssets.end())
+                {
+                    TextAssets.emplace(Move(Data));
+                }
+            }
+        }
+
+        {
+            FWriteScopeLock RLock(ReverseMapMutex);
+            bReverseMapDirty = true;
         }
 
         LOG_INFO("AssetRegistry: loaded {} entries from cache {}", Assets.size(), CachePath);

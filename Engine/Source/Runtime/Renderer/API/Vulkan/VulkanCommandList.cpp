@@ -106,10 +106,14 @@ namespace Lumina
         }
 #endif
 
+        // Barriers emitted from here restore kept resources to their initial state; tag them
+        // so the profiler can separate them from genuine per-pass transitions.
+        CurrentBarrierPhase = EGPUBarrierPhase::RestoreInitialState;
         StateTracker.KeepBufferInitialStates();
         StateTracker.KeepTextureInitialStates();
         CommitBarriers();
-        
+        CurrentBarrierPhase = EGPUBarrierPhase::Pass;
+
         VK_CHECK(vkEndCommandBuffer(CurrentCommandBuffer->CommandBuffer));
         
         PendingState.ClearPendingState(EPendingCommandState::Recording);
@@ -1689,6 +1693,31 @@ namespace Lumina
         vkCmdDrawIndexedIndirect(CurrentCommandBuffer->CommandBuffer, CurrentGraphicsState.IndirectParams->GetAPI<VkBuffer>(), Offset, DrawCount, sizeof(FDrawIndexedIndirectArguments));
     }
 
+    void FVulkanCommandList::DrawIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride)
+    {
+        UpdateGraphicsDynamicBuffers();
+
+        CommandListStats.NumDrawCalls++;
+
+        // Transient/explicit args: the buffer isn't bound through graphics state, so reference it directly to
+        // keep the chunk alive for this submission. No IndirectArgument barrier -- a ring chunk is host-written
+        // and the queue-submit guarantee makes it visible to VK_ACCESS_INDIRECT_COMMAND_READ.
+        CurrentCommandBuffer->AddReferencedResource(ArgsBuffer);
+
+        vkCmdDrawIndirect(CurrentCommandBuffer->CommandBuffer, ArgsBuffer->GetAPI<VkBuffer>(), Offset, DrawCount, Stride);
+    }
+
+    void FVulkanCommandList::DrawIndexedIndirect(FRHIBuffer* ArgsBuffer, uint64 Offset, uint32 DrawCount, uint32 Stride)
+    {
+        UpdateGraphicsDynamicBuffers();
+
+        CommandListStats.NumDrawCalls++;
+
+        CurrentCommandBuffer->AddReferencedResource(ArgsBuffer);
+
+        vkCmdDrawIndexedIndirect(CurrentCommandBuffer->CommandBuffer, ArgsBuffer->GetAPI<VkBuffer>(), Offset, DrawCount, Stride);
+    }
+
     void FVulkanCommandList::SetComputeState(const FComputeState& State)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1865,6 +1894,10 @@ namespace Lumina
         TFixedVector<VkImageMemoryBarrier2, 64> ImageBarriers;
         TFixedVector<VkBufferMemoryBarrier2, 32> BufferBarriers;
 
+        // Per-barrier detail for the profiler; only populated while it's enabled.
+        const bool bCapture = FGPUProfiler::Get().IsEnabled();
+        TFixedVector<FGPUBarrierRecord, 96> Records;
+
         VkCommandBuffer CommandBuffer = CurrentCommandBuffer->CommandBuffer;
 
         for (const FTextureBarrier& Barrier : StateTracker.GetTextureBarriers())
@@ -1920,6 +1953,22 @@ namespace Lumina
             ImageBarrier.subresourceRange       = SubresourceRange;
 
             ImageBarriers.push_back(ImageBarrier);
+
+            if (bCapture && Records.size() < Records.capacity())
+            {
+                FGPUBarrierRecord& Record   = Records.push_back();
+                Record.ResourceName         = Image->GetDescription().DebugName.c_str();
+                Record.Before               = LexResourceStates(Barrier.StateBefore);
+                Record.After                = LexResourceStates(Barrier.StateAfter);
+                Record.Mip                  = (uint16)SubresourceRange.baseMipLevel;
+                Record.ArraySlice           = (uint16)SubresourceRange.baseArrayLayer;
+                Record.NumMips              = (uint16)SubresourceRange.levelCount;
+                Record.NumArraySlices       = (uint16)SubresourceRange.layerCount;
+                Record.Phase                = CurrentBarrierPhase;
+                Record.bImage               = true;
+                Record.bEntireResource      = Barrier.bEntireTexture;
+                Record.bRedundant           = (Barrier.StateBefore == Barrier.StateAfter);
+            }
         }
 
         for (const FBufferBarrier& Barrier : StateTracker.GetBufferBarriers())
@@ -1945,6 +1994,17 @@ namespace Lumina
             BufferBarrier.size                      = Buffer->GetDescription().Size;
 
             BufferBarriers.push_back(BufferBarrier);
+
+            if (bCapture && Records.size() < Records.capacity())
+            {
+                FGPUBarrierRecord& Record   = Records.push_back();
+                Record.ResourceName         = Buffer->GetDescription().DebugName.c_str();
+                Record.Before               = LexResourceStates(Barrier.StateBefore);
+                Record.After                = LexResourceStates(Barrier.StateAfter);
+                Record.Phase                = CurrentBarrierPhase;
+                Record.bImage               = false;
+                Record.bRedundant           = (Barrier.StateBefore == Barrier.StateAfter);
+            }
         }
 
         if (!BufferBarriers.empty() || !ImageBarriers.empty())
@@ -1966,6 +2026,7 @@ namespace Lumina
             // Per-frame barrier accounting (surfaced by the GPU profiler + Tracy).
             CommandListStats.NumBarriers += NumBufferBarriers + NumImageBarriers;
             FGPUProfiler::Get().AddBarriers(NumBufferBarriers, NumImageBarriers);
+            FGPUProfiler::Get().AddBarrierRecords(Records.data(), (uint32)Records.size());
         }
 
         ImageBarriers.clear();

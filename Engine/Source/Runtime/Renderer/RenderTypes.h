@@ -2,6 +2,7 @@
 
 #include "Format.h"
 #include "RHIFwd.h"
+#include "Containers/String.h"
 #include "Core/LuminaMacros.h"
 #include "Core/Math/Hash/Hash.h"
 
@@ -66,6 +67,54 @@ namespace Lumina
     };
 
     ENUM_CLASS_FLAGS(EResourceStates)
+
+    // Human-readable name of the set bits in a resource-state mask. Debug/profiling only.
+    inline FFixedString LexResourceStates(EResourceStates State)
+    {
+        if (State == EResourceStates::Unknown)
+        {
+            return FFixedString("Unknown");
+        }
+
+        FFixedString Out;
+        auto Append = [&](EResourceStates Bit, const char* Name)
+        {
+            if ((State & Bit) == Bit)
+            {
+                if (!Out.empty())
+                {
+                    Out += "|";
+                }
+                Out += Name;
+            }
+        };
+
+        Append(EResourceStates::Common,            "Common");
+        Append(EResourceStates::ConstantBuffer,    "Constant");
+        Append(EResourceStates::VertexBuffer,      "Vertex");
+        Append(EResourceStates::IndexBuffer,       "Index");
+        Append(EResourceStates::IndirectArgument,  "Indirect");
+        Append(EResourceStates::ShaderResource,    "SRV");
+        Append(EResourceStates::UnorderedAccess,   "UAV");
+        Append(EResourceStates::RenderTarget,      "RT");
+        Append(EResourceStates::DepthWrite,        "DepthWrite");
+        Append(EResourceStates::DepthRead,         "DepthRead");
+        Append(EResourceStates::StreamOut,         "StreamOut");
+        Append(EResourceStates::CopyDest,          "CopyDst");
+        Append(EResourceStates::CopySource,        "CopySrc");
+        Append(EResourceStates::ResolveDest,       "ResolveDst");
+        Append(EResourceStates::ResolveSource,     "ResolveSrc");
+        Append(EResourceStates::Present,           "Present");
+        Append(EResourceStates::AccelStructRead,   "ASRead");
+        Append(EResourceStates::AccelStructWrite,  "ASWrite");
+        Append(EResourceStates::ShadingRateSurface,"ShadingRate");
+
+        if (Out.empty())
+        {
+            Out = "?";
+        }
+        return Out;
+    }
 
     enum class ERHIPipeline : uint8
     {

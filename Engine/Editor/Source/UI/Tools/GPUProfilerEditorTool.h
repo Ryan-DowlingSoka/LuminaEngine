@@ -27,10 +27,21 @@ namespace Lumina
         void DrawScopeTree();
         void DrawFrameTimeGraph();
         void DrawPipelineStats();
+        void DrawBarriers();
         void DrawDiagnostics();
 
         bool    bExpandAll          = true;
         float   GraphHeight         = 110.0f;
         float   FilterMinTimeMs     = 0.0f;
+
+        // Barrier inspector filters.
+        bool    bShowImageBarriers      = true;
+        bool    bShowBufferBarriers     = true;
+        bool    bShowRestoreBarriers    = true;
+        bool    bShowRedundantOnly      = false;
+        bool    bGroupBarriersByResource= false;
+
+        // Result of the most recent barrier export (file path or error), shown inline.
+        FString BarrierExportStatus;
     };
 }

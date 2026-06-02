@@ -25,7 +25,7 @@ static const int SSAO_KERNEL_SIZE = 32;
 
 #define MAX_LIGHTS      8192
 #define MAX_SHADOWS     256
-#define NUM_CASCADES    3
+#define NUM_CASCADES    4
 #define MAX_CULL_VIEWS  128
 
 // Bits inside FCullView.Flags, gating which culling stages run for the view.
@@ -325,7 +325,6 @@ struct FGPUInstance
     float4x4                ModelMatrix;
     float4                  SphereBounds;
 
-    uint*                   VBAddress;
     // Shadow LOD's meshlet range. CullMeshlets uses these for shadow-only
     // views; ShadowMappingVert reads ShadowMeshletOffset to locate the
     // emitted meshlet. Camera-side passes keep using SurfaceMeshlet*.
@@ -346,8 +345,6 @@ struct FGPUInstance
     // Base into uPreSkinnedVertices for this instance's entity (skinning compute writes,
     // draw VS reads). 0 for static instances.
     uint                    SkinnedVertexBase;
-    private uint            _Pad1;
-    private uint            _Pad2;
 
     bool HasFlag(EInstanceFlags Flag)
     {
@@ -525,6 +522,7 @@ struct FCullData
 #define DEBUG_MODE_LIGHT_COMPLEXITY     11u
 #define DEBUG_MODE_CLUSTER_GRID         12u
 #define DEBUG_MODE_SHADOW_CASCADES      13u
+#define DEBUG_MODE_SHADOW_PENUMBRA      14u
 
 struct FSceneGlobalData
 {

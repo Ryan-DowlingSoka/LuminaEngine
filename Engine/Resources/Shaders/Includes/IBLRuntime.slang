@@ -20,7 +20,18 @@ float3 SamplePrefilter(float3 R, float Roughness)
 
     float MaxLod = max(float(NumMips) - 1.0, 0.0);
     float Lod    = saturate(Roughness) * MaxLod;
-    return SampleBindlessCubeLevel(PrefilterIndex, SAMPLER_LINEAR_CLAMP, R, Lod).rgb;
+    float3 Prefiltered = SampleBindlessCubeLevel(PrefilterIndex, SAMPLER_LINEAR_CLAMP, R, Lod).rgb;
+
+    // The prefilter base is far lower-res than the sky cube, so near-mirror reflections look soft. For low
+    // roughness, blend in a direct full-res sky-cube tap (its mip 0 at r=0 is the unconvolved environment,
+    // so this is consistent, just sharper). Fades out by r~0.25 where the prefilter blur takes over.
+    float SharpBlend = saturate(1.0 - Roughness * 4.0);
+    if (SharpBlend > 0.0)
+    {
+        float3 Sharp = SampleBindlessCubeLevel(gPC.Root.get().SkyCubeIndex, SAMPLER_LINEAR_CLAMP, R, 0.0).rgb;
+        Prefiltered  = lerp(Prefiltered, Sharp, SharpBlend);
+    }
+    return Prefiltered;
 }
 
 float2 SampleBRDFLUT(float NdotV, float Roughness)

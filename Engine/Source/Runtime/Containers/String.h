@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/DisableAllWarnings.h"
+#include "Platform/PlatformString.h"
 
 PRAGMA_DISABLE_ALL_WARNINGS
 #include "EASTL/fixed_string.h"
@@ -27,9 +28,21 @@ namespace Lumina
     
     namespace StringUtils
     {
-        inline FWString ToWideString(FStringView str) { return FWString(FWString::CtorConvert(), str.begin(), str.end()); }
-        inline FWString ToWideString(const char* pStr) { return FWString(FWString::CtorConvert(), pStr); }
-        inline FString FromWideString(const FWString& Str) { return FString(FString::CtorConvert(), Str); }
+        inline FWString ToWideString(FStringView str)
+        {
+            const auto Conv = StringCast<WIDECHAR>(str.data(), static_cast<int32>(str.size()));
+            return FWString(Conv.Get(), Conv.Length());
+        }
+        inline FWString ToWideString(const char* pStr)
+        {
+            const auto Conv = StringCast<WIDECHAR>(pStr);
+            return FWString(Conv.Get(), Conv.Length());
+        }
+        inline FString FromWideString(const FWString& Str)
+        {
+            const auto Conv = StringCast<ANSICHAR>(Str.c_str(), static_cast<int32>(Str.size()));
+            return FString(Conv.Get(), Conv.Length());
+        }
         
         inline FString FormatSize(size_t Bytes)
         {
@@ -50,8 +63,11 @@ namespace Lumina
     }
 }
 
-#define TCHAR_TO_UTF8(X) FString(FString::CtorConvert(), X).c_str()
-#define UTF8_TO_TCHAR(X) FWString(FWString::CtorConvert(), X).c_str()
+// Backed by StringCast: the temporary conversion lives to the end of the full expression, same as the
+// owning-string version it replaced, but uses an inline buffer (no heap for short strings) and the
+// platform code-unit conversion. Prefer Lumina::StringCast<> directly in new code.
+#define TCHAR_TO_UTF8(X) (::Lumina::StringCast<ANSICHAR>(X).Get())
+#define UTF8_TO_TCHAR(X) (::Lumina::StringCast<WIDECHAR>(X).Get())
 
 namespace std
 {

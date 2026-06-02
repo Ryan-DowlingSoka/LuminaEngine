@@ -3,6 +3,9 @@
 #include "implot.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Renderer/GPUProfiler/GPUProfiler.h"
+#include "Paths/Paths.h"
+#include "Platform/Filesystem/FileHelper.h"
+#include "Platform/Process/PlatformProcess.h"
 
 namespace Lumina
 {
@@ -107,6 +110,12 @@ namespace Lumina
         ImGui::TextUnformatted("Scopes (this frame):");
         ImGui::Separator();
         DrawScopeTree();
+
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Barriers", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            DrawBarriers();
+        }
 
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("Pipeline Statistics", ImGuiTreeNodeFlags_DefaultOpen))
@@ -235,6 +244,374 @@ namespace Lumina
         }
 
         ImGui::EndTable();
+    }
+
+    static const char* BarrierPhaseName(EGPUBarrierPhase Phase)
+    {
+        switch (Phase)
+        {
+        case EGPUBarrierPhase::Pass:                return "Pass";
+        case EGPUBarrierPhase::RestoreInitialState: return "Restore";
+        case EGPUBarrierPhase::Copy:                return "Copy";
+        case EGPUBarrierPhase::Clear:               return "Clear";
+        default:                                    return "Other";
+        }
+    }
+
+    static ImVec4 BarrierPhaseColor(EGPUBarrierPhase Phase)
+    {
+        switch (Phase)
+        {
+        case EGPUBarrierPhase::RestoreInitialState: return ImVec4(1.00f, 0.55f, 0.25f, 1.0f); // orange: the suspect set
+        case EGPUBarrierPhase::Copy:                return ImVec4(0.55f, 0.80f, 1.00f, 1.0f);
+        case EGPUBarrierPhase::Clear:               return ImVec4(0.80f, 0.70f, 1.00f, 1.0f);
+        default:                                    return ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+        }
+    }
+
+    // Render the whole resolved frame's barrier set as plain text, independent of the UI filters,
+    // for export to file or clipboard. Pipe-delimited so it pastes cleanly into a spreadsheet.
+    static FString BuildBarrierExportText(const FGPUProfileFrame* Frame)
+    {
+        FString Out;
+        char Line[512];
+
+        auto Appendf = [&](const char* Fmt, auto... Args)
+        {
+            snprintf(Line, sizeof(Line), Fmt, Args...);
+            Out += Line;
+        };
+
+        uint32 NumPass = 0, NumRestore = 0, NumCopy = 0, NumOther = 0;
+        uint32 NumRedundant = 0, NumUnscoped = 0, NumImage = 0, NumBuffer = 0;
+        for (const FGPUBarrierRecord& B : Frame->Barriers)
+        {
+            switch (B.Phase)
+            {
+            case EGPUBarrierPhase::Pass:                ++NumPass;    break;
+            case EGPUBarrierPhase::RestoreInitialState: ++NumRestore; break;
+            case EGPUBarrierPhase::Copy:                ++NumCopy;    break;
+            default:                                    ++NumOther;   break;
+            }
+            if (B.bRedundant)     ++NumRedundant;
+            if (B.ScopeIndex < 0) ++NumUnscoped;
+            if (B.bImage)         ++NumImage; else ++NumBuffer;
+        }
+
+        Appendf("Lumina GPU Barrier Export\n");
+        Appendf("Frame #%llu    GPU Total: %.3f ms\n",
+            (unsigned long long)Frame->FrameNumber, Frame->TotalTimeMs);
+        Appendf("Captured %u barriers (%u image / %u buffer)\n",
+            (uint32)Frame->Barriers.size(), NumImage, NumBuffer);
+        Appendf("By phase: %u Pass, %u Restore, %u Copy, %u Other\n",
+            NumPass, NumRestore, NumCopy, NumOther);
+        Appendf("Redundant (before==after): %u    Unscoped: %u    Dropped: %u\n",
+            NumRedundant, NumUnscoped, Frame->NumDroppedBarriers);
+
+        // Per-resource aggregation, sorted by barrier count.
+        struct FAgg { uint32 Count = 0; uint32 Redundant = 0; bool bImage = false; };
+        TVector<eastl::pair<FFixedString, FAgg>> Aggregates;
+        for (const FGPUBarrierRecord& B : Frame->Barriers)
+        {
+            bool bFound = false;
+            for (auto& Pair : Aggregates)
+            {
+                if (Pair.first == B.ResourceName)
+                {
+                    ++Pair.second.Count;
+                    if (B.bRedundant) { ++Pair.second.Redundant; }
+                    bFound = true;
+                    break;
+                }
+            }
+            if (!bFound)
+            {
+                FAgg Agg; Agg.Count = 1; Agg.Redundant = B.bRedundant ? 1 : 0; Agg.bImage = B.bImage;
+                Aggregates.push_back({ B.ResourceName, Agg });
+            }
+        }
+        eastl::sort(Aggregates.begin(), Aggregates.end(),
+            [](const auto& A, const auto& B) { return A.second.Count > B.second.Count; });
+
+        Out += "\n== Per-resource (count | type | redundant | resource) ==\n";
+        for (const auto& Pair : Aggregates)
+        {
+            Appendf("%4u | %s | %4u | %s\n",
+                Pair.second.Count, Pair.second.bImage ? "img" : "buf",
+                Pair.second.Redundant, Pair.first.c_str());
+        }
+
+        Out += "\n== All barriers (resource | type | transition | sub | scope | phase | redundant) ==\n";
+        uint32 Index = 0;
+        for (const FGPUBarrierRecord& B : Frame->Barriers)
+        {
+            char Sub[32];
+            if (B.bImage && !B.bEntireResource)
+            {
+                snprintf(Sub, sizeof(Sub), "m%u+%u s%u", B.Mip, B.NumMips, B.ArraySlice);
+            }
+            else
+            {
+                snprintf(Sub, sizeof(Sub), "%s", B.bImage ? "all" : "-");
+            }
+
+            const char* ScopeName = "<unscoped>";
+            if (B.ScopeIndex >= 0 && B.ScopeIndex < (int32)Frame->Scopes.size())
+            {
+                ScopeName = Frame->Scopes[B.ScopeIndex].Name.c_str();
+            }
+
+            Appendf("%4u | %s | %s | %s -> %s | %s | %s | %s | %s\n",
+                Index++,
+                B.ResourceName.c_str(),
+                B.bImage ? "img" : "buf",
+                B.Before.c_str(), B.After.c_str(),
+                Sub,
+                ScopeName,
+                BarrierPhaseName(B.Phase),
+                B.bRedundant ? "redundant" : "");
+        }
+
+        return Out;
+    }
+
+    void FGPUProfilerEditorTool::DrawBarriers()
+    {
+        const FGPUProfileFrame* Frame = FGPUProfiler::Get().GetLatestResolvedFrame();
+        if (Frame == nullptr)
+        {
+            ImGui::TextDisabled("No resolved frame.");
+            return;
+        }
+
+        // Summary: split the frame total into the categories that matter for cutting waste.
+        uint32 NumPass = 0, NumRestore = 0, NumCopy = 0, NumOther = 0;
+        uint32 NumRedundant = 0, NumUnscoped = 0, NumImage = 0, NumBuffer = 0;
+        for (const FGPUBarrierRecord& B : Frame->Barriers)
+        {
+            switch (B.Phase)
+            {
+            case EGPUBarrierPhase::Pass:                ++NumPass;    break;
+            case EGPUBarrierPhase::RestoreInitialState: ++NumRestore; break;
+            case EGPUBarrierPhase::Copy:                ++NumCopy;    break;
+            default:                                    ++NumOther;   break;
+            }
+            if (B.bRedundant)      ++NumRedundant;
+            if (B.ScopeIndex < 0)  ++NumUnscoped;
+            if (B.bImage)          ++NumImage; else ++NumBuffer;
+        }
+
+        const uint32 Total = (uint32)Frame->Barriers.size();
+        ImGui::Text("Captured %u barriers  (%u image / %u buffer)", Total, NumImage, NumBuffer);
+        ImGui::Text("By phase:  ");
+        ImGui::SameLine(); ImGui::TextColored(BarrierPhaseColor(EGPUBarrierPhase::Pass),    "%u Pass", NumPass);
+        ImGui::SameLine(); ImGui::TextColored(BarrierPhaseColor(EGPUBarrierPhase::RestoreInitialState), "  %u Restore", NumRestore);
+        if (NumCopy)  { ImGui::SameLine(); ImGui::TextColored(BarrierPhaseColor(EGPUBarrierPhase::Copy), "  %u Copy", NumCopy); }
+        if (NumOther) { ImGui::SameLine(); ImGui::Text("  %u Other", NumOther); }
+        ImGui::SameLine(); ImGui::TextDisabled("  |  %u redundant (before==after)", NumRedundant);
+
+        if (NumRestore > 0)
+        {
+            ImGui::TextColored(BarrierPhaseColor(EGPUBarrierPhase::RestoreInitialState),
+                LE_ICON_INFORMATION " %u barriers are end-of-frame keep-initial-state restores "
+                "(invisible in the scope tree). These are the first place to look for waste.", NumRestore);
+        }
+        if (Frame->NumDroppedBarriers > 0)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                "Capture truncated: %u barriers dropped (raise MaxBarrierRecordsPerFrame).", Frame->NumDroppedBarriers);
+        }
+
+        // Export the full (unfiltered) frame as text.
+        const bool bHaveBarriers = !Frame->Barriers.empty();
+        if (!bHaveBarriers) { ImGui::BeginDisabled(); }
+
+        if (ImGui::Button(LE_ICON_EXPORT " Export to File"))
+        {
+            const FString Text = BuildBarrierExportText(Frame);
+
+            FFixedString Dir = Paths::Combine(Paths::GetEngineDirectory(), "Saved", "BarrierExports");
+            Paths::CreateDirectories(FStringView(Dir.data(), Dir.size()));
+
+            char FileName[64];
+            snprintf(FileName, sizeof(FileName), "barriers_frame_%llu.txt",
+                (unsigned long long)Frame->FrameNumber);
+            FFixedString FullPath = Paths::Combine(FStringView(Dir.data(), Dir.size()), FileName);
+
+            if (FileHelper::SaveStringToFile(FStringView(Text.c_str(), Text.size()),
+                                             FStringView(FullPath.data(), FullPath.size())))
+            {
+                BarrierExportStatus = FString("Saved: ") + FullPath.c_str();
+                LOG_INFO("Exported {0} GPU barriers to {1}", (uint32)Frame->Barriers.size(), FullPath.c_str());
+                Platform::ShowFileInExplorer(UTF8_TO_TCHAR(FullPath.c_str()));
+            }
+            else
+            {
+                BarrierExportStatus = FString("Failed to write: ") + FullPath.c_str();
+                LOG_ERROR("Failed to export GPU barriers to {0}", FullPath.c_str());
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_CONTENT_COPY " Copy to Clipboard"))
+        {
+            const FString Text = BuildBarrierExportText(Frame);
+            ImGui::SetClipboardText(Text.c_str());
+            char StatusBuf[64];
+            snprintf(StatusBuf, sizeof(StatusBuf), "Copied %u barriers to clipboard.", (uint32)Frame->Barriers.size());
+            BarrierExportStatus = StatusBuf;
+        }
+
+        if (!bHaveBarriers) { ImGui::EndDisabled(); }
+
+        if (!BarrierExportStatus.empty())
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", BarrierExportStatus.c_str());
+        }
+
+        ImGui::Separator();
+
+        // Filters.
+        ImGui::Checkbox("Image", &bShowImageBarriers);     ImGui::SameLine();
+        ImGui::Checkbox("Buffer", &bShowBufferBarriers);   ImGui::SameLine();
+        ImGui::Checkbox("Restores", &bShowRestoreBarriers);ImGui::SameLine();
+        ImGui::Checkbox("Redundant only", &bShowRedundantOnly); ImGui::SameLine();
+        ImGui::Checkbox("Group by resource", &bGroupBarriersByResource);
+
+        auto Passes = [&](const FGPUBarrierRecord& B) -> bool
+        {
+            if (B.bImage && !bShowImageBarriers)   return false;
+            if (!B.bImage && !bShowBufferBarriers) return false;
+            if (B.Phase == EGPUBarrierPhase::RestoreInitialState && !bShowRestoreBarriers) return false;
+            if (bShowRedundantOnly && !B.bRedundant) return false;
+            return true;
+        };
+
+        if (Frame->Barriers.empty())
+        {
+            ImGui::TextDisabled("No barriers captured this frame.");
+            return;
+        }
+
+        if (bGroupBarriersByResource)
+        {
+            // Aggregate per resource so ping-pong / over-transitioning resources stand out.
+            struct FAgg { uint32 Count = 0; uint32 Redundant = 0; bool bImage = false; };
+            TVector<eastl::pair<FFixedString, FAgg>> Aggregates;
+            for (const FGPUBarrierRecord& B : Frame->Barriers)
+            {
+                if (!Passes(B)) { continue; }
+                bool bFound = false;
+                for (auto& Pair : Aggregates)
+                {
+                    if (Pair.first == B.ResourceName)
+                    {
+                        ++Pair.second.Count;
+                        if (B.bRedundant) { ++Pair.second.Redundant; }
+                        bFound = true;
+                        break;
+                    }
+                }
+                if (!bFound)
+                {
+                    FAgg Agg; Agg.Count = 1; Agg.Redundant = B.bRedundant ? 1 : 0; Agg.bImage = B.bImage;
+                    Aggregates.push_back({ B.ResourceName, Agg });
+                }
+            }
+            eastl::sort(Aggregates.begin(), Aggregates.end(),
+                [](const auto& A, const auto& B) { return A.second.Count > B.second.Count; });
+
+            if (ImGui::BeginTable("##BarrierAgg", 4,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 260.0f)))
+            {
+                ImGui::TableSetupColumn("Resource", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed, 60.0f);
+                ImGui::TableSetupColumn("Barriers", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupColumn("Redundant",ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                for (const auto& Pair : Aggregates)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(Pair.first.c_str());
+                    ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(Pair.second.bImage ? "img" : "buf");
+                    ImGui::TableSetColumnIndex(2); ImGui::Text("%u", Pair.second.Count);
+                    ImGui::TableSetColumnIndex(3);
+                    if (Pair.second.Redundant) ImGui::Text("%u", Pair.second.Redundant);
+                    else                       ImGui::TextDisabled("-");
+                }
+                ImGui::EndTable();
+            }
+            return;
+        }
+
+        if (ImGui::BeginTable("##BarrierList", 6,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 320.0f)))
+        {
+            ImGui::TableSetupColumn("Resource",   ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Type",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableSetupColumn("Transition", ImGuiTableColumnFlags_WidthFixed, 200.0f);
+            ImGui::TableSetupColumn("Sub",        ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            ImGui::TableSetupColumn("Scope",      ImGuiTableColumnFlags_WidthFixed, 150.0f);
+            ImGui::TableSetupColumn("Phase",      ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            char SubBuf[32];
+            char TransBuf[160];
+            for (const FGPUBarrierRecord& B : Frame->Barriers)
+            {
+                if (!Passes(B)) { continue; }
+
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(B.ResourceName.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(B.bImage ? "img" : "buf");
+
+                ImGui::TableSetColumnIndex(2);
+                snprintf(TransBuf, sizeof(TransBuf), "%s -> %s", B.Before.c_str(), B.After.c_str());
+                if (B.bRedundant)
+                {
+                    ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.65f, 1.0f), "%s", TransBuf);
+                }
+                else
+                {
+                    ImGui::TextUnformatted(TransBuf);
+                }
+
+                ImGui::TableSetColumnIndex(3);
+                if (B.bImage && !B.bEntireResource)
+                {
+                    snprintf(SubBuf, sizeof(SubBuf), "m%u+%u s%u", B.Mip, B.NumMips, B.ArraySlice);
+                    ImGui::TextUnformatted(SubBuf);
+                }
+                else
+                {
+                    ImGui::TextDisabled(B.bImage ? "all" : "-");
+                }
+
+                ImGui::TableSetColumnIndex(4);
+                if (B.ScopeIndex >= 0 && B.ScopeIndex < (int32)Frame->Scopes.size())
+                {
+                    ImGui::TextUnformatted(Frame->Scopes[B.ScopeIndex].Name.c_str());
+                }
+                else
+                {
+                    ImGui::TextDisabled("<unscoped>");
+                }
+
+                ImGui::TableSetColumnIndex(5);
+                ImGui::TextColored(BarrierPhaseColor(B.Phase), "%s", BarrierPhaseName(B.Phase));
+            }
+            ImGui::EndTable();
+        }
     }
 
     void FGPUProfilerEditorTool::DrawDiagnostics()

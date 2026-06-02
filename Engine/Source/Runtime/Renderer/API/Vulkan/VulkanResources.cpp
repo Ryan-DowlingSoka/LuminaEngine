@@ -398,6 +398,19 @@ namespace Lumina
         
     }
 
+    static uint64 NextPow2_u64(uint64 v)
+    {
+        if (v <= 1) return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v |= v >> 32;
+        return v + 1;
+    }
+
     TSharedPtr<FBufferChunk> FUploadManager::CreateChunk(uint64 Size) const
     {
         LUMINA_PROFILE_SCOPE();
@@ -419,12 +432,14 @@ namespace Lumina
             FRHIBufferDesc Desc;
             Desc.Size = Size;
             // UniformBuffer intentionally omitted: chunks can exceed maxUniformBufferRange. Use BDA instead.
+            // IndirectBuffer lets a ring slice back DrawIndirect args (vendors confirm no cost alongside the rest).
             Desc.Usage.SetMultipleFlags(
                 EBufferUsageFlags::CPUWritable,
                 EBufferUsageFlags::StagingBuffer,
                 EBufferUsageFlags::Transient,
                 EBufferUsageFlags::VertexBuffer,
-                EBufferUsageFlags::IndexBuffer);
+                EBufferUsageFlags::IndexBuffer,
+                EBufferUsageFlags::IndirectBuffer);
             Desc.DebugName = FString("UploadChunk [ " + eastl::to_string(Size) + " ]");
 
             Chunk->Buffer       = Context->CreateBuffer(Desc);
@@ -435,25 +450,35 @@ namespace Lumina
         return Chunk;
     }
 
-    void FUploadManager::CreateFastRing()
+    bool FUploadManager::CreateOrResizeFastRing(uint64 NewSliceSize)
     {
+        NewSliceSize = std::min<uint64>(std::max<uint64>(NewSliceSize, kFastRingMinSlice), kFastRingMaxSlice);
+
         FRHIBufferDesc Desc;
-        Desc.Size = kFastRingSliceSize * kFastRingSliceCount;
+        Desc.Size = NewSliceSize * kFastRingSliceCount;
         Desc.Usage.SetMultipleFlags(
             EBufferUsageFlags::CPUWritable,
             EBufferUsageFlags::StagingBuffer,
             EBufferUsageFlags::Transient,
             EBufferUsageFlags::VertexBuffer,
-            EBufferUsageFlags::IndexBuffer);
+            EBufferUsageFlags::IndexBuffer,
+            EBufferUsageFlags::IndirectBuffer);
         Desc.DebugName = "UploadFastRing";
 
-        FastRingBuffer = Context->CreateBuffer(Desc);
-        FastRingMapped = FastRingBuffer.As<FVulkanBuffer>()->GetMappedMemory();
-        if (FastRingMapped == nullptr)
+        // Build into a temp first: on failure (e.g. OOM at a large size) we keep the existing ring rather
+        // than dropping to no fast path at all.
+        FRHIBufferRef NewBuffer = Context->CreateBuffer(Desc);
+        void* NewMapped = NewBuffer ? NewBuffer.As<FVulkanBuffer>()->GetMappedMemory() : nullptr;
+        if (NewMapped == nullptr)
         {
-            FastRingBuffer = nullptr;   // no host-visible mapping -> disable; everything stays on the pool
-            return;
+            return false;               // no host-visible mapping -> caller spills to the pool
         }
+
+        // Reassign drops our ref to the old buffer; the command buffers that wrote in-flight slices still
+        // hold refs (AddReferencedResource), so the old buffer lives until those submissions retire.
+        FastRingBuffer    = NewBuffer;
+        FastRingMapped    = NewMapped;
+        FastRingSliceSize = NewSliceSize;
 
         for (uint32 i = 0; i < kFastRingSliceCount; ++i)
         {
@@ -462,14 +487,45 @@ namespace Lumina
         FastRingActive = 0;
         FastRingOffset = 0;
         FastRingUsable = true;          // usable immediately for the rest of this recording
+        return true;
     }
 
     void FUploadManager::BeginFrame(uint64 CurrentVersion)
     {
+        // Roll the just-finished recording's demand into the rolling window peak, then start fresh. Done
+        // even before the ring exists so the first CreateOrResizeFastRing can size from warmup demand.
+        const uint64 LastDemand = FastRingFrameDemand;
+        FastRingWindowPeak      = std::max(FastRingWindowPeak, LastDemand);
+        FastRingFrameDemand     = 0;
+
         if (!FastRingBuffer)
         {
             FastRingUsable = false;
             return;
+        }
+
+        // Adaptive sizing. Grow immediately if the last recording overran the slice (it spilled to the
+        // pool) so a heavy scene snaps to the fast path within one recording. Otherwise re-evaluate every
+        // kFastRingEvalWindow recordings against the window peak -- this is where we shrink back down.
+        uint64 TargetSlice = 0;
+        if (LastDemand > FastRingSliceSize)
+        {
+            TargetSlice = NextPow2_u64(LastDemand);
+        }
+        else if (++FastRingWindowCount >= kFastRingEvalWindow)
+        {
+            TargetSlice         = NextPow2_u64(FastRingWindowPeak);
+            FastRingWindowCount = 0;
+            FastRingWindowPeak  = 0;
+        }
+
+        if (TargetSlice != 0)
+        {
+            TargetSlice = std::min<uint64>(std::max<uint64>(TargetSlice, kFastRingMinSlice), kFastRingMaxSlice);
+            if (TargetSlice != FastRingSliceSize && CreateOrResizeFastRing(TargetSlice))
+            {
+                return;   // fresh ring: slice 0 already active + usable, skip the normal rotation
+            }
         }
 
         // Rotate to the next slice. It's safe to overwrite once the frame that last wrote it has
@@ -492,19 +548,6 @@ namespace Lumina
         }
     }
 
-    static uint64 NextPow2_u64(uint64 v)
-    {
-        if (v <= 1) return 1;
-        v--;
-        v |= v >> 1;
-        v |= v >> 2;
-        v |= v >> 4;
-        v |= v >> 8;
-        v |= v >> 16;
-        v |= v >> 32;
-        return v + 1;
-    }
-
     bool FUploadManager::SuballocateBuffer(uint64 Size, FRHIBuffer*& RESTRICT Buffer, uint64& RESTRICT Offset, void*& RESTRICT CpuVA, uint64 CurrentVersion, uint32 Alignment)
     {
         LUMINA_PROFILE_SCOPE();
@@ -517,25 +560,33 @@ namespace Lumina
         // Alignment must be a power of two; Align<T> produces garbage otherwise.
         ASSERT(Alignment > 0 && (Alignment & (Alignment - 1)) == 0);
 
-        // Fast path: bump-allocate inside the per-frame ring slice (no pool scan / version work).
-        // Restricted to the graphics queue (the persistent frame list, where all per-frame transient
-        // lives); transfer/streaming lists do bulk uploads and stay on the pool. Warms up so short-lived
-        // lists never reserve the ring; misses (too big / slice full) spill to the pool below.
-        if (!bIsScratchBuffer && Size <= kFastRingSliceSize && VersionGetQueue(CurrentVersion) == ECommandQueue::Graphics)
+        // Fast-path candidate: graphics-queue allocations up to the slice cap. (Requests bigger than the cap
+        // can never live in the ring, so they're excluded from both demand and the fast path.)
+        const bool bFastPathCandidate = !bIsScratchBuffer && VersionGetQueue(CurrentVersion) == ECommandQueue::Graphics
+                                        && Size <= kFastRingMaxSlice;
+        if (bFastPathCandidate)
         {
+            // Demand tracking for adaptive sizing: mirror the bump as a "virtual" offset that ignores the
+            // current slice capacity, so it measures the true bytes this recording wants -- including any
+            // that spill below. Reset per recording in BeginFrame; drives grow/shrink there.
+            FastRingFrameDemand = Align<uint64>(FastRingFrameDemand, Alignment) + Size;
+
+            // Create lazily after warmup, sized to the demand seen so far (not a fixed worst case). Triggered
+            // independent of the current slice size so a large first scene sizes the ring correctly up front.
             if (!FastRingBuffer && ++FastRingWarmup >= kFastRingWarmup)
             {
-                CreateFastRing();
+                CreateOrResizeFastRing(NextPow2_u64(std::max(FastRingFrameDemand, FastRingWindowPeak)));
             }
 
-            if (FastRingBuffer && FastRingUsable)
+            // Bump-allocate inside the active slice when the request fits and the slice is free.
+            if (FastRingBuffer && FastRingUsable && Size <= FastRingSliceSize)
             {
                 const uint64 Aligned = Align<uint64>(FastRingOffset, Alignment);
-                if (Aligned + Size <= kFastRingSliceSize)
+                if (Aligned + Size <= FastRingSliceSize)
                 {
                     FastRingOffset = Aligned + Size;
                     Buffer = FastRingBuffer.GetReference();
-                    Offset = (uint64)FastRingActive * kFastRingSliceSize + Aligned;
+                    Offset = FastRingActive * FastRingSliceSize + Aligned;
                     CpuVA  = (char*)FastRingMapped + Offset;
                     return true;
                 }
