@@ -1,13 +1,58 @@
 #include "pch.h"
 #include "ScriptExports.h"
+#include "ScriptAnnotations.h"
 
 #include "Core/Serialization/Archiver.h"
 #include "Log/Log.h"
 #include "lua.h"
 #include "lualib.h"
+#include <cstdlib>
 
 namespace Lumina::Lua
 {
+    const FString* FScriptExportMeta::Find(const FName& Key) const
+    {
+        for (const FScriptAnnotationArg& Arg : Entries)
+        {
+            if (Arg.Key == Key)
+            {
+                return &Arg.Value;
+            }
+        }
+        return nullptr;
+    }
+
+    void FScriptExportMeta::Set(const FName& Key, const FString& Value)
+    {
+        for (FScriptAnnotationArg& Arg : Entries)
+        {
+            if (Arg.Key == Key)
+            {
+                Arg.Value = Value;
+                return;
+            }
+        }
+        Entries.push_back(FScriptAnnotationArg{ Key, Value });
+    }
+
+    bool FScriptExportMeta::GetNumber(const FName& Key, double& OutValue) const
+    {
+        const FString* Value = Find(Key);
+        if (!Value || Value->empty())
+        {
+            return false;
+        }
+        char* End = nullptr;
+        const double Parsed = std::strtod(Value->c_str(), &End);
+        if (End == Value->c_str())
+        {
+            return false;
+        }
+        OutValue = Parsed;
+        return true;
+    }
+
+
     bool FScriptPropertyValue::Serialize(FArchive& Ar)
     {
         // Format: [u8 Version][u32 PayloadSize][u8 KindRaw][body...]. PayloadSize backpatched on write,
@@ -381,45 +426,67 @@ namespace Lumina::Lua
         }
     }
 
-    bool BuildSchemaFromExportsTable(
+    bool BuildSchemaFromAnnotatedExports(
         lua_State* State,
-        int ExportsTableIndex,
+        int ScriptTableIndex,
+        const TVector<FScriptMemberAnnotation>& Annotations,
         FScriptExportSchema& OutSchema,
         TVector<FScriptPropertyEntry>& OutDefaults)
     {
         OutSchema.Fields.clear();
         OutDefaults.clear();
 
-        if (!lua_istable(State, ExportsTableIndex))
+        if (!lua_istable(State, ScriptTableIndex))
         {
             return false;
         }
 
-        ExportsTableIndex = lua_absindex(State, ExportsTableIndex);
+        ScriptTableIndex = lua_absindex(State, ScriptTableIndex);
 
-        lua_pushnil(State);
-        while (lua_next(State, ExportsTableIndex) != 0)
+        for (const FScriptMemberAnnotation& Annotation : Annotations)
         {
-            if (lua_type(State, -2) == LUA_TSTRING)
+            if (!Annotation.bExport || Annotation.bIsFunction)
             {
-                size_t KeyLen = 0;
-                const char* KeyStr = lua_tolstring(State, -2, &KeyLen);
-                FName FieldName(FString(KeyStr, KeyLen));
-
-                FScriptPropertyValue Value;
-                auto Type = BuildTypeFromLuaValue(State, -1, Value);
-
-                FScriptExportField Field;
-                Field.Name = FieldName;
-                Field.Type = Type;
-                OutSchema.Fields.emplace_back(eastl::move(Field));
-
-                FScriptPropertyEntry Entry;
-                Entry.Name = FieldName;
-                Entry.Value = eastl::move(Value);
-                OutDefaults.emplace_back(eastl::move(Entry));
+                continue; // only exported, non-function members are editable properties
             }
+
+            bool bAlready = false;
+            for (const FScriptExportField& Existing : OutSchema.Fields)
+            {
+                if (Existing.Name == Annotation.Member) { bAlready = true; break; }
+            }
+            if (bAlready)
+            {
+                continue;
+            }
+
+            // Read the member's default straight off the script table (raw, no metatable).
+            const FString MemberStr = Annotation.Member.ToString();
+            lua_rawgetfield(State, ScriptTableIndex, MemberStr.c_str());
+            if (lua_isnil(State, -1))
+            {
+                lua_pop(State, 1);
+                LOG_WARN("[Script] --@export '{}' has no assigned value (Script.{} = ...); skipping.", MemberStr, MemberStr);
+                continue;
+            }
+
+            FScriptPropertyValue Value;
+            auto Type = BuildTypeFromLuaValue(State, -1, Value);
             lua_pop(State, 1);
+
+            FScriptExportField Field;
+            Field.Name = Annotation.Member;
+            Field.Type = Type;
+            for (const FScriptAnnotationArg& Arg : Annotation.ExportMeta)
+            {
+                Field.Meta.Set(Arg.Key, Arg.Value);
+            }
+            OutSchema.Fields.emplace_back(eastl::move(Field));
+
+            FScriptPropertyEntry Entry;
+            Entry.Name = Annotation.Member;
+            Entry.Value = eastl::move(Value);
+            OutDefaults.emplace_back(eastl::move(Entry));
         }
 
         return !OutSchema.Fields.empty();
@@ -498,10 +565,10 @@ namespace Lumina::Lua
         }
     }
 
-    void ApplyOverridesToExportsTable(lua_State* State, int ExportsTableIndex, const FScriptExportSchema& Schema, const TVector<FScriptPropertyEntry>& Overrides)
+    void ApplyOverridesToScriptTable(lua_State* State, int ScriptTableIndex, const FScriptExportSchema& Schema, const TVector<FScriptPropertyEntry>& Overrides)
     {
-        if (!lua_istable(State, ExportsTableIndex)) return;
-        ExportsTableIndex = lua_absindex(State, ExportsTableIndex);
+        if (!lua_istable(State, ScriptTableIndex)) return;
+        ScriptTableIndex = lua_absindex(State, ScriptTableIndex);
 
         for (const FScriptPropertyEntry& Entry : Overrides)
         {
@@ -519,7 +586,7 @@ namespace Lumina::Lua
 
             PushValueToLua(State, Entry.Value, *Field->Type);
             FString KeyStr = Entry.Name.ToString();
-            lua_setfield(State, ExportsTableIndex, KeyStr.c_str());
+            lua_setfield(State, ScriptTableIndex, KeyStr.c_str());
         }
     }
 

@@ -6,6 +6,7 @@
 #include "Memory/SmartPtr.h"
 #include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
+#include "ScriptAnnotations.h"
 
 struct lua_State;
 
@@ -34,10 +35,25 @@ namespace Lumina::Lua
 
     struct FScriptExportType;
 
+    // PROPERTY-style metadata harvested from a field's --@export(...) annotation
+    // (ClampMin/ClampMax/Delta/Units/Category/Tooltip/Color/NoDrag/ReadOnly). A thin
+    // key/value lookup mirroring FProperty's HasMetadata/GetMetadata, so the editor
+    // drives the same clamp/color/units widgets for script exports.
+    struct RUNTIME_API FScriptExportMeta
+    {
+        TVector<FScriptAnnotationArg> Entries;
+
+        const FString* Find(const FName& Key) const;
+        bool Has(const FName& Key) const { return Find(Key) != nullptr; }
+        void Set(const FName& Key, const FString& Value);
+        bool GetNumber(const FName& Key, double& OutValue) const;
+    };
+
     struct FScriptExportField
     {
-        FName                       Name;
+        FName                         Name;
         TSharedPtr<FScriptExportType> Type;
+        FScriptExportMeta             Meta;   ///< From --@export(...) on this field; editor display data, rebuilt per load.
     };
 
     struct FScriptExportType
@@ -83,14 +99,19 @@ namespace Lumina::Lua
         FScriptPropertyValue        Value;
     };
 
-    // Duck-typed schema + defaults from one walk of the live Exports table. Nil fields have no type info.
-    RUNTIME_API bool BuildSchemaFromExportsTable(
+    // Schema + defaults for every --@export-annotated top-level member (`Script.<Name> = ...`),
+    // in source order. Each member's value is read (raw) from the live script table to infer its
+    // type and default; its --@export(...) args become the field's Meta. Members with no assigned
+    // value are skipped. ScriptTableIndex is the live module table (the returned `Script`).
+    RUNTIME_API bool BuildSchemaFromAnnotatedExports(
         lua_State* State,
-        int ExportsTableIndex,
+        int ScriptTableIndex,
+        const TVector<FScriptMemberAnnotation>& Annotations,
         FScriptExportSchema& OutSchema,
         TVector<FScriptPropertyEntry>& OutDefaults);
 
-    RUNTIME_API void ApplyOverridesToExportsTable(lua_State* State, int ExportsTableIndex, const FScriptExportSchema& Schema, const TVector<FScriptPropertyEntry>& Overrides);
+    // Writes each override straight onto the live script table as a top-level field (Script.<Name>).
+    RUNTIME_API void ApplyOverridesToScriptTable(lua_State* State, int ScriptTableIndex, const FScriptExportSchema& Schema, const TVector<FScriptPropertyEntry>& Overrides);
 
     // Drops type-mismatched fields, fills missing ones with defaults.
     RUNTIME_API void ReconcileOverrides(const FScriptExportSchema& Schema, const TVector<FScriptPropertyEntry>& Defaults, TVector<FScriptPropertyEntry>& InOutOverrides);

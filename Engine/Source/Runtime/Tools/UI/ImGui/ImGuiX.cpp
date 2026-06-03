@@ -214,6 +214,212 @@ namespace Lumina::ImGuiX
         return wasPressed;
     }
 
+    namespace
+    {
+        ImU32 LerpColor(ImU32 A, ImU32 B, float T)
+        {
+            return ImGui::ColorConvertFloat4ToU32(ImLerp(ImGui::ColorConvertU32ToFloat4(A), ImGui::ColorConvertU32ToFloat4(B), ImSaturate(T)));
+        }
+
+        ImU32 ScaleColorRGB(ImU32 C, float M)
+        {
+            ImVec4 V = ImGui::ColorConvertU32ToFloat4(C);
+            V.x *= M; V.y *= M; V.z *= M;
+            return ImGui::ColorConvertFloat4ToU32(V);
+        }
+
+        // Shared float/int implementation. Capsule track + shaded circular ("sphere") knob.
+        bool SliderScalarStyled(const char* Label, ImGuiDataType DataType, void* Value, const void* Min, const void* Max, ESliderFlags Flags, const char* Format, const FSliderStyle* StyleOverride)
+        {
+            ImGuiWindow* Window = ImGui::GetCurrentWindow();
+            if (Window->SkipItems)
+            {
+                return false;
+            }
+
+            ImGuiContext& g = *GImGui;
+            const ImGuiStyle& Style = g.Style;
+            const ImGuiID ID = Window->GetID(Label);
+            const float Scale = GetUIScale();
+
+            const FSliderStyle SS = StyleOverride ? *StyleOverride : FSliderStyle();
+            const float KnobRadius = ImMax(2.0f, SS.KnobRadius * Scale);
+            const float TrackHeight = ImMax(2.0f, SS.TrackHeight * Scale);
+            const bool ReadOnly = EnumHasAnyFlags(Flags, ESliderFlags::ReadOnly);
+
+            const float Width = ImGui::CalcItemWidth();
+            const ImVec2 LabelSize = ImGui::CalcTextSize(Label, nullptr, true);
+            const float RowHeight = ImMax(KnobRadius * 2.0f, g.FontSize + Style.FramePadding.y * 2.0f);
+
+            const ImVec2 Pos = Window->DC.CursorPos;
+            const ImRect FrameBB(Pos, Pos + ImVec2(Width, RowHeight));
+            const ImRect TotalBB(FrameBB.Min, FrameBB.Max + ImVec2(LabelSize.x > 0.0f ? Style.ItemInnerSpacing.x + LabelSize.x : 0.0f, 0.0f));
+
+            const bool TempInputAllowed = !ReadOnly;
+            ImGui::ItemSize(TotalBB, Style.FramePadding.y);
+            if (!ImGui::ItemAdd(TotalBB, ID, &FrameBB, TempInputAllowed ? ImGuiItemFlags_Inputable : 0))
+            {
+                return false;
+            }
+
+            if (Format == nullptr)
+            {
+                Format = ImGui::DataTypeGetInfo(DataType)->PrintFmt;
+            }
+
+            const bool Hovered = ImGui::ItemHoverable(FrameBB, ID, g.LastItemData.ItemFlags);
+            bool TempInputActive = TempInputAllowed && ImGui::TempInputIsActive(ID);
+
+            // Activation: click or nav, with Ctrl+Click opening the text-input box (matches ImGui::SliderScalar).
+            if (!ReadOnly && !TempInputActive)
+            {
+                const bool Clicked = Hovered && ImGui::IsMouseClicked(0, ImGuiInputFlags_None, ID);
+                const bool MakeActive = (Clicked || g.NavActivateId == ID);
+                if (MakeActive && Clicked)
+                {
+                    ImGui::SetKeyOwner(ImGuiKey_MouseLeft, ID);
+                }
+                if (MakeActive && ((Clicked && g.IO.KeyCtrl) || (g.NavActivateId == ID && (g.NavActivateFlags & ImGuiActivateFlags_PreferInput))))
+                {
+                    TempInputActive = true;
+                }
+
+                if (MakeActive)
+                {
+                    memcpy(&g.ActiveIdValueOnActivation, Value, ImGui::DataTypeGetInfo(DataType)->Size);
+                }
+                if (MakeActive && !TempInputActive)
+                {
+                    ImGui::SetActiveID(ID, Window);
+                    ImGui::SetFocusID(ID, Window);
+                    ImGui::FocusWindow(Window);
+                    g.ActiveIdUsingNavDirMask |= (1 << ImGuiDir_Left) | (1 << ImGuiDir_Right);
+                }
+            }
+
+            if (TempInputActive)
+            {
+                return ImGui::TempInputScalar(FrameBB, ID, Label, DataType, Value, Format, nullptr, nullptr);
+            }
+
+            // Drive value via the stock behavior, but force its usable grab range to match the knob
+            // travel (center inset by KnobRadius) so the cursor tracks the knob exactly.
+            bool ValueChanged = false;
+            if (!ReadOnly)
+            {
+                const float SavedGrabMinSize = g.Style.GrabMinSize;
+                g.Style.GrabMinSize = ImMax(1.0f, 2.0f * (KnobRadius - 2.0f));
+                ImRect GrabBB;
+                ValueChanged = ImGui::SliderBehavior(FrameBB, ID, DataType, Value, Min, Max, Format, ImGuiSliderFlags_None, &GrabBB);
+                g.Style.GrabMinSize = SavedGrabMinSize;
+                if (ValueChanged)
+                {
+                    ImGui::MarkItemEdited(ID);
+                }
+            }
+
+            const bool Held = (g.ActiveId == ID);
+
+            // Normalized position for the knob/fill (linear).
+            double DMin = 0.0, DMax = 0.0, DVal = 0.0;
+            if (DataType == ImGuiDataType_Float)
+            {
+                DMin = *(const float*)Min; DMax = *(const float*)Max; DVal = *(const float*)Value;
+            }
+            else
+            {
+                DMin = (double)*(const int32*)Min; DMax = (double)*(const int32*)Max; DVal = (double)*(const int32*)Value;
+            }
+            const float T = (DMax != DMin) ? ImSaturate((float)((DVal - DMin) / (DMax - DMin))) : 0.0f;
+
+            const float TrackLeft = FrameBB.Min.x + KnobRadius;
+            const float TrackRight = FrameBB.Max.x - KnobRadius;
+            const float CenterY = ImFloor((FrameBB.Min.y + FrameBB.Max.y) * 0.5f + 0.5f);
+            const float KnobX = TrackLeft + T * (TrackRight - TrackLeft);
+            const ImVec2 KnobCenter(KnobX, CenterY);
+
+            ImDrawList* DL = Window->DrawList;
+            const float Rounding = TrackHeight * 0.5f;
+            const ImVec2 TrackMin(FrameBB.Min.x, CenterY - TrackHeight * 0.5f);
+            const ImVec2 TrackMax(FrameBB.Max.x, CenterY + TrackHeight * 0.5f);
+
+            const ImU32 TrackCol = SS.TrackColor ? SS.TrackColor : ImGui::GetColorU32(ImGuiCol_FrameBg);
+            const ImU32 FillCol = SS.FillColor ? SS.FillColor : ImGui::GetColorU32(ImGuiCol_SliderGrab);
+            const ImU32 FillEndCol = SS.FillColorEnd ? SS.FillColorEnd : ImGui::GetColorU32(ImGuiCol_SliderGrabActive);
+            const ImU32 KnobBase = SS.KnobColor ? SS.KnobColor : ImGui::ColorConvertFloat4ToU32(ImVec4(0.93f, 0.94f, 0.96f, 1.0f));
+            const ImU32 KnobHovered = SS.KnobColorHovered ? SS.KnobColorHovered : IM_COL32(255, 255, 255, 255);
+            const ImU32 KnobCol = (Held || Hovered) ? KnobHovered : KnobBase;
+
+            // Track background.
+            DL->AddRectFilled(TrackMin, TrackMax, TrackCol, Rounding);
+
+            // Filled portion up to the knob center.
+            const float FillRight = ImClamp(KnobX, TrackMin.x + Rounding, TrackMax.x);
+            if (FillRight > TrackMin.x)
+            {
+                DL->AddRectFilled(TrackMin, ImVec2(FillRight, TrackMax.y), FillCol, Rounding, ImDrawFlags_RoundCornersLeft);
+                if (EnumHasAnyFlags(Flags, ESliderFlags::FillGradient))
+                {
+                    // Overlay a left->knob gradient; color at the knob reflects its position along the full range.
+                    const ImU32 EndCol = LerpColor(FillCol, FillEndCol, T);
+                    DL->AddRectFilledMultiColor(ImVec2(TrackMin.x + Rounding, TrackMin.y), ImVec2(FillRight, TrackMax.y), FillCol, EndCol, EndCol, FillCol);
+                }
+            }
+
+            // Glow halo behind the knob.
+            if (EnumHasAnyFlags(Flags, ESliderFlags::Glow) && (Held || Hovered))
+            {
+                const ImU32 GlowInner = ImGui::ColorConvertFloat4ToU32(ImGui::ColorConvertU32ToFloat4(FillEndCol) * ImVec4(1, 1, 1, 0.30f));
+                const ImU32 GlowOuter = ImGui::ColorConvertFloat4ToU32(ImGui::ColorConvertU32ToFloat4(FillEndCol) * ImVec4(1, 1, 1, 0.0f));
+                DL->AddCircleFilled(KnobCenter, KnobRadius * 2.1f, GlowOuter);
+                DL->AddCircleFilled(KnobCenter, KnobRadius * 1.6f, GlowInner);
+            }
+
+            // Knob: drop shadow, body, colored rim, and a top highlight to read as a sphere.
+            DL->AddCircleFilled(KnobCenter + ImVec2(0.0f, KnobRadius * 0.18f), KnobRadius, IM_COL32(0, 0, 0, 55));
+            DL->AddCircleFilled(KnobCenter, KnobRadius, KnobCol);
+            DL->AddCircleFilled(KnobCenter + ImVec2(0.0f, KnobRadius * 0.22f), KnobRadius * 0.85f, IM_COL32(0, 0, 0, 22));
+            DL->AddCircleFilled(KnobCenter - ImVec2(KnobRadius * 0.28f, KnobRadius * 0.30f), KnobRadius * 0.55f, IM_COL32(255, 255, 255, 60));
+            DL->AddCircle(KnobCenter, KnobRadius, LerpColor(FillCol, IM_COL32(0, 0, 0, 255), 0.15f), 0, ImMax(1.0f, 1.5f * Scale));
+
+            // Optional value readout, right-aligned over the track.
+            if (EnumHasAnyFlags(Flags, ESliderFlags::AlwaysValue))
+            {
+                char Buf[64];
+                const char* BufEnd = Buf + ImGui::DataTypeFormatString(Buf, IM_ARRAYSIZE(Buf), DataType, Value, Format);
+                const ImVec2 TextSize = ImGui::CalcTextSize(Buf, BufEnd);
+                const ImVec2 TextPos(FrameBB.Max.x - TextSize.x, CenterY - TextSize.y * 0.5f);
+                DL->AddText(TextPos + ImVec2(1, 1), IM_COL32(0, 0, 0, 110), Buf, BufEnd);
+                DL->AddText(TextPos, ImGui::GetColorU32(ImGuiCol_Text), Buf, BufEnd);
+            }
+
+            // Trailing label.
+            if (LabelSize.x > 0.0f)
+            {
+                ImGui::RenderText(ImVec2(FrameBB.Max.x + Style.ItemInnerSpacing.x, FrameBB.Min.y + Style.FramePadding.y), Label);
+            }
+
+            if (EnumHasAnyFlags(Flags, ESliderFlags::ValueOnHover) && (Held || Hovered))
+            {
+                char Buf[64];
+                ImGui::DataTypeFormatString(Buf, IM_ARRAYSIZE(Buf), DataType, Value, Format);
+                ImGuiX::TextTooltip("{}", Buf);
+            }
+
+            return ValueChanged;
+        }
+    }
+
+    bool SliderFloat(const char* Label, float* Value, float Min, float Max, ESliderFlags Flags, const char* Format, const FSliderStyle* Style)
+    {
+        return SliderScalarStyled(Label, ImGuiDataType_Float, Value, &Min, &Max, Flags, Format, Style);
+    }
+
+    bool SliderInt(const char* Label, int32* Value, int32 Min, int32 Max, ESliderFlags Flags, const char* Format, const FSliderStyle* Style)
+    {
+        return SliderScalarStyled(Label, ImGuiDataType_S32, Value, &Min, &Max, Flags, Format, Style);
+    }
+
     TPair<bool, uint32> DirectoryTreeViewRecursive(const std::filesystem::path& Path, uint32* Count, int* SelectionMask)
     {
         ImGuiTreeNodeFlags base_flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | 

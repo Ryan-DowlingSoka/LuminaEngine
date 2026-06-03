@@ -1,8 +1,32 @@
 #include "pch.h"
 #include "ArrayProperty.h"
+#include "Core/Serialization/NetArchive.h"
 
 namespace Lumina
 {
+    void FArrayProperty::NetSerialize(FNetArchive& Ar, void* Value)
+    {
+        if (Ar.IsWriting())
+        {
+            uint32 Num = static_cast<uint32>(GetNum(Value));
+            Ar.SerializeBits(&Num, 32);
+            for (uint32 i = 0; i < Num; ++i)
+            {
+                Inner->NetSerialize(Ar, GetAt(Value, i));
+            }
+        }
+        else
+        {
+            uint32 Num = 0;
+            Ar.SerializeBits(&Num, 32);
+            Resize(Value, Num);
+            for (uint32 i = 0; i < Num && !Ar.HasError(); ++i)
+            {
+                Inner->NetSerialize(Ar, GetAt(Value, i));
+            }
+        }
+    }
+
     void FArrayProperty::Serialize(FArchive& Ar, void* Value)
     {
         SIZE_T ElementCount = GetNum(Value);

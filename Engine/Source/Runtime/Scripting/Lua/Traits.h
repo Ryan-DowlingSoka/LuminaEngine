@@ -42,16 +42,30 @@ namespace Lumina::Lua
     
     struct FTypeIndex final
     {
+        // Hands out the next process-global tag.
         RUNTIME_API static uint16 Next();
+
+        // Resolves a stable type key to a process-global tag.
+        RUNTIME_API static uint16 GetOrCreate(uint64 TypeKey);
     };
-    
+
     template<typename T>
     struct TClassTraits
     {
         static uint16 Tag()
         {
-            static uint16 STag = FTypeIndex::Next();
+            static const uint16 STag = FTypeIndex::GetOrCreate(StableTypeKey());
             return STag;
+        }
+
+    private:
+        static uint64 StableTypeKey()
+        {
+            #if defined(_MSC_VER)
+            return Hash::FNV1a::GetHash64(__FUNCSIG__);
+            #else
+            return Hash::FNV1a::GetHash64(__PRETTY_FUNCTION__);
+            #endif
         }
     };
     

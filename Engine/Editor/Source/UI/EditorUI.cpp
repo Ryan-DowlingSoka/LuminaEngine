@@ -66,6 +66,7 @@
 #include "Core/Reflection/PropertyCustomization/PropertyCustomization.h"
 #include "EASTL/sort.h"
 #include "Input/InputProcessor.h"
+#include "Input/InputViewport.h"
 #include "Memory/Memory.h"
 #include "Platform/Process/PlatformProcess.h"
 #include "Properties/Customizations/CoreTypeCustomization.h"
@@ -90,12 +91,14 @@
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/TaskSystemProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
+#include "Tools/NetworkEditorTool.h"
 #include "Tools/PluginBrowserEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
 #include "Tools/EditorToolModal.h"
 #include "Tools/GamePreviewTool.h"
 #include "Tools/ToolFlags.h"
 #include "Tools/WorldEditorTool.h"
+#include "World/WorldManager.h"
 #include "Tools/Debug/AboutEditorTool.h"
 #include "Tools/Debug/AssetRegistryEditorTool.h"
 #include "Tools/Debug/ConsoleVariableEditorTool.h"
@@ -352,6 +355,22 @@ namespace Lumina
 
     bool FEditorUI::OnEvent(FEvent& Event)
     {
+        // Shift+F1 toggles game-input focus GLOBALLY, handled before the ImGui-capture gate below so it works
+        // no matter which preview window holds keyboard focus (otherwise WantCaptureKeyboard eats it and you
+        // can never hand input back / switch windows). It flips one registry flag gating the active viewport's
+        // world; the ImGui stand-down flags follow it in OnStartFrame.
+        if (Event.IsA<FKeyPressedEvent>())
+        {
+            FKeyPressedEvent& Key = Event.As<FKeyPressedEvent>();
+            if (Key.GetKeyCode() == EKey::F1 && Key.IsShiftDown() && !Key.IsRepeat()
+                && WorldEditorTool != nullptr && WorldEditorTool->HasSimulatingWorld())
+            {
+                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+                Reg.SetGameInputFocused(!Reg.IsGameInputFocused());
+                return true;
+            }
+        }
+
         // Consume input ImGui owns so it doesn't fall through; pass everything
         // else to tools (file drops, etc.).
         const bool bIsMouseEvent =
@@ -401,6 +420,9 @@ namespace Lumina
 
         // Init ThumbnailManager before world load so engine primitive meshes are in the transient package before deserialization.
         (void)CThumbnailManager::Get();
+
+        // Editor owns input until the user hits Play (the registry flag defaults true so packaged builds work).
+        FInputViewportRegistry::Get().SetGameInputFocused(false);
 
         RegisterBuiltinEditorTools();
 
@@ -456,6 +478,10 @@ namespace Lumina
         ConsoleLogTool = CreateTool<FConsoleLogEditorTool>(this);
         ContentBrowser = CreateTool<FContentBrowserEditorTool>(this);
 
+        // Multiplayer PIE: spawn/destroy extra-player Game Preview tools when the world editor starts/stops play.
+        (void)WorldEditorTool->GetOnPreviewStartRequestedDelegate().AddLambda([this]() { CreateGameViewportTool(); });
+        (void)WorldEditorTool->GetOnPreviewStopRequestedDelegate().AddLambda([this]() { DestroyGameViewportTool(); });
+
         // Footer drawers: Content Browser (Ctrl+Space, UE-style) and Output Log.
         // They start undocked, living in the bottom status bar instead of a dock split.
         FooterDrawers.push_back({ ContentBrowser, LE_ICON_FOLDER,       "Content Browser", ImGuiMod_Ctrl | ImGuiKey_Space });
@@ -500,6 +526,24 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
         ImGuizmo::BeginFrame();
+
+        // ImGui stands down (game owns mouse + keyboard) while playing AND game-input focus is on. Driven
+        // centrally off the single registry flag so it's correct regardless of which preview window is active.
+        {
+            ImGuiIO& IO = ImGui::GetIO();
+            // NoMouseCursorChange: ImGui's per-frame platform-window cursor update would otherwise force a
+            // captured SECONDARY window's cursor back to Normal every frame (it only honors GLFW_CURSOR_DISABLED
+            // on the MAIN window). Leaving the cursor alone while the game owns input lets game capture stick.
+            const ImGuiConfigFlags Mask = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard | ImGuiConfigFlags_NoMouseCursorChange;
+            const bool bGameOwnsInput = WorldEditorTool != nullptr && WorldEditorTool->HasSimulatingWorld()
+                                      && FInputViewportRegistry::Get().IsGameInputFocused();
+            // Reassert while the game owns input; clear ONCE on the way out. Never clear per-frame: the editor
+            // camera sets NoMouse itself during RMB-look (via FInputProcessor::SetMouseMode), and clobbering it
+            // every frame makes ImGui fight the capture (cursor flicker / camera lock).
+            if (bGameOwnsInput)            { IO.ConfigFlags |= Mask; }
+            else if (bWasGameOwningInput)  { IO.ConfigFlags &= ~Mask; }
+            bWasGameOwningInput = bGameOwnsInput;
+        }
 
         auto TitleBarLeftContents = [this, &UpdateContext] ()
         {
@@ -803,7 +847,17 @@ namespace Lumina
             WorldEditorTool->NotifyPlayInEditorStop();
             GamePreviewTool = nullptr;
         }
-        
+
+        // Keep extra-player preview bookkeeping consistent when a preview tab is closed directly.
+        for (auto PreviewItr = ExtraGamePreviews.begin(); PreviewItr != ExtraGamePreviews.end(); ++PreviewItr)
+        {
+            if (PreviewItr->Tool == Tool)
+            {
+                ExtraGamePreviews.erase(PreviewItr);
+                break;
+            }
+        }
+
         Tool->Deinitialize(UpdateContext);
         Memory::Delete(Tool);
     }
@@ -1599,13 +1653,50 @@ namespace Lumina
         }
     }
 
-    void FEditorUI::CreateGameViewportTool(const FUpdateContext& UpdateContext)
+    void FEditorUI::CreateGameViewportTool()
     {
+        // Player 1 runs in the main world-editor viewport; players 2..N each get a Game Preview pop-up.
+        // CreateTool defers the actual add (ToolsPendingAdd), so this is safe to call mid-draw.
+        if (WorldEditorTool == nullptr)
+        {
+            return;
+        }
+
+        CWorld* Source = WorldEditorTool->GetPIESourceWorld();
+        if (Source == nullptr)
+        {
+            return;
+        }
+
+        const int32 NumPlayers = WorldEditorTool->GetPIEPlayerCount();
+        for (int32 PlayerIndex = 1; PlayerIndex < NumPlayers; ++PlayerIndex)
+        {
+            // Each call duplicates the editor source world -> an independent, self-contained PIE world.
+            CWorld* PreviewWorld = GWorldManager->StartPIE(Source, EWorldType::Game, WorldEditorTool->ResolvePlayerNetMode(PlayerIndex));
+            if (PreviewWorld == nullptr)
+            {
+                LOG_WARN("Failed to start PIE world for player {}", PlayerIndex + 1);
+                continue;
+            }
+
+            // The tool owns the world: FEditorTool::Deinitialize calls DestroyWorldContext on teardown.
+            FGamePreviewTool* Tool = CreateTool<FGamePreviewTool>(this, PreviewWorld);
+            ExtraGamePreviews.push_back(FExtraGamePreview{ PreviewWorld, Tool });
+        }
     }
 
-    void FEditorUI::DestroyGameViewportTool(const FUpdateContext& UpdateContext)
+    void FEditorUI::DestroyGameViewportTool()
     {
-        
+        // Schedule each preview tool for destruction; the tool tears down its own PIE world on Deinitialize.
+        // DestroyTool also erases the matching ExtraGamePreviews entry, so just clear our list here.
+        for (const FExtraGamePreview& Preview : ExtraGamePreviews)
+        {
+            if (Preview.Tool != nullptr)
+            {
+                ToolsPendingDestroy.push(Preview.Tool);
+            }
+        }
+        ExtraGamePreviews.clear();
     }
 
     void FEditorUI::HandleUserInput(const FUpdateContext& UpdateContext)
@@ -2065,6 +2156,7 @@ namespace Lumina
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
         DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
+        DrawToolMenuItem<FNetworkEditorTool>(LE_ICON_LAN " Network", this);
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);

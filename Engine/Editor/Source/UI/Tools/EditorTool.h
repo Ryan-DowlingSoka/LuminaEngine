@@ -286,6 +286,9 @@ namespace Lumina
         void Internal_CreateViewportTool();
         
         FToolWindow* CreateToolWindow(FName InName, const TFunction<void(bool)>& DrawFunction, const ImVec2& WindowPadding = ImVec2(-1, -1), bool DisableScrolling = false);
+
+        /** Removes a previously-created tool window by name (no-op if absent). */
+        void RemoveToolWindow(const FName& InName);
         
         /** Override to add tool-specific rows in a 2-column HelpTable. */
         virtual void DrawHelpMenu() { DrawHelpTextRow("No Help Available", ""); }

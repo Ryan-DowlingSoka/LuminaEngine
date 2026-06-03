@@ -528,13 +528,14 @@ namespace Lumina
 
         if (InputViewport)
         {
-            // ImGui multi-viewport returns absolute monitor coords; GLFW events use
-            // window-relative coords. Subtract the window origin so they match.
-            int WindowX = 0;
-            int WindowY = 0;
-            Windowing::GetPrimaryWindowHandle()->GetWindowPosition(WindowX, WindowY);
+            // ImGui screen coords are global; GLFW events are window-relative. Subtract the host platform
+            // window's origin so they match. Use the window THIS panel lives in (not always the primary),
+            // so a preview in a separate OS window hit-tests against its own window.
+            ImGuiViewport* HostViewport = ImGui::GetWindowViewport();
+            const ImVec2 WindowOrigin = HostViewport->Pos;
+            InputViewport->SetNativeWindowHandle(HostViewport->PlatformHandle);
 
-            const ImVec2 PanelMin(CursorScreenPos.x - float(WindowX), CursorScreenPos.y - float(WindowY));
+            const ImVec2 PanelMin(CursorScreenPos.x - WindowOrigin.x, CursorScreenPos.y - WindowOrigin.y);
             const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
             InputViewport->SetWindowRect(int(PanelMin.x), int(PanelMin.y), int(PanelMax.x), int(PanelMax.y));
 
@@ -596,7 +597,22 @@ namespace Lumina
         ImGui::Dummy(ImStyle.ItemSpacing);
         ImGui::SetCursorPos(Origin + ImStyle.ItemSpacing);
         DrawViewportToolbar(UpdateContext);
-        
+
+        // Click-to-refocus (Unreal-style PIE): while playing in editor focus, a left-click back into the game
+        // viewport hands input to the game again. Drawn after the toolbar so IsAnyItemHovered() is true when the
+        // click landed on an overlay widget (the Stop button, gizmo controls) -- those must NOT refocus.
+        if (World != nullptr && World->IsGameWorld() && bViewportHovered
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+            && !ImGui::IsAnyItemHovered())
+        {
+            FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+            if (!Reg.IsGameInputFocused())
+            {
+                Reg.SetActiveViewport(InputViewport.get());
+                Reg.SetGameInputFocused(true);
+            }
+        }
+
         if (ImGuiDockNode* pDockNode = ImGui::GetWindowDockNode())
         {
            pDockNode->LocalFlags = 0;
@@ -1017,8 +1033,20 @@ namespace Lumina
             return W->Name == InName;
         }));
         
-        auto ToolWindow = MakeUnique<FToolWindow>(InName, DrawFunction, WindowPadding, DisableScrolling); 
+        auto ToolWindow = MakeUnique<FToolWindow>(InName, DrawFunction, WindowPadding, DisableScrolling);
         return ToolWindows.emplace_back(Move(ToolWindow)).get();
+    }
+
+    void FEditorTool::RemoveToolWindow(const FName& InName)
+    {
+        for (auto It = ToolWindows.begin(); It != ToolWindows.end(); ++It)
+        {
+            if ((*It)->Name == InName)
+            {
+                ToolWindows.erase(It);
+                return;
+            }
+        }
     }
     
     void FEditorTool::DrawKeybindsMenu()

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "WorldManager.h"
+#include "Core/Object/Package/Package.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Profiler/Profile.h"
 #include "Physics/PhysicsThread.h"
@@ -256,6 +257,13 @@ namespace Lumina
         {
             Ctx->bPIE = true;
             Ctx->SourceWorld = SourceWorld;
+
+            // Map identity = the editor source map's path. Lets the networked Welcome handshake see that a
+            // PIE client is already on the server's map (both duplicate the same source) and skip travel.
+            if (CPackage* Pkg = SourceWorld->GetPackage())
+            {
+                Ctx->MapPath = FString(Pkg->GetName().c_str());
+            }
         }
 
         return PIEWorld;

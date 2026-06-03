@@ -7,10 +7,12 @@
 namespace Lumina
 {
     class FArchive;
+    class FNetArchive;
 
     struct FStructOps
     {
-        using SerializeFn   = bool(*)(FArchive&, void*);
+        using SerializeFn    = bool(*)(FArchive&, void*);
+        using NetSerializeFn = void(*)(FNetArchive&, void*);
         using CopyFn        = void(*)(void*, const void*);
         using EqualsFn      = bool(*)(const void*, const void*);
         using ToStringFn    = FString(*)(const void*);
@@ -18,7 +20,8 @@ namespace Lumina
         using ConstructFn   = void(*)(void*);
         using DestructFn    = void(*)(void*);
 
-        SerializeFn     Serialize   = nullptr;
+        SerializeFn     Serialize    = nullptr;
+        NetSerializeFn  NetSerialize = nullptr;
         CopyFn          Copy        = nullptr;
         EqualsFn        Equals      = nullptr;
         ToStringFn      ToString    = nullptr;
@@ -28,6 +31,7 @@ namespace Lumina
         DestructFn      Destruct    = nullptr;
 
         bool HasSerializer()    const { return Serialize    != nullptr; }
+        bool HasNetSerializer() const { return NetSerialize != nullptr; }
         bool HasCopy()          const { return Copy         != nullptr; }
         bool HasEquality()      const { return Equals       != nullptr; }
         bool HasToString()      const { return ToString     != nullptr; }
@@ -62,6 +66,14 @@ namespace Lumina
             Ops->Serialize = +[](FArchive& Ar, void* Value)
             {
                 return static_cast<T*>(Value)->Serialize(Ar);
+            };
+        }
+
+        if constexpr (Concepts::THasNetSerialize<T>)
+        {
+            Ops->NetSerialize = +[](FNetArchive& Ar, void* Value)
+            {
+                static_cast<T*>(Value)->NetSerialize(Ar);
             };
         }
         

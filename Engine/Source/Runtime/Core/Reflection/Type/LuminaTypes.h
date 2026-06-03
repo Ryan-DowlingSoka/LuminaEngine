@@ -11,6 +11,7 @@ namespace Lumina
 {
     struct FPropertyParams;
     class IStructuredArchive;
+    class FNetArchive;
 }
 
 namespace Lumina
@@ -99,6 +100,10 @@ namespace Lumina
         virtual void Serialize(FArchive& Ar, void* Value) { }
         virtual void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults = nullptr) { }
 
+        /** Compact network serialization (no FName tag / size prefix). Defaults to the raw Serialize
+         *  path; override per type to quantize (e.g. transforms/quats). Value points at the field. */
+        RUNTIME_API virtual void NetSerialize(FNetArchive& Ar, void* Value);
+
         /** Defaults to byte-wise memcmp; non-trivial types (FString, structs, arrays) override. */
         RUNTIME_API virtual bool Identical(const void* ValueA, const void* ValueB) const;
 
@@ -114,6 +119,7 @@ namespace Lumina
         
         NODISCARD bool IsReadOnly()     const       { return EnumHasAnyFlags(Flags, EPropertyFlags::ReadOnly); }
         NODISCARD bool IsEditorOnly()   const       { return EnumHasAnyFlags(Flags, EPropertyFlags::EditorOnly); }
+        NODISCARD bool IsReplicated()   const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Replicated); }
         NODISCARD bool ShouldSerialize()const       { return !EnumHasAnyFlags(Flags, EPropertyFlags::NoSerialize); }
         NODISCARD bool IsEditable()     const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Editable); }
         NODISCARD bool IsConst()        const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Const); }
@@ -366,10 +372,13 @@ namespace Lumina
         using Super = TProperty_Numeric<bool>;
 
         DECLARE_FPROPERTY(EPropertyTypeFlags::Bool)
-        
+
         FBoolProperty(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
+
+        // Tight: a bool is one bit on the wire.
+        RUNTIME_API void NetSerialize(FNetArchive& Ar, void* Value) override;
     };
     
     class FInt8Property : public TProperty_Numeric<int8>

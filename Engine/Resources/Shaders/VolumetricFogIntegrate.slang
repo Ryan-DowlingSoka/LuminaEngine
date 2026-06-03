@@ -28,14 +28,17 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     float3 Accum = float3(0.0);
     float  Trans = 1.0;
 
+    // Adjacent slices share a boundary: DFar(z) == DNear(z+1). Carry it forward so the exponential
+    // slice distribution costs one pow per slice instead of two. DNear(0) = NearPlane (pow(.,0) == 1).
+    float DNear = PC.NearPlane;
+
     for (uint z = 0; z < PC.GridSize.z; ++z)
     {
         float4 S      = uBindlessTex3D[PC.ScatterSRV].Load(int4(int(DispatchID.x), int(DispatchID.y), int(z), 0));
         float  SigmaT = max(S.a, 0.0);
 
-        float DNear = Froxel_SliceDistance(float(z),     float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
-        float DFar  = Froxel_SliceDistance(float(z + 1), float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
-        float Dz    = max(DFar - DNear, 0.0);
+        float DFar = Froxel_SliceDistance(float(z + 1), float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
+        float Dz   = max(DFar - DNear, 0.0);
 
         float  SliceTrans = exp(-SigmaT * Dz);
         // Analytic integral of in-scatter across the slice (energy-conserving).
@@ -45,5 +48,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         Trans *= SliceTrans;
 
         uBindlessRWTex3D[PC.IntegratedUAV][int3(int(DispatchID.x), int(DispatchID.y), int(z))] = float4(Accum, Trans);
+
+        DNear = DFar;
     }
 }

@@ -27,7 +27,9 @@ struct FSceneRoot
     FWidgetInstance*     WidgetsPtr;
     uint  BRDFLutIndex;          // bindless 2D SRV
     uint  SkyIrradianceIndex;    // bindless cube SRV
-    uint  SkyPrefilterIndex;     // bindless cube SRV
+    // [31:24] = prefilter cube mip count (see SamplePrefilter), [23:0] = bindless cube SRV index.
+    // Packed so the per-pixel mip count rides along without growing FSceneRoot past the 128 B push budget.
+    uint  SkyPrefilterIndex;
     uint  ShadowCascadeIndex;    // bindless 2D SRV (cascade atlas)
     uint  ShadowAtlasIndex;      // bindless 2D SRV (spot/point atlas)
     uint  SkyCubeIndex;          // bindless cube SRV (full-res sky; sharp near-mirror reflections)

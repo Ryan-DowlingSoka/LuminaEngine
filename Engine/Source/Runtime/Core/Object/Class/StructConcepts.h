@@ -5,6 +5,7 @@
 namespace Lumina
 {
     class FArchive;
+    class FNetArchive;
 }
 
 namespace Lumina::Concepts
@@ -13,6 +14,14 @@ namespace Lumina::Concepts
     concept THasSerialize = requires(T& V, FArchive& Ar)
     {
         { V.Serialize(Ar) } -> std::same_as<bool>;
+    };
+
+    // A type opting into custom/tight network serialization: a dedicated NetSerialize that takes the
+    // bit archive (distinct from the disk Serialize above). Lets math types quantize on the wire.
+    template<typename T>
+    concept THasNetSerialize = requires(T& V, FNetArchive& Ar)
+    {
+        { V.NetSerialize(Ar) } -> std::same_as<void>;
     };
     
     template<typename T>

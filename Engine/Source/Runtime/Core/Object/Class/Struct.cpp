@@ -5,6 +5,7 @@
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
 #include "Core/Reflection/Type/Properties/PropertyTag.h"
+#include "Core/Serialization/NetArchive.h"
 
 IMPLEMENT_INTRINSIC_CLASS(CStruct, CField, RUNTIME_API)
 
@@ -293,6 +294,42 @@ namespace Lumina
             void* ValuePtr = Current->GetValuePtr<void>(Data);
             const void* DefPtr = Defaults ? Current->GetValuePtr<void>(Defaults) : nullptr;
             Current->SerializeItem(Record.EnterField(Current->GetPropertyName()), ValuePtr, DefPtr);
+        }
+    }
+
+    void CStruct::NetSerializeProperties(FNetArchive& Ar, void* Data) const
+    {
+        // No tags, no count, no size prefixes: both peers walk the same PROPERTY(Replicated) fields in
+        // the same order. NetSerialize reads or writes per the archive's mode.
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (!Current->ShouldSerialize() || Current->IsEditorOnly() || !Current->IsReplicated())
+            {
+                continue;
+            }
+
+            void* ValuePtr = Current->GetValuePtr<void>(Data);
+            Current->NetSerialize(Ar, ValuePtr);
+        }
+    }
+
+    void CStruct::NetSerializeAll(FNetArchive& Ar, void* Data) const
+    {
+        // A struct that opts into custom/tight net packing (e.g. a quantized math type) handles itself.
+        if (StructOps && StructOps->HasNetSerializer())
+        {
+            StructOps->NetSerialize(Ar, Data);
+            return;
+        }
+
+        // Otherwise every serializable field, in order (no Replicated filter -- the struct is a unit).
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (!Current->ShouldSerialize())
+            {
+                continue;
+            }
+            Current->NetSerialize(Ar, Current->GetValuePtr<void>(Data));
         }
     }
 }

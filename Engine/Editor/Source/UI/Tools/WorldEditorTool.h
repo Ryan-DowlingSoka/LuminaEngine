@@ -14,6 +14,7 @@
 #include "UI/Properties/PropertyTable.h"
 #include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Systems/EntitySystem.h"
+#include "World/WorldContext.h"
 
 namespace Lumina
 {
@@ -86,6 +87,13 @@ namespace Lumina
         FOnGamePreview& GetOnPreviewStartRequestedDelegate() { return OnGamePreviewStartRequested; }
         FOnGamePreview& GetOnPreviewStopRequestedDelegate() { return OnGamePreviewStopRequested; }
 
+        // Multiplayer PIE: player 1 runs in the main viewport, players 2..N get Game Preview pop-ups.
+        // FEditorUI reads these on the OnGamePreviewStartRequested broadcast to spawn the extra worlds + tools.
+        NODISCARD int32 GetPIEPlayerCount() const { return PlaySettings.NumPlayers; }
+        NODISCARD CWorld* GetPIESourceWorld() const { return ProxyWorld.Get(); }
+        /** Net mode for a player index, derived from PlaySettings (player 0 is the server when a server mode is chosen). */
+        NODISCARD ENetMode ResolvePlayerNetMode(int32 PlayerIndex) const;
+
         void NotifyPlayInEditorStart();
         void NotifyPlayInEditorStop();
 
@@ -130,8 +138,12 @@ namespace Lumina
         void SetWorldPlayInEditor(bool bShouldPlay);
         void SetWorldNewSimulate(bool bShouldSimulate);
 
+        /** Play-in-editor settings popup (player count + net mode), opened from the play controls. */
+        void DrawPlaySettingsPopup();
+
         /** Rebind OnEntityCreated/OnEntityDestroyed observers to the current World's registry. */
         void RebindRegistryObservers();
+        void UnbindRegistryObservers();
 
         /** Engine-driven world travel: drop everything tied to OldWorld and re-bind to NewWorld. ProxyWorld is preserved. */
         void OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld);
@@ -192,11 +204,26 @@ namespace Lumina
         // PIE/Simulate can restore the editor world even if Travel swaps it mid-session.
         entt::entity                            ProxyEditorEntity = entt::null;
 
+        // Play-in-editor session config, edited via the play-controls dropdown.
+        struct FPlayInEditorSettings
+        {
+            int32    NumPlayers          = 1;                     // 1..4; player 1 = main viewport, 2..N = preview windows
+            ENetMode NetMode             = ENetMode::Standalone;
+            bool     bSeparateProcesses  = false;                 // reserved; not wired yet
+        };
+        FPlayInEditorSettings                   PlaySettings;
+        static constexpr int32                  MaxPlayers = 4;
+
         FOnGamePreview                          OnGamePreviewStartRequested;
         FOnGamePreview                          OnGamePreviewStopRequested;
 
         // Gizmo op/mode/snap state + OutlinerListView/OutlinerContext/EntityToTreeNode/PendingOutlinerAdds
         // + EntityDestroyRequests now live in FSceneEditorTool.
+
+        // The registry our entt observers are currently connected to. RebindToWorld swaps World without
+        // touching observers, so we can't rely on World to find the old registry -- track it explicitly
+        // and always unbind THIS one (else entering PIE leaves the editor world observed -> teardown crash).
+        FEntityRegistry*                        ObservedRegistry = nullptr;
 
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
 

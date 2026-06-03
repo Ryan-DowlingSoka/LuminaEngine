@@ -9,16 +9,15 @@
 -- The engine expects a plain table with OnAttach / OnReady / OnUpdate /
 -- OnDetach keys; new() returns one whose metatable forwards to this module
 -- so any method the user doesn't override falls through to the no-op
--- defaults. Field access (`self.X`) and writes (`self.X = v`) that miss on
--- the instance route through the `Exports` subtable so editable properties
--- can be read/written without the `self.Exports.` prefix.
+-- defaults. Editable properties are declared as top-level fields on the
+-- instance — `Script.Speed = 5.0` annotated with `--@export(...)` — and read
+-- or written directly as `self.Speed`. There is no Exports table.
 --
 -- Per-entity fields injected by the engine before the first lifecycle call:
 --   self.Entity    — entt entity id
 --   self.World     — owning CWorld
 --   self.Transform — STransformComponent (mutable)
 --   self.Name      — entity FName
---   self.Exports   — editable properties table (also reachable as self.<key>)
 --
 -- The script-facing API is split between flat helpers on `self` (the common,
 -- entity-core operations: lifecycle, transform, components, identity, physics
@@ -49,7 +48,6 @@ EntityScript._Shape = {
     World     = "CWorld",
     Transform = "STransformComponent",
     Name      = "FName",
-    Exports   = "table",
     Input     = "SInputComponent (after EnableInput)",
     Tree      = "facet: parent / child hierarchy",
     Timers    = "facet: delays, intervals, waits",
@@ -75,22 +73,18 @@ local function DefineFacet(Name: string)
 end
 
 -- ---- Metatable -----------------------------------------------------------
--- __index: instance miss → method on EntityScript → facet → Exports[key] → nil.
--- __newindex: instance miss → write into Exports (so user-declared property
--- writes land where the editor / serializer can see them). Engine-injected
--- slots (Entity, World, Transform, Name, Exports, _*) are populated via
--- rawset on the C++ side, so they bypass __newindex; explicit user writes
--- to those names will still hit __newindex and route to Exports — engine
--- writes win because they happen first and via raw access.
+-- __index: instance miss → method on EntityScript → facet → nil. Editable
+-- properties are plain top-level fields on the instance (declared as
+-- `Script.<Name> = default` and annotated with --@export), so reads of them
+-- hit the raw field directly and never reach __index. There is no separate
+-- Exports table anymore.
 --
--- Underscore-prefixed keys are private runtime state (caches, handles,
--- engine-injected services). They live as raw fields on the instance and
--- never round-trip through Exports — this keeps internal slots out of the
--- property panel and out of any future serialization pass.
-
-local function IsPrivateKey(Key)
-    return type(Key) == "string" and string.sub(Key, 1, 1) == "_"
-end
+-- Writes need no metamethod: a declared property already exists as a raw
+-- field, so `self.Speed = 9.0` overwrites it in place; brand-new keys just
+-- rawset. Engine-injected slots (Entity, World, Transform, Name, _*) are
+-- written via rawset on the C++ side. Underscore-prefixed keys are private
+-- runtime state (caches, handles, engine services) and stay raw on the
+-- instance, out of the property panel.
 
 function EntityScript.__index(Self, Key)
     local Method = rawget(EntityScript, Key)
@@ -104,36 +98,11 @@ function EntityScript.__index(Self, Key)
         return Instance
     end
 
-    if IsPrivateKey(Key) then return nil end
-    local Exports = rawget(Self, "Exports")
-    if Exports ~= nil then return Exports[Key] end
     return nil
 end
 
-function EntityScript.__newindex(Self, Key, Value)
-    if IsPrivateKey(Key) then
-        rawset(Self, Key, Value)
-        return
-    end
-    -- Route to Exports only when the key already exists there — i.e. it
-    -- was declared as a property in `Self.Exports = {...}`. This lets
-    -- `self.Distance = 9.0` update an exported field without the explicit
-    -- `self.Exports.` prefix, while keeping everything else (lifecycle
-    -- methods like `function Self:OnUpdate()`, setup-time tables like
-    -- `Self.Meta = {...}`, transient runtime state) on the instance where
-    -- it belongs. Critical for methods: if they routed to Exports, the
-    -- engine's lua_getfield lookup would invoke __index and return the
-    -- no-op default from EntityScript before reaching Exports.
-    local Exports = rawget(Self, "Exports")
-    if Exports ~= nil and Exports[Key] ~= nil then
-        Exports[Key] = Value
-        return
-    end
-    rawset(Self, Key, Value)
-end
-
 function EntityScript.new()
-    return setmetatable({ Exports = {} }, EntityScript)
+    return setmetatable({}, EntityScript)
 end
 
 -- ---- Lifecycle -----------------------------------------------------------

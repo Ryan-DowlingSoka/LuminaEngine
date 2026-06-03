@@ -65,6 +65,7 @@ LuminaWorkspaceSettings({
         include "Engine/Source/ThirdParty/SPDLog"
         include "Engine/Source/ThirdParty/JoltPhysics"
         include "Engine/Source/ThirdParty/Recast"
+        include "Engine/Source/ThirdParty/enet"
         include "Engine/Source/ThirdParty/RPMalloc"
         include "Engine/Source/ThirdParty/XXHash"
         include "Engine/Source/ThirdParty/miniz"

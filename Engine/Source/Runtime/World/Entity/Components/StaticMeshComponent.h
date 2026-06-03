@@ -25,7 +25,7 @@ namespace Lumina
         CStaticMesh* GetStaticMesh() const { return StaticMesh; }
         
         /** The static mesh asset to render for this component. */
-        PROPERTY(Editable, Category = "Rendering")
+        PROPERTY(Editable, Replicated, Category = "Rendering")
         TObjectPtr<CStaticMesh> StaticMesh;
     };
 }

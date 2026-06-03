@@ -2,6 +2,7 @@
 
 #include "Reference.h"
 #include "ScriptExports.h"
+#include "ScriptAnnotations.h"
 #include "Containers/Name.h"
 #include "Containers/String.h"
 #include "entt/entt.hpp"
@@ -34,12 +35,25 @@ namespace Lumina::Lua
 
         FScriptExportSchema             ExportsSchema;
         TVector<FScriptPropertyEntry>   ExportDefaults;
+        TVector<FScriptRpc>             Rpcs;             // --@rpc functions, wire id = index
+        TVector<FRef>                   RpcHandlers;      // original fns (the table entry is the dispatch wrapper)
         FScriptThreadData               ThreadData;
         
         lua_State*                      PooledCoroutine    = nullptr;
         int                             PooledCoroutineRef = LUA_NOREF;
 
         bool                            bDirty = false;
+
+        // All entity scripts run on ONE shared main lua_State, and thread data is a single slot on it.
+        // Re-publish this script's entity/world before each hook invocation so thread-data consumers
+        // (World.<Subsystem>, RPC dispatch, timers) resolve THIS entity -- not whichever was set up last.
+        void PublishThreadContext()
+        {
+            if (lua_State* S = Reference.GetState())
+            {
+                lua_setthreaddata(S, &ThreadData);
+            }
+        }
 
         FScript() = default;
         ~FScript()

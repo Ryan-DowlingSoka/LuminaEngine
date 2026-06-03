@@ -253,7 +253,7 @@ namespace Lumina
     public:
 
         /** Local-space transform relative to the entity's parent (or world if no parent). */
-        PROPERTY(Editable, Category = "Transform")
+        PROPERTY(Editable, Replicated, Category = "Transform")
         FTransform LocalTransform;
     
         FTransform WorldTransform;

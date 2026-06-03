@@ -50,6 +50,7 @@ namespace Lumina
                 const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
                 if (Script)
                 {
+                    Script->PublishThreadContext();
                     ScriptComponent.FixedUpdateFunc.Call(Script->Reference, FixedDt);
                 }
             });
@@ -73,6 +74,7 @@ namespace Lumina
             const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
             if (Script)
             {
+                Script->PublishThreadContext();
                 ScriptComponent.EditorUpdateFunc.Call(Script->Reference, DeltaSeconds);
             }
         });
@@ -92,6 +94,7 @@ namespace Lumina
         {
             if (const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script)
             {
+                Script->PublishThreadContext();
                 const float DeltaTime = static_cast<float>(Context.GetDeltaTime());
 
                 if (ScriptComponent.TickRate <= 0.0f)

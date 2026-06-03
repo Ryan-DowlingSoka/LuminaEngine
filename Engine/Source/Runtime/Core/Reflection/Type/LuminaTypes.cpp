@@ -2,9 +2,24 @@
 #include "LuminaTypes.h"
 #include "Core/Object/Field.h"
 #include "Core/Object/Class.h"
+#include "Core/Serialization/NetArchive.h"
 
 namespace Lumina
 {
+    // Base default: raw, tag-less value (works for numerics/enum/string/name/object-ref). Tight-packing
+    // types (bool -> 1 bit, struct/array -> recurse) override NetSerialize on their own property class.
+    void FProperty::NetSerialize(FNetArchive& Ar, void* Value)
+    {
+        Serialize(Ar, Value);
+    }
+
+    void FBoolProperty::NetSerialize(FNetArchive& Ar, void* Value)
+    {
+        bool bValue = *static_cast<bool*>(Value);
+        Ar.SerializeBit(bValue);
+        *static_cast<bool*>(Value) = bValue; // no-op when writing
+    }
+
     void FProperty::Init()
     {
         eastl::visit([this](auto& Value)

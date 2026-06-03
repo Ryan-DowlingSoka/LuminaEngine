@@ -5,14 +5,22 @@
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/ScriptExports.h"
 #include "Scripting/Lua/LuaTypes.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetRegistry/TextAssetTypes.h"
+#include "Core/Object/Class.h"
+#include "Core/Object/ObjectCore.h"
 #include "Tools/UI/ImGui/ImGuiDragDrop.h"
+#include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
 
 namespace Lumina
 {
     namespace
     {
-        bool DrawScriptPropertyValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label);
+        // Emits one or more rows (assumes an active 2-column table) for a value and its children,
+        // meta-driven. bOutRemove, when non-null, draws a remove button for array elements.
+        void DrawValueRows(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                           const char* Label, const Lua::FScriptExportMeta& Meta, bool& bChanged, bool* bOutRemove = nullptr);
 
         // Format a Lua value for the debug Reference table without invoking __tostring,
         // which can crash if a userdata's backing C++ object has been destroyed.
@@ -39,29 +47,116 @@ namespace Lumina
             }
         }
 
-        // Draws "Name | widget" as a row; returns whether the widget changed.
-        bool DrawScalarValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        // A printf format carrying the field's Units suffix (escaped), or empty for the ImGui default.
+        FString BuildScriptUnitFormat(const Lua::FScriptExportMeta& Meta, const char* Base)
+        {
+            const FString* Units = Meta.Find("Units");
+            if (!Units || Units->empty())
+            {
+                return FString();
+            }
+            FString Out(Base);
+            Out.push_back(' ');
+            for (char C : *Units)
+            {
+                if (C == '%') Out.push_back('%');   // escape so a "%" unit can't corrupt the format
+                Out.push_back(C);
+            }
+            return Out;
+        }
+
+        // Maps --@export meta flags onto the ImGuiX slider style. The value is always shown over the
+        // track; Gradient and Glow are opt-in flair (e.g. --@export(Slider, Gradient, Glow)).
+        ImGuiX::ESliderFlags ScriptSliderFlags(const Lua::FScriptExportMeta& Meta)
+        {
+            ImGuiX::ESliderFlags Flags = ImGuiX::ESliderFlags::AlwaysValue;
+            if (Meta.Has("Gradient") || Meta.Has("FillGradient")) Flags |= ImGuiX::ESliderFlags::FillGradient;
+            if (Meta.Has("Glow")) Flags |= ImGuiX::ESliderFlags::Glow;
+            return Flags;
+        }
+
+        // A searchable asset picker for a string value carrying --@export(AssetType="..."). The
+        // string holds the chosen asset's virtual path. AssetType resolves as a reflected class
+        // first (e.g. "StaticMesh"/"CStaticMesh" -> binary .lasset assets of/under that class);
+        // otherwise it's parsed as loose text-asset kinds (luau/rml/rcss). Index 0 clears.
+        bool DrawAssetPicker(Lua::FScriptPropertyValue& Value, const char* HL, const FString& AssetType)
+        {
+            TVector<FFixedString> Paths;
+            Paths.push_back(FFixedString("(None)"));
+
+            FAssetRegistry& Registry = FAssetRegistry::Get();
+
+            CClass* FilterClass = FindObject<CClass>(FName(AssetType.c_str()));
+            if (FilterClass == nullptr)
+            {
+                FString Prefixed("C");
+                Prefixed += AssetType;
+                FilterClass = FindObject<CClass>(FName(Prefixed.c_str()));
+            }
+
+            if (FilterClass != nullptr)
+            {
+                TVector<FAssetData*> Assets = Registry.FindByPredicate([FilterClass](const FAssetData& Data)
+                {
+                    CClass* DataClass = FindObject<CClass>(Data.AssetClass);
+                    return DataClass != nullptr && DataClass->IsChildOf(FilterClass);
+                });
+                for (const FAssetData* Data : Assets)
+                {
+                    Paths.push_back(Data->Path);
+                }
+            }
+            else
+            {
+                for (ETextAssetKind Kind : TextAsset::ParseAssetTypeMeta(FStringView(AssetType.c_str(), AssetType.size())))
+                {
+                    for (const FTextAssetData* Data : Registry.GetTextAssetsOfKind(Kind))
+                    {
+                        Paths.push_back(Data->Path);
+                    }
+                }
+            }
+
+            int32 Current = 0; // 0 == (None)
+            for (int32 i = 1; i < (int32)Paths.size(); ++i)
+            {
+                if (strcmp(Paths[i].c_str(), Value.AsString.c_str()) == 0) { Current = i; break; }
+            }
+
+            const char* Preview = Value.AsString.empty() ? "Select an asset..." : Value.AsString.c_str();
+            const int32 Picked = ImGuiX::SearchableCombo(HL, Preview, (int32)Paths.size(), Current,
+                [&Paths](int32 Index) { return Paths[Index]; });
+
+            if (Picked != INDEX_NONE && Picked != Current)
+            {
+                if (Picked == 0)
+                {
+                    Value.AsString.clear();
+                }
+                else
+                {
+                    Value.AsString.assign(Paths[Picked].c_str(), Paths[Picked].size());
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // The editable widget for a leaf value, drawn into the active value column. Meta drives
+        // clamp (ClampMin/Max), drag speed (Delta), unit suffix (Units), Color picker, NoDrag input,
+        // and AssetType (string -> asset picker).
+        bool DrawScalarWidget(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                              const char* HL, const Lua::FScriptExportMeta& Meta)
         {
             using namespace Lua;
+
+            double dMin = 0.0, dMax = 0.0, dDelta = 0.0;
+            const bool  bHasMin = Meta.GetNumber("ClampMin", dMin);
+            const bool  bHasMax = Meta.GetNumber("ClampMax", dMax);
+            const bool  bNoDrag = Meta.Has("NoDrag");
+            const float Delta   = Meta.GetNumber("Delta", dDelta) ? (float)dDelta : 0.0f;
+
             bool bChanged = false;
-
-            ImGui::PushID(Label);
-
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(Label);
-            ImGui::SameLine();
-
-            const float LabelColumnEnd = 180.0f;
-            if (ImGui::GetCursorPosX() < LabelColumnEnd)
-            {
-                ImGui::SetCursorPosX(LabelColumnEnd);
-            }
-            ImGui::SetNextItemWidth(-FLT_MIN);
-
-            FFixedString HiddenLabel;
-            HiddenLabel.append("##").append(Label);
-            const char* HL = HiddenLabel.c_str();
-
             switch (Type.Kind)
             {
             case EScriptExportKind::Bool:
@@ -70,8 +165,32 @@ namespace Lumina
             case EScriptExportKind::Int:
             {
                 int Tmp = (int)Value.AsInt;
-                if (ImGui::DragInt(HL, &Tmp, 1.0f))
+                int Min = (int)dMin, Max = (int)dMax;
+                // Slider needs a finite range; fall back to drag/input if either clamp is missing.
+                if (Meta.Has("Slider") && bHasMin && bHasMax)
                 {
+                    if (ImGuiX::SliderInt(HL, &Tmp, Min, Max, ScriptSliderFlags(Meta)))
+                    {
+                        Value.AsInt = ImClamp(Tmp, Min, Max);
+                        bChanged = true;
+                    }
+                    break;
+                }
+                bool bEdited;
+                if (bNoDrag)
+                {
+                    int Step = (Delta > 0.0f) ? (int)Delta : 1;
+                    bEdited = ImGui::InputScalar(HL, ImGuiDataType_S32, &Tmp, &Step, nullptr, nullptr);
+                }
+                else
+                {
+                    bEdited = ImGui::DragScalar(HL, ImGuiDataType_S32, &Tmp, Delta > 0.0f ? Delta : 1.0f,
+                                                bHasMin ? &Min : nullptr, bHasMax ? &Max : nullptr);
+                }
+                if (bEdited)
+                {
+                    if (bHasMin && Tmp < Min) Tmp = Min;
+                    if (bHasMax && Tmp > Max) Tmp = Max;
                     Value.AsInt = Tmp;
                     bChanged = true;
                 }
@@ -79,18 +198,47 @@ namespace Lumina
             }
             case EScriptExportKind::Double:
             {
-                float Tmp = (float)Value.AsDouble;
-                if (ImGui::DragFloat(HL, &Tmp, 0.1f))
+                const FString Fmt = BuildScriptUnitFormat(Meta, "%.3f");
+                const char* Format = Fmt.empty() ? "%.3f" : Fmt.c_str();
+                if (Meta.Has("Slider") && bHasMin && bHasMax)
                 {
-                    Value.AsDouble = (double)Tmp;
+                    float Tmp = (float)Value.AsDouble;
+                    if (ImGuiX::SliderFloat(HL, &Tmp, (float)dMin, (float)dMax, ScriptSliderFlags(Meta), Format))
+                    {
+                        Value.AsDouble = ImClamp((double)Tmp, dMin, dMax);
+                        bChanged = true;
+                    }
+                    break;
+                }
+                bool bEdited;
+                if (bNoDrag)
+                {
+                    bEdited = ImGui::InputScalar(HL, ImGuiDataType_Double, &Value.AsDouble, nullptr, nullptr, Format);
+                }
+                else
+                {
+                    bEdited = ImGui::DragScalar(HL, ImGuiDataType_Double, &Value.AsDouble, Delta > 0.0f ? Delta : 0.1f,
+                                                bHasMin ? &dMin : nullptr, bHasMax ? &dMax : nullptr, Format);
+                }
+                if (bEdited)
+                {
+                    if (bHasMin && Value.AsDouble < dMin) Value.AsDouble = dMin;
+                    if (bHasMax && Value.AsDouble > dMax) Value.AsDouble = dMax;
                     bChanged = true;
                 }
                 break;
             }
             case EScriptExportKind::String:
             {
+                const FString* AssetType = Meta.Find("AssetType");
+                if (AssetType && !AssetType->empty())
+                {
+                    bChanged = DrawAssetPicker(Value, HL, *AssetType);
+                    break;
+                }
+
                 char Buffer[1024] = {0};
-                size_t Copy = Value.AsString.size() < sizeof(Buffer) - 1 ? Value.AsString.size() : sizeof(Buffer) - 1;
+                const size_t Copy = Value.AsString.size() < sizeof(Buffer) - 1 ? Value.AsString.size() : sizeof(Buffer) - 1;
                 memcpy(Buffer, Value.AsString.c_str(), Copy);
                 if (ImGui::InputText(HL, Buffer, sizeof(Buffer)))
                 {
@@ -100,82 +248,150 @@ namespace Lumina
                 break;
             }
             case EScriptExportKind::Vec2:
-                bChanged = ImGui::DragFloat2(HL, &Value.AsVec.x, 0.1f);
-                break;
             case EScriptExportKind::Vec3:
-                bChanged = ImGui::DragFloat3(HL, &Value.AsVec.x, 0.1f);
-                break;
             case EScriptExportKind::Vec4:
-                bChanged = ImGui::DragFloat4(HL, &Value.AsVec.x, 0.1f);
+            {
+                const int Components = (Type.Kind == EScriptExportKind::Vec2) ? 2 : (Type.Kind == EScriptExportKind::Vec3) ? 3 : 4;
+                if (Meta.Has("Color") && Components == 3)
+                {
+                    bChanged = ImGui::ColorEdit3(HL, &Value.AsVec.x);
+                }
+                else if (Meta.Has("Color") && Components == 4)
+                {
+                    bChanged = ImGui::ColorEdit4(HL, &Value.AsVec.x);
+                }
+                else
+                {
+                    float fMin = (float)dMin, fMax = (float)dMax;
+                    const FString Fmt = BuildScriptUnitFormat(Meta, "%.3f");
+                    bChanged = ImGui::DragScalarN(HL, ImGuiDataType_Float, &Value.AsVec.x, Components,
+                                                  Delta > 0.0f ? Delta : 0.1f,
+                                                  bHasMin ? &fMin : nullptr, bHasMax ? &fMax : nullptr,
+                                                  Fmt.empty() ? "%.3f" : Fmt.c_str());
+                }
                 break;
-            case EScriptExportKind::UnknownUserdata:
-                ImGui::TextDisabled("(%s: not yet editable)", Value.UserdataTypeName.ToString().c_str());
-                break;
+            }
             default:
                 break;
             }
-
-            ImGui::PopID();
             return bChanged;
         }
 
-        bool DrawArrayValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        void DrawScalarRow(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                           const char* Label, const Lua::FScriptExportMeta& Meta, bool& bChanged, bool* bOutRemove)
         {
             using namespace Lua;
-            if (!Type.ElementType) return false;
 
-            bool bChanged = false;
-            ImGui::PushID(Label);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(Label);
 
-            if (ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen, "%s [%u]", Label, (uint32)Value.Items.size()))
+            const FString* Tip = Meta.Find("Tooltip");
+            if (Tip && !Tip->empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                ImGui::SetTooltip("%s", Tip->c_str());
+            }
+
+            ImGui::TableNextColumn();
+
+            if (bOutRemove)
+            {
+                if (ImGui::SmallButton("x")) *bOutRemove = true;
+                ImGui::SameLine();
+            }
+
+            if (Type.Kind == EScriptExportKind::UnknownUserdata)
+            {
+                ImGui::TextDisabled("(%s: not editable)", Value.UserdataTypeName.ToString().c_str());
+                return;
+            }
+
+            ImGui::SetNextItemWidth(-FLT_MIN);
+
+            const bool bReadOnly = Meta.Has("ReadOnly");
+            if (bReadOnly) ImGui::BeginDisabled(true);
+
+            FFixedString HiddenLabel;
+            HiddenLabel.append("##").append(Label);
+            if (DrawScalarWidget(Type, Value, HiddenLabel.c_str(), Meta))
+            {
+                bChanged = true;
+            }
+
+            if (bReadOnly) ImGui::EndDisabled();
+        }
+
+        void DrawArrayRows(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                           const char* Label, const Lua::FScriptExportMeta& Meta, bool& bChanged, bool* bOutRemove)
+        {
+            using namespace Lua;
+            if (!Type.ElementType) return;
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            const bool bOpen = ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen, "%s", Label);
+
+            ImGui::TableNextColumn();
+            ImGui::Text("[%u]", (uint32)Value.Items.size());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+"))
+            {
+                Value.Items.emplace_back(FScriptPropertyValue::FromType(*Type.ElementType));
+                bChanged = true;
+            }
+            if (bOutRemove)
             {
                 ImGui::SameLine();
-                if (ImGui::SmallButton("+"))
-                {
-                    Value.Items.emplace_back(FScriptPropertyValue::FromType(*Type.ElementType));
-                    bChanged = true;
-                }
+                if (ImGui::SmallButton("x")) *bOutRemove = true;
+            }
 
+            if (bOpen)
+            {
                 for (size_t i = 0; i < Value.Items.size(); )
                 {
-                    ImGui::PushID((int)i);
                     char RowLabel[32];
                     snprintf(RowLabel, sizeof(RowLabel), "[%zu]", i);
-
-                    bool bRemoved = false;
-                    if (ImGui::SmallButton("x"))
+                    bool bRemoveElem = false;
+                    // Element widgets inherit the array's own --@export meta (clamp/units/color).
+                    DrawValueRows(*Type.ElementType, Value.Items[i], RowLabel, Meta, bChanged, &bRemoveElem);
+                    if (bRemoveElem)
                     {
                         Value.Items.erase(Value.Items.begin() + i);
                         bChanged = true;
-                        bRemoved = true;
                     }
                     else
                     {
-                        ImGui::SameLine();
-                        bChanged |= DrawScriptPropertyValue(*Type.ElementType, Value.Items[i], RowLabel);
+                        ++i;
                     }
-
-                    ImGui::PopID();
-                    if (!bRemoved) ++i;
                 }
                 ImGui::TreePop();
             }
-
-            ImGui::PopID();
-            return bChanged;
         }
 
-        bool DrawStructValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        void DrawStructRows(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                            const char* Label, const Lua::FScriptExportMeta& Meta, bool& bChanged, bool* bOutRemove)
         {
             using namespace Lua;
-            bool bChanged = false;
-            ImGui::PushID(Label);
 
-            if (ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen))
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            const bool bOpen = ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen, "%s", Label);
+
+            ImGui::TableNextColumn();
+            if (bOutRemove)
+            {
+                if (ImGui::SmallButton("x")) *bOutRemove = true;
+            }
+
+            if (bOpen)
             {
                 for (const FScriptExportField& Field : Type.Fields)
                 {
                     if (!Field.Type) continue;
+
                     FScriptPropertyValue* FieldValue = nullptr;
                     for (FScriptPropertyEntry& Entry : Value.StructFields)
                     {
@@ -190,27 +406,27 @@ namespace Lumina
                         FieldValue = &Value.StructFields.back().Value;
                     }
                     FString FieldLabel = Field.Name.ToString();
-                    bChanged |= DrawScriptPropertyValue(*Field.Type, *FieldValue, FieldLabel.c_str());
+                    DrawValueRows(*Field.Type, *FieldValue, FieldLabel.c_str(), Field.Meta, bChanged);
                 }
                 ImGui::TreePop();
             }
-
-            ImGui::PopID();
-            return bChanged;
         }
 
-        bool DrawScriptPropertyValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        void DrawValueRows(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value,
+                           const char* Label, const Lua::FScriptExportMeta& Meta, bool& bChanged, bool* bOutRemove)
         {
             using namespace Lua;
+            // ID must be stable across frames: ReconcileOverrides rebuilds the override
+            // vector every frame, so &Value is not stable. Labels are unique among siblings
+            // (field names; array element "[i]"; struct field names), so key on the label.
+            ImGui::PushID(Label);
             switch (Type.Kind)
             {
-            case EScriptExportKind::Array:
-                return DrawArrayValue(Type, Value, Label);
-            case EScriptExportKind::NestedStruct:
-                return DrawStructValue(Type, Value, Label);
-            default:
-                return DrawScalarValue(Type, Value, Label);
+            case EScriptExportKind::Array:        DrawArrayRows (Type, Value, Label, Meta, bChanged, bOutRemove); break;
+            case EScriptExportKind::NestedStruct: DrawStructRows(Type, Value, Label, Meta, bChanged, bOutRemove); break;
+            default:                              DrawScalarRow (Type, Value, Label, Meta, bChanged, bOutRemove); break;
             }
+            ImGui::PopID();
         }
 
         // Engine-recognized lifecycle / physics callbacks; these are driven by the world, not
@@ -310,6 +526,54 @@ namespace Lumina
             }
         }
 
+        // Field's --@export(Category="...") group, or empty when uncategorized.
+        FString ExportCategoryOf(const Lua::FScriptExportField& Field)
+        {
+            const FString* Category = Field.Meta.Find("Category");
+            return (Category && !Category->empty()) ? *Category : FString();
+        }
+
+        // A PropertyTable-style category band: paints both row cells dark to read as a section
+        // break, and draws a borderless collapsing header. Returns whether the section is expanded.
+        // Mirrors FCategoryPropertyRow::DrawHeader (PropertyTable.cpp).
+        bool DrawExportCategoryRow(const char* Name)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(38, 38, 42, 255));
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(38, 38, 42, 255));
+
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::PushStyleColor(ImGuiCol_Header, 0);
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(255, 255, 255, 16));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(255, 255, 255, 12));
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 220, 222, 255));
+            const bool bOpen = ImGui::CollapsingHeader(Name, ImGuiTreeNodeFlags_DefaultOpen);
+            ImGui::PopStyleColor(4);
+
+            ImGui::TableNextColumn(); // category rows leave the value cell empty
+            return bOpen;
+        }
+
+        // Draws every field belonging to one category as rows (assumes an active table).
+        void DrawExportCategoryFields(SScriptComponent& Component, const FString& Category, bool& bOutChanged)
+        {
+            for (const Lua::FScriptExportField& Field : Component.Script->ExportsSchema.Fields)
+            {
+                if (!Field.Type || ExportCategoryOf(Field) != Category) continue;
+
+                Lua::FScriptPropertyValue* Value = nullptr;
+                for (Lua::FScriptPropertyEntry& Entry : Component.PropertyOverrides.Items)
+                {
+                    if (Entry.Name == Field.Name) { Value = &Entry.Value; break; }
+                }
+                if (!Value) continue;
+
+                FString Label = Field.Name.ToString();
+                DrawValueRows(*Field.Type, *Value, Label.c_str(), Field.Meta, bOutChanged);
+            }
+        }
+
         void DrawExportsSection(SScriptComponent& Component, bool& bOutChanged)
         {
             if (!Component.Script || !Component.Script->ExportsSchema.IsValid())
@@ -328,23 +592,54 @@ namespace Lumina
                 return;
             }
 
+            // Categories in first-seen order; empty string is the uncategorized bucket.
+            TVector<FString> Categories;
+            bool bAnyCategory = false;
             for (const Lua::FScriptExportField& Field : Component.Script->ExportsSchema.Fields)
             {
-                if (!Field.Type) continue;
+                FString Category = ExportCategoryOf(Field);
+                if (!Category.empty()) bAnyCategory = true;
 
-                Lua::FScriptPropertyValue* Value = nullptr;
-                for (Lua::FScriptPropertyEntry& Entry : Component.PropertyOverrides.Items)
+                bool bFound = false;
+                for (const FString& Existing : Categories)
                 {
-                    if (Entry.Name == Field.Name) { Value = &Entry.Value; break; }
+                    if (Existing == Category) { bFound = true; break; }
                 }
-                if (!Value) continue;
-
-                FString Label = Field.Name.ToString();
-                if (DrawScriptPropertyValue(*Field.Type, *Value, Label.c_str()))
-                {
-                    bOutChanged = true;
-                }
+                if (!bFound) Categories.push_back(Category);
             }
+
+            // One table for everything; categories are header rows within it (PropertyTable style).
+            constexpr ImGuiTableFlags Flags =
+                ImGuiTableFlags_BordersOuter |
+                ImGuiTableFlags_NoBordersInBodyUntilResize |
+                ImGuiTableFlags_SizingStretchSame |
+                ImGuiTableFlags_RowBg;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 3));
+            if (ImGui::BeginTable("##ScriptExports", 2, Flags))
+            {
+                ImGui::TableSetupColumn("##Name", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+                ImGui::TableSetupColumn("##Value", ImGuiTableColumnFlags_WidthStretch);
+
+                if (!bAnyCategory)
+                {
+                    DrawExportCategoryFields(Component, FString(), bOutChanged);
+                }
+                else
+                {
+                    for (const FString& Category : Categories)
+                    {
+                        const char* Header = Category.empty() ? "General" : Category.c_str();
+                        if (DrawExportCategoryRow(Header))
+                        {
+                            DrawExportCategoryFields(Component, Category, bOutChanged);
+                        }
+                    }
+                }
+
+                ImGui::EndTable();
+            }
+            ImGui::PopStyleVar();
         }
     }
 }
@@ -513,15 +808,19 @@ namespace Lumina
             {
                 PendingMutation = [ScriptComponent]
                 {
-                    if (ScriptComponent->World)
+                    // Drop the cached bytecode/schema so the reload re-reads (and re-scans --@export)
+                    // from disk; ScriptReloaded then refreshes every component bound to this path,
+                    // reconciling each one's overrides against the rebuilt schema.
+                    const FStringView ResolvedPath = ScriptComponent->ScriptPath.ResolvePath();
+                    if (!ResolvedPath.empty())
                     {
-                        ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                        Lua::FScriptingContext::Get().ScriptReloaded(ResolvedPath);
                     }
                 };
                 bWasChanged = true;
             }
-            
-            ImGuiX::TextTooltip("Reload the script, will attempt to keep any matching values");
+
+            ImGuiX::TextTooltip("Reload the script from disk, will attempt to keep any matching values");
 
             ImGui::SameLine();
         

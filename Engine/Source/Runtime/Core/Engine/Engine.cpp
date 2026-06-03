@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Audio/AudioContext.h"
+#include "Networking/NetworkGlobals.h"
 #include "Config/Config.h"
 #include "Config/EngineSettings.h"
 #include "Core/Application/Application.h"
@@ -45,6 +46,7 @@
 #include "World/WorldManager.h"
 #include "World/World.h"
 #include "World/WorldContext.h"
+#include "World/Net/NetWorldState.h"
 #include "UI/RmlUiBridge.h"
 #include "GameInstance.h"
 #include "Core/CommandLine/CommandLine.h"
@@ -169,6 +171,7 @@ namespace Lumina
         
         basisu::basisu_encoder_init();
         Audio::Initialize();
+        Network::Initialize();
         Task::Initialize();
         Physics::Initialize();
 
@@ -271,6 +274,7 @@ namespace Lumina
         Physics::Shutdown();
         // Audio's per-frame pump runs on the task pool, so drain/free it before the task system stops.
         Audio::Shutdown();
+        Network::Shutdown();
         Task::Shutdown();
 
         // Drop plugin records before UnloadAllModules rips the DLLs out from under us.
@@ -299,6 +303,9 @@ namespace Lumina
         // Drain queued audio commands on the task pool (outside the minimized gate so audio keeps up).
         Audio::Update();
 
+        // Service the network transport every frame (outside the minimized gate so connections stay alive).
+        Network::Update();
+
         if (!Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
             {
@@ -315,7 +322,9 @@ namespace Lumina
 
                 MainThread::ProcessQueue();
 
-                // Drain Travel before world ticks; tearing down a world from inside its own update is unsafe.
+                // Drain OpenLevel/Connect, then Travel, before world ticks; tearing down a world from inside
+                // its own update is unsafe. OpenLevel may itself queue a Travel that runs in the same drain.
+                ProcessPendingOpenLevel();
                 ProcessPendingTravel();
 
                 GRenderManager->FrameStart(UpdateContext);
@@ -813,23 +822,57 @@ namespace Lumina
         // No running game world yet (cold-boot): spawn a fresh game context.
         if (OldContext == nullptr)
         {
-            FWorldContext* NewContext = GWorldManager->CreateWorldContext(WorldAsset, EWorldType::Game, ENetMode::Standalone);
+            const ENetMode ColdNetMode = (bPendingHostOverride && bPendingHostListen) ? ENetMode::ListenServer : ENetMode::Standalone;
+            FWorldContext* NewContext = GWorldManager->CreateWorldContext(WorldAsset, EWorldType::Game, ColdNetMode);
             if (NewContext != nullptr)
             {
                 NewContext->GameInstance = GameInstance;
+                NewContext->MapPath      = FString(MapName.c_str());
+                if (bPendingHostOverride)
+                {
+                    NewContext->NetPort = PendingHostPort;
+                }
             }
+            bPendingHostOverride = false;
             FCoreDelegates::OnWorldTravelled.Broadcast(nullptr, WorldAsset);
             return;
         }
 
         const EWorldType                Type           = OldContext->Type;
-        const ENetMode                  NetMode        = OldContext->NetMode;
+        ENetMode                        NetMode        = OldContext->NetMode;
         const bool                      bPIE           = OldContext->bPIE;
         const TWeakObjectPtr<CWorld>    SourceWorldRef = OldContext->SourceWorld;
+        const FString                   OldNetHost     = OldContext->NetHost;
+        uint16                          NetPort        = OldContext->NetPort;
         CGameInstance* const            SavedInstance  = OldContext->GameInstance != nullptr
                                                             ? OldContext->GameInstance
                                                             : GameInstance;
         CWorld* const                   OldWorld       = OldContext->World.Get();
+
+        // A host-level OpenLevel overrides the role/port on the world it travels to.
+        if (bPendingHostOverride)
+        {
+            NetMode = bPendingHostListen ? ENetMode::ListenServer : ENetMode::Standalone;
+            NetPort = PendingHostPort;
+            bPendingHostOverride = false;
+        }
+
+        // Carry a live CLIENT connection across the travel so a Welcome-driven map load doesn't drop the
+        // link (no disconnect/reconnect, no server-side spawn churn). Move the transport out of the old
+        // world's net state BEFORE its context (and registry) is destroyed; the new world adopts it.
+        if (NetMode == ENetMode::Client && OldWorld != nullptr)
+        {
+            if (FNetWorldState* OldNet = OldWorld->GetEntityRegistry().ctx().find<FNetWorldState>())
+            {
+                if (OldNet->Transport != nullptr && OldNet->bClientConnected)
+                {
+                    CarriedTransport        = Move(OldNet->Transport);
+                    CarriedServerConnection = OldNet->ServerConnection;
+                    CarriedLocalPeerId      = OldNet->LocalPeerId;
+                    bHasCarriedConnection   = true;
+                }
+            }
+        }
 
         // Always duplicate: PIE never runs on the cached asset, and Travel-to-same-map would self-destroy.
         CWorld* NewWorld = CWorld::DuplicateWorld(WorldAsset);
@@ -847,6 +890,9 @@ namespace Lumina
             NewContext->bPIE         = bPIE;
             NewContext->SourceWorld  = SourceWorldRef;
             NewContext->GameInstance = SavedInstance;
+            NewContext->MapPath      = FString(MapName.c_str());
+            NewContext->NetHost      = OldNetHost;
+            NewContext->NetPort      = NetPort;
         }
 
         if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
@@ -856,6 +902,82 @@ namespace Lumina
 
         // OldWorld memory still alive (only TeardownWorld has run); safe to compare identity, do not inspect state.
         FCoreDelegates::OnWorldTravelled.Broadcast(OldWorld, NewWorld);
+    }
+
+    void FEngine::OpenLevel(const FURL& URL)
+    {
+        // Deferred, drained at FrameStart alongside Travel.
+        PendingOpenURL  = URL;
+        bHasPendingOpen = true;
+    }
+
+    void FEngine::HostLevel(FStringView Map, uint16 Port)
+    {
+        FURL URL;
+        URL.Map.assign(Map.data(), Map.size());
+        URL.Port    = Port;
+        URL.bListen = true;
+        OpenLevel(URL);
+    }
+
+    void FEngine::ConnectToServer(FStringView Host, uint16 Port)
+    {
+        FURL URL;
+        URL.Host.assign(Host.data(), Host.size());
+        URL.Port = Port;
+        OpenLevel(URL);
+    }
+
+    void FEngine::ProcessPendingOpenLevel()
+    {
+        if (!bHasPendingOpen)
+        {
+            return;
+        }
+        bHasPendingOpen = false;
+
+        const FURL URL = Move(PendingOpenURL);
+        PendingOpenURL = FURL{};
+
+        if (GWorldManager == nullptr)
+        {
+            LOG_ERROR("FEngine::OpenLevel: WorldManager not initialized.");
+            return;
+        }
+
+        if (URL.IsClient())
+        {
+            // Client: flip the current game world to Client + connect target. The network system dials it
+            // next tick; the server's Welcome then travels us to its map. No travel here (we don't yet know
+            // which map the server is running).
+            FWorldContext* Ctx = GWorldManager->GetPrimaryGameContext();
+            if (Ctx == nullptr)
+            {
+                LOG_ERROR("FEngine::ConnectToServer: no game world to connect from; open a level first.");
+                return;
+            }
+            Ctx->NetMode = ENetMode::Client;
+            Ctx->NetHost = URL.Host;
+            Ctx->NetPort = URL.Port;
+            LOG_DISPLAY("[Net] Connecting to {}:{} ...", URL.Host.c_str(), URL.Port);
+            return;
+        }
+
+        // Host / standalone: travel to the map, then stamp the role + port onto the new world's context.
+        bPendingHostOverride = true;
+        bPendingHostListen   = URL.bListen;
+        PendingHostPort      = URL.Port;
+        Travel(URL.Map);
+    }
+
+    TUniquePtr<INetworkTransport> FEngine::TakeCarriedConnection(FConnectionHandle& OutConnection, uint32& OutLocalPeerId)
+    {
+        OutConnection           = CarriedServerConnection;
+        OutLocalPeerId          = CarriedLocalPeerId;
+        bHasCarriedConnection   = false;
+        CarriedServerConnection = FConnectionHandle{};
+        CarriedLocalPeerId      = 0;
+        return Move(CarriedTransport);
     }
 
     bool FEngine::LoadCookedRuntime()

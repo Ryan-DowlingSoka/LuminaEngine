@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "Scripting.h"
 #include "Core/Math/Math.h"
+#include "Tools/PrimitiveManager/PrimitiveManager.h"
+#include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "lstate.h"
 #include "luacode.h"
 #include "lualib.h"
@@ -482,6 +484,37 @@ namespace Lumina::Lua
             return FRef(State, -1);
         }>("LoadObject");
 
+        
+        EngineTable.SetFunction<[](lua_State* State) -> FRef
+        {
+            PushCObjectAsActualType(State, CPrimitiveManager::Get().CubeMesh.Get());
+            return FRef(State, -1);
+        }>("GetCubeMesh");
+        
+        EngineTable.SetFunction<[](lua_State* State) -> FRef
+        {
+            PushCObjectAsActualType(State, CPrimitiveManager::Get().SphereMesh.Get());
+            return FRef(State, -1);
+        }>("GetSphereMesh");
+        
+        EngineTable.SetFunction<[](lua_State* State) -> FRef
+        {
+            PushCObjectAsActualType(State, CPrimitiveManager::Get().CylinderMesh.Get());
+            return FRef(State, -1);
+        }>("GetCylinderMesh");
+        
+        EngineTable.SetFunction<[](lua_State* State) -> FRef
+        {
+            PushCObjectAsActualType(State, CPrimitiveManager::Get().ConeMesh.Get());
+            return FRef(State, -1);
+        }>("GetConeMesh");
+        
+        EngineTable.SetFunction<[](lua_State* State) -> FRef
+        {
+            PushCObjectAsActualType(State, CPrimitiveManager::Get().CapsuleMesh.Get());
+            return FRef(State, -1);
+        }>("GetCapsuleMesh");
+
         EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
         EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
         EngineTable.SetFunction<&FEngine::Travel>("Travel", GEngine);
@@ -916,7 +949,8 @@ namespace Lumina::Lua
         // Editor type for the entity-script `self`. Hand-authored (it's a Lua base, not a C++ binding),
         // but registered here next to the stdlib rather than hardcoded in the editor. `local Script:
         // EntityScript = EntityScript.new()` types `self` in every method. A future non-entity script
-        // kind registers its own base type the same way. `[string]: any` covers Exports + custom fields.
+        // kind registers its own base type the same way. `[string]: any` keeps user-declared
+        // --@export properties (Script.<Name>) and other custom fields type-clean.
         FScriptTypeRegistry::Get().RegisterSnippet("EntityScript", R"DEF(
 export type EntityScript = {
     Entity: number,
@@ -924,7 +958,7 @@ export type EntityScript = {
     Transform: any,
     World: any,
     Input: any,
-    Exports: { [string]: any },
+    [string]: any,
 
     IsValid: (self: EntityScript) -> boolean,
     Destroy: (self: EntityScript) -> (),
@@ -1189,8 +1223,19 @@ declare EntityScript: { new: () -> EntityScript }
             }
             OnScriptCompileSuccess.Broadcast(Path);
 
-            // Piggyback schema harvest off the first instance.
+            // One annotation scan drives both the RPC registry and the --@export schema.
+            const TVector<FScriptMemberAnnotation> Annotations = ScanScriptAnnotations(ScriptData);
+
+            // Networked functions: --@rpc annotations in source order (source order = wire id).
+            Entry.Rpcs = BuildRpcRegistry(Annotations);
+            if (!Entry.Rpcs.empty())
+            {
+                LOG_DISPLAY("[Net] Script '{}' registered {} RPC function(s).", Path, Entry.Rpcs.size());
+            }
+
+            // Piggyback the --@export schema/defaults harvest off the first instance.
             TSharedPtr<FScript> FirstScript = InstantiateFromBytecode(Entry.Bytecode, Path,
+                                                                      &Annotations,
                                                                       &Entry.ExportsSchema,
                                                                       &Entry.ExportDefaults);
             if (FirstScript == nullptr)
@@ -1198,6 +1243,7 @@ declare EntityScript: { new: () -> EntityScript }
                 return {};
             }
 
+            FirstScript->Rpcs = Entry.Rpcs;
             FirstScript->Path = Path;
             RegisteredScripts[PathName].emplace_back(FirstScript);
             ScriptCache.emplace(PathName, eastl::move(Entry));
@@ -1206,7 +1252,7 @@ declare EntityScript: { new: () -> EntityScript }
         }
 
         const FScriptCacheEntry& CachedEntry = CacheIt->second;
-        TSharedPtr<FScript> Script = InstantiateFromBytecode(CachedEntry.Bytecode, Path, nullptr, nullptr);
+        TSharedPtr<FScript> Script = InstantiateFromBytecode(CachedEntry.Bytecode, Path, nullptr, nullptr, nullptr);
         if (Script == nullptr)
         {
             return {};
@@ -1215,6 +1261,7 @@ declare EntityScript: { new: () -> EntityScript }
         Script->Path           = Path;
         Script->ExportsSchema  = CachedEntry.ExportsSchema;
         Script->ExportDefaults = CachedEntry.ExportDefaults;
+        Script->Rpcs           = CachedEntry.Rpcs;
 
         RegisteredScripts[PathName].emplace_back(Script);
         FLuaDebugger::Get().OnScriptLoaded(*Script);
@@ -1224,6 +1271,7 @@ declare EntityScript: { new: () -> EntityScript }
     TSharedPtr<FScript> FScriptingContext::InstantiateFromBytecode(
         const TVector<uint8>& Bytecode,
         FStringView Name,
+        const TVector<FScriptMemberAnnotation>* Annotations,
         FScriptExportSchema* OutSchema,
         TVector<FScriptPropertyEntry>* OutDefaults) const
     {
@@ -1256,21 +1304,16 @@ declare EntityScript: { new: () -> EntityScript }
             return {};
         }
 
-        // First-load schema harvest from the module's `Exports` table.
-        if (OutSchema != nullptr || OutDefaults != nullptr)
+        // First-load --@export schema harvest from the loaded module table (top of stack).
+        if (Annotations != nullptr && (OutSchema != nullptr || OutDefaults != nullptr))
         {
             if (lua_istable(Thread, -1))
             {
-                lua_getfield(Thread, -1, "Exports");
-                if (lua_istable(Thread, -1))
-                {
-                    FScriptExportSchema TempSchema;
-                    TVector<FScriptPropertyEntry> TempDefaults;
-                    BuildSchemaFromExportsTable(Thread, -1, TempSchema, TempDefaults);
-                    if (OutSchema)   *OutSchema   = TempSchema;
-                    if (OutDefaults) *OutDefaults = eastl::move(TempDefaults);
-                }
-                lua_pop(Thread, 1);
+                FScriptExportSchema TempSchema;
+                TVector<FScriptPropertyEntry> TempDefaults;
+                BuildSchemaFromAnnotatedExports(Thread, -1, *Annotations, TempSchema, TempDefaults);
+                if (OutSchema)   *OutSchema   = TempSchema;
+                if (OutDefaults) *OutDefaults = eastl::move(TempDefaults);
             }
         }
 
@@ -1304,9 +1347,10 @@ declare EntityScript: { new: () -> EntityScript }
             return {};
         }
 
+        const TVector<FScriptMemberAnnotation> Annotations = ScanScriptAnnotations(Code);
         FScriptExportSchema Schema;
         TVector<FScriptPropertyEntry> Defaults;
-        return InstantiateFromBytecode(Bytecode, Name, &Schema, &Defaults);
+        return InstantiateFromBytecode(Bytecode, Name, &Annotations, &Schema, &Defaults);
     }
 
     void FScriptingContext::InvalidateScriptCache(FStringView Path)

@@ -416,5 +416,27 @@ namespace Lumina
 			ASSERT(PrimaryWindow == nullptr);
 			PrimaryWindow = InWindow;
 		}
+
+		void SetCursorModeForNativeWindow(void* NativeWindow, ECursorMode Mode)
+		{
+			GLFWwindow* Window = static_cast<GLFWwindow*>(NativeWindow);
+			if (Window == nullptr)
+			{
+				Window = PrimaryWindow ? PrimaryWindow->GetWindow() : nullptr;
+			}
+			if (Window == nullptr)
+			{
+				return;
+			}
+
+			int Value = GLFW_CURSOR_NORMAL;
+			switch (Mode)
+			{
+			case ECursorMode::Normal:   Value = GLFW_CURSOR_NORMAL;   break;
+			case ECursorMode::Hidden:   Value = GLFW_CURSOR_HIDDEN;   break;
+			case ECursorMode::Disabled: Value = GLFW_CURSOR_DISABLED; break;
+			}
+			glfwSetInputMode(Window, GLFW_CURSOR, Value);
+		}
 	}
 }

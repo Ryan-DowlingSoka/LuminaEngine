@@ -663,7 +663,9 @@ float2 VogelDiskSample(int SampleIndex, int SamplesCount, float Angle)
     float GoldenAngle = 2.0 * PI * (1.0 - 1.0 / PHI);
     float r           = sqrt((float(SampleIndex) + 0.5) / float(SamplesCount));
     float theta       = float(SampleIndex) * GoldenAngle + Angle;
-    return float2(r * cos(theta), r * sin(theta));
+    float s, c;
+    sincos(theta, s, c);
+    return float2(r * c, r * s);
 }
 
 // Triangular-PDF dither (Gjol/Playdead "Banding in Games"). Two decorrelated

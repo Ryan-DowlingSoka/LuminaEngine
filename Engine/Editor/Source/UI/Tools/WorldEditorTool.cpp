@@ -682,6 +682,11 @@ namespace Lumina
         {
             OnGamePreviewStopRequested.Broadcast();
         }
+
+        // Sever registry observers while the worlds are still alive (the editor UI is torn down before
+        // GWorldManager). Leaving these connected lets a later world teardown -- including the editor
+        // world still observed across a PIE session -- fire on_destroy into this freed tool -> crash.
+        UnbindRegistryObservers();
     }
 
     void FWorldEditorTool::UpdateCameraPreview()
@@ -765,13 +770,6 @@ namespace Lumina
 
         // Drive the selected-camera preview before the world extracts this frame.
         UpdateCameraPreview();
-
-        // Reassert Game focus each frame: a game script's SetMouseMode("Normal")
-        // clears NoMouse, which would otherwise re-enable ImGui mid-play.
-        if (bGamePreviewRunning && InputFocus == EInputFocus::Game)
-        {
-            ApplyInputFocus();
-        }
 
         DrawWorldGrid();
 
@@ -1232,8 +1230,10 @@ namespace Lumina
     void FWorldEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
         // Game-focus indicator: a subtle outline + hint so it's obvious input is
-        // routed to the game (not the editor), and how to hand it back.
-        if (bGamePreviewRunning && InputFocus == EInputFocus::Game)
+        // routed to the game (not the editor), and how to hand it back. Shown on whichever viewport is the
+        // globally active + game-focused one (game focus is global, the active viewport can switch windows).
+        if (bGamePreviewRunning && FInputViewportRegistry::Get().IsGameInputFocused()
+            && InputViewport.get() == FInputViewportRegistry::Get().GetActiveViewport())
         {
             ImDrawList* DL = ImGui::GetWindowDrawList();
 
@@ -3142,13 +3142,12 @@ namespace Lumina
 
     void FWorldEditorTool::SetWorld(CWorld* InWorld)
     {
+        // Unbind observers from whatever registry we're actually observing (tracked), then RebindRegistryObservers
+        // below re-binds to the new World. Clearing selection tags is on the current World's registry.
+        UnbindRegistryObservers();
         if (World)
         {
             FEntityRegistry& OldRegistry = World->GetEntityRegistry();
-            OldRegistry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-            OldRegistry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
-            OldRegistry.on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
-            OldRegistry.on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
             OldRegistry.clear<FSelectedInEditorComponent>();
             OldRegistry.clear<FLastSelectedTag>();
         }
@@ -3240,6 +3239,25 @@ namespace Lumina
                 }
 
                 ImGui::EndDisabled();
+
+                // Play-settings dropdown (player count + net mode). Enabled even when Play is disabled.
+                ImGui::SameLine(0.0f, 2.0f);
+                if (ImGui::ArrowButton("##PlaySettings", ImGuiDir_Down))
+                {
+                    ImGui::OpenPopup("PlaySettingsPopup");
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                {
+                    ImGui::SetTooltip("Play settings (players, net mode)");
+                }
+                DrawPlaySettingsPopup();
+
+                // Compact reminder of the current multiplayer config.
+                if (PlaySettings.NumPlayers > 1)
+                {
+                    ImGui::SameLine(0.0f, 6.0f);
+                    ImGui::TextDisabled("%dP", PlaySettings.NumPlayers);
+                }
             }
             else
             {
@@ -3293,6 +3311,79 @@ namespace Lumina
         SetWorldPlayInEditor(false);
     }
 
+    void FWorldEditorTool::DrawPlaySettingsPopup()
+    {
+        if (!ImGui::BeginPopup("PlaySettingsPopup"))
+        {
+            return;
+        }
+
+        ImGui::TextUnformatted("Play In Editor");
+        ImGui::Separator();
+
+        int32 Num = PlaySettings.NumPlayers;
+        ImGui::SetNextItemWidth(170.0f);
+        if (ImGui::SliderInt("Players", &Num, 1, MaxPlayers))
+        {
+            PlaySettings.NumPlayers = (Num < 1) ? 1 : (Num > MaxPlayers ? MaxPlayers : Num);
+        }
+
+        // Order must match ENetMode: Standalone, Client, ListenServer, DedicatedServer.
+        static const char* const NetModeNames[] = { "Standalone", "Client", "Listen Server", "Dedicated Server" };
+        int32 ModeIdx = (int32)PlaySettings.NetMode;
+        ImGui::SetNextItemWidth(170.0f);
+        if (ImGui::Combo("Net Mode", &ModeIdx, NetModeNames, IM_ARRAYSIZE(NetModeNames)))
+        {
+            PlaySettings.NetMode = (ENetMode)ModeIdx;
+        }
+
+        ImGui::BeginDisabled(true);
+        ImGui::Checkbox("Separate Processes (soon)", &PlaySettings.bSeparateProcesses);
+        ImGui::EndDisabled();
+
+        // Network condition simulation. Bound straight to the CVars the transport reads, so dragging
+        // these takes effect live (even mid-PIE). Meaningless without a network, so gate on Standalone.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Network Simulation");
+        {
+            FConsoleRegistry& Console = FConsoleRegistry::Get();
+            ImGui::BeginDisabled(PlaySettings.NetMode == ENetMode::Standalone);
+
+            int32 LatencyMs = Console.GetAs<int32>("Net.Sim.LatencyMs");
+            ImGui::SetNextItemWidth(170.0f);
+            if (ImGui::SliderInt("Latency (ms)", &LatencyMs, 0, 500))
+            {
+                Console.SetAs<int32>("Net.Sim.LatencyMs", LatencyMs < 0 ? 0 : LatencyMs);
+            }
+
+            float LossPct = Console.GetAs<float>("Net.Sim.PacketLossPct");
+            ImGui::SetNextItemWidth(170.0f);
+            if (ImGui::SliderFloat("Packet Loss", &LossPct, 0.0f, 100.0f, "%.0f%%"))
+            {
+                Console.SetAs<float>("Net.Sim.PacketLossPct", LossPct < 0.0f ? 0.0f : (LossPct > 100.0f ? 100.0f : LossPct));
+            }
+
+            ImGui::EndDisabled();
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Players 2+ open preview windows in this process.");
+
+        ImGui::EndPopup();
+    }
+
+    ENetMode FWorldEditorTool::ResolvePlayerNetMode(int32 PlayerIndex) const
+    {
+        switch (PlaySettings.NetMode)
+        {
+        case ENetMode::Standalone:      return ENetMode::Standalone;
+        case ENetMode::Client:          return ENetMode::Client;
+        case ENetMode::ListenServer:    return PlayerIndex == 0 ? ENetMode::ListenServer : ENetMode::Client;
+        case ENetMode::DedicatedServer: return PlayerIndex == 0 ? ENetMode::DedicatedServer : ENetMode::Client;
+        }
+        return ENetMode::Standalone;
+    }
+
     void FWorldEditorTool::OnPostUndoRedo()
     {
         // Serialized registry is authoritative post-undo; rebuild the cached set from FSelectedInEditorComponent / FLastSelectedTag.
@@ -3327,19 +3418,33 @@ namespace Lumina
         }
     }
 
+    void FWorldEditorTool::UnbindRegistryObservers()
+    {
+        if (ObservedRegistry == nullptr)
+        {
+            return;
+        }
+        ObservedRegistry->on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
+        ObservedRegistry->on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
+        ObservedRegistry->on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
+        ObservedRegistry->on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
+        ObservedRegistry = nullptr;
+    }
+
     void FWorldEditorTool::RebindRegistryObservers()
     {
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        Registry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-        Registry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
-        Registry.on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
-        Registry.on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
+        // Unbind from whatever we were observing -- it may differ from the current World after a
+        // RebindToWorld pointer-swap (e.g. entering PIE), and that old world must not keep a dangling
+        // observer into this tool when it is later torn down.
+        UnbindRegistryObservers();
 
+        FEntityRegistry& Registry = World->GetEntityRegistry();
         Registry.on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
         // Hook on SNameComponent (not entt::entity) so we don't add an outliner row before the entity has a name.
         Registry.on_construct<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
         Registry.on_destroy<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
+        ObservedRegistry = &Registry;
     }
 
     void FWorldEditorTool::OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld)
@@ -3409,7 +3514,7 @@ namespace Lumina
 
             // PIE world owned by FWorldManager; RebindToWorld is a pointer-only swap. StartPIE
             // returns null when the world can't be duplicated, so bail before rebinding to null.
-            CWorld* PIEWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
+            CWorld* PIEWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ResolvePlayerNetMode(0));
             if (PIEWorld == nullptr)
             {
                 LOG_WARN("Cannot Play '{0}': world has no package (save the world before playing).", World->GetName().c_str());
@@ -3432,9 +3537,15 @@ namespace Lumina
 
             // Play starts in Game focus: ImGui stands down, input goes to game + UI.
             SetInputFocus(EInputFocus::Game);
+
+            // Players 2..N: FEditorUI spawns their PIE worlds + Game Preview pop-ups (deferred tool create).
+            OnGamePreviewStartRequested.Broadcast();
         }
         else
         {
+            // Tear down extra player preview worlds (FEditorUI) before the primary teardown below.
+            OnGamePreviewStopRequested.Broadcast();
+
             PropertyTables.clear();
             SelectedEntities.clear();
             LastSelectedEntity = entt::null;
@@ -3630,31 +3741,21 @@ namespace Lumina
     void FWorldEditorTool::SetInputFocus(EInputFocus NewFocus)
     {
         InputFocus = NewFocus;
-        ApplyInputFocus();
 
-        // Returning to the editor hands the cursor back so panels are usable even
-        // if the game had captured/hidden it.
-        if (NewFocus == EInputFocus::Editor)
-        {
-            FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
-        }
+        // Game-input focus is a single global state (gated against the active viewport), so it survives the
+        // one global active viewport across multiple PIE preview windows. FEditorUI drives the ImGui
+        // stand-down flags off this each frame; SetGameInputFocused(false) hands the cursor back everywhere.
+        FInputViewportRegistry::Get().SetGameInputFocused(NewFocus == EInputFocus::Game);
     }
 
     bool FWorldEditorTool::OnEvent(FEvent& Event)
     {
-        // Shift+F1 toggles editor/game input focus while playing. Read off the raw event,
-        // not ImGui: Game focus sets NoKeyboard, hiding the key from ImGui::IsKeyPressed.
+        // Shift+F1 (game-input focus toggle) is handled globally in FEditorUI::OnEvent so it works from any
+        // preview window. Esc ends the play session; handled here off the raw event since Game focus's
+        // NoKeyboard hides the key from ImGui. Deferred to Update, since stopping tears down the PIE world.
         if (bGamePreviewRunning && Event.IsA<FKeyPressedEvent>())
         {
             FKeyPressedEvent& Key = Event.As<FKeyPressedEvent>();
-            if (Key.GetKeyCode() == EKey::F1 && Key.IsShiftDown() && !Key.IsRepeat())
-            {
-                SetInputFocus(InputFocus == EInputFocus::Game ? EInputFocus::Editor : EInputFocus::Game);
-                return true;
-            }
-
-            // Esc ends the play session; handled here (not ImGui) since Game focus's NoKeyboard
-            // hides the key. Deferred to Update, stopping tears down the PIE world.
             if (Key.GetKeyCode() == EKey::Escape && !Key.IsRepeat())
             {
                 bStopPlayRequested = true;

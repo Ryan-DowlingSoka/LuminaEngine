@@ -88,6 +88,9 @@ float2 IntegrateBRDF(float NdotV, float Roughness)
     const float3 N = float3(0.0, 0.0, 1.0);
     const uint   NumSamples = 1024u;
 
+    // Smith's view term depends only on NdotV (constant across all samples); hoist it out of the loop.
+    float Gv = GeometrySchlickGGX_IBL(NdotV, Roughness);
+
     for (uint i = 0u; i < NumSamples; ++i)
     {
         float2 Xi = Hammersley(i, NumSamples);
@@ -101,9 +104,12 @@ float2 IntegrateBRDF(float NdotV, float Roughness)
         if (NdotL > 0.0)
         {
             // The GGX sample PDF cancels D(H), leaving G * VdotH / (NdotH * NdotV) per sample.
-            float G     = GeometrySmith_IBL(N, V, L, Roughness);
+            float G     = Gv * GeometrySchlickGGX_IBL(NdotL, Roughness);
             float G_Vis = (G * VdotH) / (NdotH * NdotV);
-            float Fc    = pow(1.0 - VdotH, 5.0);
+            // (1 - VdotH)^5 via the multiply chain (cheaper than pow; VdotH already saturated).
+            float X     = 1.0 - VdotH;
+            float X2    = X * X;
+            float Fc    = X2 * X2 * X;
 
             A += (1.0 - Fc) * G_Vis;
             B += Fc * G_Vis;

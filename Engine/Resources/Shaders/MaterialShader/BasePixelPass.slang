@@ -61,29 +61,6 @@ struct FCubemapCoord
     float2 UV;
 };
 
-float DistributionGGX(float3 N, float3 H, float Roughness)
-{
-    float A     = Roughness * Roughness;
-    float A2    = A * A;
-    float NdotH = max(dot(N, H), 0.0);
-    float Denom = (NdotH * NdotH * (A2 - 1.0) + 1.0);
-    return A2 / (PI * Denom * Denom);
-}
-
-float GeometrySchlickGGX(float NdotV, float Roughness)
-{
-    float R = Roughness + 1.0;
-    float K = (R * R) / 8.0;
-    return NdotV / (NdotV * (1.0 - K) + K);
-}
-
-float GeometrySmith(float3 N, float3 V, float3 L, float Roughness)
-{
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    return GeometrySchlickGGX(NdotV, Roughness) * GeometrySchlickGGX(NdotL, Roughness);
-}
-
 float3 FresnelSchlick(float CosTheta, float3 F0)
 {
     float x = saturate(1.0 - CosTheta);
@@ -91,11 +68,21 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
     return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
+// Half-precision Schlick Fresnel for the light loop. CosTheta and F0 are both [0,1], so fp16 is ample
+// and the (1-cos)^5 chain stays well within range.
+half3 FresnelSchlickHalf(half CosTheta, half3 F0)
+{
+    half x  = saturate(half(1.0) - CosTheta);
+    half x2 = x * x;
+    return F0 + (half3(1.0) - F0) * (x2 * x2 * x);
+}
+
 // Vertex-tangent TBN: MikkTSpace import tangent, Gram-Schmidt'd against the interpolated normal here;
 // TangentWS.w preserves the bitangent across UV mirrors. (A ddx/ddy TBN faceted normal maps per triangle.)
 float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
 {
-    float3 N = normalize(FragNormal);
+    // N is assumed unit-length: every caller passes the already-normalized interpolated normal.
+    float3 N = FragNormal;
 
     float3 T = FragTangent.xyz - N * dot(FragTangent.xyz, N);
     float TLen2 = dot(T, T);
@@ -251,6 +238,10 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         DepthSlopeUV.y = (-dUVdy.x * dDdx + dUVdx.x * dDdy) * InvDet;
     }
 
+    // The cascade's atlas tile (UV scale/offset) is identical for every tap; load the 32-byte FLightShadow
+    // once here rather than re-fetching it per blocker/PCF tap (SPIR-V LICM doesn't hoist BDA loads).
+    FLightShadow Tile = GetShadowTile(Light.ShadowDataIndex, CascadeIndex);
+
     // Fixed (non per-pixel) rotation for the blocker search: per-pixel rotation of this sparse pattern
     // stipples thin-occluder penumbras; a shared angle keeps the lit/shadow boundary coherent. PCF below still rotates.
     [unroll]
@@ -258,7 +249,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     {
         float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float2 AtlasUV  = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
+        float2 AtlasUV  = SampleUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
         float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
 
         // Expected receiver depth at this offset along its own plane (clamped so a runaway gradient at a
@@ -311,7 +302,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     {
         float2 Offset    = VogelDiskSample(i, SampleCount, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float2 AtlasUV   = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, CascadeUV);
+        float2 AtlasUV   = CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
         Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
     }
     return Shadow / float(SampleCount);
@@ -400,9 +391,9 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     int Face = 0;
     if (!IsSpotLight)
     {
-        float3 L   = FragmentPos - Light.Position;
-        float3 Dir = normalize(L);
-        Face = DirectionToCubemapCoord(Dir).Face;
+        // normalize(FragmentPos - Light.Position) == -LightDirToFrag (negation commutes through
+        // normalize), so reuse it instead of a second normalize.
+        Face = DirectionToCubemapCoord(-LightDirToFrag).Face;
     }
 
     // Normal-offset the receiver before projecting; without it walls self-shadow at grazing angles
@@ -443,28 +434,32 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
     float RefDepth = ProjCoords.z - Bias;
 
+    // Build each tap's UV directly in atlas space: SampleUV = BaseUV + Offset. The old form divided the
+    // offset by AtlasUVScale to bounds-check in tile-local [0,1], then multiplied straight back -- that
+    // round-trip cancels, so the per-tap divide vanishes and only the tile-rect test remains.
+    float2 BaseUV  = ShadowTile.AtlasUVOffset + SafeUV * ShadowTile.AtlasUVScale;
+    float2 TileMin = ShadowTile.AtlasUVOffset;
+    float2 TileMax = ShadowTile.AtlasUVOffset + ShadowTile.AtlasUVScale;
+
     float Shadow = 0.0;
     float Weight = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
-        float2 Offset     = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
-        float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
-        float2 TapUV      = SafeUV + TileOffset;
+        float2 Offset   = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
+        float2 SampleUV = BaseUV + Offset;
         // Skip taps that leave the face rect (those texels belong to another light's tile);
         // the clamped center tap below guarantees at least one valid sample.
-        if (any(TapUV < 0.0) || any(TapUV > 1.0))
+        if (any(SampleUV < TileMin) || any(SampleUV > TileMax))
         {
             continue;
         }
-        float2 SampleUV = ShadowTile.AtlasUVOffset + (TapUV * ShadowTile.AtlasUVScale);
         Shadow += uShadowAtlas.SampleCmpLevelZero(SampleUV, RefDepth);
         Weight += 1.0;
     }
 
     if (Weight <= 0.0)
     {
-        float2 CenterUV = ShadowTile.AtlasUVOffset + (SafeUV * ShadowTile.AtlasUVScale);
-        return uShadowAtlas.SampleCmpLevelZero(CenterUV, RefDepth);
+        return uShadowAtlas.SampleCmpLevelZero(BaseUV, RefDepth);
     }
     return Shadow / Weight;
 }
@@ -616,30 +611,43 @@ float3 ShadowPenumbraDebug(float3 FragmentPos, float3 ViewPosition, float2 Scree
 }
 
 
-float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist, float3 EnergyComp)
+// Per-pixel surface terms that don't change across the light loop. Precomputed once in FragmentMain so
+// the per-light BRDF only re-derives the L-dependent half (NdotL, the light geometry term, H, Fresnel).
+// The [0,1]-range BRDF weights are stored half: they tolerate fp16 and halve register pressure in the
+// loop. NdotV (a specular denominator) and A2 (= roughness^4, underflows fp16 at the floor) stay float.
+struct FShadingContext
 {
-    bool bSpotLight   = HasFlag(Light.Flags, ELightFlags::Spot);
-    bool bDirectional = HasFlag(Light.Flags, ELightFlags::Directional);
+    float3 N;
+    float3 V;
+    float  NdotV;        // max(dot(N,V), 1e-4)
+    float  A2;           // roughness^4 -- kept full precision so low-roughness highlights don't underflow
+    half   Kg;           // Smith-GGX k = (roughness+1)^2 / 8
+    half   Gv;           // Schlick-GGX view geometry term (loop-invariant half of Smith G)
+    half3  F0;
+    half3  DiffuseBase;  // Albedo * (1 - Metallic) / PI
+    half3  EnergyComp;   // multi-scatter compensation (Turquin 2019)
+};
 
-    float3 L            = float3(0.0);
-    float  Attenuation  = 1.0;
-    float  Falloff      = 1.0;
-    float4 LightColor   = GetLightColor(Light);
-
-    if (bDirectional)
+// L: unit surface->light direction (caller supplies it for every light type, including the sun, so the
+// directional Light.Direction normalize happens once at the call site). Distance is unused for directional.
+float3 EvaluateLightContribution(FLight Light, FShadingContext S, float3 L, float Distance)
+{
+    float NdotLf = max(dot(S.N, L), 0.0);
+    if (NdotLf <= 0.0)
     {
-        L = normalize(Light.Direction.xyz);
+        return float3(0.0);
     }
-    else
-    {
-        float Distance = PrecomputedDist;
-        L              = PrecomputedL;
-        Attenuation    = 1.0 / (Distance * Distance);
 
+    float Attenuation = 1.0;
+    float Falloff     = 1.0;
+
+    if (!HasFlag(Light.Flags, ELightFlags::Directional))
+    {
+        Attenuation     = 1.0 / max(Distance * Distance, 1e-8);
         float DistRatio = Distance / Light.Radius;
         Attenuation    *= 1.0 - smoothstep(clamp(Light.Falloff, 0.0, 1.0), 1.0, DistRatio);
 
-        if (bSpotLight)
+        if (HasFlag(Light.Flags, ELightFlags::Spot))
         {
             float3 LightDir = normalize(Light.Direction.xyz);
             float  CosTheta = dot(LightDir, L);
@@ -647,24 +655,40 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
         }
     }
 
-    float3 Radiance     = LightColor.rgb * Light.Intensity * Attenuation * Falloff;
-    float3 H            = normalize(V + L);
+    float3 Radiance = GetLightColor(Light).rgb * Light.Intensity * Attenuation * Falloff;
+    float3 H        = normalize(S.V + L);
 
-    float  NDF          = DistributionGGX(N, H, Roughness);
-    float  G            = GeometrySmith(N, V, L, Roughness);
-    float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
+    // NDF stays full precision: A2 is float and NdotH near 1.0 needs the mantissa.
+    float NdotH = max(dot(S.N, H), 0.0);
+    float Denom = NdotH * NdotH * (S.A2 - 1.0) + 1.0;
+    float NDF   = S.A2 / (PI * Denom * Denom);
 
-    float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 1e-4) * max(dot(N, L), 1e-4));
-    // Multi-scatter energy compensation (Turquin 2019); EnergyComp precomputed per-pixel from the BRDF LUT.
-    Spec               *= EnergyComp;
-    float3 kD           = (1.0 - F) * (1.0 - Metallic);
-    float  NdotL        = max(dot(N, L), 0.0);
+    // [0,1]-range BRDF weights in fp16: light geometry term, Fresnel, diffuse/spec tint.
+    half  NdotL = (half)NdotLf;
+    half  HdotV = (half)max(dot(H, S.V), 0.0);
+    half  Gl    = NdotL / (NdotL * (half(1.0) - S.Kg) + S.Kg);
+    half  G     = S.Gv * Gl;
+    half3 F     = FresnelSchlickHalf(HdotV, S.F0);
 
-    return (kD * Albedo / PI + Spec) * Radiance * NdotL;
+    half3 SpecTint = G * F * S.EnergyComp;            // directional/color part of the specular lobe
+    half3 Diffuse  = (half3(1.0) - F) * S.DiffuseBase;
+
+    // Recombine in float: NDF and the 1/(4 NdotV NdotL) term carry the HDR dynamic range.
+    float  SpecScale = NDF / (4.0 * S.NdotV * NdotLf);
+    float3 Spec      = float3(SpecTint) * SpecScale;
+
+    return (float3(Diffuse) + Spec) * Radiance * NdotLf;
 }
 
 
+// Masked materials run the alpha-test `discard` below, which MUST execute before the depth write --
+// so the masked variant omits early depth tests. With [earlydepthstencil] the depth write happens
+// before the shader, so a discarded cutout texel would still write depth (corrupting holes for fog,
+// the HZB, decals, etc.). Opaque/non-masked keeps forced early-Z over the heavy PBR shader; its discard
+// branch is never taken at runtime, so the early write is always correct.
+#ifndef MASKED
 [earlydepthstencil]
+#endif
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
@@ -726,6 +750,22 @@ PSOutput FragmentMain(PSInput Input)
     float2 DFG_EC      = SampleBRDFLUT(NdotV_EC, Roughness);
     float3 EnergyComp  = 1.0 + F0 * (1.0 / max(DFG_EC.x + DFG_EC.y, 1e-4) - 1.0);
 
+    // Loop-invariant surface terms: hoisted out of the per-light BRDF so each light only re-derives the
+    // L-dependent half. NdotV / roughness remap / view geometry term are identical across every light.
+    FShadingContext Ctx;
+    Ctx.N           = N;
+    Ctx.V           = V;
+    Ctx.NdotV       = max(NdotV_EC, 1e-4);
+    float RoughSq   = Roughness * Roughness;
+    Ctx.A2          = RoughSq * RoughSq;
+    float Kr        = Roughness + 1.0;
+    float KgF       = (Kr * Kr) * 0.125;
+    Ctx.Kg          = (half)KgF;
+    Ctx.Gv          = (half)(Ctx.NdotV / (Ctx.NdotV * (1.0 - KgF) + KgF));
+    Ctx.F0          = (half3)F0;
+    Ctx.DiffuseBase = (half3)(Albedo * (1.0 - Metallic) * INV_PI);
+    Ctx.EnergyComp  = (half3)EnergyComp;
+
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
     uint3  GridSize   = uSceneData.GridSize.xyz;
@@ -751,12 +791,13 @@ PSOutput FragmentMain(PSInput Input)
         FLight Light = GetLightAt(0);
 
         // Pixels facing away from the sun are fully self-shadowed (NdotL clamp), so skip the
-        // expensive cascade PCSS for them (~half a typical scene).
-        float SunNdotL = dot(N, normalize(Light.Direction.xyz));
+        // expensive cascade PCSS for them (~half a typical scene). SunL is reused by the BRDF below.
+        float3 SunL    = normalize(Light.Direction.xyz);
+        float  SunNdotL = dot(N, SunL);
         if (SunNdotL > 0.0)
         {
             float Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
-            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0, EnergyComp) * Shadow;
+            Lo += EvaluateLightContribution(Light, Ctx, SunL, 0.0) * Shadow;
         }
     }
 
@@ -774,16 +815,25 @@ PSOutput FragmentMain(PSInput Input)
         }
         FLight Light      = GetLightAt(LightIndex);
 
+        // Distance cull first on squared distance (cheap), so out-of-range lights skip the sqrt/normalize.
         float3 LightToFrag = Light.Position - WorldPosition;
-        float  DistToLight = length(LightToFrag);
-        float3 L           = LightToFrag / max(DistToLight, 0.0001);
-
-        // Cluster membership is conservative: a listed light may not reach this pixel or lights only
-        // its back face. Both contribute zero, so skip the shadow + BRDF work for them.
-        if (dot(N, L) <= 0.0 || DistToLight >= Light.Radius)
+        float  DistSq      = dot(LightToFrag, LightToFrag);
+        if (DistSq >= Light.Radius * Light.Radius)
         {
             continue;
         }
+
+        float  InvDist     = rsqrt(max(DistSq, 1e-8));
+        float3 L           = LightToFrag * InvDist;
+
+        // Cluster membership is conservative: a listed light may light only this pixel's back face,
+        // which contributes zero, so skip the shadow + BRDF work for it.
+        if (dot(N, L) <= 0.0)
+        {
+            continue;
+        }
+
+        float  DistToLight = DistSq * InvDist;
 
         float Shadow = 1.0;
         if (Light.ShadowDataIndex != INDEX_NONE)
@@ -791,12 +841,12 @@ PSOutput FragmentMain(PSInput Input)
             Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
-        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight, EnergyComp) * Shadow;
+        Lo += EvaluateLightContribution(Light, Ctx, L, DistToLight) * Shadow;
     }
 
     // IBL ambient: split-sum convolutions of the sky cube (irradiance by N, GGX-prefiltered specular
     // by R + BRDF LUT). GetAmbientLightIntensity() scales it so the SkyLight Intensity slider applies.
-    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic, AO);
+    float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
     float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
     float3 Color      = Ambient + Lo + Material.Emissive;
 

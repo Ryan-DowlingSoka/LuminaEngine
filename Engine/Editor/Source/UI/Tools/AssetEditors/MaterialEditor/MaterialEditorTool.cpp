@@ -655,6 +655,12 @@ namespace Lumina
             {
                 Options.MacroDefinitions.emplace_back("TRANSLUCENT");
             }
+            if (Material->GetBlendMode() == EBlendMode::Masked)
+            {
+                // Drops [earlydepthstencil] in the pixel shader so the alpha-test discard runs before the
+                // depth write; otherwise masked cutout texels write depth and corrupt fog/HZB/decals.
+                Options.MacroDefinitions.emplace_back("MASKED");
+            }
             if (Material->GetShadingModel() == EMaterialShadingModel::Unlit)
             {
                 Options.MacroDefinitions.emplace_back("UNLIT");

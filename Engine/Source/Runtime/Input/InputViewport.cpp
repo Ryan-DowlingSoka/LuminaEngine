@@ -13,7 +13,7 @@ namespace Lumina
 {
     namespace
     {
-        void ApplyCursorModeToWindow(EMouseMode Mode)
+        void ApplyCursorModeToWindow(void* NativeWindow, EMouseMode Mode)
         {
             ECursorMode CursorMode = ECursorMode::Normal;
             switch (Mode)
@@ -22,10 +22,7 @@ namespace Lumina
             case EMouseMode::Normal:   CursorMode = ECursorMode::Normal;   break;
             case EMouseMode::Captured: CursorMode = ECursorMode::Disabled; break;
             }
-            if (FWindow* Window = Windowing::GetPrimaryWindowHandle())
-            {
-                Window->SetCursorMode(CursorMode);
-            }
+            Windowing::SetCursorModeForNativeWindow(NativeWindow, CursorMode);
         }
 
         Rml::Input::KeyIdentifier ToRmlKey(EKey Key)
@@ -305,6 +302,23 @@ namespace Lumina
         ApplyActiveCursorMode();
     }
 
+    FInputViewport* FInputViewportRegistry::FindViewportForWorld(const CWorld* World) const
+    {
+        if (World == nullptr)
+        {
+            return nullptr;
+        }
+
+        for (FInputViewport* Viewport : Viewports)
+        {
+            if (Viewport->GetWorld() == World)
+            {
+                return Viewport;
+            }
+        }
+        return nullptr;
+    }
+
     void FInputViewportRegistry::SetActiveViewport(FInputViewport* Viewport)
     {
         if (ActiveViewport == Viewport)
@@ -318,6 +332,25 @@ namespace Lumina
     void FInputViewportRegistry::SetHoveredViewport(FInputViewport* Viewport)
     {
         HoveredViewport = Viewport;
+    }
+
+    void FInputViewportRegistry::SetGameInputFocused(bool bFocused)
+    {
+        if (bGameInputFocused == bFocused)
+        {
+            return;
+        }
+        bGameInputFocused = bFocused;
+
+        // Handing input back to the editor: drop any game capture so the cursor returns everywhere.
+        if (!bFocused)
+        {
+            for (FInputViewport* V : Viewports)
+            {
+                V->GetContext().SetMouseMode(EMouseMode::Normal);
+            }
+            ApplyActiveCursorMode();
+        }
     }
 
     void FInputViewportRegistry::SetFocusedViewport(FInputViewport* Viewport)
@@ -392,26 +425,49 @@ namespace Lumina
         if (bIsKeyEvent)
         {
             FInputViewport* Target = FocusedViewport ? FocusedViewport : ActiveViewport;
-            if (Target == nullptr) return false;
+            if (Target == nullptr)
+            {
+                return false;
+            }
             return Target->RouteEvent(Event);
         }
 
         // Fall through to focused/active so a release after the cursor leaves
         // the panel still reaches whichever viewport saw the press.
         FInputViewport* Target = HoveredViewport;
-        if (Target == nullptr) Target = FocusedViewport;
-        if (Target == nullptr) Target = ActiveViewport;
-        if (Target == nullptr) return false;
+        if (Target == nullptr)
+        {
+            Target = FocusedViewport;
+        }
+        if (Target == nullptr)
+        {
+            Target = ActiveViewport;
+        }
+        if (Target == nullptr)
+        {
+            return false;
+        }
         return Target->RouteEvent(Event);
     }
 
     void FInputViewportRegistry::ApplyActiveCursorMode()
     {
-        if (ActiveViewport == nullptr)
+        void* const ActiveWindow = (ActiveViewport != nullptr) ? ActiveViewport->GetNativeWindowHandle() : nullptr;
+
+        for (FInputViewport* V : Viewports)
         {
-            return;
+            void* const Window = V->GetNativeWindowHandle();
+            if (Window == ActiveWindow)
+            {
+                continue;
+            }
+            ApplyCursorModeToWindow(Window, EMouseMode::Normal);
         }
-        ApplyCursorModeToWindow(ActiveViewport->GetContext().GetMouseMode());
+
+        if (ActiveViewport != nullptr)
+        {
+            ApplyCursorModeToWindow(ActiveWindow, ActiveViewport->GetContext().GetMouseMode());
+        }
     }
 
     void FInputViewportRegistry::ReapplyActiveCursorMode()

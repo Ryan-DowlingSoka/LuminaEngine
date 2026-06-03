@@ -20,9 +20,91 @@
 #include "Config/EngineSettings.h"
 #include "Core/Object/ObjectCore.h"
 #include "Core/Windows/Window.h"
+#include "Core/Windows/GLFWInclude.h"
+#include "Core/Application/Application.h"
+#include "Events/Event.h"
+#include "Events/EventProcessor.h"
+#include "Containers/Array.h"
+#include "backends/imgui_impl_glfw.h"
 
 namespace Lumina
 {
+    namespace
+    {
+        // ImGui's secondary platform windows receive ImGui's GLFW callbacks but NOT Lumina's (those are
+        // installed only on the primary window). Without forwarding, a previewed world living in a separate
+        // OS window never gets keyboard/mouse. These wrappers run ImGui's callback first, then dispatch the
+        // event into Lumina's processor so the focused preview window can drive its world.
+        THashMap<GLFWwindow*, ImVec2> GSecondaryWindowLastMouse;
+
+        void SecondaryKeyCallback(GLFWwindow* W, int Key, int Scancode, int Action, int Mods)
+        {
+            ImGui_ImplGlfw_KeyCallback(W, Key, Scancode, Action, Mods);
+            if (Key == GLFW_KEY_UNKNOWN) { return; }
+            const bool Ctrl = (Mods & GLFW_MOD_CONTROL) != 0, Shift = (Mods & GLFW_MOD_SHIFT) != 0;
+            const bool Alt  = (Mods & GLFW_MOD_ALT) != 0,     Super = (Mods & GLFW_MOD_SUPER) != 0;
+            FEventProcessor& EP = GApp->GetEventProcessor();
+            switch (Action)
+            {
+            case GLFW_RELEASE: EP.Dispatch<FKeyReleasedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super); break;
+            case GLFW_PRESS:   EP.Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super); break;
+            case GLFW_REPEAT:  EP.Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super, true); break;
+            }
+        }
+
+        void SecondaryMouseButtonCallback(GLFWwindow* W, int Button, int Action, int Mods)
+        {
+            ImGui_ImplGlfw_MouseButtonCallback(W, Button, Action, Mods);
+            double X, Y;
+            glfwGetCursorPos(W, &X, &Y);
+            FEventProcessor& EP = GApp->GetEventProcessor();
+            if (Action == GLFW_PRESS)        { EP.Dispatch<FMouseButtonPressedEvent>(static_cast<EMouseKey>(Button), X, Y); }
+            else if (Action == GLFW_RELEASE) { EP.Dispatch<FMouseButtonReleasedEvent>(static_cast<EMouseKey>(Button), X, Y); }
+        }
+
+        void SecondaryCursorPosCallback(GLFWwindow* W, double X, double Y)
+        {
+            ImGui_ImplGlfw_CursorPosCallback(W, X, Y);
+            ImVec2& Last = GSecondaryWindowLastMouse[W];
+            const double DeltaX = X - Last.x;
+            const double DeltaY = Y - Last.y;
+            Last = ImVec2(static_cast<float>(X), static_cast<float>(Y));
+            GApp->GetEventProcessor().Dispatch<FMouseMovedEvent>(X, Y, DeltaX, DeltaY);
+        }
+
+        void SecondaryScrollCallback(GLFWwindow* W, double XOffset, double YOffset)
+        {
+            ImGui_ImplGlfw_ScrollCallback(W, XOffset, YOffset);
+            GApp->GetEventProcessor().Dispatch<FMouseScrolledEvent>(EMouseKey::Scroll, YOffset);
+        }
+
+        // Install the forwarding callbacks on every current secondary platform window. Re-set each frame
+        // (cheap, idempotent) so windows created this frame are covered without tracking creation events.
+        void ForwardSecondaryPlatformWindowInput()
+        {
+            ImGuiPlatformIO& PlatformIO = ImGui::GetPlatformIO();
+            GLFWwindow* MainWindow = static_cast<GLFWwindow*>(ImGui::GetMainViewport()->PlatformHandle);
+            for (ImGuiViewport* VP : PlatformIO.Viewports)
+            {
+                GLFWwindow* W = static_cast<GLFWwindow*>(VP->PlatformHandle);
+                if (W == nullptr || W == MainWindow)
+                {
+                    continue;
+                }
+                if (GSecondaryWindowLastMouse.find(W) == GSecondaryWindowLastMouse.end())
+                {
+                    double X, Y;
+                    glfwGetCursorPos(W, &X, &Y);
+                    GSecondaryWindowLastMouse[W] = ImVec2(static_cast<float>(X), static_cast<float>(Y));
+                }
+                glfwSetKeyCallback(W, SecondaryKeyCallback);
+                glfwSetMouseButtonCallback(W, SecondaryMouseButtonCallback);
+                glfwSetCursorPosCallback(W, SecondaryCursorPosCallback);
+                glfwSetScrollCallback(W, SecondaryScrollCallback);
+            }
+        }
+    }
+
     namespace
     {
         // Unscaled reference style captured after Initialize(); scaling resets to this before
@@ -318,6 +400,7 @@ namespace Lumina
         if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
             ImGui::UpdatePlatformWindows();
+            ForwardSecondaryPlatformWindowInput();
             CaptureViewports_GameThread(Slot);
         }
 

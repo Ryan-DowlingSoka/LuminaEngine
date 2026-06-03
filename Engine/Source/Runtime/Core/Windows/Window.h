@@ -70,6 +70,10 @@ namespace Lumina
 		RUNTIME_API extern FWindow* PrimaryWindow;
 		RUNTIME_API FWindow* GetPrimaryWindowHandle();
 		void SetPrimaryWindowHandle(FWindow* InWindow);
+
+		// Apply a cursor mode to a specific native window (GLFWwindow*); null falls back to the primary.
+		// Lets mouse capture target the focused PIE preview window rather than always the primary window.
+		RUNTIME_API void SetCursorModeForNativeWindow(void* NativeWindow, ECursorMode Mode);
 	}
 
 }

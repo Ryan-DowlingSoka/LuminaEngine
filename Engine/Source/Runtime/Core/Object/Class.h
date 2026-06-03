@@ -12,6 +12,7 @@
 namespace Lumina
 {
     class FProperty;
+    class FNetArchive;
     struct FTransform;
 }
 
@@ -112,6 +113,14 @@ namespace Lumina
 
         /** Reflected-property serialization with tags for versioning/skip support. */
         RUNTIME_API void SerializeTaggedProperties(FArchive& Ar, void* Data) const;
+
+        /** Compact network serialization: walks PROPERTY(Replicated) fields (this struct + supers) in a
+         *  fixed, tag-less order, calling each property's NetSerialize. Both peers must share the layout. */
+        RUNTIME_API void NetSerializeProperties(FNetArchive& Ar, void* Data) const;
+
+        /** Like NetSerializeProperties but serializes EVERY serializable field (not just Replicated ones),
+         *  honoring a custom StructOps serializer. Used by FProperty::NetSerialize for nested structs. */
+        RUNTIME_API void NetSerializeAll(FNetArchive& Ar, void* Data) const;
 
         /** Structured (named-field) variant; drives each property's SerializeItem. Used by the
          *  JSON backend so reflected data round-trips through human-readable named fields. */

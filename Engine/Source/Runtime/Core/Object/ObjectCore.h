@@ -125,6 +125,9 @@ namespace Lumina
         // Property exists only for editor tooling. Stripped from cooked
         // packages (see CStruct::SerializeTaggedProperties + FArchive::IsCooking).
         EditorOnly          = BIT(11),
+        // Property participates in network replication (PROPERTY(Replicated)). Read by
+        // CStruct::NetSerializeProperties; a flag test, not a metadata lookup.
+        Replicated          = BIT(12),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags);

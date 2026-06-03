@@ -116,6 +116,9 @@ LuminaThirdParty.Register({ Name = "MiniAudio",     IncludeDirs = { "." } })  --
 LuminaThirdParty.Register({ Name = "JoltPhysics",   IncludeDirs = { "JoltPhysics" } })
 LuminaThirdParty.Register({ Name = "Recast",        IncludeDirs = { "Recast/Recast/Include", "Recast/Detour/Include" } })
 
+-- Networking. Header included as <enet/enet.h>; links the Winsock + multimedia-timer system libs.
+LuminaThirdParty.Register({ Name = "ENet",          IncludeDirs = { "enet/include" }, Link = { "ENet", "ws2_32", "winmm" } })
+
 -- Scripting
 LuminaThirdParty.Register({ Name = "Luau",          IncludeDirs = { "luau/include" } })
 LuminaThirdParty.Register({ Name = "LuauAnalysis",  IncludeDirs = { "luau/include" } })
@@ -142,6 +145,7 @@ LuminaThirdParty.RuntimePublicDeps =
     "GLFW", "ImGui", "FreeType", "RmlUi",
     "Vulkan", "Volk", "VMA", "VKBootstrap", "SLang",
     "MiniAudio", "JoltPhysics", "Recast",
+    "ENet",
     "Luau",
     "MeshOptimizer", "MikkTSpace", "BasicUniversal",
 }

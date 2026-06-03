@@ -4,6 +4,7 @@
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Memory/SmartPtr.h"
 #include "ScriptExports.h"
+#include "ScriptAnnotations.h"
 #include "Tools/Actions/DeferredActions.h"
 
 
@@ -43,6 +44,7 @@ namespace Lumina::Lua
         TVector<uint8>                  Bytecode;
         FScriptExportSchema             ExportsSchema;
         TVector<FScriptPropertyEntry>   ExportDefaults;
+        TVector<FScriptRpc>             Rpcs;
     };
 
     // require() result cache; bytecode held C++-side (reload re-reads VFS), module value pinned via
@@ -193,9 +195,11 @@ namespace Lumina::Lua
         void ReloadScripts(FStringView Path);
 
         // Out* params (when non-null) are populated by walking the loaded module; seeds the cache on cold load.
+        // Annotations (when non-null) drives the --@export schema harvest from the loaded module table.
         TSharedPtr<FScript> InstantiateFromBytecode(
             const TVector<uint8>& Bytecode,
             FStringView Name,
+            const TVector<FScriptMemberAnnotation>* Annotations,
             FScriptExportSchema* OutSchema,
             TVector<FScriptPropertyEntry>* OutDefaults) const;
 

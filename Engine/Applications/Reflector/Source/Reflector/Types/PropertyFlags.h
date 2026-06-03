@@ -96,6 +96,8 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         // Property exists only for editor tooling. Stripped from cooked
         // packages (see CStruct::SerializeTaggedProperties + FArchive::IsCooking).
         EditorOnly      = BIT(11),
+        // Property participates in network replication (PROPERTY(Replicated)).
+        Replicated      = BIT(12),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags)
@@ -133,6 +135,7 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         AppendFlag(EPropertyFlags::Builtin, "Lumina::EPropertyFlags::Builtin");
         AppendFlag(EPropertyFlags::BulkSerialize, "Lumina::EPropertyFlags::BulkSerialize");
         AppendFlag(EPropertyFlags::EditorOnly, "Lumina::EPropertyFlags::EditorOnly");
+        AppendFlag(EPropertyFlags::Replicated, "Lumina::EPropertyFlags::Replicated");
 
         return Result;
     }

@@ -2,11 +2,18 @@
 local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
--- Editable properties: appear in the entity's Script panel.
--- Read/write them anywhere as self.<Name> (no .Exports prefix).
-Script.Exports = {
-    Speed = 5.0,
-}
+-- Editable properties: declare them as top-level fields and annotate with
+-- --@export(...) to expose them in the entity's Script panel. The annotation
+-- args drive the editor widget, just like a C++ PROPERTY: ClampMin/ClampMax,
+-- Delta, Units, Category, Tooltip, Color, NoDrag, ReadOnly, AssetType. Read/write
+-- anywhere as self.<Name>.
+--@export(ClampMin = 0, Units = "m/s")
+Script.Speed = 5.0
+
+-- A string + AssetType becomes an asset picker; the value is the asset's path.
+-- AssetType is a loose-asset kind (luau/rml/rcss) or a reflected class (e.g. "StaticMesh").
+-- --@export(AssetType = "luau")
+-- Script.OnHitScript = ""
 
 -- Runs once when the entity spawns. Cache components, set up state here.
 function Script:OnReady()

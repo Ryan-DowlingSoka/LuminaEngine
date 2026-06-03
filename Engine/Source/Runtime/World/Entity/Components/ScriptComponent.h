@@ -28,7 +28,7 @@ namespace Lumina
         PROPERTY(Editable, AssetType = "luau")
         FAssetRef ScriptPath;
 
-        /** Per-instance overrides for values declared in the script's `type Exports = {...}` alias. */
+        /** Per-instance overrides for the script's --@export-annotated top-level members (Script.<Name> = ...). */
         PROPERTY(Editable)
         FScriptPropertyOverrides PropertyOverrides;
 

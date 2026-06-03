@@ -14,9 +14,11 @@ float3 SampleIrradiance(float3 N)
 // last mip is fully rough (matches the bake at PrefilterEnvMapPass).
 float3 SamplePrefilter(float3 R, float Roughness)
 {
-    uint PrefilterIndex = gPC.Root.get().SkyPrefilterIndex;
-    uint Width, Height, NumMips;
-    uBindlessTexCube[PrefilterIndex].GetDimensions(0, Width, Height, NumMips);
+    // SkyPrefilterIndex packs the mip count in its top byte (see FSceneRoot) so the prefilter LOD range is
+    // known without a per-pixel GetDimensions on the cube.
+    uint Packed         = gPC.Root.get().SkyPrefilterIndex;
+    uint PrefilterIndex = Packed & 0x00FFFFFFu;
+    uint NumMips        = Packed >> 24;
 
     float MaxLod = max(float(NumMips) - 1.0, 0.0);
     float Lod    = saturate(Roughness) * MaxLod;
@@ -49,12 +51,11 @@ float ComputeSpecularOcclusion(float NdotV, float AO, float Roughness)
 
 // Energy-conserving IBL ambient: Karis split-sum + Fdez-Aguera 2019 multi-scatter compensation.
 // N is the shading normal; V points surface->camera. AO occludes diffuse+multi-scatter, SpecAO the mirror.
-float3 EvaluateIBLAmbient(float3 N, float3 V, float3 Albedo, float3 F0, float Roughness, float Metallic, float AO)
+// NdotV (= saturate(dot(N,V))) and DFG (BRDF LUT scale,bias) are passed in: the caller already sampled the
+// LUT for energy compensation, so reusing it here avoids a second per-pixel texture fetch with identical args.
+float3 EvaluateIBLAmbient(float3 N, float3 V, float NdotV, float2 DFG, float3 Albedo, float3 F0, float Roughness, float Metallic, float AO)
 {
-    float  NdotV = saturate(dot(N, V));
-    float3 R     = reflect(-V, N);
-
-    float2 DFG = SampleBRDFLUT(NdotV, Roughness);   // (scale, bias)
+    float3 R = reflect(-V, N);
 
     // Roughness-aware Fresnel as the specular weight (clamps the (1 - cos)^5 envelope to (1 - R)).
     float3 kS     = FresnelSchlickRoughness(NdotV, F0, Roughness);

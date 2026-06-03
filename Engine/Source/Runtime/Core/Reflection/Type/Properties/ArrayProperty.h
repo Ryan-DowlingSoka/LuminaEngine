@@ -28,6 +28,9 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Tight: uint32 count + each element via the element property's own NetSerialize.
+        RUNTIME_API void NetSerialize(FNetArchive& Ar, void* Value) override;
+
         /** Per-element compare via Inner; CopyCompleteValue resizes Dst then element-copies. */
         RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
         RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;

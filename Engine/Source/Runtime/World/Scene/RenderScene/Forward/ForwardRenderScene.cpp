@@ -9040,7 +9040,13 @@ namespace Lumina
         Root->Clusters           = View.ClusterBuffer->GetAddress();
         Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut]->GetResourceID();
         Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance]->GetResourceID();
-        Root->SkyPrefilterIndex  = (uint32)View.Images[(int)ENamedImage::SkyPrefilter]->GetResourceID();
+        // Pack the prefilter cube's mip count into the top byte; the shader reads it instead of a per-pixel
+        // GetDimensions. Low 24 bits hold the bindless index (far more headroom than any bindless table size).
+        {
+            FRHIImage* Prefilter = View.Images[(int)ENamedImage::SkyPrefilter];
+            uint32 PrefilterID   = (uint32)Prefilter->GetResourceID();
+            Root->SkyPrefilterIndex = (PrefilterID & 0x00FFFFFFu) | ((uint32)Prefilter->GetNumMips() << 24);
+        }
         Root->SkyCubeIndex       = (uint32)View.Images[(int)ENamedImage::SkyCube]->GetResourceID();
         Root->ShadowCascadeIndex = (uint32)GetNamedImage(ENamedImage::Cascade)->GetResourceID();
         Root->ShadowAtlasIndex   = (uint32)ShadowAtlas.GetImage()->GetResourceID();

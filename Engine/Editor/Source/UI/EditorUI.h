@@ -19,6 +19,7 @@ namespace Lumina
     class FConsoleLogEditorTool;
     class FWorldEditorTool;
     class FEditorTool;
+    class CWorld;
 }
 
 
@@ -104,8 +105,10 @@ namespace Lumina
         void DrawToolContents(const FUpdateContext& UpdateContext, FEditorTool* Tool);
 
 
-        void CreateGameViewportTool(const FUpdateContext& UpdateContext);
-        void DestroyGameViewportTool(const FUpdateContext& UpdateContext);
+        // Multiplayer PIE: spawn/destroy the extra-player Game Preview tools (players 2..N).
+        // Driven by FWorldEditorTool's OnGamePreviewStart/StopRequested delegates.
+        void CreateGameViewportTool();
+        void DestroyGameViewportTool();
 
         void DrawTitleBarMenu(const FUpdateContext& UpdateContext);
         void DrawTitleBarInfoStats(const FUpdateContext& UpdateContext);
@@ -158,6 +161,20 @@ namespace Lumina
 
         FGamePreviewTool*                               GamePreviewTool = nullptr;
         FWorldEditorTool*                               WorldEditorTool = nullptr;
+
+        // Tracks the game-owns-input state so the ImGui stand-down flags are reasserted while the game owns
+        // input and cleared ONCE on the way out -- never per-frame, which would clobber the editor camera's
+        // own NoMouse capture during RMB-look.
+        bool                                            bWasGameOwningInput = false;
+
+        // Extra-player (players 2..N) Game Preview tools spawned for multiplayer PIE. Each tool owns its
+        // own PIE world (torn down on the tool's Deinitialize), so this list is non-owning bookkeeping.
+        struct FExtraGamePreview
+        {
+            CWorld*           World = nullptr;
+            FGamePreviewTool* Tool  = nullptr;
+        };
+        TVector<FExtraGamePreview>                      ExtraGamePreviews;
 
         FConsoleLogEditorTool*                          ConsoleLogTool = nullptr;
         FContentBrowserEditorTool*                      ContentBrowser = nullptr;

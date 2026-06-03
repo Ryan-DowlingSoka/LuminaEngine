@@ -86,12 +86,14 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     float2 Rotated = float2(Local.x * c - Local.y * s,
                             Local.x * s + Local.y * c);
 
+    // Fetched once and reused for the final clip transform below (avoids a second matrix load).
+    float4x4 ViewMatrix = GetCameraView();
+
     // Billboard axes: either camera-facing or world-aligned (XZ plane).
     float3 BillboardRight;
     float3 BillboardUp;
     if (PC.BillboardToCamera != 0u)
     {
-        float4x4 ViewMatrix = GetCameraView();
         BillboardRight =  float3(ViewMatrix[0][0], ViewMatrix[0][1], ViewMatrix[0][2]);
         BillboardUp    = -float3(ViewMatrix[1][0], ViewMatrix[1][1], ViewMatrix[1][2]);
     }
@@ -108,6 +110,6 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     Out.UV           = QuadUVs[QuadIndex];
     Out.Color        = P.Color * float4(PC.Tint.rgb * PC.Tint.w, 1.0);
     Out.TextureIndex = PC.TextureIndex;
-    Out.Position     = mul(GetCameraProjection(), mul(GetCameraView(), float4(WorldPos, 1.0)));
+    Out.Position     = mul(GetCameraProjection(), mul(ViewMatrix, float4(WorldPos, 1.0)));
     return Out;
 }

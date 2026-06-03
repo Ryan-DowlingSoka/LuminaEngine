@@ -22,6 +22,10 @@ namespace Lumina
 
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
+
+        // Nested struct: defer to the struct (its net serializer if it has one, else recurse fields).
+        RUNTIME_API void NetSerialize(FNetArchive& Ar, void* Value) override;
+
         void SetStruct(CStruct* InStruct) { Struct = InStruct; }
         CStruct* GetStruct() const { return Struct; }
 

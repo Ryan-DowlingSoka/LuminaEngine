@@ -8,6 +8,7 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
+#include "Core/LuminaMacros.h"
 #include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 
@@ -114,6 +115,40 @@ namespace Lumina::ImGuiX
     {
         return ButtonEx(pIcon, pLabel, size, ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_Button]), iconColor, ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_Text]), shouldCenterContents);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Slider
+    //
+    // A clean, capsule-track slider with a spherical (shaded circular) knob. Mirrors the
+    // ImGui::SliderXxx signatures so it drops in as a replacement.
+    // ---------------------------------------------------------------------------------------------
+
+    enum class ESliderFlags : uint32
+    {
+        None         = 0,
+        FillGradient = 1 << 0,   // sweep the filled track between FillColor and FillColorEnd
+        ValueOnHover = 1 << 1,   // show the formatted value in a tooltip while hovered or active
+        AlwaysValue  = 1 << 2,   // always draw the formatted value, right-aligned over the track
+        Glow         = 1 << 3,   // soft halo behind the knob
+        ReadOnly     = 1 << 4,   // render normally but ignore input
+    };
+
+    ENUM_CLASS_FLAGS(ESliderFlags)
+
+    // Visual overrides; any color left at 0 is derived from the active theme.
+    struct FSliderStyle
+    {
+        float TrackHeight      = 6.0f;   // unscaled; multiplied by GetUIScale()
+        float KnobRadius       = 9.0f;   // unscaled; multiplied by GetUIScale()
+        ImU32 TrackColor       = 0;
+        ImU32 FillColor        = 0;
+        ImU32 FillColorEnd     = 0;      // gradient end, used when FillGradient is set
+        ImU32 KnobColor        = 0;
+        ImU32 KnobColorHovered = 0;
+    };
+
+    RUNTIME_API bool SliderFloat(const char* Label, float* Value, float Min, float Max, ESliderFlags Flags = ESliderFlags::None, const char* Format = "%.2f", const FSliderStyle* Style = nullptr);
+    RUNTIME_API bool SliderInt(const char* Label, int32* Value, int32 Min, int32 Max, ESliderFlags Flags = ESliderFlags::None, const char* Format = "%d", const FSliderStyle* Style = nullptr);
 
     RUNTIME_API TPair<bool, uint32> DirectoryTreeViewRecursive(const std::filesystem::path& Path, uint32* Count, int* SelectionMask);
 

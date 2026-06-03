@@ -66,6 +66,10 @@ namespace Lumina
             {
                 PropertyFlags |= EPropertyFlags::EditorOnly;
             }
+            else if (MetadataPair.Key == "Replicated")
+            {
+                PropertyFlags |= EPropertyFlags::Replicated;
+            }
             else if (MetadataPair.Key == "Getter")
             {
                 GetterFunc = MetadataPair.Value.empty() ? ("Get" + Name) : MetadataPair.Value;

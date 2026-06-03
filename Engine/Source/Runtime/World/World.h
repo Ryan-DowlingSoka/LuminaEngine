@@ -20,6 +20,7 @@
 #include "Entity/Systems/EntitySystem.h"
 #include "Entity/Events/LuaEventBus.h"
 #include "Scripting/Lua/Reference.h"
+#include "World/Net/NetLuaInterface.h"
 #include "World.generated.h"
 
 
@@ -167,6 +168,9 @@ namespace Lumina
 
         /** Shorthand for GetWorldContext()->NetMode; returns Standalone when no context is set. */
         NODISCARD ENetMode GetNetMode() const;
+
+        /** Lua-facing net query facade (World.Net). */
+        NODISCARD FNetLuaInterface* GetNetInterface() { return &NetInterface; }
         
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
@@ -217,6 +221,7 @@ namespace Lumina
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity);
+        void OnInputComponentConstruct(entt::registry& Registry, entt::entity Entity);
         void OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
         // Hot-reload: drop this component's script binding and re-run OnScriptComponentCreated
@@ -304,6 +309,9 @@ namespace Lumina
         Lua::FRef                                           DrawInterfaceRef;
 
         FWorldContext*                                      OwningContext = nullptr;
+
+        // Lua-facing facade bound under World.Net; .World points back at this world.
+        FNetLuaInterface                                    NetInterface;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
 

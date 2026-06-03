@@ -56,6 +56,11 @@
 #include "Renderer/RenderThread.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
+#include "World/Net/NetRpc.h"
+#include "World/Net/NetWorldState.h"
+#include "World/Net/NetRole.h"
+#include "World/Net/NetReplication.h"
+#include "World/Entity/Components/NetworkComponent.h"
 #include "Scripting/Lua/ScriptTypeRegistry.h"
 #include "Scripting/Lua/Stack.h"
 #include "Scripting/Lua/VariadicArgs.h"
@@ -382,11 +387,14 @@ namespace Lumina
         }
 
         // Bindings below take a leading CWorld* (injected from thread data) and trailing optional args;
-        // they bind via FRef::SetFunction -- no lua_State plumbing.
+        // they bind via FRef::SetFunction
 
         static void Camera_SetActive(CWorld* World, entt::entity Entity, TOptional<float> Blend, TOptional<int> Ease)
         {
-            if (World == nullptr) return;
+            if (World == nullptr)
+            {
+                return;
+            }
             const auto Fn = static_cast<ECameraBlendFunction>(static_cast<uint8>(Ease.value_or(static_cast<int>(ECameraBlendFunction::EaseInOut))));
             World->SetActiveCamera(Entity, Blend.value_or(0.0f), Fn);
         }
@@ -411,9 +419,45 @@ namespace Lumina
 
         // Bulk-spawn helper: wrap a spawn loop in Begin/EndPhysicsBatch so the N bodies enter the
         // broadphase in one batched pass. Balance on the game thread; BodyIDs valid only after End.
-        static void World_BeginPhysicsBatch(CWorld* World) { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->BeginBodyBatch(); }
-        static void World_EndPhysicsBatch(CWorld* World)   { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->EndBodyBatch();   }
-        static void         World_Destroy(CWorld* World, entt::entity Entity)             { if (World) ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity); }
+        static void World_BeginPhysicsBatch(CWorld* World) 
+        {
+            if (World && World->GetPhysicsScene())
+            {
+                World->GetPhysicsScene()->BeginBodyBatch();
+            }
+        }
+        
+        static void World_EndPhysicsBatch(CWorld* World)
+        {
+            if (World && World->GetPhysicsScene())
+            {
+                World->GetPhysicsScene()->EndBodyBatch();
+            }
+        }
+        
+        static void World_Destroy(CWorld* World, entt::entity Entity)             
+        { 
+            if (World)
+            {
+                ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity);
+            }
+        }
+
+        // Entity authoring through World.* (mutate ANY entity id; self:* stays for this-entity). Components
+        // added here replicate automatically if the entity has a Network component (the net layer observes the ECS).
+        // Routes through ConstructEntity so every entity gets the required Name + Transform (like the editor).
+        static entt::entity World_CreateEntity(CWorld* World, TOptional<FName> Name)
+        {
+            return World ? World->ConstructEntity(Name.value_or(NAME_None)) : entt::null;
+        }
+        static Lua::FRef World_AddComponent(CWorld* World, entt::entity Entity, Lua::FRef Type)
+        {
+            return World ? EmplaceComponent_Lua(World->GetEntityRegistry(), Entity, Type) : Lua::FRef{};
+        }
+        static void World_RemoveComponent(CWorld* World, entt::entity Entity, Lua::FRef Type)
+        {
+            if (World) RemoveComponent_Lua(World->GetEntityRegistry(), Entity, Type);
+        }
 
         // Metatable __index for the global World table: resolves subsystem namespaces (World.Physics,
         // and later World.Audio/Rendering/...) to the CALLING script's world via thread data, so the
@@ -431,6 +475,12 @@ namespace Lumina
             if (strcmp(Key, "Physics") == 0)
             {
                 Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene());
+                return 1;
+            }
+
+            if (strcmp(Key, "Net") == 0)
+            {
+                Lua::TStack<FNetLuaInterface*>::Push(L, World->GetNetInterface());
                 return 1;
             }
 
@@ -575,12 +625,152 @@ namespace Lumina
     }
     
     
+    namespace
+    {
+        bool NetIsServerMode(ENetMode Mode)
+        {
+            return Mode == ENetMode::ListenServer || Mode == ENetMode::DedicatedServer;
+        }
+    }
+
+    bool FNetLuaInterface::IsServer() const     { return World != nullptr && NetIsServerMode(World->GetNetMode()); }
+    bool FNetLuaInterface::IsClient() const     { return World != nullptr && World->GetNetMode() == ENetMode::Client; }
+    bool FNetLuaInterface::IsStandalone() const { return World == nullptr || World->GetNetMode() == ENetMode::Standalone; }
+    bool FNetLuaInterface::IsNetworked() const  { return !IsStandalone(); }
+
+    int32 FNetLuaInterface::GetConnectedClients() const
+    {
+        if (World == nullptr) { return 0; }
+        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        return State != nullptr ? State->ConnectedClients : 0;
+    }
+
+    bool FNetLuaInterface::IsConnected() const
+    {
+        if (World == nullptr) { return false; }
+        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        if (State == nullptr) { return false; }
+        return IsServer() ? State->ConnectedClients > 0 : State->bClientConnected;
+    }
+
+    uint32 FNetLuaInterface::GetUniqueId() const
+    {
+        if (World == nullptr) { return ServerPeerId; }
+        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        return State != nullptr ? State->LocalPeerId : ServerPeerId;
+    }
+
+    int32 FNetLuaInterface::GetConnectionCount() const
+    {
+        if (World == nullptr) { return 0; }
+        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        return State != nullptr ? (int32)State->ConnectedClientIds.size() : 0;
+    }
+
+    uint32 FNetLuaInterface::GetConnectionAt(int32 Index) const
+    {
+        if (World == nullptr || Index < 0) { return 0; }
+        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        if (State == nullptr || Index >= (int32)State->ConnectedClientIds.size()) { return 0; }
+        return State->ConnectedClientIds[(size_t)Index];
+    }
+
+    bool FNetLuaInterface::HasAuthority(entt::entity Entity) const
+    {
+        if (World == nullptr) { return false; }
+        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
+        // No net component at all -> authoritative by default (single-player / non-replicated).
+        return Net == nullptr ? IsStandalone() || IsServer() : Net->LocalRole == ENetRole::Authority;
+    }
+
+    bool FNetLuaInterface::IsLocallyOwned(entt::entity Entity) const
+    {
+        if (World == nullptr) { return false; }
+        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
+        return Net != nullptr && Net->LocalRole == ENetRole::AutonomousProxy;
+    }
+
+    int32 FNetLuaInterface::GetLocalRole(entt::entity Entity) const
+    {
+        if (World == nullptr) { return (int32)ENetRole::None; }
+        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
+        return Net != nullptr ? (int32)Net->LocalRole : (int32)ENetRole::None;
+    }
+
+    int32 FNetLuaInterface::GetRemoteRole(entt::entity Entity) const
+    {
+        if (World == nullptr) { return (int32)ENetRole::None; }
+        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
+        return Net != nullptr ? (int32)Net->RemoteRole : (int32)ENetRole::None;
+    }
+
+    uint32 FNetLuaInterface::GetOwner(entt::entity Entity) const
+    {
+        if (World == nullptr) { return 0; }
+        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
+        return Net != nullptr ? Net->OwningConnectionId : 0u;
+    }
+
+    void FNetLuaInterface::SetOwner(entt::entity Entity, uint32 ConnectionId)
+    {
+        if (World == nullptr || !IsServer()) { return; } // only the authority assigns ownership
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity);
+        if (Net == nullptr) { return; }
+        Net->OwningConnectionId = ConnectionId;
+        if (FNetWorldState* State = Registry.ctx().find<FNetWorldState>())
+        {
+            State->bOwnershipDirty = true; // replicate the new owner to clients next tick
+        }
+    }
+
+    void FNetLuaInterface::MarkDirty(entt::entity Entity)
+    {
+        if (World == nullptr || !IsServer()) { return; } // only the authority replicates
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (Registry.valid(Entity) && Registry.all_of<SNetworkComponent>(Entity))
+        {
+            Registry.emplace_or_replace<FNetDirty>(Entity);
+        }
+    }
+
+    entt::entity FNetLuaInterface::GetLocallyOwnedEntity() const
+    {
+        if (World == nullptr) { return entt::null; }
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        for (entt::entity Entity : Registry.view<SNetworkComponent>())
+        {
+            if (Registry.get<SNetworkComponent>(Entity).LocalRole == ENetRole::AutonomousProxy)
+            {
+                return Entity;
+            }
+        }
+        return entt::null;
+    }
+
+    void FNetLuaInterface::Host(FStringView Map, int32 Port) const
+    {
+        if (GEngine != nullptr)
+        {
+            GEngine->HostLevel(Map, Port > 0 ? static_cast<uint16>(Port) : 7777);
+        }
+    }
+
+    void FNetLuaInterface::Connect(FStringView InHost, int32 Port) const
+    {
+        if (GEngine != nullptr)
+        {
+            GEngine->ConnectToServer(InHost, Port > 0 ? static_cast<uint16>(Port) : 7777);
+        }
+    }
+
     CWorld::CWorld()
         : SingletonEntity(entt::null)
         , SystemContext(this)
         , LineBatcherComponent(nullptr)
         , TriangleBatcherComponent(nullptr)
     {
+        NetInterface.World = this;
     }
 
     void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength, float Hardness, CTexture* BrushMask)
@@ -683,6 +873,48 @@ namespace Lumina
                 .AddComment("Actual physics body rotation -- not the lagged render transform.")
             .Register();
 
+        // World.Net query facade. One instance per world; reached as World.Net:IsServer() etc.
+        GlobalRef.NewClass<FNetLuaInterface>("NetInterface")
+            .AddFunction<&FNetLuaInterface::IsServer>("IsServer")
+                .AddComment("True on the listen/dedicated server (the authority).")
+            .AddFunction<&FNetLuaInterface::IsClient>("IsClient")
+                .AddComment("True on a connected client.")
+            .AddFunction<&FNetLuaInterface::IsStandalone>("IsStandalone")
+                .AddComment("True when the world is not networked.")
+            .AddFunction<&FNetLuaInterface::IsNetworked>("IsNetworked")
+                .AddComment("True when running as a client or server.")
+            .AddFunction<&FNetLuaInterface::IsConnected>("IsConnected")
+                .AddComment("Server: at least one client connected. Client: link to the server established.")
+            .AddFunction<&FNetLuaInterface::GetConnectedClients>("GetConnectedClients")
+                .AddComment("Server-side count of currently-connected clients (0 elsewhere).")
+            .AddFunction<&FNetLuaInterface::GetUniqueId>("GetUniqueId")
+                .AddComment("This peer's id: 0 on the server, the server-assigned id on a client.")
+            .AddFunction<&FNetLuaInterface::GetConnectionCount>("GetConnectionCount")
+                .AddComment("Server-side count of connected clients (pair with GetConnectionAt).")
+            .AddFunction<&FNetLuaInterface::GetConnectionAt>("GetConnectionAt")
+                .AddComment("Server-side: connected client id at index [0, GetConnectionCount).")
+            .AddFunction<&FNetLuaInterface::HasAuthority>("HasAuthority")
+                .AddComment("True if this peer is the authority for the entity (server, or a local non-replicated entity).")
+            .AddFunction<&FNetLuaInterface::IsLocallyOwned>("IsLocallyOwned")
+                .AddComment("True if this peer controls the entity (its AutonomousProxy). Gate input/camera with this.")
+            .AddFunction<&FNetLuaInterface::GetLocalRole>("GetLocalRole")
+                .AddComment("This peer's ENetRole for the entity: None/SimulatedProxy/AutonomousProxy/Authority.")
+            .AddFunction<&FNetLuaInterface::GetRemoteRole>("GetRemoteRole")
+                .AddComment("The far end's ENetRole for the entity.")
+            .AddFunction<&FNetLuaInterface::GetOwner>("GetOwner")
+                .AddComment("Owning connection id of the entity (0 = server-owned / unowned).")
+            .AddFunction<&FNetLuaInterface::SetOwner>("SetOwner")
+                .AddComment("Server-only: assign the owning connection of an entity (replicates to clients).")
+            .AddFunction<&FNetLuaInterface::MarkDirty>("MarkDirty")
+                .AddComment("Server-only: flag an entity's replicated properties dirty (reliable resend next tick).")
+            .AddFunction<&FNetLuaInterface::GetLocallyOwnedEntity>("GetLocallyOwnedEntity")
+                .AddComment("The entity this peer controls (its AutonomousProxy), or null. Find 'my pawn' on a client.")
+            .AddFunction<&FNetLuaInterface::Host>("Host")
+                .AddComment("Host a map as a listen server: World.Net:Host(\"/Game/Maps/Foo\", 7777). Port <= 0 => 7777.")
+            .AddFunction<&FNetLuaInterface::Connect>("Connect")
+                .AddComment("Connect to a server: World.Net:Connect(\"127.0.0.1\", 7777). The server picks the level. Port <= 0 => 7777.")
+            .Register();
+
         GlobalRef.NewClass<entt::runtime_view>("RuntimeView")
             .AddFunction<&entt::runtime_view::contains>("Contains")
             .AddFunction<&LuaBinds::ForEachInRuntimeView_Lua>("Each")
@@ -710,6 +942,9 @@ namespace Lumina
         CameraEase.Set("EaseOut",   static_cast<int>(ECameraBlendFunction::EaseOut));
         CameraEase.Set("EaseInOut", static_cast<int>(ECameraBlendFunction::EaseInOut));
 
+        // Vec3(x,y,z) -> vector. A simple constructor for building movement/offset vectors in script.
+        GlobalRef.SetFunction<[](float X, float Y, float Z) -> FVector3 { return FVector3(X, Y, Z); }>("Vec3");
+
         Lua::FRef WorldTable = GlobalRef.NewTable("World");
         WorldTable.SetFunction<&LuaBinds::World_FindByName>("FindByName");
         WorldTable.SetFunction<&LuaBinds::World_FindByTag>("FindByTag");
@@ -722,6 +957,9 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_BeginPhysicsBatch>("BeginPhysicsBatch"); // wrap a bulk spawn loop; batches body creation
         WorldTable.SetFunction<&LuaBinds::World_EndPhysicsBatch>("EndPhysicsBatch");      // must be paired with BeginPhysicsBatch
         WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");                // Destroy(entity)
+        WorldTable.SetFunction<&LuaBinds::World_CreateEntity>("CreateEntity");      // CreateEntity() -> entity
+        WorldTable.SetFunction<&LuaBinds::World_AddComponent>("AddComponent");      // AddComponent(entity, Type)
+        WorldTable.SetFunction<&LuaBinds::World_RemoveComponent>("RemoveComponent"); // RemoveComponent(entity, Type)
         WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");                // IsValid(entity) -> bool
         WorldTable.SetFunction<&LuaBinds::World_Compact>("Compact");                // Compact() -- reclaim tombstones; invalidates cached component ptrs
         WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
@@ -757,6 +995,7 @@ namespace Lumina
         Lua::FScriptTypeRegistry::Get().RegisterSnippet("World",
             "declare World: {\n"
             "    Physics: PhysicsScene,\n"
+            "    Net: NetInterface,\n"
             "    [string]: any,\n"
             "}\n");
 #endif
@@ -916,6 +1155,7 @@ namespace Lumina
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
         // Left connected through teardown: fires at clear() to release widget RTs.
         EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
+        EntityRegistry.on_construct <SInputComponent>()             .connect<&ThisClass::OnInputComponentConstruct>(this);
         EntityRegistry.on_destroy   <SInputComponent>()             .connect<&ThisClass::OnInputComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
@@ -940,6 +1180,14 @@ namespace Lumina
         {
             TransformComponent.Registry = &EntityRegistry;
             TransformComponent.Entity = Entity;
+        });
+
+        // Bind loaded input components to this world so their queries resolve to this world's viewport
+        // (hooks connect after the load swap, so pre-existing components miss on_construct).
+        auto InputView = EntityRegistry.view<SInputComponent>();
+        InputView.each([&](entt::entity Entity, SInputComponent& InputComponent)
+        {
+            InputComponent.World = this;
         });
         
         if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
@@ -1168,6 +1416,7 @@ namespace Lumina
             
         if (ScriptComponent->ReadyFunc.IsValid())
         {
+            ScriptComponent->Script->PublishThreadContext();
             ScriptComponent->ReadyFunc.Call(ScriptComponent->Script->Reference);
         }
     }
@@ -1199,6 +1448,7 @@ namespace Lumina
             const Lua::FRef& HookRef = Component->*Hook;
             if (HookRef.IsValid())
             {
+                Component->Script->PublishThreadContext();
                 HookRef.Call(Component->Script->Reference);
             }
         };
@@ -1924,6 +2174,12 @@ namespace Lumina
         RmlUi::ReleaseWidget(this, Registry.get<SWidgetComponent>(Entity));
     }
 
+    void CWorld::OnInputComponentConstruct(entt::registry& Registry, entt::entity Entity)
+    {
+        // Bind the component to this world so its input queries resolve to this world's viewport.
+        Registry.get<SInputComponent>(Entity).World = this;
+    }
+
     void CWorld::OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
         // Release every action callback this entity registered so its captured Lua FRefs don't keep
@@ -1999,6 +2255,9 @@ namespace Lumina
         ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
         ScriptComponent.OverlapBeginFunc    = ScriptComponent.Script->Reference["OnOverlapBegin"];
         ScriptComponent.OverlapEndFunc      = ScriptComponent.Script->Reference["OnOverlapEnd"];
+
+        // Install RPC dispatch wrappers over --@rpc methods (captures originals for receive-side invoke).
+        Net::WrapScriptRpcs(ScriptComponent.Script.get());
         
         if (ScriptComponent.Script->ExportsSchema.IsValid())
         {
@@ -2010,15 +2269,11 @@ namespace Lumina
             if (lua_State* ScriptState = ScriptComponent.Script->Reference.GetState())
             {
                 ScriptComponent.Script->Reference.Push();
-                lua_getfield(ScriptState, -1, "Exports");
-                if (lua_istable(ScriptState, -1))
-                {
-                    Lua::ApplyOverridesToExportsTable(
-                        ScriptState, -1,
-                        ScriptComponent.Script->ExportsSchema,
-                        ScriptComponent.PropertyOverrides.Items);
-                }
-                lua_pop(ScriptState, 2);
+                Lua::ApplyOverridesToScriptTable(
+                    ScriptState, -1,
+                    ScriptComponent.Script->ExportsSchema,
+                    ScriptComponent.PropertyOverrides.Items);
+                lua_pop(ScriptState, 1);
             }
         }
         
@@ -2103,6 +2358,7 @@ namespace Lumina
 
         if (ScriptComponent.AttachFunc.IsValid())
         {
+            ScriptComponent.Script->PublishThreadContext();
             ScriptComponent.AttachFunc.Call(ScriptComponent.Script->Reference);
         }
 
@@ -2126,6 +2382,7 @@ namespace Lumina
 
         if (IsScriptActiveInWorld(Entity))
         {
+            ScriptComponent.Script->PublishThreadContext();
             ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
         }
     }
@@ -2136,6 +2393,7 @@ namespace Lumina
         {
             if (IsScriptActiveInWorld(Entity))
             {
+                ScriptComponent.Script->PublishThreadContext();
                 ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
             }
         }

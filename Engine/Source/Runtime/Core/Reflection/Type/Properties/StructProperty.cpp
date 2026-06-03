@@ -14,6 +14,12 @@ namespace Lumina
         Struct->SerializeTaggedProperties(Record, Value, Defaults);
     }
 
+    void FStructProperty::NetSerialize(FNetArchive& Ar, void* Value)
+    {
+        // Uses the struct's NetSerializer (StructOps) if it has one, else recurses its fields.
+        Struct->NetSerializeAll(Ar, Value);
+    }
+
     bool FStructProperty::Identical(const void* ValueA, const void* ValueB) const
     {
         if (FStructOps* Ops = Struct->GetStructOps(); Ops && Ops->HasEquality())
