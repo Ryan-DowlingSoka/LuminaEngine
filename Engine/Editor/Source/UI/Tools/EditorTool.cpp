@@ -630,7 +630,7 @@ namespace Lumina
 
     void FEditorTool::FocusViewportToEntity(entt::entity Entity)
     {
-        if (!HasWorld())
+        if (!HasWorld() || World->IsGameWorld())
         {
             return;
         }

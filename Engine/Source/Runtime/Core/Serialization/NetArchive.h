@@ -7,10 +7,11 @@
 
 namespace Lumina
 {
-    // Compact, BIT-oriented archive for network replication. Unlike the disk path it writes NO FName
-    // tags or per-property size prefixes, and packs sub-byte values tightly (a bool is 1 bit). Multi-byte
-    // values go through a fast byte path. Drive it with CStruct::NetSerializeProperties / FProperty::NetSerialize.
-    // A given instance is either a writer or a reader; FArchive's operator<< overloads work as usual.
+    class CObject;
+    struct FAssetRef;
+
+    // Compact bit-oriented archive for replication. No FName tags or size prefixes; packs sub-byte
+    // values tightly. Drive via CStruct::NetSerializeProperties / FProperty::NetSerialize.
     class RUNTIME_API FNetArchive : public FArchive
     {
     public:
@@ -32,10 +33,19 @@ namespace Lumina
         int64 TotalSize() override { return (TotalBits + 7) / 8; }
         void  Seek(int64 BytePos) override { BitCursor = BytePos * 8; }
 
-        // Optional NetGUID translation for entity-reference (PROPERTY(Entity)) fields, set by the
-        // replication layer. Null = pass the raw value through.
+        // Optional NetGUID translation for entity-ref fields. Null passes the raw value through.
         TFunction<uint32(uint32 /*LocalEntity*/)> EntityToNetGUID;
         TFunction<uint32(uint32 /*NetGUID*/)>     NetGUIDToEntity;
+
+        // Optional object-ref index translation. When set, refs serialize as a compact varint index
+        // exported once via ObjectExport. Null reads/writes the full GUID.
+        TFunction<uint32(CObject*)> ObjectToNetIndex;
+        TFunction<CObject*(uint32)> NetIndexToObject;
+
+        // Same scheme for FAssetRef fields, exported once via AssetExport. Reader uses an out-param so
+        // FAssetRef need not be complete here.
+        TFunction<uint32(const FAssetRef&)>     AssetRefToNetIndex;
+        TFunction<void(uint32, FAssetRef&)>     NetIndexToAssetRef;
 
     private:
 
@@ -47,4 +57,8 @@ namespace Lumina
         int64           BitCursor  = 0;
         int64           TotalBits  = 0;
     };
+
+    // LEB128 varint over the archive byte path; 1 byte for values < 128 (the common net-index case).
+    RUNTIME_API void   WriteVarUInt(FNetArchive& Ar, uint32 Value);
+    RUNTIME_API uint32 ReadVarUInt(FNetArchive& Ar);
 }

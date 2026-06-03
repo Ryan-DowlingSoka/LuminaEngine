@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "FontFactory.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Font/FontAtlasBaker.h"
 #include "Core/Object/Package/Package.h"
 #include "Platform/Filesystem/FileHelper.h"
 
@@ -52,6 +53,11 @@ namespace Lumina
         NewFont->SourcePath = FString(RawPath.c_str());
 
         ExtractFontMetadata(NewFont);
+
+        if (!BakeFontAtlas(NewFont))
+        {
+            LOG_WARN("FontFactory: failed to bake MSDF atlas for '{0}'; world-space text won't render with this font", RawPath.c_str());
+        }
 
         CPackage* NewPackage = NewFont->GetPackage();
         if (CPackage::SavePackage(NewPackage, NewPackage->GetPackagePath()))

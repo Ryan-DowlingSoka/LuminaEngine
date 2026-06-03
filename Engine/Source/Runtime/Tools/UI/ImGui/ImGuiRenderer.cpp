@@ -264,11 +264,11 @@ namespace Lumina
 		
     	
     	io.ConfigWindowsMoveFromTitleBarOnly = true;
+    	io.ConfigViewportsNoDefaultParent = true;
     	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
     	io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;
-    	io.ConfigViewportsNoDefaultParent = true;
 
         ImGui::StyleColorsDark();
         ImGuiStyle& Style = ImGui::GetStyle();

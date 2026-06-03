@@ -23,6 +23,8 @@
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/BillboardComponent.h"
 #include "World/Entity/Components/WidgetComponent.h"
+#include "World/Entity/Components/TextComponent.h"
+#include "Tools/FontManager/FontManager.h"
 #include "world/entity/components/charactercontrollercomponent.h"
 #include "World/Entity/Components/EditorComponent.h"
 #include "world/entity/components/entitytags.h"
@@ -518,6 +520,12 @@ namespace Lumina
             CmdList.KeepAlive(RT.GetReference());
         }
 
+        // Font atlases sampled by the text pass: same hazard as widget RTs above.
+        for (const FRHIImageRef& Atlas : Frame.Primitives.PinnedFontAtlases)
+        {
+            CmdList.KeepAlive(Atlas.GetReference());
+        }
+
         ResetPass_RenderThread(CmdList);
         CompileDrawCommands_RenderThread(CmdList);
 
@@ -694,6 +702,12 @@ namespace Lumina
                 BillboardPass(CmdList);
             }
 
+            // World-space text, pre-tone-map into HDR + Picker (one MRT pass), like billboards.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Text", FColor(0.95f, 0.85f, 0.20f));
+                TextPass(CmdList);
+            }
+
             #if USING(WITH_EDITOR)
             {
                 // World-space widgets stamp their entity id into the Picker buffer here (their
@@ -753,6 +767,14 @@ namespace Lumina
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widgets", FColor(0.80f, 0.20f, 0.95f));
                 WidgetPass(CmdList);
             }
+
+#if !defined(LE_SHIPPING)
+            // Screen-space debug text overlay (World::DrawDebugText), top-left. Last, on top of everything.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Debug Text", FColor(0.95f, 0.85f, 0.20f));
+                DebugTextPass(CmdList);
+            }
+#endif
 
             // Shade each enabled capture camera into its own RT, reusing the shared geometry/shadows/sky.
             // Reduced single-pass sequence -- no two-pass occlusion, no editor/debug overlays.
@@ -906,6 +928,9 @@ namespace Lumina
         auto& BillboardInstances     = Frame.Primitives.BillboardInstances;
         auto& WidgetInstances        = Frame.Primitives.WidgetInstances;
         auto& PinnedWidgetRTs        = Frame.Primitives.PinnedWidgetRTs;
+        auto& GlyphInstances         = Frame.Primitives.GlyphInstances;
+        auto& TextBatches            = Frame.Primitives.TextBatches;
+        auto& PinnedFontAtlases      = Frame.Primitives.PinnedFontAtlases;
         auto& FrameStats             = Frame.FrameStats;
 
         {
@@ -921,6 +946,7 @@ namespace Lumina
             auto CameraView         = Registry.view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto BillboardView      = Registry.view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto WidgetView         = Registry.view<SWidgetComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto TextView           = Registry.view<STextComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto TriangleBatcherView = Registry.view<FTriangleBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
@@ -983,6 +1009,74 @@ namespace Lumina
             }
             
             
+            // Ensure the engine default font's atlas is GPU-resident here, on the game thread, before the
+            // text task (a worker) reads it. Creating/uploading the image from inside the worker task leaves
+            // its pixels unready; doing it here matches the asset-load upload path that already works.
+            if (CFont* DefaultFont = CFontManager::Get().GetDefaultFont())
+            {
+                DefaultFont->GetAtlasImage();
+            }
+
+            // Screen-space debug text (World::DrawDebugText): drain the queued lines and lay them out top-left
+            // in pixels (the debug pass converts to NDC). Default font, single batch. Dev/Debug only.
+            Frame.Primitives.DebugTextGlyphs.clear();
+            Frame.Primitives.DebugTextBatch = {};
+#if !defined(LE_SHIPPING)
+            {
+                TVector<FDebugTextLine> DebugLines;
+                World->DrainDebugTextLines(DebugLines);
+
+                CFont* DebugFont = CFontManager::Get().GetDefaultFont();
+                FRHIImage* DebugAtlas = DebugFont ? DebugFont->GetAtlasImage() : nullptr;
+                if (!DebugLines.empty() && DebugFont && DebugFont->HasAtlas() && DebugAtlas && DebugAtlas->GetResourceID() >= 0)
+                {
+                    // Fixed pixel size in the (fixed-resolution) world RT, so the text is a consistent size
+                    // regardless of viewport aspect/size.
+                    const float PxSize = 32.0f;   // pixels per em
+                    const float Margin = 12.0f;
+                    float       PenY   = Margin;
+
+                    TVector<FShapedGlyph> DebugShaped;
+                    for (const FDebugTextLine& Line : DebugLines)
+                    {
+                        const uint32 Color = PackColor(Line.Color);
+                        if (DebugFont->ShapeText(Line.Text, 0.0f /*left*/, 0.0f, 1.0f, DebugShaped))
+                        {
+                            // ShapeText anchors the first line's top near em y=0 and stacks downward (em y<=0);
+                            // larger em y = higher on screen, so screen Y = PenY - em*PxSize.
+                            for (const FShapedGlyph& S : DebugShaped)
+                            {
+                                FGPUGlyph& G = Frame.Primitives.DebugTextGlyphs.emplace_back();
+                                G.PlaneMin  = FVector2(Margin + S.Min.x * PxSize, PenY - S.Max.y * PxSize);
+                                G.PlaneMax  = FVector2(Margin + S.Max.x * PxSize, PenY - S.Min.y * PxSize);
+                                G.UVRect    = S.UV;
+                                G.ColorPack = Color;
+                            }
+                        }
+
+                        int32 NumLines = 1;
+                        for (const char C : Line.Text)
+                        {
+                            if (C == '\n') ++NumLines;
+                        }
+                        PenY += (float)NumLines * DebugFont->GetLineHeight() * PxSize;
+                    }
+
+                    if (!Frame.Primitives.DebugTextGlyphs.empty())
+                    {
+                        FFrameData::FTextBatch& Batch = Frame.Primitives.DebugTextBatch;
+                        Batch.AtlasIndex    = (uint32)DebugAtlas->GetResourceID();
+                        Batch.AtlasWidth    = DebugFont->GetAtlasWidth();
+                        Batch.AtlasHeight   = DebugFont->GetAtlasHeight();
+                        Batch.DistanceRange = DebugFont->GetDistanceRange();
+                        Batch.FirstInstance = 0;
+                        Batch.Count         = (uint32)Frame.Primitives.DebugTextGlyphs.size();
+                        Frame.Primitives.PinnedFontAtlases.push_back(DebugFont->GetAtlasImageRef());
+                    }
+                }
+            }
+#endif
+
             DrawTaskGraph.Reset();   // reuse the persistent graph (allocator block + capacity)
             FTaskGraph& Graph = DrawTaskGraph;
 
@@ -1025,14 +1119,6 @@ namespace Lumina
                 MergeMeshDrawData(ThreadLocal);
             });
             
-            // Environment processing runs serially after Graph.Wait(): bAmbientFromSky needs
-            // LightData.SunDirection populated by ProcessDirectionalLight first.
-            //
-            // Line batching as first-class graph nodes. The cull is the heavy parallel part, and it must be a
-            // ROOT AddParallelFor so its chunks enter the queue at Dispatch alongside the mesh fan-out -- when
-            // it was fired from inside a single Add node at runtime, its chunks were born late and the worker
-            // pool bubbled between the mesh fan-out draining and the line work appearing. Prepare is cheap and
-            // runs inline here (build chunk views + clear scratch); Finalize merges/scatters after the cull.
             FLineBatcherComponent* LineBatcher = nullptr;
             LineBatcherView.each([&](FLineBatcherComponent& C) { if (LineBatcher == nullptr) LineBatcher = &C; });
             const uint32 LineChunkCount = (LineBatcher != nullptr) ? PrepareBatchedLines(*LineBatcher) : 0u;
@@ -1124,6 +1210,119 @@ namespace Lumina
                             return Math::Dot(DA, DA) > Math::Dot(DB, DB);
                         });
                 }
+            }, ETaskPriority::High);
+
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Process Text Primitives");
+
+                const FFrustum& TextFrustum = SceneGlobalData.CullData.Frustum;
+                const bool      bCullText   = SceneGlobalData.CullData.bFrustumCull != 0u;
+                const FVector3  CamRight    = FVector3(SceneGlobalData.CameraData.Right);
+                const FVector3  CamUp       = FVector3(SceneGlobalData.CameraData.Up);
+
+                TVector<FShapedGlyph> Shaped;
+
+                TextView.each([&](entt::entity Entity, STextComponent& TextComponent, const STransformComponent& TransformComponent)
+                {
+                    if (TextComponent.Text.empty())
+                    {
+                        return;
+                    }
+
+                    // Fall back to the engine default font when none is set, or its atlas failed to bake.
+                    CFont* Font = TextComponent.Font.Get();
+                    if (Font == nullptr || !Font->HasAtlas())
+                    {
+                        Font = CFontManager::Get().GetDefaultFont();
+                    }
+                    if (Font == nullptr || !Font->HasAtlas())
+                    {
+                        return;
+                    }
+
+                    FRHIImage* Atlas = Font->GetAtlasImage();
+                    if (Atlas == nullptr || Atlas->GetResourceID() < 0)
+                    {
+                        return;
+                    }
+
+                    const FMatrix4 World  = TransformComponent.GetWorldMatrix();
+                    const FVector3 Origin = FVector3(World[3]);
+
+                    const float HAlign = (TextComponent.HorizontalAlign == ETextHorizontalAlign::Left)   ? 0.0f
+                                       : (TextComponent.HorizontalAlign == ETextHorizontalAlign::Center) ? 0.5f : 1.0f;
+                    // Top places the text above the origin, Bottom below (block bottom/top anchored at origin).
+                    const float VAlign = (TextComponent.VerticalAlign == ETextVerticalAlign::Top)        ? 1.0f
+                                       : (TextComponent.VerticalAlign == ETextVerticalAlign::Middle)     ? 0.5f : 0.0f;
+
+                    if (!Font->ShapeText(TextComponent.Text, HAlign, VAlign, TextComponent.LineSpacing, Shaped) || Shaped.empty())
+                    {
+                        return;
+                    }
+
+                    // Frustum cull on a bounding sphere sized from the SHAPED extent (em units * WorldSize),
+                    // so long / multi-line text isn't culled by a fixed radius that ignores its real width.
+                    if (bCullText)
+                    {
+                        float EmExtent = 0.0f;
+                        for (const FShapedGlyph& S : Shaped)
+                        {
+                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.x), Math::Abs(S.Max.x)));
+                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.y), Math::Abs(S.Max.y)));
+                        }
+                        if (!TextFrustum.IntersectsSphere(Origin, EmExtent * TextComponent.WorldSize * 1.5f))
+                        {
+                            return;
+                        }
+                    }
+
+                    // World axes for the text plane. Oriented text uses the entity's X/Y (Y is up, matching
+                    // the widget oriented convention); billboard text uses the camera's right/up.
+                    FVector3 RightDir, UpDir;
+                    if (TextComponent.bBillboard)
+                    {
+                        RightDir = CamRight;
+                        UpDir    = CamUp;
+                    }
+                    else
+                    {
+                        RightDir = Math::Normalize(FVector3(World[0]));
+                        UpDir    = Math::Normalize(FVector3(World[1]));
+                    }
+
+                    const FVector3 RightScaled = RightDir * TextComponent.WorldSize;
+                    const FVector3 UpScaled    = UpDir    * TextComponent.WorldSize;
+                    const uint32   Color       = PackColor(TextComponent.Color);
+                    const uint32   First       = (uint32)GlyphInstances.size();
+
+                    for (const FShapedGlyph& S : Shaped)
+                    {
+                        FGPUGlyph& G = GlyphInstances.emplace_back();
+                        G.Origin    = Origin;
+                        G.Pad0      = 0.0f;
+                        G.Right     = RightScaled;
+                        G.Pad1      = 0.0f;
+                        G.Up        = UpScaled;
+                        G.Pad2      = 0.0f;
+                        G.UVRect    = S.UV;
+                        G.PlaneMin  = S.Min;
+                        G.PlaneMax  = S.Max;
+                        G.ColorPack = Color;
+                        G.EntityID  = entt::to_integral(Entity);
+                    }
+
+                    FFrameData::FTextBatch& Batch = TextBatches.emplace_back();
+                    Batch.AtlasIndex    = (uint32)Atlas->GetResourceID();
+                    Batch.AtlasWidth    = Font->GetAtlasWidth();
+                    Batch.AtlasHeight   = Font->GetAtlasHeight();
+                    Batch.DistanceRange = Font->GetDistanceRange();
+                    Batch.FirstInstance = First;
+                    Batch.Count         = (uint32)GlyphInstances.size() - First;
+                    Batch.bDepthTest    = TextComponent.bDepthTest;
+
+                    PinnedFontAtlases.push_back(Font->GetAtlasImageRef());
+                });
             }, ETaskPriority::High);
 
             Graph.Add([&]
@@ -3964,6 +4163,9 @@ namespace Lumina
         // thread's command buffer; clearing here just drops our copy.
         Frame.Geometry.PinnedMeshBuffersThisFrame.clear();
         Frame.Primitives.PinnedWidgetRTs.clear();
+        Frame.Primitives.GlyphInstances.clear();
+        Frame.Primitives.TextBatches.clear();
+        Frame.Primitives.PinnedFontAtlases.clear();
         Frame.FrameStats = {};
 
         for (int i = 0; i < (int)ELightType::Num; ++i)
@@ -6700,6 +6902,253 @@ namespace Lumina
         CmdList.SetGraphicsState(GraphicsState);
         PushRootConstants(CmdList);
         CmdList.Draw(6, WidgetInstances.size(), 0, 0);
+    }
+
+    void FForwardRenderScene::TextPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame   = *RenderFrame;
+        const auto&       Glyphs  = Frame.Primitives.GlyphInstances;
+        const auto&       Batches = Frame.Primitives.TextBatches;
+
+        if (Glyphs.empty() || Batches.empty())
+        {
+            return;
+        }
+
+        FRHIImage* HDRImage = GetNamedImage(ENamedImage::HDR);
+        if (HDRImage == nullptr)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Text Pass", tracy::Color::Yellow);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("TextVert.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("TextPixel.slang");
+
+        // Drawn pre-tone-map into HDR like billboards: one MRT pass writes color (SV_Target0) and stamps the
+        // glyph's entity id into the Picker buffer (SV_Target1), so text stays click-selectable without a
+        // second pass. Per-component bDepthTest selects between depth-tested+written (occluded by the scene)
+        // and always-on-top; the scene depth is bound either way so both pipelines share one render pass.
+        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
+            .SetImage(HDRImage)
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc::FAttachment PickerAttachment; PickerAttachment
+            .SetImage(GetNamedImage(ENamedImage::Picker))
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc::FAttachment DepthAttachment; DepthAttachment
+            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(RenderTarget)
+            .AddColorAttachment(PickerAttachment)
+            .SetDepthAttachment(DepthAttachment)
+            .SetRenderArea(HDRImage->GetExtent());
+
+        FRasterState RasterState; RasterState.SetCullNone();
+
+        // Blend only the color target; the Picker (uint id) must not blend.
+        FBlendState BlendState; BlendState
+            .Targets[0]
+                .SetBlendEnable(true)
+                .SetSrcBlend(EBlendFactor::SrcAlpha)
+                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOp(EBlendOp::Add)
+                .SetSrcBlendAlpha(EBlendFactor::One)
+                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOpAlpha(EBlendOp::Add);
+
+        auto MakePipeline = [&](bool bDepth) -> FRHIGraphicsPipelineRef
+        {
+            FDepthStencilState DepthState;
+            if (bDepth)
+            {
+                // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth, and writes depth so
+                // the text occludes things behind it.
+                DepthState.SetDepthTestEnable(true).SetDepthFunc(EComparisonFunc::GreaterOrEqual).EnableDepthWrite();
+            }
+            else
+            {
+                DepthState.DisableDepthTest().DisableDepthWrite();
+            }
+
+            FRenderState RenderState; RenderState
+                .SetDepthStencilState(DepthState)
+                .SetRasterState(RasterState)
+                .SetBlendState(BlendState);
+
+            FGraphicsPipelineDesc Desc; Desc
+                .SetDebugName("Text Pass")
+                .SetRenderState(RenderState)
+                .SetVertexShader(VertexShader)
+                .SetPixelShader(PixelShader)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+            return GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        };
+
+        FRHIGraphicsPipelineRef PipelineDepth = MakePipeline(true);
+        FRHIGraphicsPipelineRef PipelineOnTop = MakePipeline(false);
+
+        // All glyphs across every batch share one transient array; batches index it via FirstInstance.
+        auto GlyphAlloc = CmdList.CopyTransientArray(Glyphs.data(), Glyphs.size());
+
+        struct FTextPushConstants
+        {
+            uint64 GlyphsAddr;
+            uint32 AtlasIndex;
+            uint32 AtlasWidth;
+            uint32 AtlasHeight;
+            float  DistanceRange;
+            uint32 ScreenWidth;   // 0 for world text (only the debug screen-space pass uses these)
+            uint32 ScreenHeight;
+        };
+        static_assert(sizeof(FTextPushConstants) == 32, "FTextPushConstants must match TextCommon.slang.");
+
+        auto MakeState = [&](const FRHIGraphicsPipelineRef& Pipeline)
+        {
+            FGraphicsState State; State
+                .SetRenderPass(RenderPass)
+                .SetViewportState(MakeViewportStateFromImage(HDRImage))
+                .SetPipeline(Pipeline)
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            return State;
+        };
+        const FGraphicsState StateDepth = MakeState(PipelineDepth);
+        const FGraphicsState StateOnTop = MakeState(PipelineOnTop);
+
+        auto DrawBatch = [&](const FFrameData::FTextBatch& Batch)
+        {
+            FTextPushConstants PC = {};
+            PC.GlyphsAddr    = GlyphAlloc.Gpu;
+            PC.AtlasIndex    = Batch.AtlasIndex;
+            PC.AtlasWidth    = Batch.AtlasWidth;
+            PC.AtlasHeight   = Batch.AtlasHeight;
+            PC.DistanceRange = Batch.DistanceRange;
+
+            PushRootConstants(CmdList, PC);
+            CmdList.Draw(6, Batch.Count, 0, Batch.FirstInstance);
+        };
+
+        // Depth-tested text first (sorts against the scene), then always-on-top text last so it stays on top.
+        CmdList.SetGraphicsState(StateDepth);
+        for (const FFrameData::FTextBatch& Batch : Batches)
+        {
+            if (Batch.bDepthTest)
+            {
+                DrawBatch(Batch);
+            }
+        }
+
+        CmdList.SetGraphicsState(StateOnTop);
+        for (const FFrameData::FTextBatch& Batch : Batches)
+        {
+            if (!Batch.bDepthTest)
+            {
+                DrawBatch(Batch);
+            }
+        }
+    }
+
+    void FForwardRenderScene::DebugTextPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame  = *RenderFrame;
+        const auto&       Glyphs = Frame.Primitives.DebugTextGlyphs;
+        const auto&       Batch  = Frame.Primitives.DebugTextBatch;
+
+        if (Glyphs.empty() || Batch.Count == 0)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetViewOutputTarget();
+        if (OutputImage == nullptr)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Debug Text Pass", tracy::Color::Yellow);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("DebugTextVert.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("DebugTextPixel.slang");
+
+        // Screen-space overlay onto the final display-referred target (post-tone-map, like the screen UI),
+        // top-left stack. No depth, alpha blend, colors written as authored.
+        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
+            .SetImage(OutputImage)
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(RenderTarget)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FDepthStencilState DepthState; DepthState.DisableDepthTest().DisableDepthWrite();
+        FRasterState RasterState; RasterState.SetCullNone();
+
+        FBlendState BlendState; BlendState
+            .Targets[0]
+                .SetBlendEnable(true)
+                .SetSrcBlend(EBlendFactor::SrcAlpha)
+                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOp(EBlendOp::Add)
+                .SetSrcBlendAlpha(EBlendFactor::One)
+                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOpAlpha(EBlendOp::Add);
+
+        FRenderState RenderState; RenderState
+            .SetDepthStencilState(DepthState)
+            .SetRasterState(RasterState)
+            .SetBlendState(BlendState);
+
+        FGraphicsPipelineDesc Desc; Desc
+            .SetDebugName("Debug Text Pass")
+            .SetRenderState(RenderState)
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+        auto GlyphAlloc = CmdList.CopyTransientArray(Glyphs.data(), Glyphs.size());
+
+        struct FTextPushConstants
+        {
+            uint64 GlyphsAddr;
+            uint32 AtlasIndex;
+            uint32 AtlasWidth;
+            uint32 AtlasHeight;
+            float  DistanceRange;
+            uint32 ScreenWidth;
+            uint32 ScreenHeight;
+        };
+        static_assert(sizeof(FTextPushConstants) == 32, "FTextPushConstants must match TextCommon.slang.");
+
+        // Use the DISPLAY/panel size (not the RT extent) for px->NDC: the world RT is a fixed size stretched
+        // to the editor panel, so converting against the RT would let that stretch distort the text. The
+        // panel size cancels the RT->panel stretch, keeping glyphs square and a true pixel size on screen.
+        const FVector4 PanelSize = Frame.SceneGlobalData.ScreenSize;
+        const uint32   ScreenW   = PanelSize.x > 1.0f ? (uint32)PanelSize.x : OutputImage->GetSizeX();
+        const uint32   ScreenH   = PanelSize.y > 1.0f ? (uint32)PanelSize.y : OutputImage->GetSizeY();
+
+        FTextPushConstants PC = {};
+        PC.GlyphsAddr    = GlyphAlloc.Gpu;
+        PC.AtlasIndex    = Batch.AtlasIndex;
+        PC.AtlasWidth    = Batch.AtlasWidth;
+        PC.AtlasHeight   = Batch.AtlasHeight;
+        PC.DistanceRange = Batch.DistanceRange;
+        PC.ScreenWidth   = ScreenW;
+        PC.ScreenHeight  = ScreenH;
+
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(RenderPass)
+            .SetViewportState(MakeViewportStateFromImage(OutputImage))
+            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+
+        CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList, PC);
+        CmdList.Draw(6, Batch.Count, 0, 0);
     }
 
     void FForwardRenderScene::TransparentPass(ICommandList& CmdList)

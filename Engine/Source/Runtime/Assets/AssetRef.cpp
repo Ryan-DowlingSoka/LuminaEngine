@@ -2,10 +2,44 @@
 #include "AssetRef.h"
 
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Core/Serialization/NetArchive.h"
 #include "FileSystem/FileSystem.h"
 
 namespace Lumina
 {
+    void FAssetRef::NetSerialize(FNetArchive& Ar)
+    {
+        if (Ar.IsWriting())
+        {
+            // Indexed path (replication): a compact net index; Path+GUID are exported once via AssetExport.
+            if (Ar.AssetRefToNetIndex)
+            {
+                ResolvePath(); // heal/back-fill the GUID so the export keys on a stable identity
+                WriteVarUInt(Ar, IsNull() ? 0u : Ar.AssetRefToNetIndex(*this));
+                return;
+            }
+
+            Ar << Path;
+            Ar << Guid;
+        }
+        else
+        {
+            if (Ar.NetIndexToAssetRef)
+            {
+                const uint32 Index = ReadVarUInt(Ar);
+                Reset();
+                if (Index != 0)
+                {
+                    Ar.NetIndexToAssetRef(Index, *this);
+                }
+                return;
+            }
+
+            Ar << Path;
+            Ar << Guid;
+        }
+    }
+
     FGuid FAssetRef::GetGuid() const
     {
         if (Guid.empty())

@@ -40,6 +40,13 @@ namespace Lumina
 
 namespace Lumina
 {
+    // One queued screen-space debug-text line (DrawDebugText). Drained by the render scene each frame.
+    struct FDebugTextLine
+    {
+        FString  Text;
+        FVector4 Color = FVector4(1.0f);
+    };
+
     REFLECT()
     class RUNTIME_API CWorld : public CObject, public IPrimitiveDrawInterface
     {
@@ -224,9 +231,16 @@ namespace Lumina
         void OnInputComponentConstruct(entt::registry& Registry, entt::entity Entity);
         void OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
-        // Hot-reload: drop this component's script binding and re-run OnScriptComponentCreated
-        // with the freshly compiled FScript. Called by FScriptingContext::OnScriptLoaded.
+        // Clean (re)bind: drop this component's current script binding (detach + clear FRefs/tags/subs) and
+        // re-run OnScriptComponentCreated from the component's CURRENT ScriptPath. Used by hot-reload AND by
+        // SetEntityScript / replicated script swaps. Safe whether or not a script is currently attached.
         void ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
+
+        // Set (or change) the script on an entity by path: emplaces SScriptComponent if needed, sets the
+        // ScriptPath, and cleanly (re)attaches via ReloadScriptForComponent (detaching any prior script). The
+        // single clean entry point for switching an entity's script at runtime. On a server, MarkDirty the
+        // entity afterward to replicate the change to clients.
+        void SetEntityScript(entt::entity Entity, FStringView Path);
 
         // Re-binds every script component whose ScriptPath matches Path. Wired to OnScriptLoaded.
         void OnScriptSourceReloaded(FStringView Path);
@@ -239,6 +253,13 @@ namespace Lumina
 
         /** Submit a solid translucent triangle batch (3 pre-colored verts per tri). Duration <= 0 draws one frame. */
         void DrawSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest = true, float Duration = -1.0f);
+
+        /** Queue a line of screen-space debug text for this frame, stacked top-left on the world viewport
+         *  (like Unreal's AddOnScreenDebugMessage). Dev/Debug only -- a no-op in Shipping. */
+        void DrawDebugText(const FString& Text, const FVector4& Color = FVector4(1.0f));
+
+        /** Render scene drains the queued debug-text lines each frame (moves them out + clears). */
+        void DrainDebugTextLines(TVector<FDebugTextLine>& Out);
         //~ End Debug Drawing
 
         //~ Begin Render Target Painting
@@ -300,6 +321,9 @@ namespace Lumina
 
         FLineBatcherComponent*                              LineBatcherComponent;
         FTriangleBatcherComponent*                          TriangleBatcherComponent;
+
+        // Screen-space debug-text lines queued this frame (DrawDebugText); drained by the render scene.
+        TVector<FDebugTextLine>                             DebugTextLines;
 
         // Render-target paint/clear requests; drained each Extract into the frame snapshot.
         TConcurrentQueue<FTexturePaintOp>                   RenderTargetPaintQueue;

@@ -194,6 +194,18 @@ namespace Lumina
                 uint32      Count;
             };
 
+            // A run of glyph instances sharing one font atlas; one instanced draw per batch.
+            struct FTextBatch
+            {
+                uint32      AtlasIndex   = 0;   // bindless ResourceID of the font atlas
+                uint32      AtlasWidth   = 0;
+                uint32      AtlasHeight  = 0;
+                float       DistanceRange = 0.0f; // px range baked into the MSDF (drives shader AA)
+                uint32      FirstInstance = 0;
+                uint32      Count         = 0;
+                bool        bDepthTest    = false; // occluded by + writes scene depth, vs. always-on-top
+            };
+
             // Per-frame snapshot of one terrain; render passes read ONLY this. GPU resources live in
             // TerrainGPUStates keyed by Entity, so the render thread never dereferences the component.
             struct FTerrainExtract
@@ -331,6 +343,14 @@ namespace Lumina
                 TVector<FDecalBatch>             DecalBatches;
                 TVector<FWidgetInstance>         WidgetInstances;
                 TVector<FRHIImageRef>            PinnedWidgetRTs;
+                TVector<FGPUGlyph>               GlyphInstances;
+                TVector<FTextBatch>              TextBatches;
+                // Atlas images kept alive for this frame's GPU work (the text pass samples them bindlessly).
+                TVector<FRHIImageRef>            PinnedFontAtlases;
+
+                // Screen-space DrawDebugText overlay (PlaneMin/Max in pixels); single default-font batch.
+                TVector<FGPUGlyph>               DebugTextGlyphs;
+                FTextBatch                       DebugTextBatch;
             } Primitives;
 
             struct FVolumetrics
@@ -617,6 +637,8 @@ namespace Lumina
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
         void WidgetPass(ICommandList& CmdList);
+        void TextPass(ICommandList& CmdList);
+        void DebugTextPass(ICommandList& CmdList);
         void WidgetPickerPass(ICommandList& CmdList);
 
         uint32 ParticleSimulatePass(ICommandList& CmdList);

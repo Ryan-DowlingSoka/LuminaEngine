@@ -170,6 +170,12 @@ namespace Lumina::Lua
     // Pushes Object using its runtime class metatable, walking the super chain. Nil if no ancestor bound.
     RUNTIME_API void PushCObjectAsActualType(lua_State* L, CObject* Object);
 
+    // Type-erased recovery of a CObject pushed via PushCObjectAsActualType: recognizes the userdata by its
+    // runtime tag (no compile-time type needed) and returns the embedded object pointer. Used to marshal an
+    // arbitrary asset/object Lua arg over the network. False/null when the stack value isn't a CObject.
+    RUNTIME_API bool     IsCObjectUserdata(lua_State* L, int Index);
+    RUNTIME_API CObject* ToCObject(lua_State* L, int Index);
+
     // Type-erased registration; bulk of Register is emitted once for the whole program.
     class RUNTIME_API FClassBuilder
     {

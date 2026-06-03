@@ -7,6 +7,7 @@
 #include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "Scripting/Lua/ScriptTypes.h"
+#include "Scripting/Lua/Class.h"
 #include "Networking/INetworkTransport.h"
 #include "Core/Serialization/NetArchive.h"
 #include "Log/Log.h"
@@ -30,7 +31,8 @@ namespace Lumina::Net
             Number,   // Lua numbers are doubles (covers ints losslessly to 2^53)
             String,
             Vector,
-            Table,    // recursive: count + (key, value) pairs
+            Table,    // recursive, count + (key, value) pairs
+            Object,   // CObject reference -> compact net index (exported once via the package map)
         };
 
         constexpr int    MaxRpcArgDepth  = 16;          // guards against cyclic/oversized tables
@@ -110,7 +112,24 @@ namespace Lumina::Net
                 }
                 break;
 
-            default: // nil, function, userdata, thread, buffer
+            case LUA_TUSERDATA:
+                {
+                    // A loaded asset/object becomes a compact net index via the package map. Requires the
+                    // writer's object hook.
+                    if (Ar.ObjectToNetIndex && Lua::IsCObjectUserdata(L, Index))
+                    {
+                        WriteTag(ELuaArgType::Object);
+                        WriteVarUInt(Ar, Ar.ObjectToNetIndex(Lua::ToCObject(L, Index)));
+                    }
+                    else
+                    {
+                        LOG_WARN("[Net] RPC arg userdata is not a networkable CObject -- sending nil.");
+                        WriteTag(ELuaArgType::Nil);
+                    }
+                }
+                break;
+
+            default: // nil, function, thread, buffer
                 {
                     const int Type = lua_type(L, Index);
                     if (Type != LUA_TNIL && Type != LUA_TNONE)
@@ -204,6 +223,14 @@ namespace Lumina::Net
                 }
                 break;
 
+            case ELuaArgType::Object:
+                {
+                    const uint32 Index = ReadVarUInt(Ar);
+                    CObject* Obj = (Ar.NetIndexToObject && Index != 0) ? Ar.NetIndexToObject(Index) : nullptr;
+                    Lua::PushCObjectAsActualType(L, Obj); // pushes nil if null/unresolved
+                }
+                break;
+
             case ELuaArgType::Nil:
             default:
                 lua_pushnil(L);
@@ -211,11 +238,12 @@ namespace Lumina::Net
             }
         }
 
-        // Pack an RPC invocation: { ENetMessage::ScriptRpc, uint32 NetGUID, uint16 RpcId, uint8 ArgCount,
-        // ArgCount marshaled Lua values }. Args are read from the live Lua stack at [FirstArgIndex, top].
-        void WriteRpcPacket(TVector<uint8>& Buffer, lua_State* L, int FirstArgIndex, uint32 NetGUID, uint16 RpcId)
+        // Pack an RPC invocation, reading args from the live Lua stack at [FirstArgIndex, top]. Object args
+        // mint indices into State's outgoing package map, flushed as exports before this packet.
+        void WriteRpcPacket(TVector<uint8>& Buffer, lua_State* L, int FirstArgIndex, uint32 NetGUID, uint16 RpcId, FNetWorldState& State)
         {
             FNetArchive Writer(Buffer);
+            Net::BindWriters(Writer, State);
             uint8 Type = static_cast<uint8>(ENetMessage::ScriptRpc);
             Writer << Type;
             Writer << NetGUID;
@@ -232,8 +260,8 @@ namespace Lumina::Net
             }
         }
 
-        // The dispatch wrapper installed over each --@rpc method. Upvalue 1 = rpc id, upvalue 2 = the
-        // original function. Calling self:Method(...) lands here and routes per the rpc's mode.
+        // The dispatch wrapper installed over each --@rpc method. Upvalue 1 is the rpc id, upvalue 2 the
+        // original function. Calling the method lands here and routes per the rpc's mode.
         int Lua_RpcDispatch(lua_State* L)
         {
             const int RpcId = static_cast<int>(lua_tointeger(L, lua_upvalueindex(1)));
@@ -276,7 +304,7 @@ namespace Lumina::Net
             SNetworkComponent* NetComp = Registry.try_get<SNetworkComponent>(Entity);
             FNetWorldState*    State   = Registry.ctx().find<FNetWorldState>();
 
-            // Not networked (standalone, no transport, or no net identity): behave like a normal call.
+            // Not networked, behave like a normal call.
             if (NetMode == ENetMode::Standalone || State == nullptr || State->Transport == nullptr || NetComp == nullptr)
             {
                 RunLocal();
@@ -285,6 +313,28 @@ namespace Lumina::Net
 
             const bool      bIsServer = IsServerMode(NetMode);
             const ESendMode SendMode  = Rpc.bReliable ? ESendMode::Reliable : ESendMode::UnreliableSequenced;
+
+            // Flush net indices the args assigned, reliably and before the RPC packet, so the receiver can
+            // resolve them. Reliable regardless of the RPC's own mode.
+            auto FlushExports = [&](bool bBroadcast, FConnectionHandle Dest)
+            {
+                if (!State->OutObjects.PendingExports.empty())
+                {
+                    TVector<uint8> Msg;
+                    Net::BuildObjectExport(State->OutObjects, State->OutObjects.PendingExports, Msg);
+                    if (bBroadcast) Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    else            Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    State->OutObjects.PendingExports.clear();
+                }
+                if (!State->OutAssets.PendingExports.empty())
+                {
+                    TVector<uint8> Msg;
+                    Net::BuildAssetExport(State->OutAssets, State->OutAssets.PendingExports, Msg);
+                    if (bBroadcast) Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    else            Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    State->OutAssets.PendingExports.clear();
+                }
+            };
 
             switch (Rpc.Mode)
             {
@@ -296,7 +346,8 @@ namespace Lumina::Net
                 else if (NetComp->LocalRole == ENetRole::AutonomousProxy)
                 {
                     TVector<uint8> Buffer;
-                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId));
+                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId), *State);
+                    FlushExports(/*bBroadcast*/ false, State->ServerConnection);
                     Net::SendFramed(*State->Transport, State->ServerConnection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, SendMode);
                 }
                 else
@@ -310,7 +361,8 @@ namespace Lumina::Net
                 {
                     RunLocal();
                     TVector<uint8> Buffer;
-                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId));
+                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId), *State);
+                    FlushExports(/*bBroadcast*/ true, FConnectionHandle{});
                     Net::BroadcastFramed(*State->Transport, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, SendMode);
                 }
                 else
@@ -323,7 +375,8 @@ namespace Lumina::Net
                 if (bIsServer)
                 {
                     TVector<uint8> Buffer;
-                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId));
+                    WriteRpcPacket(Buffer, L, 2, NetComp->NetGUID.Value, static_cast<uint16>(RpcId), *State);
+                    FlushExports(/*bBroadcast*/ false, FConnectionHandle{ NetComp->OwningConnectionId });
                     Net::SendFramed(*State->Transport, FConnectionHandle{ NetComp->OwningConnectionId }, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, SendMode);
                 }
                 else
@@ -375,7 +428,7 @@ namespace Lumina::Net
             lua_pushcclosure(L, &Lua_RpcDispatch, "RpcDispatch", 2); // [table][fn][closure]
             lua_setfield(L, TableIdx, Rpc.Name.c_str()); // table[name] = closure ; [table][fn]
 
-            // Capture the original LAST: FRef(L, -1) pops the value it refs, leaving just [table].
+            // Capture the original last. FRef(L, -1) pops the value it refs, leaving just [table].
             Script->RpcHandlers.push_back(Lua::FRef(L, -1)); // [table]
         }
 
@@ -408,6 +461,10 @@ namespace Lumina::Net
             return;
         }
 
+        // Resolve object/asset args in the SENDER's index space (their exports arrived on the same reliable
+        // channel just before this packet).
+        Net::BindReaders(Reader, *State, Sender.Value);
+
         const entt::entity Entity = State->GuidTable.Find(FNetGUID{ Guid });
         if (Entity == entt::null || !Registry.valid(Entity))
         {
@@ -423,8 +480,8 @@ namespace Lumina::Net
         const Lua::FScriptRpc& Rpc     = ScriptComp->Script->Rpcs[RpcId];
         SNetworkComponent*     NetComp = Registry.try_get<SNetworkComponent>(Entity);
 
-        // Authority gate: a Server RPC is only honored if the sender owns the target entity. Multicast/
-        // Client packets arrive from the server (a client's only peer), so they're trusted.
+        // Authority gate. A Server RPC is only honored if the sender owns the target entity. Multicast and
+        // Client packets arrive from the server, so they're trusted.
         if (Rpc.Mode == ERpcMode::Server)
         {
             if (NetComp == nullptr || NetComp->OwningConnectionId != Sender.Value)

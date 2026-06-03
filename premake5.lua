@@ -85,6 +85,7 @@ LuminaWorkspaceSettings({
         end
         include "Engine/Source/ThirdParty/FreeType"
         include "Engine/Source/ThirdParty/RmlUi"
+        include "Engine/Source/ThirdParty/msdfgen"
 	group ""
 
     group "Build"

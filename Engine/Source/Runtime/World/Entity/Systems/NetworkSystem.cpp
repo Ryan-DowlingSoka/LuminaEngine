@@ -8,11 +8,14 @@
 #include "World/WorldManager.h"
 #include "World/Net/NetWorldState.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Object/Object.h"
+#include "Core/Object/ObjectCore.h"
 #include "World/Net/NetRpc.h"
 #include "World/Net/NetReplication.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
+#include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/EntityHandle.h"
 #include "Networking/NetworkGlobals.h"
 #include "Networking/INetworkTransport.h"
@@ -26,9 +29,8 @@
 
 namespace Lumina
 {
-    // Periodic full transform resync. Transforms are STATE (not events): a dropped delta would otherwise
-    // leave a now-idle entity permanently stale, so we re-send every replicated pose on this cadence and
-    // let convergence fall out -- no per-packet reliability/acks needed. 0 = never (deltas only).
+    // Periodic full transform resync. Transforms are state, so re-sending every replicated pose on this
+    // cadence lets a dropped delta self-heal without per-packet acks. 0 means deltas only.
     static TConsoleVar<float> CVarTransformKeyframeInterval("Net.Transform.KeyframeInterval", 0.5f,
         "Seconds between full transform keyframes (movement resync so dropped deltas self-heal). 0 = off.");
 
@@ -74,17 +76,27 @@ namespace Lumina
             for (entt::entity Entity : Networked)
             {
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
+                if (!Net.bNetLoadOnClient)
+                {
+                    continue; // server-only, never gets a network identity
+                }
                 Net.NetGUID            = FNetGUID{ StableId++ };
                 Net.OwningConnectionId = 0; // unowned until the server assigns it (SetOwner)
                 State.GuidTable.Register(Net.NetGUID, Entity);
+
+                // Server tracks live stable ids so a level entity destroyed at runtime can be despawned to
+                // clients (which would otherwise keep their level-derived copy).
+                if (bAuthority)
+                {
+                    State.KnownStableGuids.push_back(Net.NetGUID.Value);
+                }
             }
 
             LOG_DISPLAY("[Net] Adopted {} stable networked entities ({})", Networked.size(), bAuthority ? "authority" : "proxy");
         }
 
-        // Derive each entity's roles from net mode + ownership (Unreal model). Server is Authority for all;
-        // a client is AutonomousProxy for entities it owns (OwningConnectionId == its peer id) and
-        // SimulatedProxy for the rest. Cheap (few networked entities) -> run every tick.
+        // Derive each entity's roles from net mode + ownership. Server is Authority for all; a client is
+        // AutonomousProxy for entities it owns and SimulatedProxy for the rest. Run every tick.
         void RefreshNetRoles(entt::registry& Registry, const FNetWorldState& State, bool bServer)
         {
             for (entt::entity Entity : Registry.view<SNetworkComponent>())
@@ -104,13 +116,16 @@ namespace Lumina
             }
         }
 
-        // Server -> clients: full ownership table { uint16 Count, (uint32 NetGUID, uint32 OwningConnectionId)... }.
-        // Reliable -- ownership is state-defining. Sent whenever it changes or a client joins.
+        // Server to clients, full ownership table. Reliable since ownership is state-defining. Sent whenever
+        // it changes or a client joins.
         void BroadcastOwnership(entt::registry& Registry, TVector<uint8>& Batch)
         {
             auto View = Registry.view<SNetworkComponent>();
             uint16 Count = 0;
-            for (entt::entity Entity : View) { (void)Entity; ++Count; }
+            for (entt::entity Entity : View)
+            {
+                if (View.get<SNetworkComponent>(Entity).bNetLoadOnClient) { ++Count; }
+            }
             if (Count == 0)
             {
                 return;
@@ -124,6 +139,7 @@ namespace Lumina
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
+                if (!Net.bNetLoadOnClient) { continue; } // server-only, not replicated
                 uint32 Guid  = Net.NetGUID.Value;
                 uint32 Owner = Net.OwningConnectionId;
                 Writer << Guid;
@@ -132,7 +148,7 @@ namespace Lumina
             Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
         }
 
-        // Client: apply an ownership table; roles refresh from it on the same tick.
+        // Client, apply an ownership table. Roles refresh from it on the same tick.
         void ApplyOwnershipUpdate(entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
@@ -166,17 +182,47 @@ namespace Lumina
             return false;
         }
 
-        // Server: assign dynamic NetGUIDs to newly-created networked entities, then diff the live dynamic
-        // set against KnownSpawnedGuids to emit reliable SpawnEntity (new) / DespawnEntity (gone). Pre-placed
-        // entities (NetGUID < NetGUID_DynamicStart) are excluded -- both peers derive those deterministically.
+        // Net-index cache helpers live in the Net namespace (NetReplication.cpp) so the RPC path can share
+        // them. See the package-map notes there.
+
+        // Serialize one SpawnEntity message.
+        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, TVector<uint8>& OutMsg)
+        {
+            FNetArchive Writer(OutMsg);
+            Net::BindWriters(Writer, State);
+            uint8 Type = static_cast<uint8>(ENetMessage::SpawnEntity);
+            Writer << Type;
+            Writer << Guid;
+            Writer << Owner;
+            Net::WriteEntityComponents(Writer, Registry, Entity);
+        }
+        
+        void BuildExistingSpawnBatch(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& OutBatch)
+        {
+            for (entt::entity Entity : Registry.view<SNetworkComponent>())
+            {
+                SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
+                if (Net.NetGUID.Value < NetGUID_DynamicStart || !Net.bReplicates || !Net.bNetLoadOnClient)
+                {
+                    continue;
+                }
+                TVector<uint8> Msg;
+                WriteSpawnMessage(Registry, State, Entity, Net.NetGUID.Value, Net.OwningConnectionId, Msg);
+                Net::AppendFramedMessage(OutBatch, Msg.data(), static_cast<SIZE_T>(Msg.size()));
+            }
+        }
+        
         void ReplicateSpawns(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
         {
             auto View = Registry.view<SNetworkComponent>();
 
-            // 1. Assign dynamic ids to runtime-spawned networked entities (NetGUID still 0).
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
+                if (!Net.bNetLoadOnClient)
+                {
+                    continue; // server-only, never replicated to clients
+                }
                 if (Net.NetGUID.Value == 0)
                 {
                     Net.NetGUID = State.GuidTable.AllocateDynamic();
@@ -184,12 +230,11 @@ namespace Lumina
                 }
             }
 
-            // 2. Spawn: live dynamic, replicating, not yet sent.
             TVector<uint32> Live;
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (Net.NetGUID.Value < NetGUID_DynamicStart || !Net.bReplicates)
+                if (Net.NetGUID.Value < NetGUID_DynamicStart || !Net.bReplicates || !Net.bNetLoadOnClient)
                 {
                     continue;
                 }
@@ -200,19 +245,11 @@ namespace Lumina
                 }
 
                 TVector<uint8> Buffer;
-                FNetArchive Writer(Buffer);
-                uint8  Type  = static_cast<uint8>(ENetMessage::SpawnEntity);
-                uint32 Guid  = Net.NetGUID.Value;
-                uint32 Owner = Net.OwningConnectionId;
-                Writer << Type;
-                Writer << Guid;
-                Writer << Owner;
-                Net::WriteEntityComponents(Writer, Registry, Entity);
+                WriteSpawnMessage(Registry, State, Entity, Net.NetGUID.Value, Net.OwningConnectionId, Buffer);
                 Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
                 State.KnownSpawnedGuids.push_back(Net.NetGUID.Value);
             }
 
-            // 3. Despawn: known but no longer live.
             for (size_t i = 0; i < State.KnownSpawnedGuids.size(); )
             {
                 const uint32 Guid = State.KnownSpawnedGuids[i];
@@ -233,9 +270,36 @@ namespace Lumina
                 }
             }
         }
+        
+        void ReplicateStableDespawns(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
+        {
+            for (size_t i = 0; i < State.KnownStableGuids.size(); )
+            {
+                const uint32 Guid = State.KnownStableGuids[i];
+                const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
+                if (Entity == entt::null || !Registry.valid(Entity))
+                {
+                    TVector<uint8> Buffer;
+                    FNetArchive Writer(Buffer);
+                    uint8  Type = static_cast<uint8>(ENetMessage::DespawnEntity);
+                    uint32 G    = Guid;
+                    Writer << Type;
+                    Writer << G;
+                    Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
 
-        // Server: reliable property delta for every entity flagged FNetDirty (World.Net:MarkDirty). Sends the
-        // entity's replicated components; reliability handles "resend if lost" (state must converge). Clears the tag.
+                    State.GuidTable.Unregister(FNetGUID{ Guid });
+                    State.DestroyedStableGuids.push_back(Guid);
+                    State.KnownStableGuids.erase(State.KnownStableGuids.begin() + i);
+                }
+                else
+                {
+                    ++i;
+                }
+            }
+        }
+
+        // Server, reliable property delta for every entity flagged FNetDirty. Sends the entity's replicated
+        // components, reliability handles resend, then clears the tag.
         void ReplicateDirtyProperties(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
         {
             auto View = Registry.view<SNetworkComponent, FNetDirty>();
@@ -246,6 +310,7 @@ namespace Lumina
                 {
                     TVector<uint8> Buffer;
                     FNetArchive Writer(Buffer);
+                    Net::BindWriters(Writer, State);
                     uint8  Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
                     uint32 Guid = Net.NetGUID.Value;
                     Writer << Type;
@@ -256,9 +321,57 @@ namespace Lumina
             }
             Registry.clear<FNetDirty>();
         }
+        
+        void AttachReplicatedScript(CWorld* World, entt::registry& Registry, entt::entity Entity)
+        {
+            SScriptComponent* Comp = Registry.try_get<SScriptComponent>(Entity);
+            if (Comp == nullptr)
+            {
+                return;
+            }
 
-        // Client: create + link a server-spawned entity, then apply its components.
-        void ApplySpawnEntity(CWorld* World, entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
+            const FStringView Path = Comp->ScriptPath.ResolvePath();
+            if (Path.empty())
+            {
+                return; // ref/export not resolvable yet
+            }
+
+            // Already running exactly this script, nothing to do.
+            if (Comp->Script != nullptr &&
+                FStringView(Comp->Script->Path.c_str(), Comp->Script->Path.size()) == Path)
+            {
+                return;
+            }
+
+            // Nothing attached and this exact path already failed, don't reload every tick.
+            if (Comp->Script == nullptr)
+            {
+                if (FScriptAttachFailed* Failed = Registry.try_get<FScriptAttachFailed>(Entity))
+                {
+                    if (FStringView(Failed->Path.c_str(), Failed->Path.size()) == Path)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            // (Re)load from the now-current ScriptPath. Detaches the old script first if the server swapped it.
+            World->ReloadScriptForComponent(Entity, *Comp);
+
+            if (Comp->Script == nullptr)
+            {
+                Registry.emplace_or_replace<FScriptAttachFailed>(Entity).Path.assign(Path.data(), Path.size());
+                LOG_WARN("[Net] Replicated script '{}' failed to load on this peer -- marking failed (won't reload until the path changes or the entity respawns).",
+                    FString(Path.data(), Path.size()).c_str());
+            }
+            else
+            {
+                Registry.remove<FScriptAttachFailed>(Entity); // success clears any prior failure
+            }
+        }
+
+        // Client, create + link a server-spawned entity, then apply its components.
+        void ApplySpawnEntity(CWorld* World, entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
             uint8  Type = 0;
@@ -271,6 +384,7 @@ namespace Lumina
                 return; // malformed, or we already have this entity
             }
 
+            Net::BindReaders(Reader, State, SenderConn);
             const entt::entity Entity = Registry.create();
             Net::ReadEntityComponents(Reader, Registry, Entity);
 
@@ -279,10 +393,13 @@ namespace Lumina
             Net.OwningConnectionId = Owner;
             State.GuidTable.Register(Net.NetGUID, Entity);
             Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+
+            // A replicated script attaches here (path now set) so the entity gains its RPC handlers.
+            AttachReplicatedScript(World, Registry, Entity);
         }
 
-        // Client: apply a reliable property delta to an existing entity.
-        void ApplyPropertyUpdate(entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
+        // Client, apply a reliable property delta to an existing entity.
+        void ApplyPropertyUpdate(CWorld* World, entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
             uint8  Type = 0;
@@ -296,12 +413,14 @@ namespace Lumina
             const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
             if (Entity != entt::null && Registry.valid(Entity))
             {
+                Net::BindReaders(Reader, State, SenderConn);
                 Net::ReadEntityComponents(Reader, Registry, Entity);
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+                AttachReplicatedScript(World, Registry, Entity);
             }
         }
 
-        // Client: destroy a despawned entity.
+        // Client, destroy a despawned entity.
         void ApplyDespawnEntity(CWorld* World, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
@@ -333,8 +452,6 @@ namespace Lumina
             for (entt::entity Entity : Registry.view<SNetworkComponent>())
             {
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
-                // Any client-side proxy (simulated OR autonomous) is server-authoritative for its transform
-                // until prediction lands, so keep its body kinematic. Only the server simulates dynamically.
                 const bool bIsProxy = Net.LocalRole == ENetRole::SimulatedProxy || Net.LocalRole == ENetRole::AutonomousProxy;
                 if (Net.bProxyPhysicsConfigured || !bIsProxy)
                 {
@@ -372,7 +489,7 @@ namespace Lumina
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (!Net.bReplicates || !Net.bReplicatesMovement)
+                if (!Net.bReplicates || !Net.bReplicatesMovement || !Net.bNetLoadOnClient)
                 {
                     continue;
                 }
@@ -387,10 +504,9 @@ namespace Lumina
                 {
                     if (Net.bMovementCacheValid && !MovementChanged(Net.LastSentLocation, Net.LastSentRotation, Pos, Rot))
                     {
-                        continue; // unchanged since last send -> skip
+                        continue; // unchanged since last send
                     }
-                    // Throttle to NetUpdateFrequency: keep accumulating until the interval elapses (the entity
-                    // stays "changed" vs the cache, so it's still picked up next time the interval is ready).
+                    
                     const float Interval = (Net.NetUpdateFrequency > 0.0f) ? (1.0f / Net.NetUpdateFrequency) : 0.0f;
                     if (Net.TimeSinceLastNetUpdate < Interval)
                     {
@@ -433,7 +549,7 @@ namespace Lumina
             Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
         }
 
-        // Client: apply each received pose directly to the entity its NetGUID maps to.
+        // Client, apply each received pose directly to the entity its NetGUID maps to.
         void ApplyTransformSnapshot(entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
@@ -465,21 +581,21 @@ namespace Lumina
                 {
                     continue;
                 }
-                // Skip entities WE control (AutonomousProxy): they're driven by our local input, not the
-                // server relay -- applying the (round-trip-stale) server pose would fight our own movement.
+                // Skip entities we control. They're driven by our local input, so applying the stale server
+                // pose would fight our own movement.
                 if (SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity))
                 {
                     if (Net->LocalRole == ENetRole::AutonomousProxy) { continue; }
                 }
 
-                // Buffer the sample; the per-frame interpolation step writes the smoothed pose (see
-                // InterpolateProxies). We do NOT snap here -- snapping makes movement step at the send rate.
+                // Buffer the sample; the per-frame interpolation step writes the smoothed pose. Don't snap
+                // here, snapping makes movement step at the send rate.
                 State.InterpStates[Guid].Push(SampleTime, Pos, Rot);
             }
         }
 
-        // Client per-frame: advance the render clock (InterpDelay behind the newest server time) and write
-        // each SimulatedProxy's interpolated pose. Lerp position / slerp rotation between bracketing samples.
+        // Client per-frame, advance the render clock and write each SimulatedProxy's interpolated pose.
+        // Lerp position and rotation between bracketing samples.
         void InterpolateProxies(entt::registry& Registry, FNetWorldState& State, double ClientNow)
         {
             if (State.InterpStates.empty())
@@ -510,7 +626,7 @@ namespace Lumina
                 const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
                 if (Buffer.Count == 0 || Entity == entt::null || !Registry.valid(Entity) || !Registry.all_of<STransformComponent>(Entity))
                 {
-                    It = State.InterpStates.erase(It); // entity gone -> drop its buffer
+                    It = State.InterpStates.erase(It); // entity gone, drop its buffer
                     continue;
                 }
 
@@ -668,8 +784,8 @@ namespace Lumina
         {
             State->bInitialized = true;
 
-            // Connection target is data-driven (FWorldContext), set by FEngine::OpenLevel / the editor PIE
-            // setup. Defaults to loopback:7777
+            // Connection target is data-driven (FWorldContext), set by FEngine::OpenLevel or the editor PIE
+            // setup. Defaults to loopback 127.0.0.1 port 7777.
             FWorldContext* WorldCtx = GWorldManager ? GWorldManager->FindContext(World) : nullptr;
             const FString  Host = WorldCtx ? WorldCtx->NetHost : FString("127.0.0.1");
             const uint16   Port = WorldCtx ? WorldCtx->NetPort : NetDefaultPort;
@@ -703,7 +819,7 @@ namespace Lumina
                 State->bClientConnected = true;
                 LOG_DISPLAY("[Net] Client adopted carried connection after travel (peer id {})", PeerId);
             }
-            else // Client: open a fresh connection.
+            else // Client, open a fresh connection.
             {
                 State->Transport.reset(Network::CreateTransport());
 
@@ -722,7 +838,7 @@ namespace Lumina
             return;
         }
 
-        // Pump the transport: surface connect/disconnect, and on the client apply incoming snapshots.
+        // Pump the transport. Surface connect/disconnect, and on the client apply incoming snapshots.
         TVector<FNetworkEvent> Events;
         State->Transport->Service(Events);
 
@@ -747,7 +863,7 @@ namespace Lumina
                     Writer << PeerId;
                     Net::SendFramed(*State->Transport, Event.Connection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, ESendMode::Reliable);
 
-                    // Welcome: tell the client which map we're running so it can load the same level.
+                    // Welcome, tell the client which map we're running so it can load the same level.
                     if (FWorldContext* SrvCtx = GWorldManager ? GWorldManager->FindContext(World) : nullptr)
                     {
                         const FString& MapPath = SrvCtx->MapPath;
@@ -842,7 +958,7 @@ namespace Lumina
                     case ENetMessage::SpawnEntity:
                         if (!bServer)
                         {
-                            ApplySpawnEntity(World, Registry, *State, Msg, MsgSize);
+                            ApplySpawnEntity(World, Registry, *State, Event.Connection.Value, Msg, MsgSize);
                         }
                         break;
                     case ENetMessage::DespawnEntity:
@@ -854,7 +970,7 @@ namespace Lumina
                     case ENetMessage::PropertyUpdate:
                         if (!bServer)
                         {
-                            ApplyPropertyUpdate(Registry, *State, Msg, MsgSize);
+                            ApplyPropertyUpdate(World, Registry, *State, Event.Connection.Value, Msg, MsgSize);
                         }
                         break;
                     case ENetMessage::ClientTransform:
@@ -878,8 +994,7 @@ namespace Lumina
                                 Reader.Serialize(MapPath.data(), Len);
                             }
                             // Load the server's level if we aren't already on it. The live connection is
-                            // carried across the travel (see FEngine::ProcessPendingTravel). PIE clients share
-                            // the server's map -> paths match -> no travel.
+                            // carried across the travel. PIE clients share the server's map, so no travel.
                             if (!MapPath.empty())
                             {
                                 FWorldContext* CliCtx = GWorldManager ? GWorldManager->FindContext(World) : nullptr;
@@ -895,14 +1010,75 @@ namespace Lumina
                     case ENetMessage::ClientReady:
                         if (bServer)
                         {
-                            // The client finished loading the map: re-emit the full baseline so spawns,
-                            // ownership and poses sent before it was ready are delivered now. Spawn apply
-                            // dedups on the GUID table, so re-broadcasting to already-loaded clients is safe.
+                            // Late-join initial sync, catch this connection up to the current world without
+                            // re-broadcasting spawns to everyone. Transforms re-baseline via the keyframe.
                             State->bForceMovementResend = true;
                             State->bOwnershipDirty       = true;
-                            State->KnownSpawnedGuids.clear();
-                            LOG_DISPLAY("[Net][Server] Client {} ready; re-baselining world", Event.Connection.Value);
+
+                            // Build the joiner's spawn batch first (assigns its object/asset indices), then
+                            // send the index tables, then the spawns, so indices resolve before the spawns.
+                            TVector<uint8> SpawnBatch;
+                            BuildExistingSpawnBatch(Registry, *State, SpawnBatch);
+
+                            if (!State->OutObjects.IndexToGuid.empty())
+                            {
+                                TVector<uint32> AllIndices;
+                                AllIndices.reserve(State->OutObjects.IndexToGuid.size());
+                                for (const auto& Pair : State->OutObjects.IndexToGuid)
+                                {
+                                    AllIndices.push_back(Pair.first);
+                                }
+                                TVector<uint8> ExportMsg;
+                                Net::BuildObjectExport(State->OutObjects, AllIndices, ExportMsg);
+                                Net::SendFramed(*State->Transport, Event.Connection, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                            }
+
+                            if (!State->OutAssets.IndexToRef.empty()) // asset index table for the joiner
+                            {
+                                TVector<uint32> AllIndices;
+                                AllIndices.reserve(State->OutAssets.IndexToRef.size());
+                                for (const auto& Pair : State->OutAssets.IndexToRef)
+                                {
+                                    AllIndices.push_back(Pair.first);
+                                }
+                                TVector<uint8> ExportMsg;
+                                Net::BuildAssetExport(State->OutAssets, AllIndices, ExportMsg);
+                                Net::SendFramed(*State->Transport, Event.Connection, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                            }
+
+                            if (!SpawnBatch.empty())
+                            {
+                                State->Transport->Send(Event.Connection, SpawnBatch.data(), static_cast<SIZE_T>(SpawnBatch.size()), 0, ESendMode::Reliable);
+                            }
+
+                            // Replay stable entities the server destroyed at runtime. The joiner loaded the
+                            // level fresh, so tell it to remove the copies it would have created.
+                            if (!State->DestroyedStableGuids.empty())
+                            {
+                                TVector<uint8> DespawnBatch;
+                                for (uint32 Guid : State->DestroyedStableGuids)
+                                {
+                                    TVector<uint8> Buffer;
+                                    FNetArchive Writer(Buffer);
+                                    uint8  Type = static_cast<uint8>(ENetMessage::DespawnEntity);
+                                    uint32 G    = Guid;
+                                    Writer << Type;
+                                    Writer << G;
+                                    Net::AppendFramedMessage(DespawnBatch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                                }
+                                State->Transport->Send(Event.Connection, DespawnBatch.data(), static_cast<SIZE_T>(DespawnBatch.size()), 0, ESendMode::Reliable);
+                            }
+
+                            LOG_DISPLAY("[Net][Server] Client {} ready; sent initial state ({} spawn bytes)", Event.Connection.Value, static_cast<int>(SpawnBatch.size()));
                         }
+                        break;
+                    case ENetMessage::ObjectExport:
+                        // Store the sender's exports in its own incoming map since the index space is
+                        // sender-owned. The server needs this for client-to-server RPC object args.
+                        Net::ApplyObjectExport(State->InObjects[Event.Connection.Value], Msg, MsgSize);
+                        break;
+                    case ENetMessage::AssetExport:
+                        Net::ApplyAssetExport(State->InAssets[Event.Connection.Value], Msg, MsgSize);
                         break;
                     case ENetMessage::ScriptRpc:
                         // Either side can receive (server gets Server RPCs; client gets Multicast/Client).
@@ -921,20 +1097,20 @@ namespace Lumina
 
         if (bServer)
         {
-            // Smooth client-owned entities from their received-pose buffer before relaying / displaying. The
-            // host's own (locally-driven) entities aren't buffered, so they stay live. Done first so the relay
-            // snapshot below picks up the interpolated pose.
+            // Smooth client-owned entities from their received-pose buffer before relaying. The host's own
+            // entities aren't buffered so they stay live. Done first so the relay snapshot uses the result.
             InterpolateProxies(Registry, *State, Context.GetTime());
 
             if (State->ConnectedClients > 0)
             {
                 // Accumulate this tick's messages into two batches (one per reliability tier) and flush each
-                // as a single datagram -- one ENet packet header + ack instead of one per message.
+                // as a single datagram, one ENet header and ack instead of one per message.
                 TVector<uint8> ReliableBatch;
                 TVector<uint8> UnreliableBatch;
 
-                // Reliable, generic entity replication: spawn/despawn dynamic entities, then property deltas.
+                // Reliable, generic entity replication. Spawn/despawn dynamic entities, then property deltas.
                 ReplicateSpawns(Registry, *State, ReliableBatch);
+                ReplicateStableDespawns(Registry, *State, ReliableBatch);
                 ReplicateDirtyProperties(Registry, *State, ReliableBatch);
 
                 // Ownership is reliable state; (re)broadcast the table on change or a new join.
@@ -944,8 +1120,8 @@ namespace Lumina
                     State->bOwnershipDirty = false;
                 }
 
-                // Periodic keyframe: re-send every replicated pose so a dropped delta self-heals within
-                // the interval (state convergence, no acks). Deltas still cover per-frame movement.
+                // Periodic keyframe, re-send every replicated pose so a dropped delta self-heals within the
+                // interval. Deltas still cover per-frame movement.
                 const float KeyframeInterval = CVarTransformKeyframeInterval.GetValue();
                 if (KeyframeInterval > 0.0f)
                 {
@@ -960,6 +1136,23 @@ namespace Lumina
                 BroadcastTransformSnapshot(Registry, UnreliableBatch, State->bForceMovementResend,
                     static_cast<float>(Context.GetDeltaTime()), static_cast<float>(Context.GetTime()));
                 State->bForceMovementResend = false;
+
+                // Export newly-assigned net indices before the reliable batch that references them, on the
+                // same ordered channel, framed so clients resolve them in the batch.
+                if (!State->OutObjects.PendingExports.empty())
+                {
+                    TVector<uint8> ExportMsg;
+                    Net::BuildObjectExport(State->OutObjects, State->OutObjects.PendingExports, ExportMsg);
+                    Net::BroadcastFramed(*State->Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                    State->OutObjects.PendingExports.clear();
+                }
+                if (!State->OutAssets.PendingExports.empty())
+                {
+                    TVector<uint8> ExportMsg;
+                    Net::BuildAssetExport(State->OutAssets, State->OutAssets.PendingExports, ExportMsg);
+                    Net::BroadcastFramed(*State->Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                    State->OutAssets.PendingExports.clear();
+                }
 
                 if (!ReliableBatch.empty())
                 {
@@ -988,7 +1181,7 @@ namespace Lumina
                 Net::SendFramed(*State->Transport, State->ServerConnection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, ESendMode::Reliable);
             }
 
-            // Client-authoritative movement: push the pose of entities we control up to the server.
+            // Client-authoritative movement, push the pose of entities we control up to the server.
             if (State->bClientConnected)
             {
                 SendOwnedTransforms(Registry, *State, static_cast<float>(Context.GetDeltaTime()));

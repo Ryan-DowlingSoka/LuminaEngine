@@ -1367,7 +1367,7 @@ namespace Lumina
         // Set WindowClass based on per-document ID, so tabs from Document A are not dockable in Document B etc. We could be using any ID suiting us, e.g. &doc
         // We also set ParentViewportId to request the platform back-end to set parent/child relationship at the windowing level
         EditorTool->ToolWindowsClass.ClassId = EditorTool->GetID();
-        EditorTool->ToolWindowsClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration;
+        EditorTool->ToolWindowsClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
         EditorTool->ToolWindowsClass.ParentViewportId = ImGui::GetWindowViewport()->ID;
         EditorTool->ToolWindowsClass.DockingAllowUnclassed = true;
 
@@ -1418,9 +1418,14 @@ namespace Lumina
                 }
             }
 
-            // FIXME: should be able to "move window but keep layout" if CurrDockspaceRefCount > 1;
-            // FIXME: when moving, delete settings of old windows.
-            EditorToolLayoutCopy(Tool);
+            // Move the window but keep the destination layout when another same-type tool already
+            // shares it (CurrDockspaceRefCount counts ourselves, so > 1 means at least one other).
+            // Our identically-named sub-windows map straight onto that shared layout; copying would
+            // clobber it. Only fork our layout into a destination that is otherwise empty.
+            if (CurrDockspaceRefCount <= 1)
+            {
+                EditorToolLayoutCopy(Tool);
+            }
 
             if (PrevDockspaceRefCount == 0)
             {
@@ -1680,7 +1685,8 @@ namespace Lumina
             }
 
             // The tool owns the world: FEditorTool::Deinitialize calls DestroyWorldContext on teardown.
-            FGamePreviewTool* Tool = CreateTool<FGamePreviewTool>(this, PreviewWorld);
+            // PlayerIndex is the client number (player 1 is the main viewport), so previews are "Client: 1"..N.
+            FGamePreviewTool* Tool = CreateTool<FGamePreviewTool>(this, PreviewWorld, PlayerIndex);
             ExtraGamePreviews.push_back(FExtraGamePreview{ PreviewWorld, Tool });
         }
     }

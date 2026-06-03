@@ -459,6 +459,29 @@ namespace Lumina
             if (World) RemoveComponent_Lua(World->GetEntityRegistry(), Entity, Type);
         }
 
+        // Parent Child to Parent in the scene graph (preserves Child's world transform; set its local
+        // transform afterward for an offset). Pass a null Parent to detach to the root.
+        static void World_AttachEntity(CWorld* World, entt::entity Child, entt::entity Parent)
+        {
+            if (World) ECS::Utils::ReparentEntity(World->GetEntityRegistry(), Child, Parent);
+        }
+
+        // Local-space location setter (relative to the parent), unlike World_SetLocation which is world-space.
+        static void World_SetLocalLocation(CWorld* World, entt::entity Entity, FVector3 Location)
+        {
+            if (World) ECS::Utils::SetEntityLocation(World->GetEntityRegistry(), Entity, Location);
+        }
+
+        // Attach a Luau script to an entity by path. The ScriptPath is replicated, so a server-spawned
+        // entity's script reaches clients (which attach it on receipt) -- giving the entity RPC handlers.
+        static void World_AddScript(CWorld* World, entt::entity Entity, FStringView Path)
+        {
+            if (World == nullptr) { return; }
+            // Clean set/swap: detaches any prior script before attaching the new one. On a server, MarkDirty
+            // the entity to replicate the change.
+            World->SetEntityScript(Entity, Path);
+        }
+
         // Metatable __index for the global World table: resolves subsystem namespaces (World.Physics,
         // and later World.Audio/Rendering/...) to the CALLING script's world via thread data, so the
         // single shared table is correct across every world. Direct World.* fields (SpawnPrefab, etc.)
@@ -604,6 +627,36 @@ namespace Lumina
         static bool World_FractureAt(CWorld* World, entt::entity Entity, float X, float Y, float Z, TOptional<float> Strength)
         {
             return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, FVector3(X, Y, Z), Strength.value_or(0.0f));
+        }
+
+        //~ World.Debug.* -- screen-space debug text + world debug shapes. Dev/Debug only (no-op in Shipping).
+        static void World_Debug_DrawText(CWorld* World, FStringView Text, TOptional<FVector4> Color)
+        {
+            if (World) World->DrawDebugText(FString(Text), Color.value_or(FVector4(1.0f)));
+        }
+        static void World_Debug_DrawLine(CWorld* World, FVector3 Start, FVector3 End, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawLine(Start, End, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+        }
+        static void World_Debug_DrawBox(CWorld* World, FVector3 Center, FVector3 HalfExtents, FQuat Rotation, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawBox(Center, HalfExtents, Rotation, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+        }
+        static void World_Debug_DrawSphere(CWorld* World, FVector3 Center, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawSphere(Center, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+        }
+        static void World_Debug_DrawCapsule(CWorld* World, FVector3 Start, FVector3 End, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawCapsule(Start, End, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+        }
+        static void World_Debug_DrawCone(CWorld* World, FVector3 Apex, FVector3 Direction, float AngleRadians, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawCone(Apex, Direction, AngleRadians, Length, Color, 16, 4, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+        }
+        static void World_Debug_DrawArrow(CWorld* World, FVector3 Start, FVector3 Direction, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+        {
+            if (World) World->DrawArrow(Start, Direction, Length, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
         }
 
         // RT is a handle from Engine.LoadObject("/Game/X"); color defaults to opaque red (blood).
@@ -959,7 +1012,10 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");                // Destroy(entity)
         WorldTable.SetFunction<&LuaBinds::World_CreateEntity>("CreateEntity");      // CreateEntity() -> entity
         WorldTable.SetFunction<&LuaBinds::World_AddComponent>("AddComponent");      // AddComponent(entity, Type)
+        WorldTable.SetFunction<&LuaBinds::World_AddScript>("AddScript");            // AddScript(entity, "/path") -- replicated
         WorldTable.SetFunction<&LuaBinds::World_RemoveComponent>("RemoveComponent"); // RemoveComponent(entity, Type)
+        WorldTable.SetFunction<&LuaBinds::World_AttachEntity>("AttachEntity");      // AttachEntity(child, parent) -- scene-graph parent
+        WorldTable.SetFunction<&LuaBinds::World_SetLocalLocation>("SetLocalLocation"); // SetLocalLocation(entity, vector) (parent-relative)
         WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");                // IsValid(entity) -> bool
         WorldTable.SetFunction<&LuaBinds::World_Compact>("Compact");                // Compact() -- reclaim tombstones; invalidates cached component ptrs
         WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
@@ -975,6 +1031,19 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_GetScript>("GetScript");            // GetScript(entity) -> script table or nil
         WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
         WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
+
+        // World.Debug.* -- screen-space debug text + world debug shapes. Trailing args (thickness, depth-test,
+        // duration) are optional. Dev/Debug only (DrawText is a no-op in Shipping).
+        {
+            Lua::FRef DebugTable = WorldTable.NewTable("Debug");
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawText>   ("DrawText");    // DrawText(text [, color])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawLine>   ("DrawLine");    // DrawLine(start, end, color [, thickness, depthTest, duration])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawBox>    ("DrawBox");     // DrawBox(center, halfExtents, rotation, color [, ...])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawSphere> ("DrawSphere");  // DrawSphere(center, radius, color [, ...])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawCapsule>("DrawCapsule"); // DrawCapsule(start, end, radius, color [, ...])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawCone>   ("DrawCone");    // DrawCone(apex, direction, angleRadians, length, color [, ...])
+            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawArrow>  ("DrawArrow");   // DrawArrow(start, direction, length, color [, ...])
+        }
 
         // World.<Subsystem> namespaces (World.Physics, ...) resolve per script through this metatable
         // so the single shared World table is correct across every world. See World_SubsystemIndex.
@@ -996,6 +1065,15 @@ namespace Lumina
             "declare World: {\n"
             "    Physics: PhysicsScene,\n"
             "    Net: NetInterface,\n"
+            "    Debug: {\n"
+            "        DrawText: (text: string, color: vector?) -> (),\n"
+            "        DrawLine: (start: vector, finish: vector, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "        DrawBox: (center: vector, halfExtents: vector, rotation: any, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "        DrawSphere: (center: vector, radius: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "        DrawCapsule: (start: vector, finish: vector, radius: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "        DrawCone: (apex: vector, direction: vector, angleRadians: number, length: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "        DrawArrow: (start: vector, direction: vector, length: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
+            "    },\n"
             "    [string]: any,\n"
             "}\n");
 #endif
@@ -1086,6 +1164,25 @@ namespace Lumina
         // Compact once load-time churn (tombstones + prefab refresh) settles, so the world starts dense.
         // Before any on_construct hook; reorders elements but nothing here holds a component pointer.
         EntityRegistry.compact();
+
+        // Server-only entities (SNetworkComponent.bNetLoadOnClient == false) never exist on a client. Strip
+        // them here -- after the load swap, before scripts attach -- so the client never even loads their
+        // scripts. The script-attach hooks aren't connected yet, so this is a quiet removal.
+        if (GetNetMode() == ENetMode::Client)
+        {
+            TVector<entt::entity> ServerOnly;
+            for (entt::entity Entity : EntityRegistry.view<SNetworkComponent>())
+            {
+                if (!EntityRegistry.get<SNetworkComponent>(Entity).bNetLoadOnClient)
+                {
+                    ServerOnly.push_back(Entity);
+                }
+            }
+            for (entt::entity Entity : ServerOnly)
+            {
+                EntityRegistry.destroy(Entity);
+            }
+        }
 
         EntityRegistry.ctx().emplace<entt::dispatcher&>(SingletonDispatcher);
         
@@ -2418,15 +2515,58 @@ namespace Lumina
         OnScriptComponentCreated(Entity, ScriptComponent, /*bRunReady*/ true);
     }
 
+    void CWorld::SetEntityScript(entt::entity Entity, FStringView Path)
+    {
+        if (!EntityRegistry.valid(Entity))
+        {
+            return;
+        }
+
+        SScriptComponent& ScriptComponent = EntityRegistry.get_or_emplace<SScriptComponent>(Entity);
+
+        // Already running this exact script -> nothing to do (avoids a needless detach/reattach).
+        if (ScriptComponent.Script != nullptr &&
+            FStringView(ScriptComponent.Script->Path.c_str(), ScriptComponent.Script->Path.size()) == Path)
+        {
+            return;
+        }
+
+        ScriptComponent.ScriptPath.SetPath(Path);
+        ReloadScriptForComponent(Entity, ScriptComponent); // detaches any prior script, attaches the new one
+
+        // On the authority, a networked entity's script change must reach clients: flag it dirty so the next
+        // tick sends a PropertyUpdate carrying the new (replicated) ScriptPath, which clients swap to.
+        if (NetIsServerMode(GetNetMode()) && EntityRegistry.all_of<SNetworkComponent>(Entity))
+        {
+            EntityRegistry.emplace_or_replace<FNetDirty>(Entity);
+        }
+    }
+
     void CWorld::OnScriptSourceReloaded(FStringView Path)
     {
+        // Snapshot the matching entities BEFORE reloading: ReloadScriptForComponent synchronously calls the
+        // script's Lua OnDetach/OnAttach, which can create/destroy entities or add/remove SScriptComponent --
+        // mutating the pool we'd otherwise be iterating (iterator invalidation + dangling component ref).
+        TVector<entt::entity> ToReload;
         auto View = EntityRegistry.view<SScriptComponent>();
         for (entt::entity Entity : View)
         {
-            SScriptComponent& Component = View.get<SScriptComponent>(Entity);
-            if (Component.ScriptPath.ResolvePath() == Path)
+            if (View.get<SScriptComponent>(Entity).ScriptPath.ResolvePath() == Path)
             {
-                ReloadScriptForComponent(Entity, Component);
+                ToReload.push_back(Entity);
+            }
+        }
+
+        for (entt::entity Entity : ToReload)
+        {
+            // A prior reload's hook may have destroyed this entity or removed its script; re-check + re-fetch.
+            if (!EntityRegistry.valid(Entity))
+            {
+                continue;
+            }
+            if (SScriptComponent* Component = EntityRegistry.try_get<SScriptComponent>(Entity))
+            {
+                ReloadScriptForComponent(Entity, *Component);
             }
         }
     }
@@ -2478,6 +2618,26 @@ namespace Lumina
         }
 
         TriangleBatcherComponent->EnqueueTriangles(std::move(Vertices), bDepthTest, Duration);
+    }
+
+    void CWorld::DrawDebugText(const FString& Text, const FVector4& Color)
+    {
+#if !defined(LE_SHIPPING)
+        if (IsSuspended())
+        {
+            return;
+        }
+
+        FDebugTextLine& Line = DebugTextLines.emplace_back();
+        Line.Text  = Text;
+        Line.Color = Color;
+#endif
+    }
+
+    void CWorld::DrainDebugTextLines(TVector<FDebugTextLine>& Out)
+    {
+        Out = Move(DebugTextLines);
+        DebugTextLines.clear();
     }
 
     TOptional<SRayResult> CWorld::CastRay(const SRayCastSettings& Settings)

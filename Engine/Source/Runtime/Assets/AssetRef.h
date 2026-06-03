@@ -6,6 +6,8 @@
 
 namespace Lumina
 {
+    class FNetArchive;
+
     // Rename-safe reference to a loose text asset (.luau/.rml/.rcss).
     REFLECT()
     struct RUNTIME_API FAssetRef
@@ -41,6 +43,10 @@ namespace Lumina
         void SetPath(FStringView InPath);
         void Set(FStringView InPath, const FGuid& InGuid);
         void Reset() { Path.clear(); Guid.clear(); }
+
+        /** Tight network serialization. With the archive's asset-index hooks bound, writes a compact varint
+         *  index (Path+GUID exported once via ENetMessage::AssetExport); otherwise the full Path + GUID. */
+        void NetSerialize(FNetArchive& Ar);
 
         bool operator==(const FAssetRef& Other) const { return Path == Other.Path && Guid == Other.Guid; }
         bool operator!=(const FAssetRef& Other) const { return !(*this == Other); }

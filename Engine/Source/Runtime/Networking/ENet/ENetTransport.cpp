@@ -15,6 +15,23 @@ namespace Lumina
     static TConsoleVar<float> CVarSimPacketLossPct("Net.Sim.PacketLossPct", 0.0f,
         "Simulated outgoing packet loss, 0..100%. Only unreliable packets are dropped (reliable ones retransmit).");
 
+    // ENet's built-in adaptive range coder: compresses every outgoing datagram, decompresses incoming, host
+    // -wide and transparent. Both peers must enable it (they do -- same engine). Read once at host creation.
+    static TConsoleVar<bool> CVarCompression("Net.Compression", true,
+        "Compress packets with ENet's range coder (good ratio on game traffic, low overhead). Both peers must match.");
+
+    static void EnablePacketCompression(ENetHost* Host)
+    {
+        if (Host == nullptr || !CVarCompression.GetValue())
+        {
+            return;
+        }
+        if (enet_host_compress_with_range_coder(Host) != 0)
+        {
+            LOG_WARN("Network: failed to install ENet range-coder compression");
+        }
+    }
+
     // Cheap xorshift for drop decisions; deterministic seed is fine for a debug tool.
     static float SimRand01()
     {
@@ -204,6 +221,8 @@ namespace Lumina
             return false;
         }
 
+        EnablePacketCompression(Impl->Host);
+
         Impl->bIsServer = true;
         LOG_DISPLAY("Network: ENet server listening on port {} (max {} connections)", Params.Port, Params.MaxConnections);
         return true;
@@ -223,6 +242,7 @@ namespace Lumina
             LOG_ERROR("FENetTransport::ConnectToServer: failed to create client host");
             return FConnectionHandle::Invalid();
         }
+        EnablePacketCompression(Impl->Host);
         Impl->bIsServer = false;
 
         ENetAddress Address{};

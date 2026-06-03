@@ -141,4 +141,32 @@ namespace Lumina
             bValue = (ReadBit() != 0);
         }
     }
+
+    void WriteVarUInt(FNetArchive& Ar, uint32 Value)
+    {
+        while (Value >= 0x80)
+        {
+            uint8 Byte = static_cast<uint8>(Value) | 0x80;
+            Ar << Byte;
+            Value >>= 7;
+        }
+        uint8 Last = static_cast<uint8>(Value);
+        Ar << Last;
+    }
+
+    uint32 ReadVarUInt(FNetArchive& Ar)
+    {
+        uint32 Value = 0;
+        int    Shift = 0;
+        uint8  Byte  = 0;
+        do
+        {
+            Ar << Byte;
+            if (Ar.HasError()) { break; }
+            Value |= static_cast<uint32>(Byte & 0x7F) << Shift;
+            Shift += 7;
+        }
+        while ((Byte & 0x80) != 0 && Shift < 35);
+        return Value;
+    }
 }

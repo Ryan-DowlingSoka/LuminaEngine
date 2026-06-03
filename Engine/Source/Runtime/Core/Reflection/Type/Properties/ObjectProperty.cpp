@@ -25,12 +25,27 @@ namespace Lumina
 
         if (Ar.IsWriting())
         {
-            CObject* Raw  = Ptr->Get();
-            FGuid    Guid = Raw ? Raw->GetGUID() : FGuid();
+            CObject* Raw = Ptr->Get();
+
+            // Indexed path (replication): a compact net index; the GUID is exported once via ObjectExport.
+            if (Ar.ObjectToNetIndex)
+            {
+                WriteVarUInt(Ar, Raw ? Ar.ObjectToNetIndex(Raw) : 0u);
+                return;
+            }
+
+            FGuid Guid = Raw ? Raw->GetGUID() : FGuid();
             Ar << Guid;
         }
         else
         {
+            if (Ar.NetIndexToObject)
+            {
+                const uint32 Index = ReadVarUInt(Ar);
+                *Ptr = (Index != 0) ? Ar.NetIndexToObject(Index) : nullptr;
+                return;
+            }
+
             FGuid Guid;
             Ar << Guid;
 

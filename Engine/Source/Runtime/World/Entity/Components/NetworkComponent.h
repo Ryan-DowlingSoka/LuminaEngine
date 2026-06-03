@@ -7,9 +7,8 @@
 
 namespace Lumina
 {
-    // Marks an entity for networking. Authored fields (bReplicates/...) serialize with the world; the
-    // runtime net state (NetGUID/LocalRole/RemoteRole/OwningConnectionId) is derived per-peer by
-    // SNetworkSystem -- exposed ReadOnly + NoSerialize so it shows in details for debugging but is never saved.
+    // Marks an entity for networking. Authored fields serialize with the world; runtime net state is
+    // derived per-peer by SNetworkSystem and shown ReadOnly for debugging but never saved.
     REFLECT(Component, Category = "Networking")
     struct RUNTIME_API SNetworkComponent
     {
@@ -22,6 +21,10 @@ namespace Lumina
         /** Relevant to every connection (skips relevancy culling once that exists). */
         PROPERTY(Editable, Category = "Networking")
         bool bAlwaysRelevant = false;
+
+        /** When false the entity exists only on the server; clients strip it at world load. */
+        PROPERTY(Editable, Category = "Networking")
+        bool bNetLoadOnClient = true;
 
         /** Replicate this entity's transform. The server only sends it on frames where it actually moved. */
         PROPERTY(Editable, Category = "Networking")
@@ -38,7 +41,7 @@ namespace Lumina
         PROPERTY(ReadOnly, NoSerialize, Category = "Networking|Debug")
         FNetGUID NetGUID;
 
-        /** This peer's role: Authority on the server, Autonomous/Simulated proxy on clients. */
+        /** This peer's role. Authority on the server, proxy on clients. */
         PROPERTY(ReadOnly, NoSerialize, Category = "Networking|Debug")
         ENetRole LocalRole = ENetRole::None;
 
@@ -50,12 +53,12 @@ namespace Lumina
         PROPERTY(ReadOnly, NoSerialize, Category = "Networking|Debug")
         uint32 OwningConnectionId = 0;
 
-        // Client-only latch: a proxy's physics body has been switched to Kinematic so the local sim no
-        // longer fights replicated transforms. Set once the body exists.
+        // Client-only latch. A proxy's physics body switched to Kinematic so the local sim no longer
+        // fights replicated transforms. Set once the body exists.
         bool     bProxyPhysicsConfigured = false;
 
-        // Server-only movement-replication cache: the last local pose actually sent, so a snapshot
-        // includes only entities whose transform changed since. Invalid until the first send.
+        // Server-only movement cache, the last local pose sent so a snapshot includes only entities whose
+        // transform changed since. Invalid until the first send.
         FVector3 LastSentLocation;
         FQuat    LastSentRotation;
         bool     bMovementCacheValid = false;

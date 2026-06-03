@@ -19,13 +19,18 @@ namespace Lumina
     struct FScriptHasFixedUpdateFn  {};
     struct FScriptHasEditorUpdateFn {};
 
+    // Client marker, a replicated ScriptPath that failed to load on this peer. Stops the re-attach from
+    // reloading it every tick. Holds the failed path so a changed ScriptPath still retries.
+    struct FScriptAttachFailed { FString Path; };
+
     REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SScriptComponent
     {
         GENERATED_BODY()
 
-        /** Luau script to execute on this entity. Rename-safe (GUID-backed). */
-        PROPERTY(Editable, AssetType = "luau")
+        /** Luau script to execute on this entity. Rename-safe (GUID-backed). Replicated so a server-spawned
+         *  entity carries its script (and thus its RPC handlers) to clients, which attach it on receipt. */
+        PROPERTY(Editable, Replicated, AssetType = "luau")
         FAssetRef ScriptPath;
 
         /** Per-instance overrides for the script's --@export-annotated top-level members (Script.<Name> = ...). */
@@ -53,12 +58,8 @@ namespace Lumina
 
         Lua::FRef       ScriptMetaTable;
 
-        /**
-         * Handlers for directed messages dispatched via FEntityMessageBus / `Messages:Send`.
-         * Populated once at script attach by walking the script table for `On*` functions
-         * (see CWorld::OnScriptComponentCreated). Cleared automatically when the component
-         * is destroyed -- FRef releases its Lua ref in its dtor.
-         */
+        /** Handlers for directed messages dispatched via FEntityMessageBus. Populated at script attach by
+         *  walking the script table for On* functions, released when the component is destroyed. */
         THashMap<FName, Lua::FRef>  MessageHandlers;
 
         CWorld*         World           = nullptr;

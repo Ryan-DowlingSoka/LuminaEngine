@@ -42,6 +42,7 @@
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
+#include "Tools/FontManager/FontManager.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
 #include "World/World.h"
@@ -195,6 +196,10 @@ namespace Lumina
 
         // Built-in primitive meshes must exist before any world deserializes.
         CPrimitiveManager::Get();
+
+        // Bake the default world-text font on the main thread (the render extract runs on workers and only
+        // reads it). Lazy elsewhere, but force it here so the first text draw never initializes off-thread.
+        CFontManager::Get();
 
         GWorldManager = Memory::New<FWorldManager>();
 
@@ -819,29 +824,44 @@ namespace Lumina
             }
         }
 
-        // No running game world yet (cold-boot): spawn a fresh game context.
+        // No running game world yet (cold-boot): spawn a fresh game context. Duplicate the asset like every
+        // other path -- the cached WorldAsset must never be the live world, or the next Travel would tear it
+        // down and a later LoadObject of this map would hand back a destroyed husk.
         if (OldContext == nullptr)
         {
+            CWorld* ColdWorld = CWorld::DuplicateWorld(WorldAsset);
+            if (ColdWorld == nullptr)
+            {
+                LOG_ERROR("FEngine::Travel: DuplicateWorld failed for '{}' (cold-boot).", MapName.c_str());
+                return;
+            }
+
             const ENetMode ColdNetMode = (bPendingHostOverride && bPendingHostListen) ? ENetMode::ListenServer : ENetMode::Standalone;
-            FWorldContext* NewContext = GWorldManager->CreateWorldContext(WorldAsset, EWorldType::Game, ColdNetMode);
+            FWorldContext* NewContext = GWorldManager->CreateWorldContext(ColdWorld, EWorldType::Game, ColdNetMode);
             if (NewContext != nullptr)
             {
                 NewContext->GameInstance = GameInstance;
+                NewContext->SourceWorld  = WorldAsset;
                 NewContext->MapPath      = FString(MapName.c_str());
                 if (bPendingHostOverride)
                 {
                     NewContext->NetPort = PendingHostPort;
                 }
             }
+
+            if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
+            {
+                Primary->SetWorld(ColdWorld);
+            }
+
             bPendingHostOverride = false;
-            FCoreDelegates::OnWorldTravelled.Broadcast(nullptr, WorldAsset);
+            FCoreDelegates::OnWorldTravelled.Broadcast(nullptr, ColdWorld);
             return;
         }
 
         const EWorldType                Type           = OldContext->Type;
         ENetMode                        NetMode        = OldContext->NetMode;
         const bool                      bPIE           = OldContext->bPIE;
-        const TWeakObjectPtr<CWorld>    SourceWorldRef = OldContext->SourceWorld;
         const FString                   OldNetHost     = OldContext->NetHost;
         uint16                          NetPort        = OldContext->NetPort;
         CGameInstance* const            SavedInstance  = OldContext->GameInstance != nullptr
@@ -888,7 +908,7 @@ namespace Lumina
         if (NewContext != nullptr)
         {
             NewContext->bPIE         = bPIE;
-            NewContext->SourceWorld  = SourceWorldRef;
+            NewContext->SourceWorld  = WorldAsset; // NewWorld was duplicated from WorldAsset -> that's its source
             NewContext->GameInstance = SavedInstance;
             NewContext->MapPath      = FString(MapName.c_str());
             NewContext->NetHost      = OldNetHost;

@@ -51,20 +51,31 @@ namespace Lumina
     bool FInputProcessor::IsMouseButtonReleased(EMouseKey M) const { auto* C = GetActiveContext(); return C ? C->IsMouseButtonReleased(M) : false; }
     float FInputProcessor::GetMouseButtonHeldTime(EMouseKey M) const { auto* C = GetActiveContext(); return C ? C->GetMouseButtonHeldTime(M) : -1.0f; }
 
-    void FInputProcessor::SetMouseMode(EMouseMode Mode)
+    void FInputProcessor::SetMouseMode(EMouseMode Mode, CWorld* CallerWorld)
     {
-        FInputViewport* Active = FInputViewportRegistry::Get().GetActiveViewport();
-        if (Active == nullptr)
+        FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+
+        // Target the CALLER's own viewport when known (per-window capture); else the active one. This is
+        // what makes multiple game-preview windows behave: each player's script sets only its own window's
+        // mode, so an inactive player's release can't wipe the focused window's capture.
+        FInputViewport* Target = (CallerWorld != nullptr) ? Reg.FindViewportForWorld(CallerWorld) : nullptr;
+        if (Target == nullptr)
+        {
+            Target = Reg.GetActiveViewport();
+        }
+        if (Target == nullptr)
         {
             return;
         }
-        Active->GetContext().SetMouseMode(Mode);
-        FInputViewportRegistry::Get().ReapplyActiveCursorMode();
+        Target->GetContext().SetMouseMode(Mode);
+        Reg.ReapplyActiveCursorMode();
 
         // Block ImGui's invisible-cursor warp from fighting our capture.
         #if WITH_EDITOR
+        FInputViewport* Active = Reg.GetActiveViewport();
+        const EMouseMode ActiveMode = Active ? Active->GetContext().GetMouseMode() : EMouseMode::Normal;
         ImGuiIO& IO = ImGui::GetIO();
-        if (Mode == EMouseMode::Captured || Mode == EMouseMode::Hidden)
+        if (ActiveMode == EMouseMode::Captured || ActiveMode == EMouseMode::Hidden)
         {
             IO.ConfigFlags |= ImGuiConfigFlags_NoMouse;
         }

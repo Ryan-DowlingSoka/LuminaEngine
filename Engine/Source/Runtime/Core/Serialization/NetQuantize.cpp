@@ -19,7 +19,7 @@ namespace Lumina::NetQuantize
         }
 
         // LEB128 varint (7 data bits + continuation bit per byte).
-        void WriteVarUInt(FNetArchive& Ar, uint64 Value)
+        void WriteVarUInt64(FNetArchive& Ar, uint64 Value)
         {
             do
             {
@@ -31,7 +31,7 @@ namespace Lumina::NetQuantize
             while (Value != 0);
         }
 
-        uint64 ReadVarUInt(FNetArchive& Ar)
+        uint64 ReadVarUInt64(FNetArchive& Ar)
         {
             uint64 Result = 0;
             uint32 Shift  = 0;
@@ -62,16 +62,16 @@ namespace Lumina::NetQuantize
     void WritePackedVector(FNetArchive& Ar, const FVector3& V)
     {
         // Quantize in double so large world coords keep mm precision before the cast.
-        WriteVarUInt(Ar, ZigZag(RoundToInt64(static_cast<double>(V.x) / PositionQuantum)));
-        WriteVarUInt(Ar, ZigZag(RoundToInt64(static_cast<double>(V.y) / PositionQuantum)));
-        WriteVarUInt(Ar, ZigZag(RoundToInt64(static_cast<double>(V.z) / PositionQuantum)));
+        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.x) / PositionQuantum)));
+        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.y) / PositionQuantum)));
+        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.z) / PositionQuantum)));
     }
 
     void ReadPackedVector(FNetArchive& Ar, FVector3& V)
     {
-        V.x = static_cast<float>(UnZigZag(ReadVarUInt(Ar)) * PositionQuantum);
-        V.y = static_cast<float>(UnZigZag(ReadVarUInt(Ar)) * PositionQuantum);
-        V.z = static_cast<float>(UnZigZag(ReadVarUInt(Ar)) * PositionQuantum);
+        V.x = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
+        V.y = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
+        V.z = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
     }
 
     void WritePackedQuat(FNetArchive& Ar, const FQuat& Q)

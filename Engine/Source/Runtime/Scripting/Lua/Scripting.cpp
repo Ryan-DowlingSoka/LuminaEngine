@@ -301,6 +301,14 @@ namespace Lumina::Lua
             static THashMap<const CClass*, FUserdataLayout> Registry;
             return Registry;
         }
+
+        // Reverse map: runtime userdata tag -> the CObject class registered for it. Lets us recognize a
+        // CObject userdata on the Lua stack when the concrete C++ type isn't known at compile time.
+        THashMap<uint16, const CClass*>& GetCObjectTagRegistry()
+        {
+            static THashMap<uint16, const CClass*> Registry;
+            return Registry;
+        }
     }
 
     void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout)
@@ -310,6 +318,33 @@ namespace Lumina::Lua
             return;
         }
         GetCObjectLayoutRegistry()[Class] = Layout;
+        GetCObjectTagRegistry()[Layout.Tag] = Class;
+    }
+
+    bool IsCObjectUserdata(lua_State* L, int Index)
+    {
+        if (!lua_isuserdata(L, Index))
+        {
+            return false;
+        }
+        const int Tag = lua_userdatatag(L, Index);
+        if (Tag < 0)
+        {
+            return false;
+        }
+        const auto& Registry = GetCObjectTagRegistry();
+        return Registry.find(static_cast<uint16>(Tag)) != Registry.end();
+    }
+
+    CObject* ToCObject(lua_State* L, int Index)
+    {
+        if (!IsCObjectUserdata(L, Index))
+        {
+            return nullptr;
+        }
+        // The block is an in-place TObjectPtr<ClassT> (pointer-sized, object pointer at offset 0).
+        void* Block = lua_touserdata(L, Index);
+        return Block != nullptr ? *static_cast<CObject* const*>(Block) : nullptr;
     }
 
     const FUserdataLayout* FindCObjectLayout(const CClass* Class)
@@ -776,21 +811,23 @@ namespace Lumina::Lua
         // Only viewport/window-scoped knobs live on the global Input table; per-frame gameplay queries
         // are gated through SInputComponent (InputComponent.h) so an input-less entity can't read input.
         FRef InputTable = GlobalsRef.NewTable("Input");
-
-        // Accept strings: "Hidden", "Normal", "Captured".
-        InputTable.SetFunction<[](FStringView Mode)
+        
+        InputTable.SetFunction<[](lua_State* State, FStringView Mode)
         {
+            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
+            CWorld* CallerWorld = TD ? TD->World : nullptr;
+
             if      (Mode == "Hidden")
             {
-                FInputProcessor::Get().SetMouseMode(EMouseMode::Hidden);
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Hidden, CallerWorld);
             }
             else if (Mode == "Normal")
             {
-                FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Normal, CallerWorld);
             }
             else if (Mode == "Captured")
             {
-                FInputProcessor::Get().SetMouseMode(EMouseMode::Captured);
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Captured, CallerWorld);
             }
             else
             {
@@ -834,7 +871,11 @@ namespace Lumina::Lua
         GlobalsRef.NewClass<SInputComponent>("SInputComponent")
             .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
             {
-                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                // Route to THIS component's own world viewport (not the global active one) so a binding made
+                // in one game-preview window doesn't land on whichever window is focused.
+                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
+                if (V == nullptr) { V = Reg.GetActiveViewport(); }
                 if (V == nullptr) return uint64{0};
                 const uint64 Id = V->GetContext().RegisterActionCallback(
                     FName(FString(Name.data(), Name.size()).c_str()),
@@ -845,7 +886,11 @@ namespace Lumina::Lua
             }>("BindAction")
             .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
             {
-                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                // Route to THIS component's own world viewport (not the global active one) so a binding made
+                // in one game-preview window doesn't land on whichever window is focused.
+                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
+                if (V == nullptr) { V = Reg.GetActiveViewport(); }
                 if (V == nullptr) return uint64{0};
                 const uint64 Id = V->GetContext().RegisterActionCallback(
                     FName(FString(Name.data(), Name.size()).c_str()),
@@ -856,7 +901,11 @@ namespace Lumina::Lua
             }>("BindActionReleased")
             .AddFunction<[](SInputComponent& Self, uint64 Id)
             {
-                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                // Route to THIS component's own world viewport (not the global active one) so a binding made
+                // in one game-preview window doesn't land on whichever window is focused.
+                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
+                if (V == nullptr) { V = Reg.GetActiveViewport(); }
                 if (V != nullptr)
                 {
                     V->GetContext().UnregisterActionCallback(Id);

@@ -137,23 +137,26 @@ namespace Lumina
         template<typename... CallArgs>
         void Broadcast(CallArgs&&... args)
         {
-            if constexpr (eastl::is_void_v<R>)
+            if (InvocationList.empty())
             {
-                for (auto& Entry : InvocationList)
-                {
-                    if (Entry.Delegate.IsBound())
-                    {
-                        Entry.Delegate.Execute(eastl::forward<CallArgs>(args)...);
-                    }
-                }
+                return;
             }
-            else
+
+            TVector<FDelegateHandle> Handles;
+            Handles.reserve(InvocationList.size());
+            for (const FDelegateEntry& Entry : InvocationList)
             {
-                for (auto& Entry : InvocationList)
+                Handles.push_back(Entry.Handle);
+            }
+
+            for (FDelegateHandle Handle : Handles)
+            {
+                for (FDelegateEntry& Entry : InvocationList)
                 {
-                    if (Entry.Delegate.IsBound())
+                    if (Entry.Handle == Handle && Entry.Delegate.IsBound())
                     {
                         Entry.Delegate.Execute(eastl::forward<CallArgs>(args)...);
+                        break;
                     }
                 }
             }

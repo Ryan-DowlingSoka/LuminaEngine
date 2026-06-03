@@ -8,8 +8,10 @@ namespace Lumina
     public:
 
         LUMINA_EDITOR_TOOL(FGamePreviewTool)
-        
-        FGamePreviewTool(IEditorToolContext* Context, CWorld* InWorld);
+
+        // ClientIndex > 0 names the tool "Client: N" so multiple previews are uniquely named (the tool name
+        // is the window/dock identity); 0 keeps the lone "Game Preview" title.
+        FGamePreviewTool(IEditorToolContext* Context, CWorld* InWorld, int32 ClientIndex = 0);
 
 
         void OnInitialize() override;

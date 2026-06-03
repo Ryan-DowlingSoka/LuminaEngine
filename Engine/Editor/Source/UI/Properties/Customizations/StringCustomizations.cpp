@@ -258,20 +258,33 @@ namespace Lumina
     {
         // "FilePath" meta turns the field into an asset-path picker ("..." button, searchable).
         const bool bFilePath = Property->Property->HasMetadata("FilePath");
+        // "Multiline" meta turns the field into a wrapping multi-line box (newlines allowed).
+        const bool bMultiline = Property->Property->HasMetadata("Multiline");
         const float ButtonWidth = bFilePath ? ImGui::GetFrameHeight() : 0.0f;
 
         EPropertyChangeOp Result = EPropertyChangeOp::None;
 
-        char Buffer[256];
+        char Buffer[1024];
         strncpy(Buffer, DisplayValue.c_str(), sizeof(Buffer));
         Buffer[sizeof(Buffer) - 1] = '\0';
 
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - ButtonWidth);
-        if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
+        if (bMultiline)
         {
-            DisplayValue = Buffer;
+            const ImVec2 Size(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight() * 4.0f + ImGui::GetStyle().FramePadding.y * 2.0f);
+            if (ImGui::InputTextMultiline("##ParamName", Buffer, sizeof(Buffer), Size))
+            {
+                DisplayValue = Buffer;
+            }
         }
-        ImGui::PopItemWidth();
+        else
+        {
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - ButtonWidth);
+            if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
+            {
+                DisplayValue = Buffer;
+            }
+            ImGui::PopItemWidth();
+        }
 
         if (ImGui::IsItemDeactivatedAfterEdit())
         {

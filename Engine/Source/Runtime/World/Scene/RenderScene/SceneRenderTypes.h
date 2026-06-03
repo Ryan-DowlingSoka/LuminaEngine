@@ -450,6 +450,25 @@ namespace Lumina
 
     static constexpr uint32 WIDGET_FLAG_BILLBOARD = 1u << 0;
 
+    // One world-space text glyph quad. Origin/Right/Up define the text plane in world space (Right/Up
+    // pre-scaled by the world em size); PlaneMin/Max are the quad bounds in that plane (em units) and
+    // UVRect indexes the font's MSDF atlas. Must match FGPUGlyph in TextCommon.slang (scalar layout, 96B).
+    struct alignas(16) FGPUGlyph
+    {
+        FVector3 Origin;   float Pad0;   // world anchor (entity origin)
+        FVector3 Right;    float Pad1;   // world right axis * worldEmSize
+        FVector3 Up;       float Pad2;   // world up axis * worldEmSize
+        FVector4 UVRect;                 // u0, v0, u1, v1
+        FVector2 PlaneMin;               // quad min in the text plane
+        FVector2 PlaneMax;               // quad max in the text plane
+        uint32   ColorPack;              // PackColor()
+        uint32   EntityID;               // for the picker pass
+        uint32   Pad4;
+        uint32   Pad5;
+    };
+
+    static_assert(sizeof(FGPUGlyph) == 96, "FGPUGlyph layout must match TextCommon.slang");
+
     // One projected decal. Drawn as a unit cube; the decal pixel shader reconstructs the surface from
     // depth, projects into decal-local space, and writes the DBuffer. Must match FGPUDecal in DecalCommon.slang.
     struct alignas(16) FGPUDecal

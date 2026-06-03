@@ -11,9 +11,12 @@
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
+#include "World/Entity/Components/TextComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/World.h"
 #include "Core/Math/Math.h"
+#include "Tools/FontManager/FontManager.h"
+#include <cfloat>
 
 namespace Lumina::EditorEntityUtils
 {
@@ -191,39 +194,83 @@ namespace Lumina::EditorEntityUtils
         }
 
         OutRotation = Transform->GetWorldRotation();
-
-        // Padding so the box sits just outside the mesh silhouette.
         const FVector3 WorldScale = Transform->GetWorldScale();
 
-        // Resolve the local-space AABB if the entity has a renderable mesh asset.
+        // Accumulate a box in the entity's rotated frame, in WORLD units. Each contributor scales on its own
+        // basis (mesh local AABB * WorldScale; text em-extent * WorldSize), so they're unioned here.
+        auto VMin = [](const FVector3& A, const FVector3& B) { return FVector3(Math::Min(A.x, B.x), Math::Min(A.y, B.y), Math::Min(A.z, B.z)); };
+        auto VMax = [](const FVector3& A, const FVector3& B) { return FVector3(Math::Max(A.x, B.x), Math::Max(A.y, B.y), Math::Max(A.z, B.z)); };
+
+        FVector3 Min( FLT_MAX,  FLT_MAX,  FLT_MAX);
+        FVector3 Max(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+        bool     bHasBounds = false;
+        auto Accumulate = [&](const FVector3& BMin, const FVector3& BMax)
+        {
+            Min = VMin(Min, BMin);
+            Max = VMax(Max, BMax);
+            bHasBounds = true;
+        };
+
+        // Renderable mesh asset: local-space AABB scaled by the transform.
         const SStaticMeshComponent*   Mesh    = Registry.try_get<SStaticMeshComponent>(Entity);
         const SSkeletalMeshComponent* Skinned = Registry.try_get<SSkeletalMeshComponent>(Entity);
-
-        FAABB Local;
-        bool  bHasBounds = false;
         if (Mesh && Mesh->StaticMesh)
         {
-            Local = Mesh->GetAABB();
-            bHasBounds = true;
+            const FAABB Local = Mesh->GetAABB();
+            Accumulate(Local.Min * WorldScale, Local.Max * WorldScale);
         }
         else if (Skinned && Skinned->SkeletalMesh)
         {
-            Local = Skinned->GetAABB();
-            bHasBounds = true;
+            const FAABB Local = Skinned->GetAABB();
+            Accumulate(Local.Min * WorldScale, Local.Max * WorldScale);
+        }
+
+        // World text: include the shaped glyph extent (em units * WorldSize) in the entity's local X/Y plane,
+        // so a nameplate/label entity gets a box around the text rather than a unit cube.
+        if (const STextComponent* Text = Registry.try_get<STextComponent>(Entity); Text && !Text->Text.empty())
+        {
+            CFont* Font = Text->Font.Get();
+            if (Font == nullptr || !Font->HasAtlas())
+            {
+                Font = CFontManager::Get().GetDefaultFont();
+            }
+            if (Font != nullptr && Font->HasAtlas())
+            {
+                const float HAlign = (Text->HorizontalAlign == ETextHorizontalAlign::Left)   ? 0.0f
+                                   : (Text->HorizontalAlign == ETextHorizontalAlign::Center) ? 0.5f : 1.0f;
+                const float VAlign = (Text->VerticalAlign == ETextVerticalAlign::Top)        ? 1.0f
+                                   : (Text->VerticalAlign == ETextVerticalAlign::Middle)     ? 0.5f : 0.0f;
+
+                TVector<FShapedGlyph> Shaped;
+                if (Font->ShapeText(Text->Text, HAlign, VAlign, Text->LineSpacing, Shaped) && !Shaped.empty())
+                {
+                    FVector2 EmMin( FLT_MAX,  FLT_MAX);
+                    FVector2 EmMax(-FLT_MAX, -FLT_MAX);
+                    for (const FShapedGlyph& S : Shaped)
+                    {
+                        EmMin = FVector2(Math::Min(EmMin.x, S.Min.x), Math::Min(EmMin.y, S.Min.y));
+                        EmMax = FVector2(Math::Max(EmMax.x, S.Max.x), Math::Max(EmMax.y, S.Max.y));
+                    }
+                    const float WS    = Text->WorldSize;
+                    const float ThinZ = WS * 0.05f; // planar text -> give the box a little depth so it's visible
+                    Accumulate(FVector3(EmMin.x * WS, EmMin.y * WS, -ThinZ),
+                               FVector3(EmMax.x * WS, EmMax.y * WS,  ThinZ));
+                }
+            }
         }
 
         if (bHasBounds)
         {
-            constexpr float Padding = 1.05f;
-            const FVector3 LocalCenter = (Local.Min + Local.Max) * 0.5f;
-            const FVector3 LocalHalf   = (Local.Max - Local.Min) * 0.5f;
+            constexpr float Padding = 1.05f; // sit just outside the silhouette
+            const FVector3 LocalCenter = (Min + Max) * 0.5f;
+            const FVector3 LocalHalf   = (Max - Min) * 0.5f;
 
-            OutCenter      = Transform->GetWorldLocation() + (OutRotation * (LocalCenter * WorldScale));
-            OutHalfExtents = LocalHalf * WorldScale * Padding;
+            OutCenter      = Transform->GetWorldLocation() + (OutRotation * LocalCenter);
+            OutHalfExtents = LocalHalf * Padding;
         }
         else
         {
-            // No mesh bounds (lights, audio, empties, ...): a unit box scaled by the transform.
+            // No mesh/text bounds (lights, audio, empties, ...): a unit box scaled by the transform.
             OutCenter      = Transform->GetWorldLocation();
             OutHalfExtents = WorldScale;
         }

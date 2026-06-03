@@ -1,12 +1,18 @@
 ﻿#include "GamePreviewTool.h"
 #include "World/WorldManager.h"
+#include <format>
 
 namespace Lumina
 {
-    FGamePreviewTool::FGamePreviewTool(IEditorToolContext* Context, CWorld* InWorld)
-        :FEditorTool(Context, "Game Preview", InWorld)
+    static FString MakeGamePreviewName(int32 ClientIndex)
     {
-        
+        return ClientIndex > 0 ? FString(std::format("Client: {}", ClientIndex).c_str()) : FString("Game Preview");
+    }
+
+    FGamePreviewTool::FGamePreviewTool(IEditorToolContext* Context, CWorld* InWorld, int32 ClientIndex)
+        :FEditorTool(Context, MakeGamePreviewName(ClientIndex), InWorld)
+    {
+
     }
 
     void FGamePreviewTool::OnInitialize()

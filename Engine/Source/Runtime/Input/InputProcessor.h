@@ -7,6 +7,7 @@
 namespace Lumina
 {
     class FInputContext;
+    class CWorld;
 
     // Facade over the active FInputContext; falls through to the viewport registry, safe defaults if none.
     class FInputProcessor
@@ -40,7 +41,10 @@ namespace Lumina
         RUNTIME_API bool IsMouseButtonReleased(EMouseKey MouseCode) const;
         RUNTIME_API float GetMouseButtonHeldTime(EMouseKey MouseCode) const;
 
-        RUNTIME_API void       SetMouseMode(EMouseMode Mode);
+        // CallerWorld targets that world's viewport (per-window capture); null = the global active viewport.
+        // Routing per-caller is essential with multiple game-preview windows: a non-active player releasing
+        // its own capture must not clobber the active viewport's mode.
+        RUNTIME_API void       SetMouseMode(EMouseMode Mode, CWorld* CallerWorld = nullptr);
         RUNTIME_API void       SetInputMode(EInputMode Mode);
         RUNTIME_API EInputMode GetInputMode() const;
 

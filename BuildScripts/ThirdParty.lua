@@ -124,6 +124,10 @@ LuminaThirdParty.Register({ Name = "Luau",          IncludeDirs = { "luau/includ
 LuminaThirdParty.Register({ Name = "LuauAnalysis",  IncludeDirs = { "luau/include" } })
 
 
+-- MSDF font-atlas baking (runtime, for the default engine font + editor import). Included as
+-- <msdfgen/...>, so the public include dir is the ThirdParty root; depends on FreeType.
+LuminaThirdParty.Register({ Name = "MSDFGen",       IncludeDirs = { "." },                  Dependencies = { "FreeType" } })
+
 -- Geometry / mesh / texture processing
 LuminaThirdParty.Register({ Name = "MeshOptimizer", IncludeDirs = { "meshoptimizer/src" } })
 LuminaThirdParty.Register({ Name = "MikkTSpace",    IncludeDirs = { "MikkTSpace/src" } })
@@ -147,7 +151,7 @@ LuminaThirdParty.RuntimePublicDeps =
     "MiniAudio", "JoltPhysics", "Recast",
     "ENet",
     "Luau",
-    "MeshOptimizer", "MikkTSpace", "BasicUniversal",
+    "MeshOptimizer", "MikkTSpace", "BasicUniversal", "MSDFGen",
 }
 
 -- Extra third-party the Editor module exposes on top of Runtime's set.
