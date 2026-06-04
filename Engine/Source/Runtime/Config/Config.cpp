@@ -3,6 +3,7 @@
 #include "DeveloperSettings.h"
 
 #include "Core/Math/Math.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectArray.h"
 #include "Core/Object/ObjectCore.h"
@@ -168,6 +169,9 @@ namespace Lumina
         {
             LOG_ERROR("FConfig: failed to write settings file {0}", FilePath.c_str());
         }
+
+        // Let open editors live-refresh from the just-saved values.
+        FCoreDelegates::OnSettingsSaved.Broadcast(SettingsClass);
     }
 
     void FConfig::ForEachSettingsClass(const TFunction<void(CClass*)>& Func) const

@@ -1,7 +1,3 @@
--- Per-player pawn. The server-only manager (RpcTest) spawns one of these per peer and attaches this script;
--- its ScriptPath replicates, so every client attaches it too. Only the peer that OWNS this pawn controls it
--- (free-fly + camera); everyone else just sees it interpolated. The nameplate text is pushed by the server
--- via a multicast RPC (visuals aren't replicated) and floated above the pawn on every peer.
 local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
@@ -14,6 +10,7 @@ Script.LookSensitivity = 0.15
 local LabelHeight = 1.8
 local LabelSize   = 0.5
 
+
 function Script:OnReady()
     self.Yaw, self.Pitch = 0.0, 0.0
     self.Captured    = false
@@ -25,8 +22,6 @@ function Script:OnReady()
     self.ResendTimer = 0.0
 end
 
--- Local (per-peer), non-networked text entity parented to this pawn in the scene graph, so it follows the
--- pawn automatically via the transform hierarchy (no per-frame position copy).
 function Script:EnsureLabel()
     if self.LabelEntity == nil or not World.IsValid(self.LabelEntity) then
         self.LabelEntity = World.CreateEntity("Label")
@@ -49,8 +44,7 @@ function Script:SetLabel(text)
     World.GetComponent(self:EnsureLabel(), STextComponent):SetText(text)
 end
 
--- True when THIS peer owns the pawn: the host owns its own (owner 0 == server peer id), each client owns its
--- own. Works on the server too, where LocalRole is Authority for everything (so IsLocallyOwned wouldn't).
+
 function Script:IsMine()
     return World.Net:GetOwner(self.Entity) == World.Net:GetUniqueId()
 end

@@ -21,7 +21,10 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API bool SerializeEntity(FArchive& Ar, FEntityRegistry& Registry, entt::entity& Entity);
 	RUNTIME_API bool SerializeRegistry(FArchive& Ar, FEntityRegistry& Registry);
 	RUNTIME_API bool EntityHasTag(const FName& Tag, FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent);
+	// Reparent Child under Parent (entt::null detaches). bPreserveWorld recomputes the local transform so the
+	// child keeps its world pose (editor/gameplay default). Pass false on a network client applying a replicated
+	// attachment -- the local transform is authoritative there (replicated), so just relink + recompose world.
+	RUNTIME_API void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent, bool bPreserveWorld = true);
 	RUNTIME_API void DestroyEntityHierarchy(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API void DetachImmediateChildren(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API void RemoveFromParent(FEntityRegistry& Registry, entt::entity Child);

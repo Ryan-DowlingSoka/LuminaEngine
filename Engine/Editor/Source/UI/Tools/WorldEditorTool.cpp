@@ -43,6 +43,12 @@
 #include "UI/Properties/EntityPropertyContext.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
+#include "World/Net/NetWorldState.h"
+#include "World/Net/NetReplicationGraph.h"
+#include "World/Entity/Components/NetworkComponent.h"
+#include "World/Entity/Components/TransformComponent.h"
+#include "Config/NetworkSettings.h"
+#include <cmath>
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/EditorComponent.h"
@@ -62,6 +68,7 @@ namespace Lumina
 {
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
+    static constexpr const char* SystemsName = "Systems";
     
     static FVector3 SanitizeManipulationScale(FVector3 Scale)
     {
@@ -335,7 +342,12 @@ namespace Lumina
         {
             DrawWorldSettings(bFocused);
         });
-        
+
+        CreateToolWindow(SystemsName, [&](bool bFocused)
+        {
+            DrawSystemsPanel(bFocused);
+        });
+
         CreateToolWindow("Details", [&] (bool bFocused)
         {
             DrawDetailsPanel(bFocused);
@@ -1225,38 +1237,14 @@ namespace Lumina
         ImGui::DockBuilderDockWindow(GetToolWindowName(SceneGraphName).c_str(),        dockRightTop);
         ImGui::DockBuilderDockWindow(GetToolWindowName("Details").c_str(),             dockRightBottomLeft);
         ImGui::DockBuilderDockWindow(GetToolWindowName(WorldSettingsName).c_str(),     dockRightBottomRight);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(SystemsName).c_str(),           dockRightBottomRight);
     }
 
     void FWorldEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
-        // Game-focus indicator: a subtle outline + hint so it's obvious input is
-        // routed to the game (not the editor), and how to hand it back. Shown on whichever viewport is the
-        // globally active + game-focused one (game focus is global, the active viewport can switch windows).
-        if (bGamePreviewRunning && FInputViewportRegistry::Get().IsGameInputFocused()
-            && InputViewport.get() == FInputViewportRegistry::Get().GetActiveViewport())
-        {
-            ImDrawList* DL = ImGui::GetWindowDrawList();
-
-            // Back out ItemSpacing to land the outline exactly on the image rect.
-            const ImVec2 Spacing = ImGui::GetStyle().ItemSpacing;
-            const ImVec2 Cursor  = ImGui::GetCursorScreenPos();
-            const ImVec2 Min(Cursor.x - Spacing.x, Cursor.y - Spacing.y);
-            const ImVec2 Max(Min.x + ViewportSize.x, Min.y + ViewportSize.y);
-            const ImU32  Accent = IM_COL32(255, 176, 64, 200);
-
-            // Drawn 1px inside the edge so the full 2px stroke stays within the image.
-            DL->AddRect(ImVec2(Min.x + 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Max.y - 1.0f),
-                Accent, 0.0f, 0, 2.0f);
-
-            // Faint, translucent hint in the top-right (clear of the toolbar at top-left).
-            const char*  Hint     = "Shift+F1: Editor focus";
-            const ImVec2 TextSize = ImGui::CalcTextSize(Hint);
-            const float  Pad = 6.0f, Margin = 8.0f;
-            const ImVec2 BgMin(Max.x - TextSize.x - Pad * 2.0f - Margin, Min.y + Margin);
-            const ImVec2 BgMax(BgMin.x + TextSize.x + Pad * 2.0f, BgMin.y + TextSize.y + Pad * 1.5f);
-            DL->AddRectFilled(BgMin, BgMax, IM_COL32(0, 0, 0, 70), 4.0f);
-            DL->AddText(ImVec2(BgMin.x + Pad, BgMin.y + Pad * 0.75f), IM_COL32(235, 235, 235, 120), Hint);
-        }
+        // Game-focus indicator: amber outline + hint so it's obvious input is routed to the game (not the
+        // editor), and how to hand it back. Shared with the game preview tool for consistent focus feedback.
+        DrawGameFocusIndicator(ViewportSize);
 
         if (bViewportHovered)
         {
@@ -1265,7 +1253,12 @@ namespace Lumina
                 CycleGuizmoOp();
             }
         }
-        
+
+        // Net interest-management overlay: controlled by its own "Network (AOI / Grid)" toggle and safe during
+        // play (needs only the world's net state, not the play-time-null editor entity), so draw it before the
+        // editor-only gizmo gate below.
+        DrawNetworkDebugOverlay();
+
         if (World->IsGameWorld() || bGameViewMode)
         {
             return;
@@ -2181,12 +2174,11 @@ namespace Lumina
     void FWorldEditorTool::DrawViewportToolbarPlayControls(float ButtonSize)
     {
         DrawSimulationControls(ButtonSize);
-        if (!bGamePreviewRunning)
-        {
-            ImGui::SameLine();
-            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-            ImGui::SameLine();
-        }
+        // Always trail a separator -- the rest of the toolbar now follows even during play (when editor-focused),
+        // so the controls must stay on the same row as the Stop button.
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+        ImGui::SameLine();
     }
 
     void FWorldEditorTool::DrawViewportToolbarModeSelector(float ButtonSize)
@@ -2245,9 +2237,101 @@ namespace Lumina
         }
     }
 
+    void FWorldEditorTool::DrawNetworkDebugOverlay()
+    {
+        if (!bDrawNetworkDebug || World == nullptr)
+        {
+            return;
+        }
+        FNetWorldState* Net = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        if (Net == nullptr)
+        {
+            return; // world isn't networked
+        }
+
+        const FNetExtract& Ex   = Net->Extract;
+        const FNetGrid&    Grid = Net->Grid;
+        const float        Y    = 0.05f; // just above the ground plane
+
+        // 1) Occupied grid cells only (cheap even with a huge grid -- empty cells are skipped).
+        const FVector4 CellColor(0.30f, 0.55f, 1.0f, 1.0f);
+        const int32 NumCells = Grid.NumCells();
+        if (static_cast<int32>(Grid.CellStart.size()) == NumCells + 1)
+        {
+            for (int32 cz = 0; cz < Grid.DimZ; ++cz)
+            {
+                for (int32 cx = 0; cx < Grid.DimX; ++cx)
+                {
+                    const int32 C = Grid.CellIndex(cx, cz);
+                    if (Grid.CellStart[C + 1] <= Grid.CellStart[C]) { continue; }
+                    const FVector3 M = Grid.CellOrigin(cx, cz);
+                    const float    s = Grid.CellSize;
+                    const FVector3 A(M.x,     Y, M.z);
+                    const FVector3 B(M.x + s, Y, M.z);
+                    const FVector3 Cc(M.x + s, Y, M.z + s);
+                    const FVector3 D(M.x,     Y, M.z + s);
+                    World->DrawLine(A, B,  CellColor, 1.0f, false, -1.0f);
+                    World->DrawLine(B, Cc, CellColor, 1.0f, false, -1.0f);
+                    World->DrawLine(Cc, D, CellColor, 1.0f, false, -1.0f);
+                    World->DrawLine(D, A,  CellColor, 1.0f, false, -1.0f);
+                }
+            }
+        }
+
+        // 2) Per-client AOI circles on the XZ plane: enter (green) + leave (yellow).
+        const SDefaultWorldSettings& Settings = World->GetDefaultWorldSettings();
+        auto DrawCircleXZ = [&](const FVector3& Center, float Radius, const FVector4& Col)
+        {
+            constexpr int Segs = 48;
+            FVector3 Prev;
+            for (int i = 0; i <= Segs; ++i)
+            {
+                const float a = (static_cast<float>(i) / Segs) * 6.2831853f;
+                const FVector3 P(Center.x + std::cos(a) * Radius, Center.y, Center.z + std::sin(a) * Radius);
+                if (i > 0) { World->DrawLine(Prev, P, Col, 1.5f, false, -1.0f); }
+                Prev = P;
+            }
+        };
+        for (const auto& KV : Net->OwnerToRecord)
+        {
+            const uint32 Rec = KV.second;
+            if (Rec >= Ex.Num()) { continue; }
+            const FVector3 VP = Ex.Pos[Rec];
+            DrawCircleXZ(VP, Settings.AOIEnterRadius, FVector4(0.2f, 1.0f, 0.3f, 1.0f));
+            DrawCircleXZ(VP, Settings.AOILeaveRadius, FVector4(1.0f, 0.9f, 0.2f, 1.0f));
+        }
+
+        // 3) Relevant entities per client, marked + coloured by LOD tier (near red / mid yellow / far green).
+        static const FVector4 TierCol[4] = {
+            FVector4(1.0f, 0.25f, 0.25f, 1.0f), // Near
+            FVector4(1.0f, 0.85f, 0.20f, 1.0f), // Mid
+            FVector4(0.30f, 1.0f, 0.45f, 1.0f), // Far
+            FVector4(0.5f,  0.5f,  0.5f,  1.0f), // Cull (shouldn't appear)
+        };
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        for (const auto& CVKV : Net->ClientViews)
+        {
+            const FNetClientView& CV = CVKV.second;
+            for (const auto& RKV : CV.Relevant)
+            {
+                const entt::entity E = Net->GuidTable.Find(FNetGUID{ RKV.first });
+                if (E == entt::null || !Registry.valid(E)) { continue; }
+                STransformComponent* T = Registry.try_get<STransformComponent>(E);
+                if (T == nullptr) { continue; }
+                const FVector3  P   = T->GetWorldLocationCached();
+                const FVector4& Col = TierCol[static_cast<int>(RKV.second.Tier) & 3];
+                const float     r   = 0.5f;
+                World->DrawLine(P - FVector3(r, 0, 0), P + FVector3(r, 0, 0), Col, 2.0f, false, -1.0f);
+                World->DrawLine(P - FVector3(0, 0, r), P + FVector3(0, 0, r), Col, 2.0f, false, -1.0f);
+                World->DrawLine(P, P + FVector3(0, r * 2.0f, 0),               Col, 2.0f, false, -1.0f);
+            }
+        }
+    }
+
     void FWorldEditorTool::DrawViewModeExtraItems()
     {
         ImGui::MenuItem("Draw Entity Debug Info", nullptr, &bDrawEntityDebugInfo);
+        ImGui::MenuItem("Network (AOI / Grid)", nullptr, &bDrawNetworkDebug);
 
         if (ImGui::MenuItem("Game View", "G", &bGameViewMode))
         {
@@ -3498,6 +3582,7 @@ namespace Lumina
         if (bShouldPlay)
         {
             bGamePreviewRunning = true;
+            bGameViewMode = true; // default to a clean game view on play; toggle off to see editor/debug overlays
             PropertyTables.clear();
             SelectedEntities.clear();
             LastSelectedEntity = entt::null;
@@ -3553,6 +3638,7 @@ namespace Lumina
             bDetailsDirty = true;
             World->SetPaused(true);
             bGamePreviewRunning = false;
+            bGameViewMode = false; // back to the editor view on stop
 
             // Hand input back to the editor on stop.
             SetInputFocus(EInputFocus::Editor);
@@ -3835,6 +3921,79 @@ namespace Lumina
     void FWorldEditorTool::DrawWorldSettings(bool bFocused)
     {
         WorldSettingsPropertyTable->DrawTree();
+    }
+
+    void FWorldEditorTool::DrawSystemsPanel(bool bFocused)
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        TVector<CWorld::FSystemInfo> Systems;
+        World->GetAllSystems(Systems);
+
+        eastl::sort(Systems.begin(), Systems.end(), [](const CWorld::FSystemInfo& A, const CWorld::FSystemInfo& B)
+        {
+            return strcmp(A.Name.c_str(), B.Name.c_str()) < 0;
+        });
+
+        int32 EnabledCount = 0;
+        for (const CWorld::FSystemInfo& Info : Systems)
+        {
+            EnabledCount += Info.bEnabled ? 1 : 0;
+        }
+
+        ImGui::TextUnformatted("World Systems");
+        ImGui::SameLine();
+        ImGuiX::HelpMarker("Engine systems registered for this world. Disabling one stops it ticking in this world "
+                           "(write your own to replace it). Changes apply at the start of the next frame and are saved with the world.");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d / %d enabled)", EnabledCount, (int32)Systems.size());
+
+        SystemsFilter.Draw("##SystemSearch", -1.0f);
+        ImGui::Separator();
+
+        if (ImGui::BeginChild("##SystemsList", ImVec2(0, 0), false))
+        {
+            for (const CWorld::FSystemInfo& Info : Systems)
+            {
+                const char* NameStr = Info.Name.c_str();
+                if (!SystemsFilter.PassFilter(NameStr))
+                {
+                    continue;
+                }
+
+                ImGui::PushID(NameStr);
+
+                bool bEnabled = Info.bEnabled;
+                if (ImGui::Checkbox(NameStr, &bEnabled))
+                {
+                    World->SetSystemEnabled(Info.Name, bEnabled);
+                    MarkSceneDirty();
+                }
+
+                // Stages this system ticks in, as muted secondary text.
+                if (!Info.Stages.empty())
+                {
+                    FString StageText;
+                    for (size_t i = 0; i < Info.Stages.size(); ++i)
+                    {
+                        if (i > 0)
+                        {
+                            StageText += ", ";
+                        }
+                        StageText += GUpdateStageNames[(uint8)Info.Stages[i]];
+                    }
+
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%s)", StageText.c_str());
+                }
+
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndChild();
     }
 
     void FWorldEditorTool::HandleOutlinerEmptyAreaDrop()

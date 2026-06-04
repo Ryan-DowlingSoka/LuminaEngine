@@ -10,6 +10,96 @@ namespace Lumina
     {
         constexpr float kRowHeight = 15.0f;
         constexpr float kIndentPerDepth = 21.0f;
+
+        // Styled hover tooltip for a node: an accent title, a dim subtitle, and a wrapped row of
+        // rounded "chip" pills. Falls back to the plain TooltipText when no rich fields are set.
+        void DrawTreeNodeTooltip(const FTreeNodeDisplay& Display)
+        {
+            const bool bRich = !Display.TooltipTitle.empty() || !Display.TooltipChips.empty();
+            if (!bRich)
+            {
+                ImGuiX::TextTooltip("{}", Display.TooltipText);
+                return;
+            }
+
+            if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                return;
+            }
+
+            const float Scale = ImGuiX::GetUIScale();
+
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(11.0f * Scale, 9.0f * Scale));
+            if (ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None))
+            {
+                const char* Title = Display.TooltipTitle.empty() ? Display.DisplayName.c_str() : Display.TooltipTitle.c_str();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.97f, 1.0f, 1.0f));
+                ImGui::TextUnformatted(Title);
+                ImGui::PopStyleColor();
+
+                if (!Display.TooltipSubtitle.empty())
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.52f, 0.55f, 0.62f, 1.0f));
+                    ImGui::TextUnformatted(Display.TooltipSubtitle.c_str());
+                    ImGui::PopStyleColor();
+                }
+
+                if (!Display.TooltipChips.empty())
+                {
+                    ImGui::Dummy(ImVec2(0.0f, 3.0f * Scale));
+
+                    if (!Display.TooltipChipHeader.empty())
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.47f, 0.53f, 1.0f));
+                        ImGui::TextUnformatted(Display.TooltipChipHeader.c_str());
+                        ImGui::PopStyleColor();
+                        ImGui::Dummy(ImVec2(0.0f, 2.0f * Scale));
+                    }
+
+                    ImDrawList* DL = ImGui::GetWindowDrawList();
+                    const ImVec2 Origin = ImGui::GetCursorScreenPos();
+                    const ImVec2 ChipPad(7.0f * Scale, 3.0f * Scale);
+                    const float GapX = 5.0f * Scale;
+                    const float GapY = 5.0f * Scale;
+                    const float Rounding = 4.0f * Scale;
+                    const float WrapWidth = 340.0f * Scale;
+
+                    const ImU32 ChipBg     = IM_COL32(54, 57, 66, 255);
+                    const ImU32 ChipBorder = IM_COL32(80, 85, 96, 255);
+                    const ImU32 ChipText   = IM_COL32(206, 211, 220, 255);
+
+                    float X = 0.0f, Y = 0.0f, LineHeight = 0.0f, MaxRight = 0.0f;
+                    for (const FString& Chip : Display.TooltipChips)
+                    {
+                        const ImVec2 TextSize = ImGui::CalcTextSize(Chip.c_str());
+                        const float W = TextSize.x + ChipPad.x * 2.0f;
+                        const float H = TextSize.y + ChipPad.y * 2.0f;
+
+                        if (X > 0.0f && X + W > WrapWidth)
+                        {
+                            X = 0.0f;
+                            Y += LineHeight + GapY;
+                            LineHeight = 0.0f;
+                        }
+
+                        const ImVec2 P0(Origin.x + X, Origin.y + Y);
+                        const ImVec2 P1(P0.x + W, P0.y + H);
+                        DL->AddRectFilled(P0, P1, ChipBg, Rounding);
+                        DL->AddRect(P0, P1, ChipBorder, Rounding);
+                        DL->AddText(ImVec2(P0.x + ChipPad.x, P0.y + ChipPad.y), ChipText, Chip.c_str());
+
+                        MaxRight = ImMax(MaxRight, X + W);
+                        X += W + GapX;
+                        LineHeight = ImMax(LineHeight, H);
+                    }
+
+                    ImGui::Dummy(ImVec2(MaxRight, Y + LineHeight));
+                }
+
+                ImGui::EndTooltip();
+            }
+            ImGui::PopStyleVar();
+        }
     }
 
     FTreeListView::~FTreeListView()
@@ -354,7 +444,7 @@ namespace Lumina
             ImGui::EndDragDropTarget();
         }
 
-        ImGuiX::TextTooltip("{}", Display.TooltipText);
+        DrawTreeNodeTooltip(Display);
 
         if (Context.ItemContextMenuFunction)
         {

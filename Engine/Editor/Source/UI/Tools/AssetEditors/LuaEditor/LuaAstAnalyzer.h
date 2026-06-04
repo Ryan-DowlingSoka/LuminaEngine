@@ -27,6 +27,27 @@ namespace Lumina
         int     Line = 1;        // 1-based line of the declaration
     };
 
+    // A member assigned onto a table in the buffer, e.g. `Script.Thing = 0` or
+    // `function Script:OnUpdate(...)`. Lets hover/autocomplete describe a field
+    // ("Thing: number, field of Script") that the runtime hasn't harvested and
+    // that Luau collapses to `any` on open table types.
+    struct FLuaAstMemberEntry
+    {
+        FString Owner;          // base expression text, e.g. "Script" / "self" (empty for a plain function)
+        FString Name;           // member name, e.g. "Thing"
+        FString Path;           // "Owner.Name" (separator normalized to '.'), or just "Name" when Owner is empty
+        FString TypeAnnotation; // explicit `: T` when one was written (locals-style)
+        FString ValueHint;      // syntactic value type: number/string/boolean/.../function
+        int     Line    = 1;    // 1-based line of the declaration
+        bool    bMethod = false;// declared via `function Owner:Name(...)`
+
+        // Function parameter names, when this entry is a function/method. Powers
+        // signature help. Empty for non-function members.
+        TVector<FString> Params;
+        bool    bVararg   = false;
+        bool    bFunction = false; // true for any function form (declaration or `= function`)
+    };
+
     struct FLuaSymbolRef
     {
         int Line   = 1; // 1-based
@@ -75,6 +96,11 @@ namespace Lumina
         // All buffer locals + their annotated type / inferred origin name.
         // Used by hover/autocomplete so they reflect lexical-scope locals.
         void CollectLocals(TVector<FLuaAstLocalEntry>& Out) const;
+
+        // Members assigned onto a table in the buffer (`Script.X = ...`, method
+        // declarations, `self.X = ...` inside methods). Used by hover/autocomplete
+        // to describe user-authored fields the runtime hasn't harvested.
+        void CollectMembers(TVector<FLuaAstMemberEntry>& Out) const;
 
         // Resolve the local identifier at 1-based (Line1, Col1) to its declaration (writes
         // name + line/col). Globals and member access need the type checker, not handled here.

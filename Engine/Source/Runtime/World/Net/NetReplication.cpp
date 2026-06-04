@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "NetReplication.h"
 #include "NetWorldState.h"
+#include "NetRpc.h"
+#include "ScriptRepState.h"
 #include "Core/Serialization/NetArchive.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/Object.h"
@@ -9,9 +11,17 @@
 #include "Containers/Array.h"
 #include "Assets/AssetRef.h"
 #include "World/Entity/EntityUtils.h"
+#include "World/Entity/Components/ScriptComponent.h"
+#include "World/Entity/Components/RelationshipComponent.h"
+#include "World/Entity/Components/NetworkComponent.h"
+#include "Scripting/Lua/ScriptTypes.h"
+#include "Scripting/Lua/Scripting.h"
 #include "Networking/INetworkTransport.h"
 #include "Log/Log.h"
 #include "entt/entt.hpp"
+#include "EASTL/sort.h"
+#include "lua.h"
+#include "lualib.h"
 
 namespace Lumina::Net
 {
@@ -28,46 +38,234 @@ namespace Lumina::Net
             return S ? S.cast<CStruct*>() : nullptr;
         }
 
-        // Live pointer to Entity's component of the given meta type, or null. Goes through entt storage
-        // since meta_any has no raw-data accessor in this build.
+        // Live pointer to Entity's component of the given meta type, or null. O(1): the component's storage
+        // is keyed by its type-info hash (the inverse of entt::resolve(Set.info())), so resolve it directly
+        // instead of scanning every storage.
         void* FindComponentPtr(entt::registry& Registry, entt::entity Entity, const entt::meta_type& Type)
         {
-            for (auto [Id, Set] : Registry.storage())
+            if (auto* Set = Registry.storage(Type.info().hash()))
             {
-                if (Set.contains(Entity) && entt::resolve(Set.info()) == Type)
+                if (Set->contains(Entity))
                 {
-                    return Set.value(Entity);
+                    return Set->value(Entity);
                 }
             }
             return nullptr;
         }
 
-        // Lazy hash to meta_type map of every reflected component. Same build gives an identical map on
-        // both peers, so the hash is a stable cross-peer type id.
-        const THashMap<uint32, entt::meta_type>& ComponentTypeMap()
+        struct FReplType
         {
-            static const THashMap<uint32, entt::meta_type> Map = []
+            uint32          Hash;
+            entt::meta_type Type;
+            CStruct*        Struct;
+        };
+
+        // Every reflected component, sorted by name-hash so the array index is a stable cross-peer type id.
+        // Same build => identical set + order on both peers, so we send a 1-byte varint index on the wire
+        // instead of the 4-byte hash. ByIndex[i] is the type; HashToIndex maps a local component to its index.
+        struct FReplTypeTable
+        {
+            TVector<FReplType>      ByIndex;
+            THashMap<uint32, uint32> HashToIndex;
+        };
+
+        const FReplTypeTable& ReplTypes()
+        {
+            static const FReplTypeTable Table = []
             {
-                THashMap<uint32, entt::meta_type> M;
+                FReplTypeTable T;
                 for (auto&& [Id, Type] : entt::resolve())
                 {
-                    CStruct* St = StructFromMeta(Type);
-                    if (St != nullptr)
+                    if (CStruct* St = StructFromMeta(Type))
                     {
-                        M[HashStructName(St->GetName())] = Type;
+                        T.ByIndex.push_back({ HashStructName(St->GetName()), Type, St });
                     }
                 }
-                return M;
+                eastl::sort(T.ByIndex.begin(), T.ByIndex.end(),
+                    [](const FReplType& A, const FReplType& B) { return A.Hash < B.Hash; });
+                for (uint32 i = 0; i < static_cast<uint32>(T.ByIndex.size()); ++i)
+                {
+                    T.HashToIndex[T.ByIndex[i].Hash] = i;
+                }
+                return T;
             }();
-            return Map;
+            return Table;
+        }
+
+        // Client, apply the script-rep block written by WriteEntityComponents: whitelisted writes into the live
+        // script table + optional OnRep_<Field>(old) hooks. Unknown/out-of-range indices (or no live script) are
+        // still consumed so the stream stays aligned -- only --@replicated fields are ever written (safety).
+        void ReadScriptRepBlock(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
+        {
+            uint16 Count = 0;
+            Ar << Count;
+            if (Count == 0 || Ar.HasError())
+            {
+                return;
+            }
+
+            SScriptComponent* SC = Registry.valid(Entity) ? Registry.try_get<SScriptComponent>(Entity) : nullptr;
+            Lua::FScript* Script = (SC && SC->Script) ? SC->Script.get() : nullptr;
+
+            // A lua_State is needed even with no live script, to consume (discard) values and stay aligned.
+            lua_State* L = Script ? Script->Reference.GetState() : Lua::FScriptingContext::Get().GetVM();
+            if (L == nullptr)
+            {
+                Ar.SetHasError(true);
+                return;
+            }
+            if (Script != nullptr)
+            {
+                Script->PublishThreadContext();
+            }
+
+            for (uint16 i = 0; i < Count && !Ar.HasError(); ++i)
+            {
+                const uint32 RepIndex   = ReadVarUInt(Ar);
+                const bool   bApplicable = (Script != nullptr) && (RepIndex < static_cast<uint32>(Script->ReplicatedFields.size()));
+
+                if (!bApplicable)
+                {
+                    Net::DeserializeLuaValue(L, Ar, 0); // consume + discard (unknown index / no live script)
+                    lua_pop(L, 1);
+                    continue;
+                }
+
+                const FName& FieldName = Script->ReplicatedFields[RepIndex].Name;
+
+                Script->Reference.Push();                        // [table]
+                const int TableIdx = lua_gettop(L);
+
+                lua_rawgetfield(L, TableIdx, FieldName.c_str());  // [table][old]
+                Net::DeserializeLuaValue(L, Ar, 0);         // [table][old][new]
+                lua_pushvalue(L, -1);                            // [table][old][new][new]
+                lua_rawsetfield(L, TableIdx, FieldName.c_str());  // [table][old][new](table[field] = new)
+
+                // OnRep_<Field>(self, old) if the script defines it (the script analog of native on_update).
+                const FString HookName = FString("OnRep_") + FString(FieldName.c_str());
+                lua_rawgetfield(L, TableIdx, HookName.c_str());  // [table][old][new][hookOrNil]
+                if (lua_isfunction(L, -1))
+                {
+                    lua_pushvalue(L, TableIdx);                  // [..][hook][self]
+                    lua_pushvalue(L, TableIdx + 1);              // [..][hook][self][old]
+                    if (lua_pcall(L, 2, 0, 0) != LUA_OK)         // pops hook + self + old
+                    {
+                        LOG_ERROR("[Net] OnRep '{}' failed: {}", HookName.c_str(), lua_tostring(L, -1));
+                        lua_pop(L, 1);                           // error message
+                    }
+                }
+                else
+                {
+                    lua_pop(L, 1);                               // non-function (nil)
+                }
+
+                lua_pop(L, 3); // table, old, new
+            }
+        }
+
+        // Client, apply a replicated attachment: reparent Child under the entity owning ParentGuid. No-op when
+        // already correct; ParentGuid 0 detaches; an unspawned parent is recorded in PendingAttach and retried
+        // when it spawns (DrainPendingAttach). Keep-local reparent -- the child's local transform is replicated.
+        void ApplyReplicatedParent(entt::registry& Registry, entt::entity Child, uint32 ParentGuid)
+        {
+            FNetWorldState* State = Registry.ctx().find<FNetWorldState>();
+            if (State == nullptr || !Registry.valid(Child))
+            {
+                return;
+            }
+
+            uint32 CurParentGuid = 0;
+            if (const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Child); Rel && Rel->Parent != entt::null)
+            {
+                if (const SNetworkComponent* PNet = Registry.try_get<SNetworkComponent>(Rel->Parent))
+                {
+                    CurParentGuid = PNet->NetGUID.Value;
+                }
+            }
+
+            const uint32 ChildKey = static_cast<uint32>(entt::to_integral(Child));
+            if (CurParentGuid == ParentGuid)
+            {
+                State->PendingAttach.erase(ChildKey); // already attached as desired
+                return;
+            }
+
+            if (ParentGuid == 0)
+            {
+                ECS::Utils::ReparentEntity(Registry, Child, entt::null, /*bPreserveWorld*/ false);
+                State->PendingAttach.erase(ChildKey);
+                return;
+            }
+
+            const entt::entity Parent = State->GuidTable.Find(FNetGUID{ ParentGuid });
+            if (Parent != entt::null && Registry.valid(Parent))
+            {
+                ECS::Utils::ReparentEntity(Registry, Child, Parent, /*bPreserveWorld*/ false);
+                State->PendingAttach.erase(ChildKey);
+            }
+            else
+            {
+                State->PendingAttach[ChildKey] = ParentGuid; // parent not spawned yet -- retry on its spawn
+            }
         }
     }
 
-    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
+    void DrainPendingAttach(entt::registry& Registry, FNetWorldState& State, uint32 NewGuid, entt::entity NewEntity)
     {
-        struct FComp { uint32 Hash; void* Ptr; CStruct* Struct; };
+        for (auto It = State.PendingAttach.begin(); It != State.PendingAttach.end(); )
+        {
+            if (It->second == NewGuid)
+            {
+                const entt::entity Child = static_cast<entt::entity>(It->first);
+                if (Registry.valid(Child))
+                {
+                    ECS::Utils::ReparentEntity(Registry, Child, NewEntity, /*bPreserveWorld*/ false);
+                }
+                It = State.PendingAttach.erase(It);
+            }
+            else
+            {
+                ++It;
+            }
+        }
+    }
+
+    bool ParentReplicates(entt::registry& Registry, entt::entity Parent)
+    {
+        if (Parent == entt::null)
+        {
+            return false;
+        }
+        const SNetworkComponent* PNet = Registry.try_get<SNetworkComponent>(Parent);
+        return PNet != nullptr && PNet->bReplicates && PNet->bNetLoadOnClient && PNet->NetGUID.Value != 0;
+    }
+
+    void WriteNetGuid(FNetArchive& Ar, uint32 Guid)
+    {
+        const uint32 Encoded = (Guid >= NetGUID_DynamicStart)
+            ? (((Guid - NetGUID_DynamicStart) << 1) | 1u)
+            : (Guid << 1);
+        WriteVarUInt(Ar, Encoded);
+    }
+
+    uint32 ReadNetGuid(FNetArchive& Ar)
+    {
+        const uint32 Encoded = ReadVarUInt(Ar);
+        return (Encoded & 1u) ? (NetGUID_DynamicStart + (Encoded >> 1)) : (Encoded >> 1);
+    }
+
+    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity, const FNetRepContext* Ctx, const TVector<FScriptRepFieldOut>* ScriptFields)
+    {
+        struct FComp
+        {
+            uint32 Index;
+            void* Ptr;
+            CStruct* Struct;
+        };
+        
         TVector<FComp> Comps;
 
+        const FReplTypeTable& Types = ReplTypes();
         for (auto [Id, Set] : Registry.storage())
         {
             if (!Set.contains(Entity))
@@ -84,16 +282,126 @@ namespace Lumina::Net
             {
                 continue;
             }
-            Comps.push_back({ HashStructName(St->GetName()), Set.value(Entity), St });
+            const auto It = Types.HashToIndex.find(HashStructName(St->GetName()));
+            if (It == Types.HashToIndex.end())
+            {
+                continue; // not a known replicated type (shouldn't happen for a reflected component)
+            }
+            Comps.push_back({ It->second, Set.value(Entity), St });
         }
 
         uint16 Count = static_cast<uint16>(Comps.size());
         Ar << Count;
         for (FComp& C : Comps)
         {
-            Ar << C.Hash;
+            WriteVarUInt(Ar, C.Index); // compact type id (was a 4-byte hash)
             C.Struct->NetSerializeProperties(Ar, C.Ptr);
         }
+
+        // Script-rep block: --@replicated fields whose net condition passes Ctx. Always present (count 0 when
+        // there are none) so ReadEntityComponents can read it unconditionally -- this is what unifies script
+        // and native replication on the same wire path.
+        const FNetRepContext BroadcastCtx{};
+        const FNetRepContext& Rc = Ctx ? *Ctx : BroadcastCtx;
+        uint16 SCount = 0;
+        if (ScriptFields != nullptr)
+        {
+            for (const FScriptRepFieldOut& F : *ScriptFields)
+            {
+                if (RepFieldPasses(F.Cond, Rc)) { ++SCount; }
+            }
+        }
+        Ar << SCount;
+        if (ScriptFields != nullptr)
+        {
+            for (const FScriptRepFieldOut& F : *ScriptFields)
+            {
+                if (!RepFieldPasses(F.Cond, Rc)) { continue; }
+                WriteVarUInt(Ar, F.RepIndex);
+                if (!F.Bytes.empty())
+                {
+                    Ar.Serialize(const_cast<uint8*>(F.Bytes.data()), static_cast<int64>(F.Bytes.size()));
+                }
+            }
+        }
+
+        // Attachment link: the parent's NetGUID (0 = unparented, or a parent that doesn't replicate to clients
+        // -- in which case BuildExtract sends this entity's WORLD transform so it still lands correctly).
+        // Stateful: rides the spawn baseline + every dirty update; the client resolves it and reparents.
+        uint32 ParentGuid = 0;
+        if (const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+            Rel && Rel->Parent != entt::null && ParentReplicates(Registry, Rel->Parent))
+        {
+            ParentGuid = Registry.get<SNetworkComponent>(Rel->Parent).NetGUID.Value;
+        }
+        WriteNetGuid(Ar, ParentGuid);
+    }
+
+    TVector<FScriptRepFieldOut> CollectScriptFields(entt::registry& Registry, entt::entity Entity,
+        FNetWorldState& State, bool bBaseline, FScriptRepState* DiffState)
+    {
+        TVector<FScriptRepFieldOut> Out;
+
+        SScriptComponent* SC = Registry.valid(Entity) ? Registry.try_get<SScriptComponent>(Entity) : nullptr;
+        Lua::FScript* Script = (SC && SC->Script) ? SC->Script.get() : nullptr;
+        if (Script == nullptr || Script->ReplicatedFields.empty())
+        {
+            return Out;
+        }
+        lua_State* L = Script->Reference.GetState();
+        if (L == nullptr)
+        {
+            return Out;
+        }
+
+        const uint32 N = static_cast<uint32>(Script->ReplicatedFields.size());
+        if (DiffState != nullptr && DiffState->LastSent.size() != N)
+        {
+            DiffState->LastSent.clear();
+            DiffState->LastSent.resize(N);
+        }
+
+        Script->PublishThreadContext();
+        Script->Reference.Push();                  // [table]
+        const int TableIdx = lua_gettop(L);
+
+        for (uint32 i = 0; i < N; ++i)
+        {
+            const Lua::FScriptReplicatedField& Field = Script->ReplicatedFields[i];
+
+            // Serialize with the outgoing object/asset hooks bound so any
+            // CObject/asset ref mints a net-index that the existing export step flushes before this message.
+            lua_rawgetfield(L, TableIdx, Field.Name.c_str()); // [table][value]
+            TVector<uint8> Bytes;
+            {
+                FNetArchive Writer(Bytes);
+                Net::BindWriters(Writer, State);
+                Net::SerializeLuaValue(L, -1, Writer, 0);
+            }
+            lua_pop(L, 1);                                     // [table]
+
+            bool bChanged = true;
+            if (!bBaseline && DiffState != nullptr)
+            {
+                bChanged = (DiffState->LastSent[i] != Bytes);
+            }
+            if (DiffState != nullptr)
+            {
+                DiffState->LastSent[i] = Bytes; // seed (baseline) or update (diff)
+            }
+
+            if (bBaseline || bChanged)
+            {
+                FScriptRepFieldOut F;
+                F.RepIndex = i;
+                F.Cond     = Field.Condition;
+                F.Bytes    = eastl::move(Bytes);
+                Out.push_back(eastl::move(F));
+            }
+        }
+
+        lua_pop(L, 1); // table
+        return Out;
     }
 
     void ReadEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
@@ -101,28 +409,30 @@ namespace Lumina::Net
         uint16 Count = 0;
         Ar << Count;
 
-        const THashMap<uint32, entt::meta_type>& Map = ComponentTypeMap();
+        // Components applied this message; patched after the loop to fire on_update<T> (the "OnRep" signal)
+        // once the entity is fully updated, so a handler reacting to one component sees the others applied.
+        TVector<entt::meta_type> Applied;
+
+        const FReplTypeTable& Types = ReplTypes();
         for (uint16 i = 0; i < Count; ++i)
         {
-            uint32 Hash = 0;
-            Ar << Hash;
+            const uint32 Index = ReadVarUInt(Ar);
             if (Ar.HasError())
             {
                 return;
             }
 
-            auto It = Map.find(Hash);
-            if (It == Map.end())
+            if (Index >= static_cast<uint32>(Types.ByIndex.size()))
             {
                 // Can't skip an unknown component without a size prefix. Same-build peers never hit this;
                 // abort the entity if they do.
-                LOG_WARN("[Net] Replication: unknown component type hash {} -- aborting.", Hash);
+                LOG_WARN("[Net] Replication: component type index {} out of range -- aborting.", Index);
                 Ar.SetHasError(true);
                 return;
             }
 
-            entt::meta_type Type = It->second;
-            CStruct* St = StructFromMeta(Type);
+            entt::meta_type Type = Types.ByIndex[Index].Type;
+            CStruct* St = Types.ByIndex[Index].Struct;
             if (St == nullptr)
             {
                 Ar.SetHasError(true);
@@ -142,6 +452,7 @@ namespace Lumina::Net
             if (Ptr != nullptr)
             {
                 St->NetSerializeProperties(Ar, Ptr);
+                Applied.push_back(Type);
             }
             else
             {
@@ -149,6 +460,25 @@ namespace Lumina::Net
                 return;
             }
         }
+
+        // Fire on_update<T> for each applied component
+        entt::meta_any Signal{};
+        for (const entt::meta_type& Type : Applied)
+        {
+            if (!Registry.valid(Entity))
+            {
+                break; // a prior handler's script logic destroyed the entity
+            }
+            ECS::Utils::InvokeMetaFunc(Type, entt::hashed_string("patch"), entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Signal));
+        }
+
+        // Script-rep block follows the native components on the wire. Read after the on_update pass so a
+        // replicated SScriptComponent has already (re)attached its live script for the field writes / OnRep.
+        ReadScriptRepBlock(Ar, Registry, Entity);
+
+        // Attachment link (mirrors WriteEntityComponents): always read to stay aligned, then resolve + reparent.
+        const uint32 ParentGuid = ReadNetGuid(Ar);
+        ApplyReplicatedParent(Registry, Entity, ParentGuid);
     }
 
     void AppendFramedMessage(TVector<uint8>& Batch, const uint8* Msg, SIZE_T MsgSize)
@@ -157,7 +487,7 @@ namespace Lumina::Net
         {
             return;
         }
-        if (MsgSize > 0xFFFF)
+        if (MsgSize > MaxFramedMessageSize)
         {
             LOG_WARN("[Net] Message of {} bytes exceeds the 64K frame limit -- dropped.", (uint64)MsgSize);
             return;
@@ -217,17 +547,31 @@ namespace Lumina::Net
         // The result is cached (including null) so a missing asset is tried once, not per reference.
         CObject* NetObj_Resolve(FNetObjectMap& Map, uint32 Index)
         {
-            if (Index == 0) { return nullptr; }
+            if (Index == 0)
+            {
+                return nullptr;
+            }
             auto Oit = Map.IndexToObject.find(Index);
-            if (Oit != Map.IndexToObject.end()) { return Oit->second; } // resolved or already failed
+            if (Oit != Map.IndexToObject.end())
+            {
+                return Oit->second;
+            }
+            
             auto Git = Map.IndexToGuid.find(Index);
-            if (Git == Map.IndexToGuid.end()) { return nullptr; }       // export not arrived yet
+            if (Git == Map.IndexToGuid.end())
+            {
+                return nullptr;
+            }
+            
             CObject* Obj = FindObject<CObject>(Git->second);
-            if (Obj == nullptr) { Obj = StaticLoadObject(Git->second); } // not resident, load from disk
             if (Obj == nullptr)
             {
-                LOG_WARN("[Net] Replicated object index {} (GUID {}) not found and load failed -- marking failed (null).",
-                    Index, Git->second.ToString().c_str());
+                Obj = StaticLoadObject(Git->second);
+            }
+            
+            if (Obj == nullptr)
+            {
+                LOG_WARN("[Net] Replicated object index {} (GUID {}) not found and load failed -- marking failed (null).", Index, Git->second.ToString().c_str());
             }
             Map.IndexToObject[Index] = Obj; // cache (incl. null) so we don't reload on every reference
             return Obj;
@@ -265,8 +609,16 @@ namespace Lumina::Net
     {
         FNetObjectMap& InObj = State.InObjects[SenderConn]; // operator[] default-creates the per-connection entry
         FNetAssetMap&  InAst = State.InAssets[SenderConn];
-        Ar.NetIndexToObject   = [&InObj](uint32 I) { return NetObj_Resolve(InObj, I); };
-        Ar.NetIndexToAssetRef = [&InAst](uint32 I, FAssetRef& Out) { Out = NetAsset_Resolve(InAst, I); };
+        
+        Ar.NetIndexToObject   = [&InObj](uint32 I)
+        {
+            return NetObj_Resolve(InObj, I);
+        };
+        
+        Ar.NetIndexToAssetRef = [&InAst](uint32 I, FAssetRef& Out)
+        {
+            Out = NetAsset_Resolve(InAst, I);
+        };
     }
 
     void BuildObjectExport(const FNetObjectMap& Map, const TVector<uint32>& Indices, TVector<uint8>& OutMsg)

@@ -27,16 +27,19 @@ namespace Lumina
 
     private:
 
-        // Rolling send/recv rate history (bytes/sec) per world, for the throughput graph.
+        // Rolling per-world history for the graphs: send/recv throughput (bytes/sec) and the last transform
+        // snapshot size (bytes) so you can watch it climb toward the frame cap.
         struct FNetHistory
         {
             static constexpr int Capacity = 240;
-            float  SendRate[Capacity] = {};
-            float  RecvRate[Capacity] = {};
-            int    Head               = 0;
-            uint64 LastSent           = 0;
-            uint64 LastRecv           = 0;
-            bool   bPrimed            = false;
+            float  SendRate[Capacity]     = {};
+            float  RecvRate[Capacity]     = {};
+            float  MovementBytes[Capacity]= {};
+            float  SnapshotEMA            = 0.0f; // smoothed snapshot bytes, for a steady progress bar
+            int    Head                   = 0;
+            uint64 LastSent               = 0;
+            uint64 LastRecv               = 0;
+            bool   bPrimed                = false;
         };
 
         void DrawNetworkWindow(bool bIsFocused);

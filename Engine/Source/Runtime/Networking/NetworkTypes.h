@@ -40,6 +40,16 @@ namespace Lumina
         Multicast,  // server -> all peers
     };
 
+    // Replication condition for a script-replicated field (Unreal COND_* analog). Evaluated per recipient
+    // connection when the server serializes a replicated property. Server -> client only.
+    enum class EScriptRepCondition : uint8
+    {
+        Always,      // sent to every client
+        OwnerOnly,   // sent only to the entity's owning client
+        SkipOwner,   // sent to every client except the owner
+        InitialOnly, // sent once, in the spawn baseline; never in dirty updates
+    };
+
     enum class EConnectionState : uint8
     {
         Disconnected,

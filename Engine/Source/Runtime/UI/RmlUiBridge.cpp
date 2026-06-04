@@ -451,7 +451,7 @@ namespace Lumina::RmlUi
 
         (void)FCoreDelegates::OnContentFileModified.AddStatic(&OnContentFileModified);
 
-        LOG_INFO("[RmlUi] Initialized. Per-world contexts are owned by their CWorld.");
+        LOG_INFO("[RmlUi] Initialized.");
         return true;
     }
 
@@ -459,7 +459,10 @@ namespace Lumina::RmlUi
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
-        if (!State.bInitialized && !State.System) return;
+        if (!State.bInitialized && !State.System)
+        {
+            return;
+        }
 
         if (State.DebuggerHost != nullptr)
         {

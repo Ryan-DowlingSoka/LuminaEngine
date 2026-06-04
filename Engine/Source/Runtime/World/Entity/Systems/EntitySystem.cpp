@@ -41,6 +41,12 @@ namespace Lumina
         return Underlying.id();
     }
 
+    FName FEntitySystemWrapper::GetName() const noexcept
+    {
+        const char* Name = Underlying.name();
+        return Name ? FName(Name) : FName();
+    }
+
     uint64 FEntityScriptSystem::GetHash() const noexcept
     {
         if (WeakScript.expired())
@@ -49,6 +55,12 @@ namespace Lumina
         }
         
         return (uint64)WeakScript.lock().get();
+    }
+
+    FName FEntityScriptSystem::GetName() const noexcept
+    {
+        // Script systems aren't engine systems and aren't toggleable; never matches a disabled name.
+        return FName();
     }
 
     FSystemAccess FEntityScriptSystem::GetSystemAccess() const

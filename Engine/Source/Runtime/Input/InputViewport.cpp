@@ -5,6 +5,7 @@
 #include "Events/Event.h"
 #include "Input/InputContext.h"
 #include "UI/RmlUiBridge.h"
+#include "World/World.h"
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Input.h>
@@ -342,15 +343,11 @@ namespace Lumina
         }
         bGameInputFocused = bFocused;
 
-        // Handing input back to the editor: drop any game capture so the cursor returns everywhere.
-        if (!bFocused)
-        {
-            for (FInputViewport* V : Viewports)
-            {
-                V->GetContext().SetMouseMode(EMouseMode::Normal);
-            }
-            ApplyActiveCursorMode();
-        }
+        // Cursor ownership follows input focus: releasing hands the cursor back across every window (the
+        // editor needs it) and re-acquiring restores the active game world's capture. Each world's desired
+        // mouse mode is preserved (not wiped), so it survives the round-trip -- ApplyActiveCursorMode gates
+        // a game world's capture on this flag instead.
+        ApplyActiveCursorMode();
     }
 
     void FInputViewportRegistry::SetFocusedViewport(FInputViewport* Viewport)
@@ -466,7 +463,18 @@ namespace Lumina
 
         if (ActiveViewport != nullptr)
         {
-            ApplyCursorModeToWindow(ActiveWindow, ActiveViewport->GetContext().GetMouseMode());
+            EMouseMode Mode = ActiveViewport->GetContext().GetMouseMode();
+
+            // A game world only holds the cursor while it owns input focus; releasing focus (Shift+F1 / Stop)
+            // shows the cursor without discarding the world's desired mode. Editor worlds keep their mode so
+            // RMB-look capture is unaffected.
+            const CWorld* ActiveWorld = ActiveViewport->GetWorld();
+            if (ActiveWorld != nullptr && ActiveWorld->IsGameWorld() && !bGameInputFocused)
+            {
+                Mode = EMouseMode::Normal;
+            }
+
+            ApplyCursorModeToWindow(ActiveWindow, Mode);
         }
     }
 

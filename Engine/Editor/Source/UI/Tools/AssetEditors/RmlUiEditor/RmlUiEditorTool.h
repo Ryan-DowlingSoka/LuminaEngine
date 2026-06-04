@@ -48,6 +48,9 @@ namespace Lumina
         void EnsurePreviewTarget(uint32 Width, uint32 Height);
         void TearDownPreview();
         void StartWatching();
+        // Copy persisted CRmlUiEditorSettings values into the cached member fields. Run at construction
+        // and on the OnSettingsSaved live-refresh.
+        void PullSettings();
         void ApplyEditorSettings();
         void DrawPreviewToolbar();
         void DrawPreviewCanvas();
@@ -70,6 +73,9 @@ namespace Lumina
 
         // Retargets VirtualPath when this file is renamed/moved, so a save writes the new file.
         FDelegateHandle             FileRenamedHandle;
+        // Live-refresh subscription: re-pull + re-apply when CRmlUiEditorSettings is saved from the
+        // global Settings panel, so palette/appearance edits show up without reopening the editor.
+        FDelegateHandle             SettingsSavedHandle;
         // .rcss stylesheets are edited the same as .rml, but can't render on
         // their own -- the preview wraps them in a component specimen.
         bool                        bIsStylesheet = false;

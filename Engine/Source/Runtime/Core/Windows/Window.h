@@ -74,6 +74,10 @@ namespace Lumina
 		// Apply a cursor mode to a specific native window (GLFWwindow*); null falls back to the primary.
 		// Lets mouse capture target the focused PIE preview window rather than always the primary window.
 		RUNTIME_API void SetCursorModeForNativeWindow(void* NativeWindow, ECursorMode Mode);
+
+		// Authoritative OS-level focus for a native window (GLFWwindow*). Exactly one window is focused at a
+		// time, so this disambiguates the active viewport across separate preview windows under game input.
+		RUNTIME_API bool IsNativeWindowFocused(void* NativeWindow);
 	}
 
 }

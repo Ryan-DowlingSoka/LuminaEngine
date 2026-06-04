@@ -11,7 +11,9 @@
 #include "Core/Object/ObjectCore.h"
 #include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "UI/EditorUI.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
+#include "LuminaEditor.h"
 
 namespace Lumina
 {
@@ -788,10 +790,18 @@ namespace Lumina
             
             if (ImGui::Button(LE_ICON_OPEN_IN_NEW "##Open", GButtonSize))
             {
-                VFS::PlatformOpen(ScriptComponent->ScriptPath.Path);
+                // Route through the editor's file-open path so it honors the Lua Editor setting
+                // (in-engine FLuaEditorTool by default, native editor when bUsePlatformEditor is set),
+                // same as double-clicking the script in the content browser.
+                const FStringView Path(ScriptComponent->ScriptPath.Path.c_str(),
+                                       ScriptComponent->ScriptPath.Path.length());
+                if (!Path.empty())
+                {
+                    static_cast<FEditorUI*>(GEditorEngine->GetDevelopmentToolsUI())->OpenFileEditor(Path);
+                }
             }
-            
-            ImGuiX::TextTooltip("Open the script in your native editor");
+
+            ImGuiX::TextTooltip("Open the script for editing (uses the Lua Editor setting for in-engine vs. native)");
             
             ImGui::SameLine();
             

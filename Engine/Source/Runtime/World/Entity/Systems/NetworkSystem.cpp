@@ -12,10 +12,15 @@
 #include "Core/Object/ObjectCore.h"
 #include "World/Net/NetRpc.h"
 #include "World/Net/NetReplication.h"
+#include "World/Net/ScriptRepState.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
+#include "World/Entity/Components/RepTransformComponent.h"
 #include "World/Entity/Components/ScriptComponent.h"
+#include "World/Net/NetReplicationGraph.h"
+#include "Config/NetworkSettings.h"
+#include "World/Subsystems/WorldSettings.h"
 #include "World/Entity/EntityHandle.h"
 #include "Networking/NetworkGlobals.h"
 #include "Networking/INetworkTransport.h"
@@ -23,17 +28,11 @@
 #include "Physics/PhysicsTypes.h"
 #include "Core/Serialization/NetArchive.h"
 #include "Core/Serialization/NetQuantize.h"
-#include "Core/Console/ConsoleVariable.h"
 #include "Log/Log.h"
 #include "EASTL/sort.h"
 
 namespace Lumina
 {
-    // Periodic full transform resync. Transforms are state, so re-sending every replicated pose on this
-    // cadence lets a dropped delta self-heal without per-packet acks. 0 means deltas only.
-    static TConsoleVar<float> CVarTransformKeyframeInterval("Net.Transform.KeyframeInterval", 0.5f,
-        "Seconds between full transform keyframes (movement resync so dropped deltas self-heal). 0 = off.");
-
     namespace
     {
         // Loopback port for in-editor listen-server PIE. CVar-ize when real connections land.
@@ -140,10 +139,8 @@ namespace Lumina
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
                 if (!Net.bNetLoadOnClient) { continue; } // server-only, not replicated
-                uint32 Guid  = Net.NetGUID.Value;
-                uint32 Owner = Net.OwningConnectionId;
-                Writer << Guid;
-                Writer << Owner;
+                Net::WriteNetGuid(Writer, Net.NetGUID.Value);
+                WriteVarUInt(Writer, Net.OwningConnectionId);
             }
             Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
         }
@@ -158,9 +155,8 @@ namespace Lumina
             Reader << Count;
             for (uint16 i = 0; i < Count; ++i)
             {
-                uint32 Guid = 0, Owner = 0;
-                Reader << Guid;
-                Reader << Owner;
+                const uint32 Guid  = Net::ReadNetGuid(Reader);
+                const uint32 Owner = ReadVarUInt(Reader);
                 if (Reader.HasError())
                 {
                     break;
@@ -185,34 +181,30 @@ namespace Lumina
         // Net-index cache helpers live in the Net namespace (NetReplication.cpp) so the RPC path can share
         // them. See the package-map notes there.
 
-        // Serialize one SpawnEntity message.
-        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, TVector<uint8>& OutMsg)
+        // Serialize one SpawnEntity message for a specific recipient (TargetConn). Carries the script-rep
+        // baseline: all --@replicated fields eligible for that recipient (InitialOnly included), seeding the
+        // entity's diff snapshot so subsequent PropertyUpdates send only changes.
+        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, uint32 TargetConn, TVector<uint8>& OutMsg)
         {
             FNetArchive Writer(OutMsg);
             Net::BindWriters(Writer, State);
             uint8 Type = static_cast<uint8>(ENetMessage::SpawnEntity);
             Writer << Type;
-            Writer << Guid;
-            Writer << Owner;
-            Net::WriteEntityComponents(Writer, Registry, Entity);
+            Net::WriteNetGuid(Writer, Guid);
+            WriteVarUInt(Writer, Owner);
+
+            FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
+            TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/true, &Diff);
+            const FNetRepContext Ctx{ TargetConn, Owner, /*bInitial*/true };
+            Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields);
         }
         
-        void BuildExistingSpawnBatch(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& OutBatch)
-        {
-            for (entt::entity Entity : Registry.view<SNetworkComponent>())
-            {
-                SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
-                if (Net.NetGUID.Value < NetGUID_DynamicStart || !Net.bReplicates || !Net.bNetLoadOnClient)
-                {
-                    continue;
-                }
-                TVector<uint8> Msg;
-                WriteSpawnMessage(Registry, State, Entity, Net.NetGUID.Value, Net.OwningConnectionId, Msg);
-                Net::AppendFramedMessage(OutBatch, Msg.data(), static_cast<SIZE_T>(Msg.size()));
-            }
-        }
-        
-        void ReplicateSpawns(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
+        // Server lifetime maintenance for dynamic entities ONLY: assign NetGUIDs to new ones and unregister
+        // the GUIDs of destroyed ones. Does NOT emit spawn/despawn -- those are per-client (relevancy-driven,
+        // in ServerReplicateRelevant). KnownSpawnedGuids is the global existence set used to detect destruction;
+        // the per-client diff sees a destroyed entity as GuidTable.Find() == null. (Rule: AOI never unregisters
+        // a GUID -- only true world-destroy, here.)
+        void MaintainDynamicLifetime(entt::registry& Registry, FNetWorldState& State)
         {
             auto View = Registry.view<SNetworkComponent>();
 
@@ -239,15 +231,10 @@ namespace Lumina
                     continue;
                 }
                 Live.push_back(Net.NetGUID.Value);
-                if (VectorContains(State.KnownSpawnedGuids, Net.NetGUID.Value))
+                if (!VectorContains(State.KnownSpawnedGuids, Net.NetGUID.Value))
                 {
-                    continue;
+                    State.KnownSpawnedGuids.push_back(Net.NetGUID.Value);
                 }
-
-                TVector<uint8> Buffer;
-                WriteSpawnMessage(Registry, State, Entity, Net.NetGUID.Value, Net.OwningConnectionId, Buffer);
-                Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
-                State.KnownSpawnedGuids.push_back(Net.NetGUID.Value);
             }
 
             for (size_t i = 0; i < State.KnownSpawnedGuids.size(); )
@@ -255,13 +242,7 @@ namespace Lumina
                 const uint32 Guid = State.KnownSpawnedGuids[i];
                 if (!VectorContains(Live, Guid))
                 {
-                    TVector<uint8> Buffer;
-                    FNetArchive Writer(Buffer);
-                    uint8 Type = static_cast<uint8>(ENetMessage::DespawnEntity);
-                    Writer << Type;
-                    Writer << State.KnownSpawnedGuids[i];
-                    Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
-                    State.GuidTable.Unregister(FNetGUID{ Guid });
+                    State.GuidTable.Unregister(FNetGUID{ Guid }); // destroyed; per-client diff will despawn it
                     State.KnownSpawnedGuids.erase(State.KnownSpawnedGuids.begin() + i);
                 }
                 else
@@ -281,11 +262,11 @@ namespace Lumina
                 {
                     TVector<uint8> Buffer;
                     FNetArchive Writer(Buffer);
-                    uint8  Type = static_cast<uint8>(ENetMessage::DespawnEntity);
-                    uint32 G    = Guid;
+                    uint8 Type = static_cast<uint8>(ENetMessage::DespawnEntity);
                     Writer << Type;
-                    Writer << G;
+                    Net::WriteNetGuid(Writer, Guid);
                     Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                    ++State.Stats.DespawnsSent;
 
                     State.GuidTable.Unregister(FNetGUID{ Guid });
                     State.DestroyedStableGuids.push_back(Guid);
@@ -299,86 +280,74 @@ namespace Lumina
         }
 
         // Server, reliable property delta for every entity flagged FNetDirty. Sends the entity's replicated
-        // components, reliability handles resend, then clears the tag.
+        // native components + changed --@replicated script fields (field-granular diff), then clears the tag.
+        // Entities with owner-filtered (OwnerOnly/SkipOwner) script fields send per-client (deferred into
+        // PendingClientReliable so exports precede them); all others take the single reliable broadcast.
         void ReplicateDirtyProperties(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
         {
             auto View = Registry.view<SNetworkComponent, FNetDirty>();
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (Net.bReplicates && Net.NetGUID.Value != 0)
+                if (!Net.bReplicates || Net.NetGUID.Value == 0)
+                {
+                    continue;
+                }
+
+                // Diff the --@replicated script fields once (recipient-independent); updates the snapshot.
+                FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
+                TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/false, &Diff);
+
+                bool bOwnerConditioned = false;
+                for (const Net::FScriptRepFieldOut& F : Fields)
+                {
+                    if (F.Cond == EScriptRepCondition::OwnerOnly || F.Cond == EScriptRepCondition::SkipOwner)
+                    {
+                        bOwnerConditioned = true;
+                        break;
+                    }
+                }
+
+                auto WriteUpdate = [&](TVector<uint8>& Dest, const FNetRepContext& Ctx)
                 {
                     TVector<uint8> Buffer;
                     FNetArchive Writer(Buffer);
                     Net::BindWriters(Writer, State);
-                    uint8  Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
-                    uint32 Guid = Net.NetGUID.Value;
+                    uint8 Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
                     Writer << Type;
-                    Writer << Guid;
-                    Net::WriteEntityComponents(Writer, Registry, Entity);
-                    Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                    Net::WriteNetGuid(Writer, Net.NetGUID.Value);
+                    Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields);
+                    Net::AppendFramedMessage(Dest, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                };
+
+                if (!bOwnerConditioned)
+                {
+                    // Common path: native components + changed Always fields, one reliable broadcast.
+                    const FNetRepContext Ctx{ /*TargetConn*/0, Net.OwningConnectionId, /*bInitial*/false };
+                    WriteUpdate(Batch, Ctx);
                 }
+                else
+                {
+                    // Owner-filtered fields present: per recipient (native re-serialized per client).
+                    for (uint32 ConnId : State.ConnectedClientIds)
+                    {
+                        const FNetRepContext Ctx{ ConnId, Net.OwningConnectionId, /*bInitial*/false };
+                        WriteUpdate(State.PendingClientReliable[ConnId], Ctx);
+                    }
+                }
+                ++State.Stats.PropertyUpdatesSent;
             }
             Registry.clear<FNetDirty>();
         }
         
-        void AttachReplicatedScript(CWorld* World, entt::registry& Registry, entt::entity Entity)
-        {
-            SScriptComponent* Comp = Registry.try_get<SScriptComponent>(Entity);
-            if (Comp == nullptr)
-            {
-                return;
-            }
-
-            const FStringView Path = Comp->ScriptPath.ResolvePath();
-            if (Path.empty())
-            {
-                return; // ref/export not resolvable yet
-            }
-
-            // Already running exactly this script, nothing to do.
-            if (Comp->Script != nullptr &&
-                FStringView(Comp->Script->Path.c_str(), Comp->Script->Path.size()) == Path)
-            {
-                return;
-            }
-
-            // Nothing attached and this exact path already failed, don't reload every tick.
-            if (Comp->Script == nullptr)
-            {
-                if (FScriptAttachFailed* Failed = Registry.try_get<FScriptAttachFailed>(Entity))
-                {
-                    if (FStringView(Failed->Path.c_str(), Failed->Path.size()) == Path)
-                    {
-                        return;
-                    }
-                }
-            }
-
-            // (Re)load from the now-current ScriptPath. Detaches the old script first if the server swapped it.
-            World->ReloadScriptForComponent(Entity, *Comp);
-
-            if (Comp->Script == nullptr)
-            {
-                Registry.emplace_or_replace<FScriptAttachFailed>(Entity).Path.assign(Path.data(), Path.size());
-                LOG_WARN("[Net] Replicated script '{}' failed to load on this peer -- marking failed (won't reload until the path changes or the entity respawns).",
-                    FString(Path.data(), Path.size()).c_str());
-            }
-            else
-            {
-                Registry.remove<FScriptAttachFailed>(Entity); // success clears any prior failure
-            }
-        }
-
         // Client, create + link a server-spawned entity, then apply its components.
-        void ApplySpawnEntity(CWorld* World, entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
+        void ApplySpawnEntity(entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
-            uint8  Type = 0;
-            uint32 Guid = 0, Owner = 0;
+            uint8 Type = 0;
             Reader << Type;
-            Reader << Guid;
-            Reader << Owner;
+            const uint32 Guid  = Net::ReadNetGuid(Reader);
+            const uint32 Owner = ReadVarUInt(Reader);
             if (Reader.HasError() || State.GuidTable.Find(FNetGUID{ Guid }) != entt::null)
             {
                 return; // malformed, or we already have this entity
@@ -393,19 +362,19 @@ namespace Lumina
             Net.OwningConnectionId = Owner;
             State.GuidTable.Register(Net.NetGUID, Entity);
             Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
-
-            // A replicated script attaches here (path now set) so the entity gains its RPC handlers.
-            AttachReplicatedScript(World, Registry, Entity);
+            // Now that this entity's NetGUID is registered, reparent any children that were waiting on it.
+            Net::DrainPendingAttach(Registry, State, Guid, Entity);
+            // A replicated script attaches via on_update<SScriptComponent> (fired by ReadEntityComponents'
+            // patch), so the entity gains its RPC handlers without a hard-coded call here.
         }
 
         // Client, apply a reliable property delta to an existing entity.
-        void ApplyPropertyUpdate(CWorld* World, entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
+        void ApplyPropertyUpdate(entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
-            uint8  Type = 0;
-            uint32 Guid = 0;
+            uint8 Type = 0;
             Reader << Type;
-            Reader << Guid;
+            const uint32 Guid = Net::ReadNetGuid(Reader);
             if (Reader.HasError())
             {
                 return;
@@ -416,7 +385,7 @@ namespace Lumina
                 Net::BindReaders(Reader, State, SenderConn);
                 Net::ReadEntityComponents(Reader, Registry, Entity);
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
-                AttachReplicatedScript(World, Registry, Entity);
+                // Script reattach (if ScriptPath changed) happens via on_update<SScriptComponent>.
             }
         }
 
@@ -424,10 +393,9 @@ namespace Lumina
         void ApplyDespawnEntity(CWorld* World, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
-            uint8  Type = 0;
-            uint32 Guid = 0;
+            uint8 Type = 0;
             Reader << Type;
-            Reader << Guid;
+            const uint32 Guid = Net::ReadNetGuid(Reader);
             if (Reader.HasError())
             {
                 return;
@@ -467,89 +435,522 @@ namespace Lumina
             }
         }
 
-        // True once a local pose has moved past a small tolerance from the last-sent one (~1mm / tiny rotation).
-        bool MovementChanged(const FVector3& OldPos, const FQuat& OldRot, const FVector3& NewPos, const FQuat& NewRot)
+        // LOD tier -> position quantum (m): coarser the farther away. Both peers derive it from the wire tier.
+        double TierPosQuantum(ENetLODTier Tier)
         {
-            const FVector3 D = NewPos - OldPos;
-            if (D.x * D.x + D.y * D.y + D.z * D.z > 1e-6f)
+            switch (Tier)
             {
-                return true;
+            case ENetLODTier::Near: return 0.001; // 1 mm
+            case ENetLODTier::Mid:  return 0.01;  // 1 cm
+            default:                return 0.1;   // 10 cm (Far)
             }
-            const float Dot = NewRot.x * OldRot.x + NewRot.y * OldRot.y + NewRot.z * OldRot.z + NewRot.w * OldRot.w;
-            return 1.0f - (Dot < 0.0f ? -Dot : Dot) > 1e-6f;
         }
-        
-        void BroadcastTransformSnapshot(entt::registry& Registry, TVector<uint8>& Batch, bool bForceResend, float DeltaTime, float ServerTime)
+
+        // Per-entity send record. Stores the raw pose + its LOD tier; the wire encoding (position quantum,
+        // rotation precision) is chosen by tier at write time and mirrored by tier at read time.
+        struct FTransformSendRecord
+        {
+            uint32      Guid = 0;
+            ENetLODTier Tier = ENetLODTier::Near;
+            FVector3    Pos;
+            FQuat       Rot;
+            bool        bScale = false;
+            FVector3    Scale  = FVector3(1.0f);
+        };
+
+        void WriteTransformRecord(FNetArchive& Writer, const FTransformSendRecord& R)
+        {
+            uint8 Tier = static_cast<uint8>(R.Tier);
+            Writer.SerializeBits(&Tier, 2);
+            Net::WriteNetGuid(Writer, R.Guid);
+
+            NetQuantize::FQuantizedVector::FromVector(R.Pos, TierPosQuantum(R.Tier)).Write(Writer);
+
+            if (R.Tier == ENetLODTier::Far)
+            {
+                // Yaw-only rotation, 1 byte -- far entities don't need full orientation fidelity.
+                const float Yaw = Math::EulerAngles(R.Rot).y; // radians, around up (Y)
+                float Norm = Yaw / 6.2831853f + 0.5f;
+                Norm = Norm < 0.0f ? 0.0f : (Norm > 1.0f ? 1.0f : Norm);
+                uint8 YawByte = static_cast<uint8>(Norm * 255.0f + 0.5f);
+                Writer << YawByte;
+            }
+            else
+            {
+                NetQuantize::FQuantizedQuat::FromQuat(R.Rot).Write(Writer);
+            }
+
+            bool bScale = R.bScale;
+            Writer.SerializeBit(bScale); // 1-bit has-scale flag
+            if (bScale)
+            {
+                NetQuantize::FQuantizedVector::FromVector(R.Scale, NetQuantize::ScaleQuantum).Write(Writer);
+            }
+        }
+
+        // Quantize a local pose into the entity's send-cache, change-detect by exact integer compare, honor the
+        // NetUpdateFrequency throttle, and (on a positive decision) refresh the cache. Returns true to send;
+        // bOutScale says whether scale changed / a baseline is forced and must ride along on the wire.
+        bool PrepareTransformSend(SNetworkComponent& Net, FRepTransform& Rep, const FVector3& Pos, const FQuat& Rot,
+            const FVector3& Scale, float DeltaTime, bool bForceResend, bool& bOutScale)
+        {
+            Rep.TimeSinceLastSend += DeltaTime;
+
+            const NetQuantize::FQuantizedVector QPos   = NetQuantize::FQuantizedVector::FromVector(Pos);
+            const NetQuantize::FQuantizedQuat   QRot   = NetQuantize::FQuantizedQuat::FromQuat(Rot);
+            const NetQuantize::FQuantizedVector QScale = NetQuantize::FQuantizedVector::FromVector(Scale, NetQuantize::ScaleQuantum);
+
+            const bool bPoseChanged  = !Rep.bSendCacheValid || QPos != Rep.LastSentPos || QRot != Rep.LastSentRot;
+            const bool bScaleChanged = !Rep.bSendCacheValid || QScale != Rep.LastSentScale;
+
+            bOutScale = false;
+            if (!bForceResend)
+            {
+                if (Rep.bSendCacheValid && !bPoseChanged && !bScaleChanged)
+                {
+                    return false; // unchanged since last send
+                }
+                const float Interval = (Net.NetUpdateFrequency > 0.0f) ? (1.0f / Net.NetUpdateFrequency) : 0.0f;
+                if (Rep.TimeSinceLastSend < Interval)
+                {
+                    return false; // throttled
+                }
+            }
+
+            // Send scale only when it actually changed, or on a baseline/keyframe (first send included).
+            bOutScale = bScaleChanged || bForceResend || !Rep.bSendCacheValid;
+
+            Rep.LastSentPos       = QPos;
+            Rep.LastSentRot       = QRot;
+            Rep.LastSentScale     = QScale;
+            Rep.bSendCacheValid   = true;
+            Rep.TimeSinceLastSend = 0.0f;
+            return true;
+        }
+
+        // Add FRepTransform to entities that replicate movement, drop it from those that no longer qualify, and
+        // keep the NetGUID mirror current. Mirrors ConfigureProxyPhysics's lazy, idempotent approach. Runs on
+        // the (exclusive) SNetworkSystem, so the structural changes here are safe.
+        void EnsureRepTransforms(entt::registry& Registry)
+        {
+            for (entt::entity Entity : Registry.view<SNetworkComponent>())
+            {
+                SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
+                const bool bQualifies = Net.bReplicates && Net.bReplicatesMovement && Net.bNetLoadOnClient
+                    && Registry.all_of<STransformComponent>(Entity);
+                const bool bHas = Registry.all_of<FRepTransform>(Entity);
+
+                if (bQualifies && !bHas)
+                {
+                    Registry.emplace<FRepTransform>(Entity).NetGUID = Net.NetGUID.Value;
+                }
+                else if (!bQualifies && bHas)
+                {
+                    Registry.remove<FRepTransform>(Entity);
+                }
+                else if (bQualifies)
+                {
+                    Registry.get<FRepTransform>(Entity).NetGUID = Net.NetGUID.Value; // keep fresh after adoption
+                }
+            }
+        }
+
+        // Server -> clients, INTEREST-MANAGED. Builds the shared SoA extract + spatial grid once, then per client
+        // gathers the entities in its AOI, diffs against what it already knows (reliable spawn on enter / despawn
+        // after a grace timer on leave), and sends only those entities' transforms (unreliable, chunked). Done in
+        // two phases: phase A builds the per-client buffers (spawns MINT object/asset net-indices); then the index
+        // exports + the reliable broadcast batch go out; then phase B flushes the per-client buffers -- so a client
+        // always learns an index before any spawn (broadcast or per-client) that references it. GuidTable is never
+        // touched here (lifetime-only).
+        void ServerReplicateRelevant(entt::registry& Registry, FNetWorldState& State,
+            const SDefaultWorldSettings& Settings, float DeltaTime,
+            float ServerTime, TVector<uint8>& ReliableBroadcast)
+        {
+            NetGraph::BuildExtract(Registry, State.Extract, State.OwnerToRecord);
+            NetGraph::BuildGrid(State.Extract, Settings, State.Grid);
+
+            const FNetExtract& Ex   = State.Extract;
+            const FNetGrid&    Grid = State.Grid;
+            const float Grace      = Settings.RelevancyGraceSeconds;
+            const float EnterR2    = Settings.AOIEnterRadius * Settings.AOIEnterRadius;
+            const int32 CellRadius = static_cast<int32>(Settings.AOILeaveRadius / Grid.CellSize) + 1;
+
+            constexpr SIZE_T HeaderBytes        = 7;
+            constexpr SIZE_T MaxRecordBytes     = 5 + 30 + 6 + 1 + 30;
+            constexpr SIZE_T MaxRecordsPerFrame = (Net::MaxFramedMessageSize - HeaderBytes) / MaxRecordBytes;
+            static_assert(MaxRecordsPerFrame >= 1 && MaxRecordsPerFrame <= 0xFFFF, "frame chunk size invalid");
+
+            const uint32 NumClients = static_cast<uint32>(State.ConnectedClientIds.size());
+            TVector<TVector<uint8>>                ClientReliable; ClientReliable.resize(NumClients);
+            TVector<TVector<FTransformSendRecord>> ClientRecords;  ClientRecords.resize(NumClients);
+
+            uint32 RelevantSum = 0, RelevantMax = 0, SpawnsSum = 0, DespawnsSum = 0;
+            TVector<uint32>      Gathered;
+            TVector<ENetLODTier> GatheredTier;
+
+            // --- Phase A: gather + relevancy diff per client; build reliable (spawn/despawn) + transform records ---
+            for (uint32 ci = 0; ci < NumClients; ++ci)
+            {
+                const uint32 ConnId = State.ConnectedClientIds[ci];
+                FNetClientView& CV  = State.ClientViews[ConnId];
+
+                const auto VpIt = State.OwnerToRecord.find(ConnId);
+                if (VpIt == State.OwnerToRecord.end()) { continue; } // no owned pawn yet -> nothing relevant
+                const FVector3 VP = Ex.WorldPos[VpIt->second]; // viewpoint in world space
+
+                Gathered.clear();
+                GatheredTier.clear();
+                int32 Vcx, Vcz;
+                Grid.CellCoords(VP, Vcx, Vcz);
+                for (int32 cz = Vcz - CellRadius; cz <= Vcz + CellRadius; ++cz)
+                {
+                    if (cz < 0 || cz >= Grid.DimZ) { continue; }
+                    for (int32 cx = Vcx - CellRadius; cx <= Vcx + CellRadius; ++cx)
+                    {
+                        if (cx < 0 || cx >= Grid.DimX) { continue; }
+                        const int32 Cell = Grid.CellIndex(cx, cz);
+                        for (int32 s = Grid.CellStart[Cell]; s < Grid.CellStart[Cell + 1]; ++s)
+                        {
+                            const uint32 Rec = Grid.SortedRecords[s];
+                            const FVector3& P = Ex.WorldPos[Rec]; // world-space relevancy
+                            const float DX = P.x - VP.x;
+                            const float DZ = P.z - VP.z;
+                            ENetLODTier Tier = NetGraph::TierForDistanceSq(DX * DX + DZ * DZ, Settings);
+                            if (Tier == ENetLODTier::Cull)
+                            {
+                                if (!(Ex.Flags[Rec] & NETREC_AlwaysRelevant)) { continue; }
+                                Tier = ENetLODTier::Far;
+                            }
+                            Gathered.push_back(Rec);
+                            GatheredTier.push_back(Tier);
+                        }
+                    }
+                }
+
+                for (auto& KV : CV.Relevant) { KV.second.bRelevant = false; }
+
+                TVector<uint8>& Reliable = ClientReliable[ci];
+                for (size_t g = 0; g < Gathered.size(); ++g)
+                {
+                    const uint32 Rec  = Gathered[g];
+                    const uint32 Guid = Ex.Guid[Rec];
+                    const bool   bDyn = (Ex.Flags[Rec] & NETREC_Dynamic) != 0;
+                    auto It = CV.Relevant.find(Guid);
+                    if (It == CV.Relevant.end())
+                    {
+                        // Hysteresis: a NEW entity only becomes relevant inside the (smaller) enter radius;
+                        // existing ones stay relevant out to the leave radius (the gather bound above). Always
+                        // include AlwaysRelevant entities.
+                        if (!(Ex.Flags[Rec] & NETREC_AlwaysRelevant))
+                        {
+                            const FVector3& P = Ex.WorldPos[Rec]; // world-space relevancy
+                            const float DDX = P.x - VP.x;
+                            const float DDZ = P.z - VP.z;
+                            if (DDX * DDX + DDZ * DDZ > EnterR2) { continue; }
+                        }
+                        FRelevantEntry E;
+                        E.Tier         = GatheredTier[g];
+                        E.bRelevant    = true;
+                        E.bDynamic     = bDyn;
+                        E.TimeOutOfAOI = 0.0f;
+                        if (bDyn)
+                        {
+                            const entt::entity Ent = State.GuidTable.Find(FNetGUID{ Guid });
+                            if (Ent != entt::null)
+                            {
+                                TVector<uint8> Buf;
+                                WriteSpawnMessage(Registry, State, Ent, Guid, Ex.OwnerConn[Rec], ConnId, Buf);
+                                Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
+                                ++SpawnsSum;
+                                E.bBaselinePending = true; // spawn carried the pose; hold the transform one tick
+                            }
+                        }
+                        else
+                        {
+                            E.bNeedsBaseline = true; // stable entity: client has it from the map; send current pose once
+                        }
+                        CV.Relevant.emplace(Guid, E);
+                    }
+                    else
+                    {
+                        It->second.bRelevant    = true;
+                        It->second.Tier         = GatheredTier[g];
+                        It->second.TimeOutOfAOI = 0.0f;
+                    }
+                }
+
+                for (auto It = CV.Relevant.begin(); It != CV.Relevant.end(); )
+                {
+                    FRelevantEntry& E = It->second;
+                    if (!E.bRelevant)
+                    {
+                        const uint32 Guid = It->first;
+                        const bool bDestroyed = (State.GuidTable.Find(FNetGUID{ Guid }) == entt::null);
+                        E.TimeOutOfAOI += DeltaTime;
+                        if (bDestroyed || E.TimeOutOfAOI >= Grace)
+                        {
+                            if (E.bDynamic)
+                            {
+                                TVector<uint8> Buf;
+                                FNetArchive W(Buf);
+                                uint8 Type = static_cast<uint8>(ENetMessage::DespawnEntity);
+                                W << Type;
+                                Net::WriteNetGuid(W, Guid);
+                                Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
+                                ++DespawnsSum;
+                            }
+                            It = CV.Relevant.erase(It);
+                            continue;
+                        }
+                    }
+                    ++It;
+                }
+
+                TVector<FTransformSendRecord>& Records = ClientRecords[ci];
+                for (size_t g = 0; g < Gathered.size(); ++g)
+                {
+                    const uint32 Rec  = Gathered[g];
+                    const uint32 Guid = Ex.Guid[Rec];
+                    auto It = CV.Relevant.find(Guid);
+                    if (It == CV.Relevant.end()) { continue; }
+                    FRelevantEntry& E = It->second;
+                    E.TimeSinceSent += DeltaTime;
+                    if (E.bBaselinePending) { E.bBaselinePending = false; continue; } // spawn carried the pose
+
+                    const bool bChanged  = (Ex.Flags[Rec] & NETREC_Changed) != 0;
+                    const bool bScaleChg = (Ex.Flags[Rec] & NETREC_ScaleChanged) != 0;
+                    const bool bBaseline = CV.bForceBaseline || E.bNeedsBaseline;
+
+                    // Rate LOD: Near sends every changed tick; Mid/Far throttle to their tier rate. A baseline
+                    // (newly relevant / keyframe) always sends regardless of cadence.
+                    float Period = 0.0f;
+                    if (E.Tier == ENetLODTier::Mid)      { Period = (Settings.TierMidRate > 0.0f) ? 1.0f / Settings.TierMidRate : 0.0f; }
+                    else if (E.Tier == ENetLODTier::Far) { Period = (Settings.TierFarRate > 0.0f) ? 1.0f / Settings.TierFarRate : 0.0f; }
+                    const bool bCadence = (Period <= 0.0f) || (E.TimeSinceSent >= Period);
+
+                    if (!(bBaseline || (bChanged && bCadence))) { continue; }
+                    E.bNeedsBaseline = false;
+                    E.TimeSinceSent  = 0.0f;
+
+                    FTransformSendRecord R;
+                    R.Guid   = Guid;
+                    R.Tier   = E.Tier;
+                    R.Pos    = Ex.Pos[Rec];
+                    R.Rot    = Ex.Rot[Rec].ToQuat();
+                    R.bScale = bScaleChg || bBaseline;
+                    R.Scale  = Ex.Scale[Rec].ToVector(NetQuantize::ScaleQuantum);
+                    Records.push_back(R);
+                }
+
+                CV.bForceBaseline = false;
+                RelevantSum += static_cast<uint32>(CV.Relevant.size());
+                RelevantMax  = std::max(RelevantMax, static_cast<uint32>(CV.Relevant.size()));
+            }
+
+            // --- Exports first (all this-tick spawns have now minted their indices), then the reliable broadcast
+            //     batch, so every client learns an index before any spawn that references it. ---
+            if (!State.OutObjects.PendingExports.empty())
+            {
+                TVector<uint8> ExportMsg;
+                Net::BuildObjectExport(State.OutObjects, State.OutObjects.PendingExports, ExportMsg);
+                Net::BroadcastFramed(*State.Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                State.OutObjects.PendingExports.clear();
+            }
+            if (!State.OutAssets.PendingExports.empty())
+            {
+                TVector<uint8> ExportMsg;
+                Net::BuildAssetExport(State.OutAssets, State.OutAssets.PendingExports, ExportMsg);
+                Net::BroadcastFramed(*State.Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                State.OutAssets.PendingExports.clear();
+            }
+            if (!ReliableBroadcast.empty())
+            {
+                State.Stats.ReliableBatchBytes = static_cast<uint32>(ReliableBroadcast.size());
+                State.Transport->Broadcast(ReliableBroadcast.data(), static_cast<SIZE_T>(ReliableBroadcast.size()), 0, ESendMode::Reliable);
+            }
+
+            // --- Phase B: flush per-client reliable spawns/despawns, then chunked unreliable transforms ---
+            uint32 LargestFrame = 0, TotalBytes = 0, Chunks = 0;
+            for (uint32 ci = 0; ci < NumClients; ++ci)
+            {
+                const FConnectionHandle Conn{ State.ConnectedClientIds[ci] };
+                TVector<uint8>& Reliable = ClientReliable[ci];
+                if (!Reliable.empty())
+                {
+                    State.Transport->Send(Conn, Reliable.data(), static_cast<SIZE_T>(Reliable.size()), 0, ESendMode::Reliable);
+                }
+
+                // Owner-conditioned PropertyUpdates deferred from ReplicateDirtyProperties, now that exports went out.
+                const auto PcrIt = State.PendingClientReliable.find(State.ConnectedClientIds[ci]);
+                if (PcrIt != State.PendingClientReliable.end() && !PcrIt->second.empty())
+                {
+                    State.Transport->Send(Conn, PcrIt->second.data(), static_cast<SIZE_T>(PcrIt->second.size()), 0, ESendMode::Reliable);
+                }
+
+                TVector<FTransformSendRecord>& Records = ClientRecords[ci];
+                if (Records.empty()) { continue; }
+
+                TVector<uint8> Unreliable;
+                for (size_t Begin = 0; Begin < Records.size(); Begin += MaxRecordsPerFrame)
+                {
+                    const size_t End = std::min(Records.size(), Begin + MaxRecordsPerFrame);
+                    TVector<uint8> Buffer;
+                    FNetArchive Writer(Buffer);
+                    uint8  Type  = static_cast<uint8>(ENetMessage::TransformSnapshot);
+                    uint16 Count = static_cast<uint16>(End - Begin);
+                    Writer << Type;
+                    Writer << ServerTime;
+                    Writer << Count;
+                    for (size_t i = Begin; i < End; ++i) { WriteTransformRecord(Writer, Records[i]); }
+                    const uint32 FrameBytes = static_cast<uint32>(Buffer.size());
+                    LargestFrame = std::max(LargestFrame, FrameBytes);
+                    TotalBytes  += FrameBytes;
+                    ++Chunks;
+                    Net::AppendFramedMessage(Unreliable, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                }
+                State.Transport->Send(Conn, Unreliable.data(), static_cast<SIZE_T>(Unreliable.size()), 0, ESendMode::UnreliableSequenced);
+            }
+
+            State.Stats.MovementEntityCount    = Ex.Num();
+            State.Stats.MovementFrameBytes     = LargestFrame;
+            State.Stats.MovementTotalBytes     = TotalBytes;
+            State.Stats.UnreliableBatchBytes   = TotalBytes;
+            State.Stats.MovementChunks         = static_cast<uint16>(Chunks > 0xFFFF ? 0xFFFF : Chunks);
+            State.Stats.PeakMovementFrameBytes = std::max(State.Stats.PeakMovementFrameBytes, LargestFrame);
+            State.Stats.SpawnsSent             = static_cast<uint16>(SpawnsSum > 0xFFFF ? 0xFFFF : SpawnsSum);
+            State.Stats.DespawnsSent           = static_cast<uint16>(DespawnsSum > 0xFFFF ? 0xFFFF : DespawnsSum);
+            State.Stats.RelevantAvg            = NumClients ? (RelevantSum / NumClients) : 0;
+            State.Stats.RelevantMax            = RelevantMax;
+
+            State.PendingClientReliable.clear(); // consumed this tick
+        }
+
+        // Client -> server. Push the pose of entities this client owns (AutonomousProxy) upstream.
+        void SendOwnedTransforms(entt::registry& Registry, FNetWorldState& State, float DeltaTime)
         {
             auto&& TransformStorage = Registry.storage<STransformComponent>();
-            auto View = Registry.view<SNetworkComponent>();
+            auto View = Registry.view<SNetworkComponent, FRepTransform>();
 
-            // First pass: pick the entities to send (don't touch the cache until we commit to sending).
-            TVector<entt::entity> ToSend;
+            TVector<FTransformSendRecord> Records;
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (!Net.bReplicates || !Net.bReplicatesMovement || !Net.bNetLoadOnClient)
+                FRepTransform&     Rep = View.get<FRepTransform>(Entity);
+                if (Net.LocalRole != ENetRole::AutonomousProxy || !Net.bReplicatesMovement)
                 {
                     continue;
                 }
-
-                Net.TimeSinceLastNetUpdate += DeltaTime;
-
-                STransformComponent& Transform = TransformStorage.get(Entity);
-                const FVector3 Pos = Transform.GetLocalLocation();
-                const FQuat    Rot = Transform.GetLocalRotation();
-
-                if (!bForceResend)
+                if (!TransformStorage.contains(Entity))
                 {
-                    if (Net.bMovementCacheValid && !MovementChanged(Net.LastSentLocation, Net.LastSentRotation, Pos, Rot))
-                    {
-                        continue; // unchanged since last send
-                    }
-                    
-                    const float Interval = (Net.NetUpdateFrequency > 0.0f) ? (1.0f / Net.NetUpdateFrequency) : 0.0f;
-                    if (Net.TimeSinceLastNetUpdate < Interval)
-                    {
-                        continue;
-                    }
+                    continue;
                 }
-                ToSend.push_back(Entity);
+                STransformComponent& T = TransformStorage.get(Entity);
+
+                bool bScale = false;
+                if (!PrepareTransformSend(Net, Rep, T.GetLocalLocation(), T.GetLocalRotation(), T.GetLocalScale(), DeltaTime, false, bScale))
+                {
+                    continue;
+                }
+                FTransformSendRecord R;
+                R.Guid   = Net.NetGUID.Value;
+                R.Tier   = ENetLODTier::Near; // the owner's own pawn -> full precision upstream
+                R.Pos    = T.GetLocalLocation();
+                R.Rot    = T.GetLocalRotation();
+                R.bScale = bScale;
+                R.Scale  = T.GetLocalScale();
+                Records.push_back(R);
             }
 
-            if (ToSend.empty())
+            if (Records.empty())
             {
                 return;
             }
 
             TVector<uint8> Buffer;
             FNetArchive Writer(Buffer);
-            uint8 Type = static_cast<uint8>(ENetMessage::TransformSnapshot);
+            uint8  Type  = static_cast<uint8>(ENetMessage::ClientTransform);
+            uint16 Count = static_cast<uint16>(Records.size());
             Writer << Type;
-            Writer << ServerTime;
-            uint16 Count = static_cast<uint16>(ToSend.size());
             Writer << Count;
-
-            for (entt::entity Entity : ToSend)
+            for (const FTransformSendRecord& R : Records)
             {
-                SNetworkComponent&   Net       = View.get<SNetworkComponent>(Entity);
-                STransformComponent& Transform = TransformStorage.get(Entity);
-                uint32   Guid = Net.NetGUID.Value;
-                FVector3 Pos  = Transform.GetLocalLocation();
-                FQuat    Rot  = Transform.GetLocalRotation();
-                Writer << Guid;
-                NetQuantize::WritePackedVector(Writer, Pos);
-                NetQuantize::WritePackedQuat(Writer, Rot);
-
-                Net.LastSentLocation       = Pos;
-                Net.LastSentRotation       = Rot;
-                Net.bMovementCacheValid    = true;
-                Net.TimeSinceLastNetUpdate = 0.0f;
+                WriteTransformRecord(Writer, R);
             }
-
-            Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+            Net::SendFramed(*State.Transport, State.ServerConnection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, ESendMode::UnreliableSequenced);
         }
 
-        // Client, apply each received pose directly to the entity its NetGUID maps to.
+        // Decode one transform record into an entity's FRepTransform ring. Shared by the client snapshot and the
+        // server's client-transform receive. Returns false on a decode error so the caller breaks the batch.
+        bool ReadTransformIntoRing(entt::registry& Registry, FNetWorldState& State, FNetArchive& Reader, double SampleTime,
+            bool bSkipAutonomous, uint32 OwnerGate)
+        {
+            // Decode mirrors WriteTransformRecord: tier byte selects the position quantum + rotation precision.
+            uint8 TierByte = 0;
+            Reader.SerializeBits(&TierByte, 2);
+            const ENetLODTier Tier = static_cast<ENetLODTier>(TierByte);
+            const uint32 Guid = Net::ReadNetGuid(Reader);
+
+            NetQuantize::FQuantizedVector QPos;
+            QPos.Read(Reader);
+            const FVector3 Pos = QPos.ToVector(TierPosQuantum(Tier));
+
+            FQuat Rot;
+            if (Tier == ENetLODTier::Far)
+            {
+                uint8 YawByte = 0;
+                Reader << YawByte;
+                const float Yaw = (static_cast<float>(YawByte) / 255.0f - 0.5f) * 6.2831853f;
+                Rot = FQuat(FVector3(0.0f, Yaw, 0.0f));
+            }
+            else
+            {
+                NetQuantize::FQuantizedQuat QRot;
+                QRot.Read(Reader);
+                Rot = QRot.ToQuat();
+            }
+
+            bool bScale = false;
+            Reader.SerializeBit(bScale);
+            NetQuantize::FQuantizedVector QScale;
+            if (bScale)
+            {
+                QScale.Read(Reader);
+            }
+            if (Reader.HasError())
+            {
+                return false;
+            }
+
+            const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
+            if (Entity == entt::null || !Registry.valid(Entity) || !Registry.all_of<STransformComponent>(Entity))
+            {
+                return true; // unknown/late entity; skip but keep parsing the batch
+            }
+
+            SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity);
+            // Client: skip entities we control (driven by local input; the server pose would be stale).
+            if (bSkipAutonomous && Net != nullptr && Net->LocalRole == ENetRole::AutonomousProxy)
+            {
+                return true;
+            }
+            // Server: only accept poses for entities the sender actually owns.
+            if (OwnerGate != 0 && (Net == nullptr || Net->OwningConnectionId != OwnerGate))
+            {
+                return true;
+            }
+
+            FRepTransform& Rep = Registry.get_or_emplace<FRepTransform>(Entity);
+            Rep.NetGUID = Guid;
+            Rep.Ring.Push(SampleTime, Pos, Rot);
+            if (bScale)
+            {
+                Rep.CurrentScaleQ = QScale;
+                Rep.bHasScale     = true;
+            }
+            return true;
+        }
+
+        // Client, buffer each received pose into the entity's ring; the interp system writes the smoothed pose.
         void ApplyTransformSnapshot(entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
@@ -565,150 +966,14 @@ namespace Lumina
 
             for (uint16 Index = 0; Index < Count; ++Index)
             {
-                uint32   Guid = 0;
-                FVector3 Pos;
-                FQuat    Rot;
-                Reader << Guid;
-                NetQuantize::ReadPackedVector(Reader, Pos);
-                NetQuantize::ReadPackedQuat(Reader, Rot);
-                if (Reader.HasError())
+                if (!ReadTransformIntoRing(Registry, State, Reader, SampleTime, /*bSkipAutonomous*/ true, /*OwnerGate*/ 0))
                 {
                     break;
                 }
-
-                const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
-                if (Entity == entt::null || !Registry.valid(Entity) || !Registry.all_of<STransformComponent>(Entity))
-                {
-                    continue;
-                }
-                // Skip entities we control. They're driven by our local input, so applying the stale server
-                // pose would fight our own movement.
-                if (SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity))
-                {
-                    if (Net->LocalRole == ENetRole::AutonomousProxy) { continue; }
-                }
-
-                // Buffer the sample; the per-frame interpolation step writes the smoothed pose. Don't snap
-                // here, snapping makes movement step at the send rate.
-                State.InterpStates[Guid].Push(SampleTime, Pos, Rot);
             }
         }
 
-        // Client per-frame, advance the render clock and write each SimulatedProxy's interpolated pose.
-        // Lerp position and rotation between bracketing samples.
-        void InterpolateProxies(entt::registry& Registry, FNetWorldState& State, double ClientNow)
-        {
-            if (State.InterpStates.empty())
-            {
-                return;
-            }
-
-            // Track the server/client clock offset so RenderTime advances smoothly with the local frame clock
-            // and stays ~InterpDelay behind the newest received server time. Gentle EMA absorbs jitter/drift.
-            if (!State.bClockInitialized)
-            {
-                State.ClockOffset       = State.LatestServerTime - ClientNow;
-                State.bClockInitialized = true;
-            }
-            else
-            {
-                const double Measured = State.LatestServerTime - ClientNow;
-                State.ClockOffset += (Measured - State.ClockOffset) * 0.02;
-            }
-
-            const double RenderTime = ClientNow + State.ClockOffset - State.InterpDelay;
-
-            for (auto It = State.InterpStates.begin(); It != State.InterpStates.end(); )
-            {
-                const uint32     Guid   = It->first;
-                FNetInterpState& Buffer = It->second;
-
-                const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
-                if (Buffer.Count == 0 || Entity == entt::null || !Registry.valid(Entity) || !Registry.all_of<STransformComponent>(Entity))
-                {
-                    It = State.InterpStates.erase(It); // entity gone, drop its buffer
-                    continue;
-                }
-
-                // The owner's own entity is driven locally, not interpolated.
-                if (SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity))
-                {
-                    if (Net->LocalRole == ENetRole::AutonomousProxy) { ++It; continue; }
-                }
-
-                FVector3 Pos;
-                FQuat    Rot;
-                Buffer.Evaluate(RenderTime, Pos, Rot);
-
-                STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
-                FTransform NewTransform;
-                NewTransform.Location = Pos;
-                NewTransform.Rotation = Rot;
-                NewTransform.Scale    = Transform.GetLocalScale();
-                Transform.SetLocalTransform(NewTransform);
-                Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
-                ++It;
-            }
-        }
-        
-        void SendOwnedTransforms(entt::registry& Registry, FNetWorldState& State, float DeltaTime)
-        {
-            auto View = Registry.view<SNetworkComponent, STransformComponent>();
-            TVector<entt::entity> ToSend;
-            for (entt::entity Entity : View)
-            {
-                SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (Net.LocalRole != ENetRole::AutonomousProxy || !Net.bReplicatesMovement)
-                {
-                    continue;
-                }
-
-                Net.TimeSinceLastNetUpdate += DeltaTime;
-
-                STransformComponent& T = View.get<STransformComponent>(Entity);
-                const FVector3 Pos = T.GetLocalLocation();
-                const FQuat    Rot = T.GetLocalRotation();
-                if (Net.bMovementCacheValid && !MovementChanged(Net.LastSentLocation, Net.LastSentRotation, Pos, Rot))
-                {
-                    continue;
-                }
-                // Throttle the upstream to the owner's NetUpdateFrequency (the server relays at its own rate).
-                const float Interval = (Net.NetUpdateFrequency > 0.0f) ? (1.0f / Net.NetUpdateFrequency) : 0.0f;
-                if (Net.TimeSinceLastNetUpdate < Interval)
-                {
-                    continue;
-                }
-                ToSend.push_back(Entity);
-            }
-            if (ToSend.empty())
-            {
-                return;
-            }
-
-            TVector<uint8> Buffer;
-            FNetArchive Writer(Buffer);
-            uint8  Type  = static_cast<uint8>(ENetMessage::ClientTransform);
-            uint16 Count = static_cast<uint16>(ToSend.size());
-            Writer << Type;
-            Writer << Count;
-            for (entt::entity Entity : ToSend)
-            {
-                SNetworkComponent&   Net = View.get<SNetworkComponent>(Entity);
-                STransformComponent& T   = View.get<STransformComponent>(Entity);
-                uint32   Guid = Net.NetGUID.Value;
-                FVector3 Pos  = T.GetLocalLocation();
-                FQuat    Rot  = T.GetLocalRotation();
-                Writer << Guid;
-                NetQuantize::WritePackedVector(Writer, Pos);
-                NetQuantize::WritePackedQuat(Writer, Rot);
-                Net.LastSentLocation       = Pos;
-                Net.LastSentRotation       = Rot;
-                Net.bMovementCacheValid    = true;
-                Net.TimeSinceLastNetUpdate = 0.0f;
-            }
-            Net::SendFramed(*State.Transport, State.ServerConnection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, ESendMode::UnreliableSequenced);
-        }
-        
+        // Server, buffer each client-owned pose into its ring (gated on ownership). Relayed raw next snapshot.
         void ApplyClientTransform(entt::registry& Registry, FNetWorldState& State, FConnectionHandle Sender, double ServerNow, const uint8* Data, SIZE_T Size)
         {
             FNetArchive Reader(Data, Size);
@@ -721,28 +986,10 @@ namespace Lumina
 
             for (uint16 i = 0; i < Count; ++i)
             {
-                uint32   Guid = 0;
-                FVector3 Pos;
-                FQuat    Rot;
-                Reader << Guid;
-                NetQuantize::ReadPackedVector(Reader, Pos);
-                NetQuantize::ReadPackedQuat(Reader, Rot);
-                if (Reader.HasError())
+                if (!ReadTransformIntoRing(Registry, State, Reader, ServerNow, /*bSkipAutonomous*/ false, /*OwnerGate*/ Sender.Value))
                 {
                     break;
                 }
-
-                const entt::entity Entity = State.GuidTable.Find(FNetGUID{ Guid });
-                if (Entity == entt::null || !Registry.valid(Entity))
-                {
-                    continue;
-                }
-                SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity);
-                if (Net == nullptr || Net->OwningConnectionId != Sender.Value) // ownership gate
-                {
-                    continue;
-                }
-                State.InterpStates[Guid].Push(ServerNow, Pos, Rot);
             }
         }
     }
@@ -851,8 +1098,8 @@ namespace Lumina
                 {
                     ++State->ConnectedClients;
                     State->ConnectedClientIds.push_back(Event.Connection.Value);
-                    State->bForceMovementResend = true; // baseline every movement-replicated pose for the new client
-                    State->bOwnershipDirty       = true; // and the current ownership table
+                    State->ClientViews[Event.Connection.Value] = FNetClientView{}; // bForceBaseline defaults true
+                    State->bOwnershipDirty = true; // (re)send the current ownership table
 
                     // Tell the new client its unique peer id (= its connection handle here).
                     TVector<uint8> Buffer;
@@ -895,6 +1142,7 @@ namespace Lumina
                     State->ConnectedClients = (State->ConnectedClients > 0) ? State->ConnectedClients - 1 : 0;
                     auto& Ids = State->ConnectedClientIds;
                     Ids.erase(eastl::remove(Ids.begin(), Ids.end(), Event.Connection.Value), Ids.end());
+                    State->ClientViews.erase(Event.Connection.Value); // drop its per-client relevancy state
 
                     // Release anything this connection owned so it doesn't stay stuck as an orphan proxy.
                     for (entt::entity Entity : Registry.view<SNetworkComponent>())
@@ -958,7 +1206,7 @@ namespace Lumina
                     case ENetMessage::SpawnEntity:
                         if (!bServer)
                         {
-                            ApplySpawnEntity(World, Registry, *State, Event.Connection.Value, Msg, MsgSize);
+                            ApplySpawnEntity(Registry, *State, Event.Connection.Value, Msg, MsgSize);
                         }
                         break;
                     case ENetMessage::DespawnEntity:
@@ -970,7 +1218,7 @@ namespace Lumina
                     case ENetMessage::PropertyUpdate:
                         if (!bServer)
                         {
-                            ApplyPropertyUpdate(World, Registry, *State, Event.Connection.Value, Msg, MsgSize);
+                            ApplyPropertyUpdate(Registry, *State, Event.Connection.Value, Msg, MsgSize);
                         }
                         break;
                     case ENetMessage::ClientTransform:
@@ -1011,15 +1259,13 @@ namespace Lumina
                         if (bServer)
                         {
                             // Late-join initial sync, catch this connection up to the current world without
-                            // re-broadcasting spawns to everyone. Transforms re-baseline via the keyframe.
-                            State->bForceMovementResend = true;
-                            State->bOwnershipDirty       = true;
+                            // re-baseline this client's relevant entities; ownership re-sent below.
+                            State->ClientViews[Event.Connection.Value].bForceBaseline = true;
+                            State->bOwnershipDirty = true;
 
-                            // Build the joiner's spawn batch first (assigns its object/asset indices), then
-                            // send the index tables, then the spawns, so indices resolve before the spawns.
-                            TVector<uint8> SpawnBatch;
-                            BuildExistingSpawnBatch(Registry, *State, SpawnBatch);
-
+                            // Send the full object/asset index tables so the joiner can resolve refs in the
+                            // relevancy-driven spawns it will receive (dynamic entities arrive via AOI, not a bulk
+                            // spawn dump; stable level entities come from the map it loads).
                             if (!State->OutObjects.IndexToGuid.empty())
                             {
                                 TVector<uint32> AllIndices;
@@ -1046,11 +1292,6 @@ namespace Lumina
                                 Net::SendFramed(*State->Transport, Event.Connection, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
                             }
 
-                            if (!SpawnBatch.empty())
-                            {
-                                State->Transport->Send(Event.Connection, SpawnBatch.data(), static_cast<SIZE_T>(SpawnBatch.size()), 0, ESendMode::Reliable);
-                            }
-
                             // Replay stable entities the server destroyed at runtime. The joiner loaded the
                             // level fresh, so tell it to remove the copies it would have created.
                             if (!State->DestroyedStableGuids.empty())
@@ -1060,16 +1301,15 @@ namespace Lumina
                                 {
                                     TVector<uint8> Buffer;
                                     FNetArchive Writer(Buffer);
-                                    uint8  Type = static_cast<uint8>(ENetMessage::DespawnEntity);
-                                    uint32 G    = Guid;
+                                    uint8 Type = static_cast<uint8>(ENetMessage::DespawnEntity);
                                     Writer << Type;
-                                    Writer << G;
+                                    Net::WriteNetGuid(Writer, Guid);
                                     Net::AppendFramedMessage(DespawnBatch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
                                 }
                                 State->Transport->Send(Event.Connection, DespawnBatch.data(), static_cast<SIZE_T>(DespawnBatch.size()), 0, ESendMode::Reliable);
                             }
 
-                            LOG_DISPLAY("[Net][Server] Client {} ready; sent initial state ({} spawn bytes)", Event.Connection.Value, static_cast<int>(SpawnBatch.size()));
+                            LOG_DISPLAY("[Net][Server] Client {} ready; sent index tables (entities arrive via relevancy)", Event.Connection.Value);
                         }
                         break;
                     case ENetMessage::ObjectExport:
@@ -1095,73 +1335,50 @@ namespace Lumina
         // Roles fall out of net mode + ownership; recompute every tick (cheap, few networked entities).
         RefreshNetRoles(Registry, *State, bServer);
 
+        // Keep the transient FRepTransform component in sync with which entities replicate movement. Smoothing
+        // back onto STransformComponent is done by SNetMovementInterpSystem (PostPhysics), not here.
+        EnsureRepTransforms(Registry);
+
         if (bServer)
         {
-            // Smooth client-owned entities from their received-pose buffer before relaying. The host's own
-            // entities aren't buffered so they stay live. Done first so the relay snapshot uses the result.
-            InterpolateProxies(Registry, *State, Context.GetTime());
-
             if (State->ConnectedClients > 0)
             {
-                // Accumulate this tick's messages into two batches (one per reliability tier) and flush each
-                // as a single datagram, one ENet header and ack instead of one per message.
-                TVector<uint8> ReliableBatch;
-                TVector<uint8> UnreliableBatch;
+                State->Stats.PropertyUpdatesSent = 0;
+                State->Stats.bKeyframeThisTick   = false;
 
-                // Reliable, generic entity replication. Spawn/despawn dynamic entities, then property deltas.
-                ReplicateSpawns(Registry, *State, ReliableBatch);
+                // Periodic keyframe -> re-arm every client's baseline so a dropped delta self-heals.
+                const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
+                const float KeyframeInterval = WorldSettings.TransformKeyframeInterval;
+                if (KeyframeInterval > 0.0f)
+                {
+                    State->TimeSinceKeyframe += static_cast<float>(Context.GetDeltaTime());
+                    if (State->TimeSinceKeyframe >= KeyframeInterval)
+                    {
+                        State->TimeSinceKeyframe       = 0.0f;
+                        State->Stats.bKeyframeThisTick = true;
+                        for (auto& KV : State->ClientViews) { KV.second.bForceBaseline = true; }
+                    }
+                }
+
+                // Dynamic-entity lifetime (GUID assign / unregister on destroy) -- NOT spawn emission.
+                MaintainDynamicLifetime(Registry, *State);
+
+                // Reliable, broadcast-to-all generic replication: stable despawns, property deltas, ownership.
+                // Built here, but broadcast INSIDE ServerReplicateRelevant -- after the per-client spawns mint
+                // their net-indices and those index exports are sent -- so clients resolve indices in order.
+                TVector<uint8> ReliableBatch;
                 ReplicateStableDespawns(Registry, *State, ReliableBatch);
                 ReplicateDirtyProperties(Registry, *State, ReliableBatch);
-
-                // Ownership is reliable state; (re)broadcast the table on change or a new join.
                 if (State->bOwnershipDirty)
                 {
                     BroadcastOwnership(Registry, ReliableBatch);
                     State->bOwnershipDirty = false;
                 }
 
-                // Periodic keyframe, re-send every replicated pose so a dropped delta self-heals within the
-                // interval. Deltas still cover per-frame movement.
-                const float KeyframeInterval = CVarTransformKeyframeInterval.GetValue();
-                if (KeyframeInterval > 0.0f)
-                {
-                    State->TimeSinceKeyframe += static_cast<float>(Context.GetDeltaTime());
-                    if (State->TimeSinceKeyframe >= KeyframeInterval)
-                    {
-                        State->bForceMovementResend = true;
-                        State->TimeSinceKeyframe    = 0.0f;
-                    }
-                }
-
-                BroadcastTransformSnapshot(Registry, UnreliableBatch, State->bForceMovementResend,
-                    static_cast<float>(Context.GetDeltaTime()), static_cast<float>(Context.GetTime()));
-                State->bForceMovementResend = false;
-
-                // Export newly-assigned net indices before the reliable batch that references them, on the
-                // same ordered channel, framed so clients resolve them in the batch.
-                if (!State->OutObjects.PendingExports.empty())
-                {
-                    TVector<uint8> ExportMsg;
-                    Net::BuildObjectExport(State->OutObjects, State->OutObjects.PendingExports, ExportMsg);
-                    Net::BroadcastFramed(*State->Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
-                    State->OutObjects.PendingExports.clear();
-                }
-                if (!State->OutAssets.PendingExports.empty())
-                {
-                    TVector<uint8> ExportMsg;
-                    Net::BuildAssetExport(State->OutAssets, State->OutAssets.PendingExports, ExportMsg);
-                    Net::BroadcastFramed(*State->Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
-                    State->OutAssets.PendingExports.clear();
-                }
-
-                if (!ReliableBatch.empty())
-                {
-                    State->Transport->Broadcast(ReliableBatch.data(), static_cast<SIZE_T>(ReliableBatch.size()), 0, ESendMode::Reliable);
-                }
-                if (!UnreliableBatch.empty())
-                {
-                    State->Transport->Broadcast(UnreliableBatch.data(), static_cast<SIZE_T>(UnreliableBatch.size()), 0, ESendMode::UnreliableSequenced);
-                }
+                // Per-client interest-managed spawn/despawn + transform snapshots (also flushes the index
+                // exports + the reliable broadcast batch above, in the correct order).
+                ServerReplicateRelevant(Registry, *State, WorldSettings,
+                    static_cast<float>(Context.GetDeltaTime()), static_cast<float>(Context.GetTime()), ReliableBatch);
             }
         }
         else
@@ -1187,9 +1404,8 @@ namespace Lumina
                 SendOwnedTransforms(Registry, *State, static_cast<float>(Context.GetDeltaTime()));
             }
 
-            // Smooth every SimulatedProxy from its sample buffer (runs every frame, not just on packet
-            // receipt, so motion stays smooth between the throttled updates).
-            InterpolateProxies(Registry, *State, Context.GetTime());
+            // SimulatedProxy smoothing (interpolate/extrapolate each ring onto STransformComponent) runs in
+            // SNetMovementInterpSystem at PostPhysics, every frame, so motion stays smooth between updates.
         }
     }
 }

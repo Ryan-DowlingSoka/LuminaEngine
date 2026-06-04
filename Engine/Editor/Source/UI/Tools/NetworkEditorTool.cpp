@@ -4,8 +4,13 @@
 #include "World/WorldContext.h"
 #include "World/World.h"
 #include "World/Net/NetWorldState.h"
+#include "World/Net/NetReplication.h"
 #include "World/Entity/Components/NetworkComponent.h"
+#include "World/Entity/Components/RepTransformComponent.h"
+#include "World/Entity/Components/NameComponent.h"
 #include "Networking/INetworkTransport.h"
+#include "Config/NetworkSettings.h"
+#include "Core/Object/ObjectCore.h"
 
 namespace Lumina
 {
@@ -44,6 +49,23 @@ namespace Lumina
             return FString(Buf);
         }
 
+        const char* NetRoleName(ENetRole Role)
+        {
+            switch (Role)
+            {
+            case ENetRole::None:            return "None";
+            case ENetRole::SimulatedProxy:  return "SimulatedProxy";
+            case ENetRole::AutonomousProxy: return "AutonomousProxy";
+            case ENetRole::Authority:       return "Authority";
+            }
+            return "?";
+        }
+
+        // Severity palette for the warnings panel / threshold colouring.
+        const ImVec4 ColGood (0.40f, 0.85f, 0.45f, 1.0f);
+        const ImVec4 ColWarn (0.95f, 0.80f, 0.25f, 1.0f);
+        const ImVec4 ColBad  (0.95f, 0.35f, 0.30f, 1.0f);
+
         // A networked world is one whose registry has a live FNetWorldState with a transport.
         FNetWorldState* GetNetState(CWorld* World)
         {
@@ -76,13 +98,19 @@ namespace Lumina
         {
             const float SendRate = static_cast<float>(Stats.TotalSentBytes     - History.LastSent) / DeltaSeconds;
             const float RecvRate = static_cast<float>(Stats.TotalReceivedBytes - History.LastRecv) / DeltaSeconds;
-            History.SendRate[History.Head] = SendRate;
-            History.RecvRate[History.Head] = RecvRate;
+            History.SendRate[History.Head]      = SendRate;
+            History.RecvRate[History.Head]      = RecvRate;
+            History.MovementBytes[History.Head] = static_cast<float>(State->Stats.MovementFrameBytes);
             History.Head = (History.Head + 1) % FNetHistory::Capacity;
         }
         History.LastSent = Stats.TotalSentBytes;
         History.LastRecv = Stats.TotalReceivedBytes;
         History.bPrimed  = true;
+
+        // Smooth the snapshot size for a readable progress bar (the raw per-tick value jitters as each tick
+        // sends a different subset of due entities).
+        const float SnapNow = static_cast<float>(State->Stats.MovementFrameBytes);
+        History.SnapshotEMA += (SnapNow - History.SnapshotEMA) * 0.1f;
     }
 
     void FNetworkEditorTool::DrawNetworkWindow(bool bIsFocused)
@@ -160,6 +188,91 @@ namespace Lumina
         const bool bIsServer = SelectedWorld->GetNetMode() == ENetMode::ListenServer
                             || SelectedWorld->GetNetMode() == ENetMode::DedicatedServer;
 
+        const FNetReplicationStats& RepStats = State->Stats;
+
+        // Per-connection stats fetched once; the warnings panel and the Connections section both use them.
+        TVector<FConnectionStats> Conns;
+        State->Transport->GetConnectionStats(Conns);
+
+        // Proxy interpolation-ring health (reused by Warnings + Interpolation): how many rings hold samples,
+        // and their sample-count average/min. A low average means the buffer is starving -> visible stutter.
+        int RingCount = 0, RingSampleSum = 0, RingMin = 0;
+        bool bRingMinSet = false;
+        for (entt::entity E : Registry.view<FRepTransform>())
+        {
+            const FRepTransform& Rep = Registry.get<FRepTransform>(E);
+            if (Rep.Ring.Count > 0)
+            {
+                ++RingCount;
+                RingSampleSum += Rep.Ring.Count;
+                if (!bRingMinSet || Rep.Ring.Count < RingMin) { RingMin = Rep.Ring.Count; bRingMinSet = true; }
+            }
+        }
+
+        // --- Validation / Warnings ---
+        if (ImGui::CollapsingHeader("Validation", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            bool bAny = false;
+            char Buf[256];
+            auto Bullet = [&](const ImVec4& Col, const char* Text) { ImGui::TextColored(Col, "  - %s", Text); bAny = true; };
+
+            const float CapPct = (Net::MaxFramedMessageSize > 0)
+                ? static_cast<float>(RepStats.MovementFrameBytes) / static_cast<float>(Net::MaxFramedMessageSize) : 0.0f;
+
+            if (RepStats.OversizedSnapshotDrops > 0)
+            {
+                snprintf(Buf, sizeof(Buf), "Transform snapshot exceeded the 64 KB frame cap %u time(s) -- updates were DROPPED. "
+                    "Reduce replicated entities or split the snapshot.", RepStats.OversizedSnapshotDrops);
+                Bullet(ColBad, Buf);
+            }
+            else if (CapPct >= 0.75f)
+            {
+                snprintf(Buf, sizeof(Buf), "Transform snapshot at %.0f%% of the 64 KB frame cap (%u entities).",
+                    CapPct * 100.0f, RepStats.MovementEntityCount);
+                Bullet(ColWarn, Buf);
+            }
+
+            for (const FConnectionStats& C : Conns)
+            {
+                if (C.PacketLoss > 0.15f)
+                {
+                    snprintf(Buf, sizeof(Buf), "Connection %u packet loss %.0f%%.", C.ConnectionId, C.PacketLoss * 100.0f);
+                    Bullet(ColBad, Buf);
+                }
+                else if (C.PacketLoss > 0.05f)
+                {
+                    snprintf(Buf, sizeof(Buf), "Connection %u packet loss %.1f%%.", C.ConnectionId, C.PacketLoss * 100.0f);
+                    Bullet(ColWarn, Buf);
+                }
+
+                if (C.RoundTripTimeMs > 300)
+                {
+                    snprintf(Buf, sizeof(Buf), "Connection %u RTT %u ms (high).", C.ConnectionId, C.RoundTripTimeMs);
+                    Bullet(ColBad, Buf);
+                }
+                else if (C.RoundTripTimeMs > 150)
+                {
+                    snprintf(Buf, sizeof(Buf), "Connection %u RTT %u ms.", C.ConnectionId, C.RoundTripTimeMs);
+                    Bullet(ColWarn, Buf);
+                }
+            }
+
+            if (RingCount > 0)
+            {
+                const float Avg = static_cast<float>(RingSampleSum) / static_cast<float>(RingCount);
+                if (Avg < 2.0f)
+                {
+                    snprintf(Buf, sizeof(Buf), "Proxy interpolation buffers starving (avg %.1f samples) -- expect stutter.", Avg);
+                    Bullet(ColWarn, Buf);
+                }
+            }
+
+            if (!bAny)
+            {
+                ImGui::TextColored(ColGood, "  - No issues detected.");
+            }
+        }
+
         // --- Overview ---
         if (ImGui::CollapsingHeader("Overview", ImGuiTreeNodeFlags_DefaultOpen))
         {
@@ -212,9 +325,95 @@ namespace Lumina
             ImGui::PlotLines("##Recv", H.RecvRate, FNetHistory::Capacity, H.Head, nullptr, 0.0f, FLT_MAX, ImVec2(-1, 60));
         }
 
+        // --- Replication (what the net layer actually sent this tick) ---
+        if (ImGui::CollapsingHeader("Replication", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            int MoveRepl = 0, RoleAuth = 0, RoleSim = 0, RoleAuto = 0, RoleNone = 0;
+            for (entt::entity E : Registry.view<SNetworkComponent>())
+            {
+                const SNetworkComponent& N = Registry.get<SNetworkComponent>(E);
+                if (N.bReplicates && N.bReplicatesMovement && N.bNetLoadOnClient) { ++MoveRepl; }
+                switch (N.LocalRole)
+                {
+                case ENetRole::Authority:       ++RoleAuth; break;
+                case ENetRole::SimulatedProxy:  ++RoleSim;  break;
+                case ENetRole::AutonomousProxy: ++RoleAuto; break;
+                default:                        ++RoleNone; break;
+                }
+            }
+
+            // Transform snapshot size vs the 64 KB frame cap, coloured by how close we are (red once dropped).
+            // Use the smoothed snapshot bytes so the bar reads as a steady level instead of flickering with the
+            // per-tick subset of due entities.
+            FNetHistory& H = Histories[SelectedWorld];
+            const float SmoothBytes = H.SnapshotEMA;
+            float CapPct = (Net::MaxFramedMessageSize > 0)
+                ? SmoothBytes / static_cast<float>(Net::MaxFramedMessageSize) : 0.0f;
+            if (CapPct > 1.0f) { CapPct = 1.0f; }
+            const ImVec4 BarCol = (RepStats.OversizedSnapshotDrops > 0) ? ColBad : (CapPct >= 0.75f ? ColWarn : ColGood);
+
+            char Overlay[96];
+            snprintf(Overlay, sizeof(Overlay), "%s / %s  (largest frame)",
+                FormatBytesNice((double)SmoothBytes).c_str(),
+                FormatBytesNice((double)Net::MaxFramedMessageSize).c_str());
+
+            ImGui::TextUnformatted("Largest transform frame vs 64 KB cap:");
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, BarCol);
+            ImGui::ProgressBar(CapPct, ImVec2(-1, 0), Overlay);
+            ImGui::PopStyleColor();
+
+            ImGui::BulletText("Movement-replicated entities: %d", MoveRepl);
+            ImGui::BulletText("Relevant per client: %u avg, %u max  (of %d) -- interest culling",
+                RepStats.RelevantAvg, RepStats.RelevantMax, MoveRepl);
+            // The snapshot is split into as many <=64 KB frames as needed, so any entity count replicates.
+            const float BytesPerEnt = RepStats.MovementEntityCount
+                ? static_cast<float>(RepStats.MovementTotalBytes) / static_cast<float>(RepStats.MovementEntityCount) : 0.0f;
+            ImGui::BulletText("Snapshot total: %s across %u frame%s  (%u entities, %.1f B/entity)",
+                FormatBytesNice((double)RepStats.MovementTotalBytes).c_str(),
+                RepStats.MovementChunks, RepStats.MovementChunks == 1 ? "" : "s",
+                RepStats.MovementEntityCount, BytesPerEnt);
+            ImGui::BulletText("Peak frame: %s", FormatBytesNice((double)RepStats.PeakMovementFrameBytes).c_str());
+            if (RepStats.OversizedSnapshotDrops > 0)
+            {
+                ImGui::TextColored(ColBad, "  Oversized frame drops: %u", RepStats.OversizedSnapshotDrops);
+            }
+            ImGui::BulletText("Datagrams: unreliable %s, reliable %s",
+                FormatBytesNice((double)RepStats.UnreliableBatchBytes).c_str(),
+                FormatBytesNice((double)RepStats.ReliableBatchBytes).c_str());
+            ImGui::BulletText("Last tick: %u spawns, %u despawns, %u property updates%s",
+                RepStats.SpawnsSent, RepStats.DespawnsSent, RepStats.PropertyUpdatesSent,
+                RepStats.bKeyframeThisTick ? "  (keyframe)" : "");
+            ImGui::BulletText("Roles: Authority %d, Simulated %d, Autonomous %d, None %d",
+                RoleAuth, RoleSim, RoleAuto, RoleNone);
+
+            // Largest-frame history (raw per-tick); plot top is the frame cap. With chunking this stays under
+            // the cap -- the snapshot just splits into more frames as entities grow.
+            const float CurSnap = H.MovementBytes[(H.Head + FNetHistory::Capacity - 1) % FNetHistory::Capacity];
+            ImGui::Spacing();
+            ImGui::Text("Largest frame (cap = top of plot): %s", FormatBytesNice(CurSnap).c_str());
+            ImGui::PlotLines("##Snap", H.MovementBytes, FNetHistory::Capacity, H.Head, nullptr,
+                0.0f, static_cast<float>(Net::MaxFramedMessageSize), ImVec2(-1, 60));
+        }
+
+        // --- Interpolation (client-side smoothing health) ---
+        if (ImGui::CollapsingHeader("Interpolation", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            const CNetworkSettings* NS = GetDefault<CNetworkSettings>();
+            ImGui::BulletText("Interp delay: %.0f ms", (NS ? NS->InterpDelay : 0.1f) * 1000.0f);
+            ImGui::BulletText("Clock offset: %.1f ms", State->ClockOffset * 1000.0);
+            ImGui::BulletText("Latest server time: %.2f s", State->LatestServerTime);
+            if (RingCount > 0)
+            {
+                ImGui::BulletText("Proxy rings: %d active, avg %.1f samples (min %d, cap %d)",
+                    RingCount, (float)RingSampleSum / (float)RingCount, RingMin, FNetInterpState::Capacity);
+            }
+            else
+            {
+                ImGui::BulletText("Proxy rings: none active");
+            }
+        }
+
         // --- Per-connection stats ---
-        TVector<FConnectionStats> Conns;
-        State->Transport->GetConnectionStats(Conns);
         if (ImGui::CollapsingHeader("Connections", ImGuiTreeNodeFlags_DefaultOpen))
         {
             if (Conns.empty())
@@ -249,6 +448,56 @@ namespace Lumina
                 ImGui::EndTable();
             }
         }
+
+        // --- Per-entity replication (collapsed; capped + filterable so big sessions stay responsive) ---
+        if (ImGui::CollapsingHeader("Entities"))
+        {
+            static ImGuiTextFilter Filter;
+            Filter.Draw("Filter (name)", 180.0f);
+
+            constexpr int MaxRows = 256;
+            int Shown = 0, Total = 0;
+            if (ImGui::BeginTable("##Ents", 6,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp
+                | ImGuiTableFlags_ScrollY, ImVec2(0, 220)))
+            {
+                ImGui::TableSetupColumn("NetGUID");
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Role");
+                ImGui::TableSetupColumn("Owner");
+                ImGui::TableSetupColumn("Move");
+                ImGui::TableSetupColumn("Ring");
+                ImGui::TableHeadersRow();
+
+                for (entt::entity E : Registry.view<SNetworkComponent>())
+                {
+                    ++Total;
+                    const SNetworkComponent& N = Registry.get<SNetworkComponent>(E);
+
+                    const char* Name = "";
+                    if (const SNameComponent* NC = Registry.try_get<SNameComponent>(E)) { Name = NC->Name.c_str(); }
+                    if (!Filter.PassFilter(Name)) { continue; }
+                    if (Shown >= MaxRows) { continue; }
+                    ++Shown;
+
+                    int Ring = 0;
+                    if (const FRepTransform* R = Registry.try_get<FRepTransform>(E)) { Ring = R->Ring.Count; }
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::Text("%u", N.NetGUID.Value);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(Name);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(NetRoleName(N.LocalRole));
+                    ImGui::TableNextColumn(); ImGui::Text("%u", N.OwningConnectionId);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(N.bReplicatesMovement ? "yes" : "no");
+                    ImGui::TableNextColumn(); ImGui::Text("%d", Ring);
+                }
+                ImGui::EndTable();
+            }
+            if (Shown < Total)
+            {
+                ImGui::TextDisabled("Showing %d of %d networked entities (cap/filter).", Shown, Total);
+            }
+        }
     }
 
     void FNetworkEditorTool::DrawHelpMenu()
@@ -258,8 +507,22 @@ namespace Lumina
             "Pick one to inspect its transport and connections.");
         DrawHelpTextRow("Transport",
             "Cumulative bytes/packets the ENet host has sent/received, plus a rolling bytes/sec graph.");
+        DrawHelpTextRow("Validation",
+            "Surfaces problems detected this tick: a transform snapshot approaching or exceeding the 64 KB "
+            "frame cap (oversized snapshots are dropped wholesale), high packet loss / RTT, and starving "
+            "client interpolation buffers. Green means nothing flagged.");
+        DrawHelpTextRow("Replication",
+            "What the server actually sent this tick: the transform-snapshot size vs the 64 KB frame cap "
+            "(the bar goes yellow at 75%, red once frames drop), peak size, datagram sizes, spawn/despawn/"
+            "property-update counts, the role breakdown, and a snapshot-size graph (plot top = the cap).");
+        DrawHelpTextRow("Interpolation",
+            "Client-side smoothing health: render interp delay, server/client clock offset, and the proxy "
+            "sample-ring fill (a low average means stutter under loss).");
         DrawHelpTextRow("Connections",
             "Per-peer round-trip time, measured packet loss, and throughput. RTT/loss populate after a few "
             "reliable round-trips. Use the Play settings' Network Simulation to inject latency/loss.");
+        DrawHelpTextRow("Entities",
+            "Per-entity replication state (NetGUID, name, role, owner, movement flag, interpolation sample "
+            "count). Capped to 256 rows and name-filterable so large sessions stay responsive.");
     }
 }

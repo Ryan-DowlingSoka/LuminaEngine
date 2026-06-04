@@ -199,6 +199,11 @@ namespace Lumina
 
         /** Draws overlay elements on the viewport for tool actions. */
         virtual void DrawViewportToolbar(const FUpdateContext& UpdateContext);
+
+        /** Amber outline + "Shift+F1: Editor focus" hint, shown when this tool's viewport currently owns
+         *  game input. Shared by the world editor and game preview so focus reads consistently across tools.
+         *  Call from DrawViewportOverlayElements. */
+        void DrawGameFocusIndicator(ImVec2 ViewportSize);
         
         /** Moves the viewport to focus on the desired entity */
         virtual void FocusViewportToEntity(entt::entity Entity);

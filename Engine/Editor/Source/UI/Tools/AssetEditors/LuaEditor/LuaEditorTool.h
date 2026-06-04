@@ -2,6 +2,7 @@
 
 #include "Containers/Array.h"
 #include "Containers/String.h"
+#include "LuaAnnotationSchema.h"
 #include "LuaAstAnalyzer.h"
 #include "LuaTypeContext.h"
 #include "Memory/SmartPtr.h"
@@ -37,11 +38,19 @@ namespace Lumina
         enum class EPalette : uint8 { Dark, Light };
 
         void LoadFromDisk();
+        // Copy persisted CLuaEditorSettings values into the cached member fields. Run at construction
+        // and on the OnSettingsSaved live-refresh.
+        void PullSettings();
         void ApplyEditorSettings();
         void RefreshBreakpointMarkers();
 
         void RebuildSymbolIndex();
         void OnAutoCompleteRequest(TextEditor::AutoCompleteState& State);
+
+        // Annotation-DSL autocomplete: fills directive names or --@export/--@rpc argument tokens for the
+        // given context, filtered by Partial. Used inside `--@...` comments where Lua symbols don't apply.
+        void FillAnnotationCompletions(TextEditor::AutoCompleteState& State,
+                                       ELuaAnnotationContext Context, FStringView Partial);
         void OnHoverIdentifier(const std::string& Word, const std::string& DottedPath);
 
         // Populates DocumentOutline with clickable function/local declarations.
@@ -59,6 +68,20 @@ namespace Lumina
         // Harvests `local` declarations from the buffer so hover can show "local Name: Type"
         // without a full Luau type checker. Cheap; runs after each delayed change callback.
         void RebuildLocalIndex();
+
+        // Harvests table-member assignments (`Script.X = 0`, methods, `self.X`) from the
+        // AST so hover/autocomplete describe user-authored fields. Runs alongside RebuildLocalIndex.
+        void RebuildMemberIndex();
+
+        // Scans `--@export(...)` annotations from the buffer into ExportMetaByMember for hover.
+        void RebuildExportMeta();
+
+        // Validates --@ annotations (wrong placement, duplicate params) into AnnotationErrors.
+        void RebuildAnnotationDiagnostics(FStringView Body);
+
+        // Parameter-hint popup shown while the cursor sits inside a function call's
+        // argument list; resolves the callee against engine symbols and buffer functions.
+        void DrawSignatureHelp();
 
         // Free-text hover: tooltip when over a string/number/keyword/type annotation.
         // Identifier hovers still go through the editor's built-in hover callback.
@@ -161,6 +184,10 @@ namespace Lumina
         bool                bExternalChangePending = false;
         FDelegateHandle     ScriptLoadedHandle;
 
+        // Live-refresh subscription: re-pull + re-apply when CLuaEditorSettings is saved from the
+        // global Settings panel, so palette/appearance edits show up without reopening the editor.
+        FDelegateHandle     SettingsSavedHandle;
+
         // Retargets VirtualPath when this file is renamed/moved in the content browser, so a
         // subsequent save writes the new file instead of recreating the old path.
         FDelegateHandle     FileRenamedHandle;
@@ -188,6 +215,28 @@ namespace Lumina
             int           Line = -1;        // zero-based source line of the declaration
         };
         THashMap<FString, FLocalDecl>                                           Locals;
+
+        // Members written onto a table in this buffer (`Script.X = 0`, methods,
+        // `self.X = ...`), keyed by dotted path "Owner.Name". Drives hover ("X:
+        // number, field of Script") and member autocomplete for user-authored
+        // fields the runtime VM never harvested. Rebuilt from the AST per edit.
+        struct FMemberDecl
+        {
+            FString Owner;       // owning table expression, e.g. "Script" / "self" (empty for a plain function)
+            FString TypeName;    // best-effort type: annotation or syntactic value hint
+            int     Line = -1;   // 1-based declaration line
+            bool    bMethod = false;
+            bool    bFunction = false;
+            bool    bVararg = false;
+            TVector<FString> Params; // parameter names when bFunction (powers signature help)
+        };
+        THashMap<FString, FMemberDecl>                                          Members;
+
+        // --@export(...) metadata per field name, scanned from the buffer (cheap text pass)
+        // in RefreshAnalysis. Surfaced in the field hover so clamp/category/units/tooltip read
+        // off the same tooltip. Mirrored as plain strings to keep the runtime header out of here.
+        struct FExportArg { FString Key; FString Value; };
+        THashMap<FString, TVector<FExportArg>>                                  ExportMetaByMember;
 
         TextEditor::AutoCompleteConfig                                  AutoCompleteCfg;
 
@@ -260,6 +309,10 @@ namespace Lumina
         TVector<FLuaLintWarning>            LintWarnings;
         
         TVector<FLuaTypeDiagnostic>         TypeErrors;
+
+        // Our own annotation validation (wrong-place --@export/@rpc/@replicated, duplicate params),
+        // reused as FLuaTypeDiagnostic so they render exactly like type errors. Rebuilt per analysis.
+        TVector<FLuaTypeDiagnostic>         AnnotationErrors;
         
         FLuaAstAnalyzer                     AstAnalyzer;
         

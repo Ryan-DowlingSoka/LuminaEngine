@@ -250,10 +250,20 @@ namespace Lumina
             LocalTransform.Rotation = Rotation;
         }
 
+        // Write a network-resolved local pose WITHOUT marking dirty. The replication interp pass calls this
+        // from a parallel body (MarkDirty mutates the transform pool under a mutex, which is not ParallelFor-
+        // safe); the caller emplaces FNeedsTransformUpdate and resolves serially. Mirrors SetFromPhysics.
+        void SetFromNetwork(const FVector3& Location, const FQuat& Rotation, const FVector3& InScale)
+        {
+            LocalTransform.Location = Location;
+            LocalTransform.Rotation = Rotation;
+            LocalTransform.Scale    = InScale;
+        }
+
     public:
 
         /** Local-space transform relative to the entity's parent (or world if no parent). */
-        PROPERTY(Editable, Replicated, Category = "Transform")
+        PROPERTY(Editable, Category = "Transform")
         FTransform LocalTransform;
     
         FTransform WorldTransform;

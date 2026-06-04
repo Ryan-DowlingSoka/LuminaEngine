@@ -45,6 +45,7 @@ namespace Lumina::Lua
         FScriptExportSchema             ExportsSchema;
         TVector<FScriptPropertyEntry>   ExportDefaults;
         TVector<FScriptRpc>             Rpcs;
+        TVector<FScriptReplicatedField> ReplicatedFields;
     };
 
     // require() result cache; bytecode held C++-side (reload re-reads VFS), module value pinned via

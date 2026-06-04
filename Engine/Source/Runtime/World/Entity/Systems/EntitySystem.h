@@ -84,6 +84,9 @@ namespace Lumina
         void Teardown(const FSystemContext& SystemContext) const noexcept;
         uint64 GetHash() const noexcept;
 
+        // The reflected struct name; the stable identifier used to toggle this system per-world.
+        FName GetName() const noexcept;
+
     private:
         entt::meta_type Underlying;
         entt::meta_any  Instance;
@@ -99,6 +102,7 @@ namespace Lumina
         void Update(const FSystemContext& SystemContext) const noexcept;
         void Teardown(const FSystemContext& SystemContext) const noexcept;
         uint64 GetHash() const noexcept;
+        FName GetName() const noexcept;
 
     private:
 

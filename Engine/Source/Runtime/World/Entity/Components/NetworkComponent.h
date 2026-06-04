@@ -57,14 +57,7 @@ namespace Lumina
         // fights replicated transforms. Set once the body exists.
         bool     bProxyPhysicsConfigured = false;
 
-        // Server-only movement cache, the last local pose sent so a snapshot includes only entities whose
-        // transform changed since. Invalid until the first send.
-        FVector3 LastSentLocation;
-        FQuat    LastSentRotation;
-        bool     bMovementCacheValid = false;
-
-        // Send-rate throttle accumulator (seconds since this entity's transform was last sent). Used by the
-        // server's snapshot and the owning client's upstream send to honor NetUpdateFrequency.
-        float    TimeSinceLastNetUpdate = 0.0f;
+        // Movement send-cache and the throttle accumulator moved to the transient FRepTransform component
+        // (quantized last-sent pose + TimeSinceLastSend), so networking state is off the gameplay component.
     };
 }

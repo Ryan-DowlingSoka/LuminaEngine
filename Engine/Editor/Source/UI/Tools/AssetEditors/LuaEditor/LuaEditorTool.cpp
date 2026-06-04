@@ -7,15 +7,18 @@
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/ScriptAnnotations.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
+#include "Tools/UI/ImGui/ImGuiKeyCapture.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
 
 #include <algorithm>
+#include <random>
 
 #include "UI/Tools/EditorToolContext.h"
 
@@ -27,6 +30,19 @@ namespace Lumina
         {
             const FStringView Name = VFS::FileName(Path);
             return FString(Name.data(), Name.size());
+        }
+
+        // A random, readable color: random hue with high saturation/value so the result stays vibrant
+        // rather than muddy. Backs the "Randomize colors" button in the settings popup.
+        FVector3 RandomVibrantColor()
+        {
+            static std::mt19937 Rng{std::random_device{}()};
+            std::uniform_real_distribution<float> Hue(0.0f, 1.0f);
+            std::uniform_real_distribution<float> Sat(0.55f, 0.9f);
+            std::uniform_real_distribution<float> Val(0.75f, 1.0f);
+            float R, G, B;
+            ImGui::ColorConvertHSVtoRGB(Hue(Rng), Sat(Rng), Val(Rng), R, G, B);
+            return FVector3(R, G, B);
         }
 
         // Luau reserved words; surfaced first in suggestions when they match the prefix.
@@ -260,7 +276,13 @@ namespace Lumina
         const FStringView ParentView = VFS::Parent(InVirtualPath, true);
         ParentDir = FString(ParentView.data(), ParentView.size());
 
-        // Pull persisted preferences from the developer-settings object.
+        PullSettings();
+    }
+
+    void FLuaEditorTool::PullSettings()
+    {
+        // Pull persisted preferences from the developer-settings object. (Syntax colors are read
+        // straight from the CDO in ApplyEditorSettings, so they aren't mirrored into members here.)
         const CLuaEditorSettings* Settings = GetDefault<CLuaEditorSettings>();
         EditorFontScale         = Settings->FontScale;
         EditorTabSize           = std::max(1, std::min(8, Settings->TabSize));
@@ -338,6 +360,17 @@ namespace Lumina
         GlobalsChangedHandle = SC.OnGlobalsChanged.AddLambda([this]
         {
             bSymbolsDirty = true;
+        });
+
+        // Live-refresh when the Lua editor settings (palette, fonts, completion) are edited in the
+        // global Settings panel, so color/appearance tweaks apply without reopening the editor.
+        SettingsSavedHandle = FCoreDelegates::OnSettingsSaved.AddLambda([this](CClass* Class)
+        {
+            if (Class == CLuaEditorSettings::StaticClass())
+            {
+                PullSettings();
+                ApplyEditorSettings();
+            }
         });
 
         // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
@@ -419,12 +452,29 @@ namespace Lumina
         {
             OnAutoCompleteRequest(State);
         };
+        // Comments don't normally trigger completion, but the --@export / --@rpc annotation DSL should
+        // autocomplete like a language construct -- opt those lines back in.
+        AutoCompleteCfg.commentTriggerFilter = [this](const TextEditor::AutoCompleteState& State) -> bool
+        {
+            const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
+            FString Partial;
+            return LuaAnnotations::Classify(FStringView(Line.data(), Line.size()),
+                                            static_cast<int>(State.searchTermEndIndex), Partial)
+                   != ELuaAnnotationContext::None;
+        };
         CodeEditor.SetAutoCompleteConfig(&AutoCompleteCfg);
 
         // Hover tooltip uses the same harvested symbol table as autocomplete.
         CodeEditor.SetHoverCallback([this](const std::string& Word, const std::string& DottedPath)
         {
             OnHoverIdentifier(Word, DottedPath);
+        });
+
+        // Ctrl/Cmd+Click on an identifier jumps to its definition. The editor has
+        // already moved the caret to the click, so we resolve at the cursor.
+        CodeEditor.SetDefinitionCallback([this](const std::string&, const std::string&)
+        {
+            GoToDefinitionAtCursor();
         });
 
         CreateToolWindow("LuaEditor", [this](bool bFocused)
@@ -459,9 +509,10 @@ namespace Lumina
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Mono);
             ImGui::PushFontSize(ImGui::GetStyle().FontSizeBase * EditorFontScale);
             CodeEditor.Render("##lua_text", EditorSize);
-            
+
             DrawFreeFormHoverTooltip();
-            
+            DrawSignatureHelp();
+
             if (bPausedHere && bShowInlineValuesWhilePaused)
             {
                 DrawInlineValueOverlay();
@@ -500,6 +551,7 @@ namespace Lumina
         SC.OnScriptLoaded.Remove(ScriptLoadedHandle);
         SC.OnGlobalsChanged.Remove(GlobalsChangedHandle);
         FCoreDelegates::OnContentFileRenamed.Remove(FileRenamedHandle);
+        FCoreDelegates::OnSettingsSaved.Remove(SettingsSavedHandle);
     }
 
     void FLuaEditorTool::ApplyCompileError(int Line, const FString& Message)
@@ -662,9 +714,28 @@ namespace Lumina
         CodeEditor.SetAutoIndentEnabled(bAutoIndent);
         CodeEditor.SetShowMatchingBrackets(bShowMatchingBrackets);
         CodeEditor.SetCompletePairedGlyphs(bCompletePairedGlyphs);
-        CodeEditor.SetPalette(EditorPalette == EPalette::Dark
+        // Start from the chosen Dark/Light base (chrome: background, selection, brackets, line numbers),
+        // then override the syntax-token slots with the user's customizable colors from CLuaEditorSettings.
+        TextEditor::Palette Pal = (EditorPalette == EPalette::Dark)
             ? TextEditor::GetDarkPalette()
-            : TextEditor::GetLightPalette());
+            : TextEditor::GetLightPalette();
+
+        const CLuaEditorSettings* Colors = GetDefault<CLuaEditorSettings>();
+        auto Set = [&Pal](TextEditor::Color Slot, const FVector3& C)
+        {
+            const auto B = [](float V) { return (int)(std::clamp(V, 0.0f, 1.0f) * 255.0f + 0.5f); };
+            Pal[(size_t)Slot] = IM_COL32(B(C.x), B(C.y), B(C.z), 255);
+        };
+        Set(TextEditor::Color::keyword,            Colors->KeywordColor);
+        Set(TextEditor::Color::number,             Colors->NumberColor);
+        Set(TextEditor::Color::string,             Colors->StringColor);
+        Set(TextEditor::Color::comment,            Colors->CommentColor);
+        Set(TextEditor::Color::identifier,         Colors->IdentifierColor);
+        Set(TextEditor::Color::knownIdentifier,    Colors->KnownIdentifierColor);
+        Set(TextEditor::Color::punctuation,        Colors->PunctuationColor);
+        Set(TextEditor::Color::annotation,         Colors->AnnotationColor);
+        Set(TextEditor::Color::annotationArgument, Colors->AnnotationArgumentColor);
+        CodeEditor.SetPalette(Pal);
 
         AutoCompleteCfg.triggerOnTyping = bAutoTriggerCompletion;
         AutoCompleteCfg.triggerDelay = std::chrono::milliseconds{AutoTriggerDelayMs};
@@ -799,6 +870,9 @@ namespace Lumina
         {
             DocumentOutline.clear();
             Locals.clear();
+            Members.clear();
+            ExportMetaByMember.clear();
+            AnnotationErrors.clear();
             LintWarnings.clear();
             TypeErrors.clear();
             HoverTypeCache = {};
@@ -809,6 +883,9 @@ namespace Lumina
         
         AstAnalyzer.Parse(Body);
         RebuildLocalIndex();
+        RebuildMemberIndex();
+        RebuildExportMeta();
+        RebuildAnnotationDiagnostics(Body);
         RebuildDocumentOutline();
         AstAnalyzer.RunLint(LintWarnings);
         
@@ -858,6 +935,322 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::RebuildMemberIndex()
+    {
+        Members.clear();
+        if (!AstAnalyzer.IsValid())
+        {
+            return;
+        }
+
+        TVector<FLuaAstMemberEntry> Entries;
+        AstAnalyzer.CollectMembers(Entries);
+        for (const FLuaAstMemberEntry& E : Entries)
+        {
+            FMemberDecl D;
+            D.Owner.assign(E.Owner.c_str(), E.Owner.size());
+            D.Line      = E.Line;
+            D.bMethod   = E.bMethod;
+            D.bFunction = E.bFunction;
+            D.bVararg   = E.bVararg;
+            D.Params    = E.Params;
+            if (!E.TypeAnnotation.empty())
+            {
+                D.TypeName.assign(E.TypeAnnotation.c_str(), E.TypeAnnotation.size());
+            }
+            else if (!E.ValueHint.empty())
+            {
+                D.TypeName.assign(E.ValueHint.c_str(), E.ValueHint.size());
+            }
+
+            // First definition wins, but let a later one upgrade an unknown type
+            // (e.g. `Script.X = nil` in OnReady then `Script.X = 5` elsewhere).
+            const FString Key(E.Path.c_str(), E.Path.size());
+            auto It = Members.find(Key);
+            if (It == Members.end())
+            {
+                Members[Key] = Move(D);
+            }
+            else if (It->second.TypeName.empty() && !D.TypeName.empty())
+            {
+                It->second.TypeName = Move(D.TypeName);
+            }
+        }
+    }
+
+    void FLuaEditorTool::RebuildExportMeta()
+    {
+        ExportMetaByMember.clear();
+
+        const std::string Body = CodeEditor.GetText();
+        const TVector<Lua::FScriptMemberAnnotation> Annotations =
+            Lua::ScanScriptAnnotations(FStringView(Body.data(), Body.size()));
+
+        for (const Lua::FScriptMemberAnnotation& A : Annotations)
+        {
+            if (!A.bExport || A.bIsFunction)
+            {
+                continue;
+            }
+            TVector<FExportArg> Args;
+            Args.reserve(A.ExportMeta.size());
+            for (const Lua::FScriptAnnotationArg& Arg : A.ExportMeta)
+            {
+                FExportArg Out;
+                Out.Key.assign(Arg.Key.c_str());
+                Out.Value = Arg.Value;
+                Args.push_back(Move(Out));
+            }
+            ExportMetaByMember[FString(A.Member.c_str())] = Move(Args);
+        }
+    }
+
+    void FLuaEditorTool::RebuildAnnotationDiagnostics(FStringView Body)
+    {
+        AnnotationErrors.clear();
+
+        const TVector<Lua::FScriptAnnotationDiagnostic> Diags = Lua::ValidateScriptAnnotations(Body);
+        AnnotationErrors.reserve(Diags.size());
+        for (const Lua::FScriptAnnotationDiagnostic& D : Diags)
+        {
+            FLuaTypeDiagnostic Out;
+            Out.Line      = D.Line;
+            Out.Column    = D.Column;
+            Out.EndLine   = D.Line;
+            Out.EndColumn = D.EndColumn;
+            Out.Message.assign(D.Message.c_str(), D.Message.size());
+            AnnotationErrors.push_back(Move(Out));
+        }
+    }
+
+    void FLuaEditorTool::DrawSignatureHelp()
+    {
+        // Don't stack on the completion popup; only when the editor has focus.
+        if (CodeEditor.IsAutoCompleteActive())
+        {
+            return;
+        }
+        if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        {
+            return;
+        }
+
+        const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
+        const int TabSize = std::max(1, CodeEditor.GetTabSize());
+
+        auto ColToByte = [TabSize](const std::string& S, int Col) -> int
+        {
+            int Vis = 0, I = 0;
+            while (I < (int)S.size() && Vis < Col)
+            {
+                Vis += (S[I] == '\t') ? (TabSize - (Vis % TabSize)) : 1;
+                ++I;
+            }
+            return I;
+        };
+        auto ByteToCol = [TabSize](const std::string& S, int Byte) -> int
+        {
+            int Vis = 0;
+            for (int I = 0; I < Byte && I < (int)S.size(); ++I)
+            {
+                Vis += (S[I] == '\t') ? (TabSize - (Vis % TabSize)) : 1;
+            }
+            return Vis;
+        };
+
+        // Forward-scan a window of lines up to the cursor, tracking a stack of open
+        // brackets so commas only count at the call's own depth. The innermost '('
+        // with an identifier callee in front of it is the active call.
+        struct FOpen { char Ch; int ArgIndex; std::string Callee; int Line; int Col; };
+        TVector<FOpen> Stack;
+
+        const int CursorLine = Pos.line;
+        const int FirstLine  = std::max(0, CursorLine - 120);
+
+        auto ExtractCallee = [](const std::string& S, int ParenPos) -> std::string
+        {
+            int J = ParenPos - 1;
+            while (J >= 0 && (S[J] == ' ' || S[J] == '\t')) --J;
+            const int End = J + 1;
+            while (J >= 0 && (IsIdentChar(S[J]) || S[J] == '.' || S[J] == ':')) --J;
+            int Start = J + 1;
+            while (Start < End && !IsIdentChar(S[Start])) ++Start; // can't lead with . or :
+            if (Start >= End) return std::string();
+            return S.substr(Start, End - Start);
+        };
+
+        for (int LineIdx = FirstLine; LineIdx <= CursorLine; ++LineIdx)
+        {
+            const std::string Text = CodeEditor.GetLineText(LineIdx);
+            const int EndByte = (LineIdx == CursorLine)
+                ? std::min((int)Text.size(), ColToByte(Text, Pos.column))
+                : (int)Text.size();
+
+            for (int I = 0; I < EndByte; ++I)
+            {
+                const char C = Text[I];
+
+                // Line comment: skip the rest of the line (ignore long-comment edge case).
+                if (C == '-' && I + 1 < (int)Text.size() && Text[I + 1] == '-')
+                {
+                    break;
+                }
+                // Simple string literal: skip to the closing quote on this line.
+                if (C == '"' || C == '\'')
+                {
+                    const char Quote = C;
+                    ++I;
+                    while (I < EndByte)
+                    {
+                        if (Text[I] == '\\') { I += 2; continue; }
+                        if (Text[I] == Quote) break;
+                        ++I;
+                    }
+                    continue;
+                }
+
+                if (C == '(' || C == '[' || C == '{')
+                {
+                    FOpen F;
+                    F.Ch       = C;
+                    F.ArgIndex = 0;
+                    F.Line     = LineIdx;
+                    F.Col      = I;
+                    if (C == '(') F.Callee = ExtractCallee(Text, I);
+                    Stack.push_back(Move(F));
+                }
+                else if (C == ')' || C == ']' || C == '}')
+                {
+                    if (!Stack.empty()) Stack.pop_back();
+                }
+                else if (C == ',')
+                {
+                    if (!Stack.empty()) ++Stack.back().ArgIndex;
+                }
+            }
+        }
+
+        // The active call is the innermost open bracket, and only when it's a call
+        // paren with a named callee -- being inside a `{table}` / `[index]` / grouping
+        // `(expr)` that sits above a call must not surface the outer call's signature.
+        if (Stack.empty() || Stack.back().Ch != '(' || Stack.back().Callee.empty())
+        {
+            return;
+        }
+        const FOpen* Call = &Stack.back();
+
+        // Resolve the callee to a parameter list. Colon calls look up the dotted form.
+        std::string LookupStr = Call->Callee;
+        for (char& Ch : LookupStr) { if (Ch == ':') Ch = '.'; }
+
+        const size_t TailDot = LookupStr.find_last_of('.');
+        const std::string DisplayName = (TailDot == std::string::npos)
+            ? LookupStr : LookupStr.substr(TailDot + 1);
+        const FString LookupKey(LookupStr.c_str(), LookupStr.size());
+
+        TVector<FString> Params;
+        bool bVararg = false;
+        bool bFound  = false;
+        FString Doc;
+
+        auto SItr = SymbolByPath.find(LookupKey);
+        if (SItr != SymbolByPath.end() && SItr->second.Kind == Lua::ELuaSymbolKind::Function)
+        {
+            const Lua::FLuaSymbol& Sym = SItr->second;
+            for (const FString& P : Sym.ParamNames)
+            {
+                Params.emplace_back(P.c_str(), P.size());
+            }
+            if (Params.empty() && Sym.ParamCount > 0)
+            {
+                for (uint8 K = 0; K < Sym.ParamCount; ++K)
+                {
+                    char Buf[16];
+                    std::snprintf(Buf, sizeof(Buf), "arg%u", unsigned(K + 1));
+                    Params.emplace_back(Buf);
+                }
+            }
+            bVararg = Sym.bIsVararg;
+            if (!Sym.Description.empty()) Doc.assign(Sym.Description.c_str(), Sym.Description.size());
+            bFound = true;
+        }
+        else
+        {
+            auto MItr = Members.find(LookupKey);
+            if (MItr != Members.end() && MItr->second.bFunction)
+            {
+                Params  = MItr->second.Params;
+                bVararg = MItr->second.bVararg;
+                bFound  = true;
+            }
+        }
+
+        if (!bFound)
+        {
+            return;
+        }
+
+        // Position the popup just above the line that opens the call.
+        const std::string OpenLineText = CodeEditor.GetLineText(Call->Line);
+        const int VisCol = ByteToCol(OpenLineText, Call->Col);
+        ImVec2 Anchor = CodeEditor.GetScreenPosForCoordinate(Call->Line, VisCol);
+        const bool bRoomAbove = Call->Line > CodeEditor.GetFirstVisibleLine();
+        const ImVec2 Pivot = bRoomAbove ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+        if (!bRoomAbove) Anchor.y += CodeEditor.GetLineHeight();
+
+        ImGui::SetNextWindowPos(Anchor, ImGuiCond_Always, Pivot);
+        ImGui::SetNextWindowBgAlpha(0.92f);
+        const ImGuiWindowFlags Flags =
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs;
+
+        if (ImGui::Begin("##lua_sig_help", nullptr, Flags))
+        {
+            const ImVec4 Dim    = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+            const ImVec4 Active = ImVec4(1.0f, 0.85f, 0.45f, 1.0f);
+
+            ImGui::TextUnformatted(DisplayName.c_str());
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::TextUnformatted("(");
+
+            const int ActiveArg = Call->ArgIndex;
+            const int ParamCount = (int)Params.size();
+            for (int K = 0; K < ParamCount; ++K)
+            {
+                if (K > 0)
+                {
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::TextUnformatted(", ");
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+                const bool bIsActive = (K == ActiveArg);
+                ImGui::TextColored(bIsActive ? Active : Dim, "%s", Params[K].c_str());
+            }
+            if (bVararg)
+            {
+                if (ParamCount > 0)
+                {
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::TextUnformatted(", ");
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+                const bool bIsActive = (ActiveArg >= ParamCount);
+                ImGui::TextColored(bIsActive ? Active : Dim, "...");
+            }
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::TextUnformatted(")");
+
+            if (!Doc.empty())
+            {
+                ImGui::PushTextWrapPos(420.0f);
+                ImGui::TextColored(Dim, "%s", Doc.c_str());
+                ImGui::PopTextWrapPos();
+            }
+        }
+        ImGui::End();
+    }
+
 
     void FLuaEditorTool::DrawFreeFormHoverTooltip()
     {
@@ -898,6 +1291,48 @@ namespace Lumina
             ++ByteIdx;
         }
         if (ByteIdx >= N) return;
+
+        // Annotation directive / argument hover (--@export / --@rpc): show the DSL docs as if the
+        // directive were a built-in language construct. Only inside a `--` comment that carries an `@`.
+        {
+            const size_t Comment = LineText.find("--");
+            const size_t At      = (Comment == std::string::npos)
+                                       ? std::string::npos
+                                       : LineText.find('@', Comment);
+            if (At != std::string::npos && static_cast<int>(At) < ByteIdx)
+            {
+                int WStart = ByteIdx;
+                int WEnd   = ByteIdx;
+                while (WStart > 0 && IsIdentChar(LineText[WStart - 1])) --WStart;
+                while (WEnd < N && IsIdentChar(LineText[WEnd])) ++WEnd;
+                if (WEnd > WStart)
+                {
+                    const FString Word(LineText.data() + WStart, LineText.data() + WEnd);
+                    if (const FLuaAnnotationToken* T = LuaAnnotations::FindToken(
+                            FStringView(Word.c_str(), Word.size())))
+                    {
+                        const bool bDirective = (WStart > 0 && LineText[WStart - 1] == '@');
+                        // Match the on-screen annotation color so the hover reads as the same construct.
+                        const ImVec4 TitleColor = ImGui::ColorConvertU32ToFloat4(
+                            CodeEditor.GetPalette().get(TextEditor::Color::annotation));
+                        BeginTranslucentTooltip();
+                        ImGui::TextColored(TitleColor, "%s%s", bDirective ? "@" : "", T->Name);
+                        if (T->Detail && T->Detail[0])
+                        {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(%s)", T->Detail);
+                        }
+                        if (T->Doc && T->Doc[0])
+                        {
+                            ImGui::Separator();
+                            ImGui::TextUnformatted(T->Doc);
+                        }
+                        EndTranslucentTooltip();
+                        return;
+                    }
+                }
+            }
+        }
 
         // String literal hover.
         FStringHit Hit;
@@ -1186,6 +1621,93 @@ namespace Lumina
         }
         
         const FString FullKey(DottedPath.c_str(), DottedPath.size());
+
+        // Member field/method authored in this buffer (e.g. `Script.Thing = 0`).
+        // Luau often can't infer a concrete type for these (open table types
+        // collapse to `any`, which we discard above), so fall back to the
+        // syntactic value type and always name the owning table -- this is what
+        // turns a hover on `.Thing` into "Thing: number, field of table Script".
+        if (Word != DottedPath)
+        {
+            auto MItr = Members.find(FullKey);
+            if (MItr != Members.end())
+            {
+                const FMemberDecl& M = MItr->second;
+                const bool bHaveType = !TypeText.empty() || !M.TypeName.empty();
+                const FString& ShownType = !TypeText.empty() ? TypeText : M.TypeName;
+
+                BeginTranslucentTooltip();
+                if (M.bMethod)
+                {
+                    ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f), "(method) %s", DottedPath.c_str());
+                }
+                else
+                {
+                    ImGui::TextColored(ImVec4(0.63f, 0.78f, 0.55f, 1.0f), "(field) %s", DottedPath.c_str());
+                }
+                ImGui::Separator();
+
+                if (bHaveType)
+                {
+                    ImGui::Text("%s: %s", Word.c_str(), ShownType.c_str());
+                    ImGui::TextDisabled(TypeText.empty() ? "inferred from value" : "inferred type");
+                }
+                else
+                {
+                    ImGui::TextUnformatted(Word.c_str());
+                }
+
+                ImGui::Spacing();
+                ImGui::TextDisabled("%s of table %s", M.bMethod ? "method" : "field", M.Owner.c_str());
+
+                // --@export(...) metadata for this field, if any (ClampMin/Category/Units/...).
+                if (!M.bMethod)
+                {
+                    auto EItr = ExportMetaByMember.find(FString(Word.c_str(), Word.size()));
+                    if (EItr != ExportMetaByMember.end())
+                    {
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f), "exported property");
+                        if (ImGui::BeginTable("##export_meta", 2,
+                                ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp))
+                        {
+                            for (const FExportArg& Arg : EItr->second)
+                            {
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGui::TextDisabled("%s", Arg.Key.c_str());
+                                ImGui::TableNextColumn();
+                                if (Arg.Value.empty())
+                                {
+                                    ImGui::TextDisabled("(flag)");
+                                }
+                                else
+                                {
+                                    ImGui::TextUnformatted(Arg.Value.c_str());
+                                }
+                            }
+                            ImGui::EndTable();
+                        }
+                    }
+                }
+
+                if (!DocText.empty())
+                {
+                    ImGui::Spacing();
+                    ImGui::PushTextWrapPos(420.0f);
+                    ImGui::TextColored(ImVec4(0.78f, 0.85f, 0.72f, 1.0f), "%s", DocText.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+                if (M.Line > 0)
+                {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("declared on line %d", M.Line);
+                }
+                EndTranslucentTooltip();
+                return;
+            }
+        }
+
         auto Itr = SymbolByPath.find(FullKey);
         if (Itr == SymbolByPath.end() && Word != DottedPath)
         {
@@ -1428,6 +1950,71 @@ namespace Lumina
             }
             return std::string(Symbol.TypeName.c_str(), Symbol.TypeName.size());
         }
+
+        // Inline code-template completions (distinct from the snippets popup's
+        // kLuaSnippets). Body uses '\n' for newlines, '\t' for one indent level
+        // (expanded to the editor's tab/space setting at build time), and a single
+        // '\v' to mark where the caret lands after expansion. Labels are
+        // prefix-matched, so a label starting with a keyword (e.g. "for") is
+        // offered as you type that keyword.
+        struct FCompletionSnippet { const char* Label; const char* Detail; const char* Body; };
+        const FCompletionSnippet kCompletionSnippets[] =
+        {
+            {"for",            "numeric loop",    "for i = 1, \v do\n\t\nend"},
+            {"for ipairs",     "array iteration", "for i, v in ipairs(\v) do\n\t\nend"},
+            {"for pairs",      "table iteration", "for k, v in pairs(\v) do\n\t\nend"},
+            {"while",          "while loop",      "while \v do\n\t\nend"},
+            {"if",             "if statement",    "if \v then\n\t\nend"},
+            {"if else",        "if / else",       "if \v then\n\t\nelse\n\t\nend"},
+            {"function",       "function",        "function \v()\n\t\nend"},
+            {"local function", "local function",  "local function \v()\n\t\nend"},
+            {"local",          "local variable",  "local \v = "},
+            {"repeat",         "repeat / until",  "repeat\n\t\nuntil \v"},
+            {"do",             "do block",        "do\n\t\v\nend"},
+            {"return",         "return",          "return \v"},
+        };
+    }
+
+    void FLuaEditorTool::FillAnnotationCompletions(TextEditor::AutoCompleteState& State,
+                                                   ELuaAnnotationContext Context, FStringView Partial)
+    {
+        FLuaAnnotationTokenList List;
+        switch (Context)
+        {
+        case ELuaAnnotationContext::Directive:      List = LuaAnnotations::Directives();     break;
+        case ELuaAnnotationContext::ExportArgs:     List = LuaAnnotations::ExportArgs();     break;
+        case ELuaAnnotationContext::RpcArgs:        List = LuaAnnotations::RpcArgs();        break;
+        case ELuaAnnotationContext::ReplicatedArgs: List = LuaAnnotations::ReplicatedArgs(); break;
+        default: return;
+        }
+
+        auto Matches = [&](const char* Name) -> bool
+        {
+            if (Partial.empty()) return true;
+            const size_t PN = Partial.size();
+            if (std::strlen(Name) < PN) return false;
+            for (size_t I = 0; I < PN; ++I)
+            {
+                if (std::tolower((unsigned char)Name[I]) != std::tolower((unsigned char)Partial[I]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        // Directives read as keywords (magenta 'k'); arguments as values (green 'v'). Schema order is
+        // already the natural reading order, so we preserve it rather than re-sorting.
+        const char Kind = (Context == ELuaAnnotationContext::Directive) ? 'k' : 'v';
+        for (const FLuaAnnotationToken& T : List)
+        {
+            if (!Matches(T.Name)) continue;
+            std::string Insert = T.Name;
+            if (T.bTakesValue) Insert += '=';
+            State.suggestions.push_back(std::move(Insert));
+            State.suggestionKinds.push_back(Kind);
+            State.suggestionDetails.push_back(T.Detail ? T.Detail : "");
+        }
     }
 
     void FLuaEditorTool::OnAutoCompleteRequest(TextEditor::AutoCompleteState& State)
@@ -1435,6 +2022,27 @@ namespace Lumina
         State.suggestions.clear();
         State.suggestionKinds.clear();
         State.suggestionDetails.clear();
+        State.suggestionInsertText.clear();
+
+        // Annotation DSL (--@export / --@rpc / --@replicated): offer directive + argument completions so
+        // the comment directives autocomplete like language constructs. Handled before the Lua symbol path
+        // and returns early -- regular symbol completion makes no sense inside a comment.
+        {
+            const std::string AnnLine = CodeEditor.GetLineText(static_cast<int>(State.line));
+            FString Partial;
+            const ELuaAnnotationContext Ctx = LuaAnnotations::Classify(
+                FStringView(AnnLine.data(), AnnLine.size()),
+                static_cast<int>(State.searchTermEndIndex), Partial);
+            if (Ctx != ELuaAnnotationContext::None)
+            {
+                FillAnnotationCompletions(State, Ctx, FStringView(Partial.c_str(), Partial.size()));
+                return;
+            }
+            if (State.inComment)
+            {
+                return; // plain comment: no language completions (lists already cleared above)
+            }
+        }
 
         const std::string& Term = State.searchTerm;
         
@@ -1483,6 +2091,7 @@ namespace Lumina
             ETier_Engine  = 6,
             ETier_Type    = 5,
             ETier_Module  = 5,
+            ETier_Snippet = 4,
             ETier_Keyword = 3,
             ETier_String  = 2,
             ETier_Buffer  = 1,
@@ -1492,6 +2101,7 @@ namespace Lumina
         {
             std::string Name;
             std::string Detail;
+            std::string InsertText; // non-empty for snippets: the expansion body
             char        Kind = 'p';
             int         Rank = 0;
         };
@@ -1530,6 +2140,47 @@ namespace Lumina
             case 'f': return ETier_Property; // typed GeneratedFunction
             default:  return ETier_Property;
             }
+        };
+
+        // Expand a snippet template: continuation lines inherit the current line's
+        // leading whitespace; '\t' becomes one indent level in the editor's style.
+        auto BuildSnippetBody = [&](const char* Tmpl) -> std::string
+        {
+            const std::string CurLine = CodeEditor.GetLineText(static_cast<int>(State.line));
+            std::string Base;
+            for (char Ch : CurLine)
+            {
+                if (Ch == ' ' || Ch == '\t') Base.push_back(Ch);
+                else break;
+            }
+            const std::string One = CodeEditor.IsInsertSpacesOnTabs()
+                ? std::string(static_cast<size_t>(std::max(1, CodeEditor.GetTabSize())), ' ')
+                : std::string("\t");
+
+            std::string Out;
+            for (const char* P = Tmpl; *P; ++P)
+            {
+                if (*P == '\n')      { Out.push_back('\n'); Out += Base; }
+                else if (*P == '\t') { Out += One; }
+                else                 { Out.push_back(*P); }
+            }
+            return Out;
+        };
+
+        auto AddSnippet = [&](const FCompletionSnippet& S)
+        {
+            const FString Key(S.Label);
+            if (!Seen.insert(Key).second) return;
+            const int Match = MatchScore(FStringView(S.Label, std::strlen(S.Label)));
+            if (Match < 0) return;
+
+            FCandidate C;
+            C.Name       = S.Label;
+            C.Detail     = S.Detail;
+            C.InsertText = BuildSnippetBody(S.Body);
+            C.Kind       = 's';
+            C.Rank       = Match * 10000 + ETier_Snippet * 100;
+            Candidates.push_back(Move(C));
         };
 
         // Member-access path: "Engine.VFS." or "Engine.VFS:". Only suggest
@@ -1627,9 +2278,38 @@ namespace Lumina
                     }
                 }
             }
+
+            // Fields/methods authored on this table in the buffer (`Script.X = 0`,
+            // `function Script:Y()`). They never reach the runtime harvest and Luau
+            // collapses them to `any`, so without this `Script.` wouldn't complete
+            // the user's own members. Matched by the owner expression text.
+            for (const auto& MemberPair : Members)
+            {
+                const FMemberDecl& Member = MemberPair.second;
+                if (Member.Owner != OwnerPath) continue;
+
+                const FString& Path = MemberPair.first;
+                const size_t Dot = Path.rfind('.');
+                const char* NameStr = (Dot == FString::npos) ? Path.c_str() : Path.c_str() + Dot + 1;
+                const size_t NameLen = (Dot == FString::npos) ? Path.size() : Path.size() - Dot - 1;
+                if (NameLen == 0 || NameStr[0] == '_') continue;
+
+                std::string Detail = Member.TypeName.empty()
+                    ? std::string(Member.bMethod ? "method" : "field")
+                    : std::string(Member.TypeName.c_str(), Member.TypeName.size());
+                Add(NameStr, NameLen, std::move(Detail),
+                    Member.bMethod ? 'f' : 'v', ETier_Field);
+            }
         }
         else
         {
+            // Snippets first so a template claims its trigger name (e.g. "for")
+            // ahead of the bare keyword the dedup would otherwise keep.
+            for (const FCompletionSnippet& S : kCompletionSnippets)
+            {
+                AddSnippet(S);
+            }
+
             // Top-level: typed entries + keywords + engine globals + buffer.
             for (const FLuaTypedCompletion& C : TypedEntries)
             {
@@ -1669,11 +2349,13 @@ namespace Lumina
         State.suggestions.reserve(Candidates.size());
         State.suggestionKinds.reserve(Candidates.size());
         State.suggestionDetails.reserve(Candidates.size());
+        State.suggestionInsertText.reserve(Candidates.size());
         for (FCandidate& C : Candidates)
         {
             State.suggestions.push_back(std::move(C.Name));
             State.suggestionKinds.push_back(C.Kind);
             State.suggestionDetails.push_back(std::move(C.Detail));
+            State.suggestionInsertText.push_back(std::move(C.InsertText));
         }
     }
 
@@ -1797,6 +2479,28 @@ namespace Lumina
             {
                 CodeEditor.AddMarker(Line - 1, TypeErrCol, TypeErrFill,
                                      "Type error", Tip.c_str());
+            }
+        }
+
+        // Annotation errors (our own --@ validation): wrong placement / duplicate params.
+        if (!AnnotationErrors.empty())
+        {
+            const ImU32 AnnErrCol  = IM_COL32(255, 140, 90, 255);
+            const ImU32 AnnErrFill = IM_COL32(255, 140, 90, 55);
+            const int LineCount = CodeEditor.GetLineCount();
+
+            THashMap<int, FString> ByLine;
+            for (const FLuaTypeDiagnostic& E : AnnotationErrors)
+            {
+                if (E.Line < 1 || E.Line > LineCount) continue;
+                FString& Tip = ByLine[E.Line];
+                if (!Tip.empty()) Tip.append("\n\n");
+                Tip.append(E.Message.c_str(), E.Message.size());
+            }
+            for (auto& [Line, Tip] : ByLine)
+            {
+                CodeEditor.AddMarker(Line - 1, AnnErrCol, AnnErrFill,
+                                     "Annotation error", Tip.c_str());
             }
         }
 
@@ -1943,7 +2647,7 @@ namespace Lumina
         ImGuiX::TextTooltip("Toggle the outline panel (Ctrl+\\).");
 
         // Problems: icon + count, colored by worst severity.
-        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
+        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size() + AnnotationErrors.size();
         const size_t TotalWarn   = LintWarnings.size();
         char ProblemsLabel[48];
         if (TotalErrors == 0 && TotalWarn == 0)
@@ -2147,6 +2851,24 @@ namespace Lumina
             bDirty = true;
         }
 
+        // Fun button: roll a fresh random vibrant palette for the syntax colors. Writes the settings
+        // and saves -- the OnSettingsSaved live-refresh re-applies the palette immediately.
+        if (ImGui::Button(LE_ICON_DICE_5 " Randomize colors", ImVec2(-1, 0)))
+        {
+            CLuaEditorSettings* Colors = GetMutableDefault<CLuaEditorSettings>();
+            Colors->KeywordColor            = RandomVibrantColor();
+            Colors->NumberColor             = RandomVibrantColor();
+            Colors->StringColor             = RandomVibrantColor();
+            Colors->CommentColor            = RandomVibrantColor();
+            Colors->IdentifierColor         = RandomVibrantColor();
+            Colors->KnownIdentifierColor    = RandomVibrantColor();
+            Colors->PunctuationColor        = RandomVibrantColor();
+            Colors->AnnotationColor         = RandomVibrantColor();
+            Colors->AnnotationArgumentColor = RandomVibrantColor();
+            GConfig->SaveSettings(CLuaEditorSettings::StaticClass());
+        }
+        ImGuiX::TextTooltip("Roll a random vibrant set of syntax colors.");
+
         ImGui::Spacing();
         ImGui::Separator();
 
@@ -2327,7 +3049,7 @@ namespace Lumina
             return;
         }
 
-        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
+        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size() + AnnotationErrors.size();
         const size_t TotalWarn   = LintWarnings.size();
 
         ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.85f, 1.0f),
@@ -2391,6 +3113,23 @@ namespace Lumina
                 ImGui::PushID(RowID++);
                 ImGui::TableNextColumn();
                 ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "type");
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", E.Line);
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(E.Message.c_str(), false,
+                        ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    JumpTo(E.Line, E.Column);
+                }
+                ImGui::PopID();
+            }
+
+            for (const FLuaTypeDiagnostic& E : AnnotationErrors)
+            {
+                ImGui::TableNextRow();
+                ImGui::PushID(RowID++);
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "annotation");
                 ImGui::TableNextColumn();
                 ImGui::Text("%d", E.Line);
                 ImGui::TableNextColumn();
@@ -2961,7 +3700,34 @@ namespace Lumina
     void FLuaEditorTool::HandleEditorShortcuts()
     {
         const ImGuiIO& Io = ImGui::GetIO();
-        
+
+        // Rebindable actions (CLuaEditorSettings > Hotkeys). Each is a single SKey chord.
+        const CLuaEditorSettings* Keys = GetDefault<CLuaEditorSettings>();
+        if (ImGuiX::IsChordPressed(Keys->GoToLineKey))
+        {
+            bRequestOpenGoto = true;
+        }
+        if (ImGuiX::IsChordPressed(Keys->RunToCursorKey))
+        {
+            RunToCursor();
+        }
+        if (ImGuiX::IsChordPressed(Keys->ToggleOutlineKey))
+        {
+            bShowOutline = !bShowOutline;
+        }
+        if (ImGuiX::IsChordPressed(Keys->FormatDocumentKey))
+        {
+            FormatDocument();
+        }
+        if (ImGuiX::IsChordPressed(Keys->GoToDefinitionKey))
+        {
+            if (!GoToDefinitionAtCursor())
+            {
+                ImGuiX::Notifications::NotifyInfo("No local definition under the cursor.");
+            }
+        }
+
+        // Fixed (overloaded) shortcuts: their Shift/Ctrl variants switch behavior, so they stay built-in.
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false))
         {
             const int CurLine = CodeEditor.GetCurrentCursorPosition().line;
@@ -2975,38 +3741,10 @@ namespace Lumina
             }
         }
 
-        if (Io.KeyCtrl)
+        // Shift+F12: toggle reference highlights (opt-in to avoid flashes).
+        if (Io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_F12, false))
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_G, false))
-            {
-                bRequestOpenGoto = true;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_F10, false))
-            {
-                RunToCursor();
-            }
-            // Toggle outline panel (Ctrl+\). Cheap accelerator to peek at the
-            // file structure without opening the toolbar popup.
-            if (ImGui::IsKeyPressed(ImGuiKey_Backslash, false))
-            {
-                bShowOutline = !bShowOutline;
-            }
-        }
-
-        // F12: go to definition; Shift+F12: toggle reference highlights (opt-in to avoid flashes).
-        if (ImGui::IsKeyPressed(ImGuiKey_F12, false))
-        {
-            if (Io.KeyShift)
-            {
-                ToggleHighlightReferencesAtCursor();
-            }
-            else
-            {
-                if (!GoToDefinitionAtCursor())
-                {
-                    ImGuiX::Notifications::NotifyInfo("No local definition under the cursor.");
-                }
-            }
+            ToggleHighlightReferencesAtCursor();
         }
 
         // Alt+Shift+Right: expand selection to the next enclosing AST node.
@@ -3014,12 +3752,6 @@ namespace Lumina
         if (Io.KeyAlt && Io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightArrow, false))
         {
             ExpandSelectionToEnclosingNode();
-        }
-
-        // Ctrl+Shift+I (mnemonic: "Indent + format"): pretty-print the file.
-        if (Io.KeyCtrl && Io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_I, false))
-        {
-            FormatDocument();
         }
     }
 
@@ -3169,6 +3901,55 @@ namespace Lumina
             Item.Indent = E.Indent;
             DocumentOutline.push_back(Move(Item));
         }
+
+        // Fold the annotation DSL into the outline so exports and RPCs read as first-class members:
+        // exported properties (not otherwise in the AST outline) get their own 'e' entries, and RPC
+        // methods -- already present as functions -- are retagged 'r'. ScanScriptAnnotations is the same
+        // pass the runtime uses, so the outline can't drift from what actually replicates.
+        const std::string Body = CodeEditor.GetText();
+        const TVector<Lua::FScriptMemberAnnotation> Annotations =
+            Lua::ScanScriptAnnotations(FStringView(Body.data(), Body.size()));
+
+        auto MemberMatches = [](const FOutlineItem& Item, const FName& Member) -> bool
+        {
+            // AST function names render dotted ("Script:SetLabel"); match the tail member name.
+            const FStringView Full(Item.Name.c_str(), Item.Name.size());
+            const FStringView Want(Member.c_str(), std::strlen(Member.c_str()));
+            if (Full == Want) return true;
+            if (Full.size() <= Want.size()) return false;
+            const size_t Tail = Full.size() - Want.size();
+            const char Sep = Full[Tail - 1];
+            return (Sep == ':' || Sep == '.') && Full.substr(Tail) == Want;
+        };
+
+        for (const Lua::FScriptMemberAnnotation& A : Annotations)
+        {
+            if (A.bRpc && A.bIsFunction)
+            {
+                for (FOutlineItem& Item : DocumentOutline)
+                {
+                    if (Item.Kind == 'f' && MemberMatches(Item, A.Member))
+                    {
+                        Item.Kind = 'r';
+                        break;
+                    }
+                }
+            }
+            else if (A.bExport && !A.bIsFunction)
+            {
+                FOutlineItem Item;
+                Item.Kind   = 'e';
+                Item.Name   = A.Member.c_str();
+                Item.Detail = "exported property";
+                Item.Line   = (A.Line > 0) ? (A.Line - 1) : 0;
+                Item.Indent = 0;
+                DocumentOutline.push_back(Move(Item));
+            }
+        }
+
+        // Source order so injected exports interleave with the AST entries instead of trailing them.
+        std::stable_sort(DocumentOutline.begin(), DocumentOutline.end(),
+            [](const FOutlineItem& A, const FOutlineItem& B) { return A.Line < B.Line; });
     }
 
     void FLuaEditorTool::FormatDocument()
@@ -3206,6 +3987,26 @@ namespace Lumina
 
     bool FLuaEditorTool::GoToDefinitionAtCursor()
     {
+        // Buffer member declared in this file (Script.X = ..., function Script:Y, self.X).
+        // The Members index records each one's declaration line; jump straight to it.
+        std::string Word, Dotted;
+        if (CodeEditor.GetIdentifierAtCursor(Word, Dotted))
+        {
+            auto It = Members.find(FString(Dotted.c_str(), Dotted.size()));
+            if (It == Members.end() && Word != Dotted)
+            {
+                It = Members.find(FString(Word.c_str(), Word.size()));
+            }
+            if (It != Members.end() && It->second.Line > 0)
+            {
+                const int Target = It->second.Line - 1;
+                CodeEditor.SetCursor(Target, 0);
+                CodeEditor.ScrollToLine(Target, TextEditor::Scroll::alignMiddle);
+                return true;
+            }
+        }
+
+        // Otherwise fall back to lexical locals via the AST.
         if (!AstAnalyzer.IsValid()) return false;
         const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
         FString Name;
@@ -3298,6 +4099,7 @@ namespace Lumina
                 switch (Item.Kind)
                 {
                 case 'f': KindColor = ImVec4(0.86f, 0.71f, 0.35f, 1.0f); Glyph = "fn"; break;
+                case 'r': KindColor = ImVec4(0.8f,  0.6f,  0.9f,  1.0f); Glyph = "rpc"; break;
                 case 'l': KindColor = ImVec4(0.55f, 0.85f, 0.6f,  1.0f); Glyph = "lo"; break;
                 case 'e': KindColor = ImVec4(0.65f, 0.85f, 1.0f,  1.0f); Glyph = "ex"; break;
                 case 'c': KindColor = ImVec4(0.6f,  0.6f,  0.7f,  1.0f); Glyph = LE_ICON_FORMAT_LIST_BULLETED; break;

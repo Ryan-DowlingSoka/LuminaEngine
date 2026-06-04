@@ -1007,7 +1007,6 @@ export type EntityScript = {
     Transform: any,
     World: any,
     Input: any,
-    [string]: any,
 
     IsValid: (self: EntityScript) -> boolean,
     Destroy: (self: EntityScript) -> (),
@@ -1282,6 +1281,13 @@ declare EntityScript: { new: () -> EntityScript }
                 LOG_DISPLAY("[Net] Script '{}' registered {} RPC function(s).", Path, Entry.Rpcs.size());
             }
 
+            // Replicated state: --@replicated fields in source order (source order = wire rep-index).
+            Entry.ReplicatedFields = BuildReplicatedRegistry(Annotations);
+            if (!Entry.ReplicatedFields.empty())
+            {
+                LOG_DISPLAY("[Net] Script '{}' registered {} replicated field(s).", Path, Entry.ReplicatedFields.size());
+            }
+
             // Piggyback the --@export schema/defaults harvest off the first instance.
             TSharedPtr<FScript> FirstScript = InstantiateFromBytecode(Entry.Bytecode, Path,
                                                                       &Annotations,
@@ -1293,6 +1299,7 @@ declare EntityScript: { new: () -> EntityScript }
             }
 
             FirstScript->Rpcs = Entry.Rpcs;
+            FirstScript->ReplicatedFields = Entry.ReplicatedFields;
             FirstScript->Path = Path;
             RegisteredScripts[PathName].emplace_back(FirstScript);
             ScriptCache.emplace(PathName, eastl::move(Entry));
@@ -1308,9 +1315,10 @@ declare EntityScript: { new: () -> EntityScript }
         }
 
         Script->Path           = Path;
-        Script->ExportsSchema  = CachedEntry.ExportsSchema;
-        Script->ExportDefaults = CachedEntry.ExportDefaults;
-        Script->Rpcs           = CachedEntry.Rpcs;
+        Script->ExportsSchema    = CachedEntry.ExportsSchema;
+        Script->ExportDefaults   = CachedEntry.ExportDefaults;
+        Script->Rpcs             = CachedEntry.Rpcs;
+        Script->ReplicatedFields = CachedEntry.ReplicatedFields;
 
         RegisteredScripts[PathName].emplace_back(Script);
         FLuaDebugger::Get().OnScriptLoaded(*Script);

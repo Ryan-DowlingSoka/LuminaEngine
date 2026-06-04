@@ -243,7 +243,32 @@ void TextEditor::render(const char* title, const ImVec2& size, bool border) {
 		auto start = autocomplete.getStart();
 		auto end = document.findWordEnd(start, true);
 		auto replacement = autocomplete.getReplacement();
-		replaceSectionText(start, end, replacement);
+
+		// Snippet caret marker ('\v'): strip it, insert the rest, then place the
+		// caret where the marker was. Plain completions contain no marker and just
+		// land at the end of the inserted text as before.
+		auto markerPos = replacement.find('\v');
+		if (markerPos != std::string::npos) {
+			std::string before = replacement.substr(0, markerPos);
+			std::string cleaned = before + replacement.substr(markerPos + 1);
+			replaceSectionText(start, end, cleaned);
+
+			// Walk `before` from `start` to resolve the caret coordinate, honoring
+			// embedded newlines/tabs and skipping UTF-8 continuation bytes.
+			Coordinate caret = start;
+			int tab = document.getTabSize();
+			for (char ch : before) {
+				if (ch == '\n') { caret.line++; caret.column = 0; }
+				else if (ch == '\t') { caret.column += tab - (caret.column % tab); }
+				else if ((static_cast<unsigned char>(ch) & 0xC0) != 0x80) { caret.column++; }
+			}
+			cursors.clearAdditional();
+			cursors.getMain().update(caret, caret);
+			makeCursorVisible();
+
+		} else {
+			replaceSectionText(start, end, replacement);
+		}
 	}
 
 	// handle change tracking if there is a change callback in place
@@ -834,6 +859,66 @@ void TextEditor::handleKeyboardInputs() {
 //	TextEditor::handleMouseInteractions
 //
 
+bool TextEditor::extractIdentifierAt(const Coordinate& coord, std::string& outWord, std::string& outDotted) const {
+	if (coord.line < 0 || coord.line >= (int)document.size()) {
+		return false;
+	}
+	auto& line = document.at(coord.line);
+	int idx = (int)document.getIndex(coord);
+
+	// CodePoint::isWord follows the colorizer's identifier definition (letters,
+	// digits, underscore), the same rule the autocomplete engine uses.
+	if (!(idx >= 0 && idx < (int)line.size() && CodePoint::isWord(line[idx].codepoint))) {
+		return false;
+	}
+
+	int wordStart = idx;
+	while (wordStart > 0 && CodePoint::isWord(line[wordStart - 1].codepoint)) {
+		--wordStart;
+	}
+	int wordEnd = idx;
+	while (wordEnd < (int)line.size() && CodePoint::isWord(line[wordEnd].codepoint)) {
+		++wordEnd;
+	}
+
+	auto appendCP = [](std::string& out, ImWchar cp) {
+		char buf[4];
+		size_t n = TextEditor::CodePoint::write(buf, cp);
+		out.append(buf, n);
+	};
+
+	outWord.clear();
+	outWord.reserve(wordEnd - wordStart);
+	for (int i = wordStart; i < wordEnd; ++i) {
+		appendCP(outWord, line[i].codepoint);
+	}
+
+	// Walk further left over any "Ident.Ident:Ident" chain so the host gets
+	// enough context to resolve member-access paths. Separators are normalized
+	// to "." regardless of whether the user wrote "." or ":".
+	outDotted = outWord;
+	int cursor = wordStart;
+	while (cursor > 0 && (line[cursor - 1].codepoint == '.' || line[cursor - 1].codepoint == ':')) {
+		int segEnd = cursor - 1;
+		int segStart = segEnd;
+		while (segStart > 0 && CodePoint::isWord(line[segStart - 1].codepoint)) {
+			--segStart;
+		}
+		if (segStart == segEnd) break;
+
+		std::string seg;
+		seg.reserve(segEnd - segStart);
+		for (int i = segStart; i < segEnd; ++i) {
+			appendCP(seg, line[i].codepoint);
+		}
+		outDotted = seg + "." + outDotted;
+		cursor = segStart;
+	}
+
+	return true;
+}
+
+
 void TextEditor::handleMouseInteractions() {
 	// handle middle mouse button modes
 	panning &= panMode && ImGui::IsMouseDown(ImGuiMouseButton_Middle);
@@ -911,60 +996,8 @@ void TextEditor::handleMouseInteractions() {
 		// so the host can resolve dotted member paths without re-tokenising.
 		// Suppressed mid-drag to avoid spamming during a selection sweep.
 		if (hoverCallback && overText && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-			auto& line = document.at(glyphCoordinate.line);
-			auto idx = document.getIndex(glyphCoordinate);
-
-			// Expand to word bounds at the hovered position. CodePoint::isWord
-			// follows the colorizer's identifier definition (letters, digits,
-			// underscore), same rule the autocomplete engine uses.
-			if (idx >= 0 && idx < (int)line.size() && CodePoint::isWord(line[idx].codepoint)) {
-				int wordStart = idx;
-				while (wordStart > 0 && CodePoint::isWord(line[wordStart - 1].codepoint)) {
-					--wordStart;
-				}
-				int wordEnd = idx;
-				while (wordEnd < (int)line.size() && CodePoint::isWord(line[wordEnd].codepoint)) {
-					++wordEnd;
-				}
-
-				auto appendCP = [](std::string& out, ImWchar cp) {
-					char buf[4];
-					size_t n = TextEditor::CodePoint::write(buf, cp);
-					out.append(buf, n);
-				};
-
-				std::string word;
-				word.reserve(wordEnd - wordStart);
-				for (int i = wordStart; i < wordEnd; ++i) {
-					appendCP(word, line[i].codepoint);
-				}
-
-				// Walk further left over any "Ident.Ident:Ident" chain so
-				// the host gets enough context to look up Engine.VFS.ReadFile
-				// from a hover on "ReadFile".
-				std::string dotted = word;
-				int cursor = wordStart;
-				while (cursor > 0 && (line[cursor - 1].codepoint == '.' || line[cursor - 1].codepoint == ':')) {
-					int sepPos = cursor - 1;
-					int segEnd = sepPos;
-					int segStart = segEnd;
-					while (segStart > 0 && CodePoint::isWord(line[segStart - 1].codepoint)) {
-						--segStart;
-					}
-					if (segStart == segEnd) break;
-
-					std::string seg;
-					seg.reserve(segEnd - segStart);
-					for (int i = segStart; i < segEnd; ++i) {
-						appendCP(seg, line[i].codepoint);
-					}
-					// Always show as "." in the dotted path even if the user
-					// wrote ":". The host only cares about the symbol path,
-					// not the call style.
-					dotted = seg + "." + dotted;
-					cursor = segStart;
-				}
-
+			std::string word, dotted;
+			if (extractIdentifierAt(glyphCoordinate, word, dotted)) {
 				hoverCallback(word, dotted);
 			}
 		}
@@ -1100,8 +1133,18 @@ void TextEditor::handleMouseInteractions() {
 						autocomplete.cancel();
 
 					} else if (addCursor) {
-						cursors.addCursor(cursorCoordinate);
-						autocomplete.cancel();
+						// Ctrl/Cmd+Click: go to definition when the host wants it and
+						// the click lands on an identifier; otherwise add a cursor.
+						std::string word, dotted;
+						if (definitionCallback && extractIdentifierAt(glyphCoordinate, word, dotted)) {
+							cursors.setCursor(cursorCoordinate);
+							autocomplete.cancel();
+							definitionCallback(word, dotted);
+
+						} else {
+							cursors.addCursor(cursorCoordinate);
+							autocomplete.cancel();
+						}
 
 					} else {
 						cursors.setCursor(cursorCoordinate);
@@ -2399,6 +2442,8 @@ const TextEditor::Palette& TextEditor::GetDarkPalette() {
 		IM_COL32(156, 220, 254, 255),	// identifier
 		IM_COL32( 79, 193, 255, 255),	// known identifier
 		IM_COL32(106, 153,  85, 255),	// comment
+		IM_COL32(229, 192,  79, 255),	// annotation
+		IM_COL32(224, 224, 224, 255),	// annotation argument
 		IM_COL32( 30,  30,  30, 255),	// background
 		IM_COL32(224, 224, 224, 255),	// cursor
 		IM_COL32( 32,  96, 160, 255),	// selection
@@ -2429,6 +2474,8 @@ const TextEditor::Palette& TextEditor::GetLightPalette()
 		IM_COL32( 64,  64,  64, 255),	// identifier
 		IM_COL32( 16,  96,  96, 255),	// known identifier
 		IM_COL32( 35, 135,   5, 255),	// comment
+		IM_COL32(176, 120,   0, 255),	// annotation
+		IM_COL32( 48,  48,  48, 255),	// annotation argument
 		IM_COL32(255, 255, 255, 255),	// background
 		IM_COL32(  0,   0,   0, 255),	// cursor
 		IM_COL32(  0,   0,  96,  64),	// selection
@@ -3737,11 +3784,11 @@ TextEditor::State TextEditor::Colorizer::update(Line& line, const Language* lang
 
 			// handle single line comments
 			} else if (language->singleLineComment.size() && matches(glyph, line.end(), language->singleLineComment)) {
-				setColor(glyph, line.end(), Color::comment);
+				colorizeSingleLineComment(glyph, line.end(), language, language->singleLineComment.size());
 				glyph = line.end();
 
 			} else if (language->singleLineCommentAlt.size() && matches(glyph, line.end(), language->singleLineCommentAlt)) {
-				setColor(glyph, line.end(), Color::comment);
+				colorizeSingleLineComment(glyph, line.end(), language, language->singleLineCommentAlt.size());
 				glyph = line.end();
 
 			// are we starting a multiline comment
@@ -4012,6 +4059,58 @@ bool TextEditor::Colorizer::matches(Line::iterator start, Line::iterator end, co
 	}
 
 	return true;
+}
+
+
+//
+//	TextEditor::Colorizer::colorizeSingleLineComment
+//
+
+void TextEditor::Colorizer::colorizeSingleLineComment(Line::iterator start, Line::iterator end, const Language* language, size_t markerSize) {
+	// without an annotation marker, or when this isn't an annotation, the whole run is a plain comment
+	if (language->annotationMarker.empty()) {
+		setColor(start, end, Color::comment);
+		return;
+	}
+
+	// skip the comment marker and any leading whitespace, then test for the annotation marker (e.g. "@")
+	auto cursor = start + markerSize;
+	while (cursor < end && CodePoint::isWhiteSpace(cursor->codepoint)) {
+		cursor++;
+	}
+
+	if (cursor >= end || !matches(cursor, end, language->annotationMarker)) {
+		setColor(start, end, Color::comment);
+		return;
+	}
+
+	// directive = the annotation marker plus the identifier that follows it (--@export, --@rpc, ...)
+	auto directiveEnd = cursor + language->annotationMarker.size();
+	auto isIdent = [](ImWchar c) {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+	};
+	while (directiveEnd < end && isIdent(directiveEnd->codepoint)) {
+		directiveEnd++;
+	}
+
+	// the comment marker through the directive name reads as the annotation color
+	setColor(start, directiveEnd, Color::annotation);
+
+	// a following (...) argument list reads as the argument color; anything after the ')' is a comment
+	if (directiveEnd < end && directiveEnd->codepoint == '(') {
+		auto argEnd = directiveEnd;
+		while (argEnd < end && argEnd->codepoint != ')') {
+			argEnd++;
+		}
+		if (argEnd < end) {
+			argEnd++; // include the closing ')'
+		}
+		setColor(directiveEnd, argEnd, Color::annotationArgument);
+		setColor(argEnd, end, Color::comment);
+
+	} else {
+		setColor(directiveEnd, end, Color::comment);
+	}
 }
 
 
@@ -4700,6 +4799,7 @@ static ImU32 kindBadgeColor(char kind) {
 		case 't': return IM_COL32( 90, 200, 220, 255); // table
 		case 'v': return IM_COL32(160, 200, 140, 255); // value (number/string/bool)
 		case 'k': return IM_COL32(200, 130, 220, 255); // keyword
+		case 's': return IM_COL32(120, 160, 245, 255); // snippet (template expansion)
 		case 'i': return IM_COL32(180, 180, 180, 255); // identifier (buffer scrape)
 		default:  return IM_COL32(150, 150, 150, 255);
 	}
@@ -4802,7 +4902,10 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 
 			// handle cases where autocomplete request is ignored
 			if(state.inComment && !configuration.triggerInComments) {
-				return false;
+				// the app may opt specific comment contexts back in (e.g. annotation directives)
+				if (!configuration.commentTriggerFilter || !configuration.commentTriggerFilter(state)) {
+					return false;
+				}
 			}
 
 			if(state.inString && !configuration.triggerInStrings) {
@@ -4936,6 +5039,7 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					 else {
 						currentSelection--;
 					}
+					selectionNavigated = true;
 
 				} else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
 					if (currentSelection == items - 1) {
@@ -4944,12 +5048,17 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					} else {
 						currentSelection++;
 					}
+					selectionNavigated = true;
 
-				// Tab accepts the selected suggestion. Enter is intentionally
-				// NOT bound to accept, the popup auto-shows while typing,
-				// and stealing Enter for accept makes "type word, press
-				// Enter for newline" insert the suggestion instead.
+				// Tab always accepts the highlighted suggestion. Enter accepts too,
+				// but only when acceptOnEnter() allows it (member-access context or
+				// after the user navigated the list), so the popup auto-showing
+				// while typing a plain word never eats the user's newline.
 				} else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
+					requestDeactivation = true;
+					result = true;
+
+				} else if (acceptOnEnter() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
 					requestDeactivation = true;
 					result = true;
 
@@ -5013,6 +5122,7 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 
 void TextEditor::Autocomplete::setSuggestions(const std::vector<std::string>& suggestions) {
 	state.suggestions = suggestions;
+	state.suggestionInsertText.clear(); // async path supplies plain names only
 	currentSelection = 0;
 }
 
@@ -5022,16 +5132,35 @@ void TextEditor::Autocomplete::setSuggestions(const std::vector<std::string>& su
 //
 
 bool TextEditor::Autocomplete::isSpecialKeyPressed() const {
-	// Keys the editor must not handle while autocomplete is active.
-	// Enter/KeypadEnter are intentionally absent so a newline still inserts
-	// when the popup happens to be open, Tab is the accept key.
+	// Keys the editor must not handle while autocomplete is active so render()
+	// can consume them. Tab/arrows are always the popup's; Enter is the popup's
+	// only when acceptOnEnter() allows it -- otherwise it falls through to the
+	// editor and inserts a newline, so the auto-showing popup can't false-complete.
 	for (auto key : {ImGuiKey_Tab, ImGuiKey_UpArrow, ImGuiKey_DownArrow}) {
 		if (ImGui::IsKeyPressed(key)) {
 			return true;
 		}
 	}
 
+	if (acceptOnEnter() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+		return true;
+	}
+
 	return false;
+}
+
+
+//
+//	TextEditor::Autocomplete::acceptOnEnter
+//
+
+bool TextEditor::Autocomplete::acceptOnEnter() const {
+	// Member-access lists (after '.'/':') complete on Enter because a newline
+	// there is almost never intended. In any other context the user must first
+	// opt in by navigating the list with the arrow keys; until then Enter stays
+	// a newline. This is what stops the popup from eating a line break when it
+	// auto-shows while the user is just finishing a plain word.
+	return state.memberAccess || selectionNavigated;
 }
 
 
@@ -5075,6 +5204,15 @@ void TextEditor::Autocomplete::updateState(Document& document, const Language* l
 		state.inString = color == Color::string;
 	}
 
+	// Member-access context: a '.' or ':' immediately precedes the search term
+	// (e.g. "Engine.<term>" or "self:<term>"). Drives Enter-to-accept so a member
+	// list completes on Enter while a plain word leaves Enter as a newline.
+	state.memberAccess = false;
+	if (startLocation.column > 0) {
+		auto separator = document.getCodePoint(Coordinate(startLocation.line, startLocation.column - 1));
+		state.memberAccess = (separator == '.' || separator == ':');
+	}
+
 	state.line = currentLocation.line;
 	state.searchTermStartColumn = startLocation.column;
 	state.searchTermStartIndex = document.getIndex(startLocation);
@@ -5100,6 +5238,10 @@ void TextEditor::Autocomplete::refreshSuggestions() {
 	}
 
 	currentSelection = 0;
+
+	// A fresh suggestion set means the search term changed (typing) or the popup
+	// re-anchored to a new word, so the user hasn't navigated this list yet.
+	selectionNavigated = false;
 }
 
 
@@ -8497,6 +8639,9 @@ const TextEditor::Language* TextEditor::Language::Luau() {
 	if (!initialized) {
 		language = *Lua();
 		language.name = "Luau";
+
+		// Engine script annotations (--@export / --@rpc / --@replicated) colored apart from comments.
+		language.annotationMarker = "@";
 
 		// Backtick interpolated strings.
 		language.otherStringAltStart = "`";

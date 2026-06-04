@@ -12,6 +12,7 @@
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
+#include "Tools/UI/ImGui/ImGuiKeyCapture.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
@@ -19,6 +20,9 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+
+#include <algorithm>
+#include <random>
 
 namespace Lumina
 {
@@ -31,6 +35,19 @@ namespace Lumina
         {
             const FStringView Name = VFS::FileName(Path);
             return FString(Name.data(), Name.size());
+        }
+
+        // A random, readable color: random hue with high saturation/value so the result stays vibrant
+        // rather than muddy. Backs the "Randomize colors" button in the settings popup.
+        FVector3 RandomVibrantColor()
+        {
+            static std::mt19937 Rng{std::random_device{}()};
+            std::uniform_real_distribution<float> Hue(0.0f, 1.0f);
+            std::uniform_real_distribution<float> Sat(0.55f, 0.9f);
+            std::uniform_real_distribution<float> Val(0.75f, 1.0f);
+            float R, G, B;
+            ImGui::ColorConvertHSVtoRGB(Hue(Rng), Sat(Rng), Val(Rng), R, G, B);
+            return FVector3(R, G, B);
         }
 
         // Standard 16:9 game-UI resolutions plus 4K. Index 0 = "Fit to pane".
@@ -393,7 +410,13 @@ namespace Lumina
         bIsStylesheet = (VirtualPath.size() >= 5) &&
             (FStringView(VirtualPath.c_str(), VirtualPath.size()).substr(VirtualPath.size() - 5) == FStringView(".rcss"));
 
-        // Pull persisted preferences from the developer-settings object.
+        PullSettings();
+    }
+
+    void FRmlUiEditorTool::PullSettings()
+    {
+        // Pull persisted preferences from the developer-settings object. (Syntax colors are read
+        // straight from the CDO in ApplyEditorSettings, so they aren't mirrored into members here.)
         const CRmlUiEditorSettings* Settings = GetDefault<CRmlUiEditorSettings>();
         EditorFontScale         = Settings->FontScale;
         EditorTabSize           = std::max(1, std::min(8, Settings->TabSize));
@@ -429,6 +452,17 @@ namespace Lumina
             VirtualPath.assign(New.data(), New.size());
             const FStringView ParentView = VFS::Parent(New, true);
             ParentDir.assign(ParentView.data(), ParentView.size());
+        });
+
+        // Live-refresh when the RmlUi editor settings (palette, fonts, completion) are edited in the
+        // global Settings panel, so color/appearance tweaks apply without reopening the editor.
+        SettingsSavedHandle = FCoreDelegates::OnSettingsSaved.AddLambda([this](CClass* Class)
+        {
+            if (Class == CRmlUiEditorSettings::StaticClass())
+            {
+                PullSettings();
+                ApplyEditorSettings();
+            }
         });
 
         char NameBuf[96];
@@ -511,6 +545,7 @@ namespace Lumina
     void FRmlUiEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
         FCoreDelegates::OnContentFileRenamed.Remove(FileRenamedHandle);
+        FCoreDelegates::OnSettingsSaved.Remove(SettingsSavedHandle);
         FileWatcher.Stop();
         TearDownPreview();
     }
@@ -598,9 +633,28 @@ namespace Lumina
         CodeEditor.SetAutoIndentEnabled(bAutoIndent);
         CodeEditor.SetShowMatchingBrackets(bShowMatchingBrackets);
         CodeEditor.SetCompletePairedGlyphs(bCompletePairedGlyphs);
-        CodeEditor.SetPalette(EditorPalette == EPalette::Dark
+
+        // Start from the chosen Dark/Light base (chrome), then override the syntax-token slots with the
+        // user's customizable colors from CRmlUiEditorSettings.
+        TextEditor::Palette Pal = (EditorPalette == EPalette::Dark)
             ? TextEditor::GetDarkPalette()
-            : TextEditor::GetLightPalette());
+            : TextEditor::GetLightPalette();
+
+        const CRmlUiEditorSettings* Colors = GetDefault<CRmlUiEditorSettings>();
+        auto Set = [&Pal](TextEditor::Color Slot, const FVector3& C)
+        {
+            const auto B = [](float V) { return (int)(std::clamp(V, 0.0f, 1.0f) * 255.0f + 0.5f); };
+            Pal[(size_t)Slot] = IM_COL32(B(C.x), B(C.y), B(C.z), 255);
+        };
+        Set(TextEditor::Color::keyword,         Colors->TagColor);
+        Set(TextEditor::Color::declaration,     Colors->AttributeColor);
+        Set(TextEditor::Color::knownIdentifier, Colors->PropertyColor);
+        Set(TextEditor::Color::identifier,      Colors->IdentifierColor);
+        Set(TextEditor::Color::number,          Colors->NumberColor);
+        Set(TextEditor::Color::string,          Colors->StringColor);
+        Set(TextEditor::Color::comment,         Colors->CommentColor);
+        Set(TextEditor::Color::punctuation,     Colors->PunctuationColor);
+        CodeEditor.SetPalette(Pal);
     }
 
     void FRmlUiEditorTool::PersistSettings() const
@@ -765,6 +819,23 @@ namespace Lumina
                 EditorPalette = (EPalette)PaletteIdx;
                 bDirty = true;
             }
+
+            // Fun button: roll a fresh random vibrant palette for the syntax colors. Saving fires the
+            // OnSettingsSaved live-refresh, so the editor recolors immediately.
+            if (ImGui::Button(LE_ICON_DICE_5 " Randomize colors", ImVec2(-1, 0)))
+            {
+                CRmlUiEditorSettings* Colors = GetMutableDefault<CRmlUiEditorSettings>();
+                Colors->TagColor         = RandomVibrantColor();
+                Colors->AttributeColor   = RandomVibrantColor();
+                Colors->PropertyColor    = RandomVibrantColor();
+                Colors->IdentifierColor  = RandomVibrantColor();
+                Colors->NumberColor      = RandomVibrantColor();
+                Colors->StringColor      = RandomVibrantColor();
+                Colors->CommentColor     = RandomVibrantColor();
+                Colors->PunctuationColor = RandomVibrantColor();
+                GConfig->SaveSettings(CRmlUiEditorSettings::StaticClass());
+            }
+            ImGuiX::TextTooltip("Roll a random vibrant set of syntax colors.");
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -1015,12 +1086,9 @@ namespace Lumina
 
     void FRmlUiEditorTool::HandleEditorShortcuts()
     {
-        const ImGuiIO& Io = ImGui::GetIO();
-        if (!Io.KeyCtrl)
-        {
-            return;
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_G, false))
+        // Rebindable via CRmlUiEditorSettings > Hotkeys.
+        const CRmlUiEditorSettings* Keys = GetDefault<CRmlUiEditorSettings>();
+        if (ImGuiX::IsChordPressed(Keys->GoToLineKey))
         {
             bRequestOpenGoto = true;
         }

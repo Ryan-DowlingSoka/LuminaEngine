@@ -246,14 +246,7 @@ namespace Lumina
 
 			Impl->Window = glfwCreateWindow(Impl->Specs.Extent.x, Impl->Specs.Extent.y, Impl->Specs.Title.c_str(), nullptr, nullptr);
 			glfwSetWindowAttrib(Impl->Window, GLFW_RESIZABLE, GLFW_TRUE);
-
-#if WITH_EDITOR
-			// GLFW window hints persist globally. The editor main window opts out of the native titlebar
-			// (custom borderless titlebar), but ImGui's detached tool windows (Platform_CreateWindow) never
-			// reset it -> they'd inherit GLFW_TITLEBAR=false and lose the OS min/max/close buttons. Restore
-			// the default so secondary viewport windows get a real titlebar with a maximize button.
-			glfwWindowHint(GLFW_TITLEBAR, GLFW_TRUE);
-#endif
+			
 
 			const int PosX = (Mode->width  - (int)Impl->Specs.Extent.x) / 2;
 			const int PosY = (Mode->height - (int)Impl->Specs.Extent.y) / 2;
@@ -445,6 +438,16 @@ namespace Lumina
 			case ECursorMode::Disabled: Value = GLFW_CURSOR_DISABLED; break;
 			}
 			glfwSetInputMode(Window, GLFW_CURSOR, Value);
+		}
+
+		bool IsNativeWindowFocused(void* NativeWindow)
+		{
+			GLFWwindow* Window = static_cast<GLFWwindow*>(NativeWindow);
+			if (Window == nullptr)
+			{
+				return false;
+			}
+			return glfwGetWindowAttrib(Window, GLFW_FOCUSED) != 0;
 		}
 	}
 }

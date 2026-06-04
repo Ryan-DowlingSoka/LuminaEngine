@@ -324,6 +324,128 @@ namespace Lumina
             bool visit(Luau::AstNode*) override     { return false; }
         };
 
+        // Copy an AstExprFunction's parameter names (no types) for signature help.
+        void CollectParamNames(const Luau::AstExprFunction& Fn, TVector<FString>& Out, bool& bVararg)
+        {
+            for (Luau::AstLocal* Arg : Fn.args)
+            {
+                Out.push_back(FString(Arg && Arg->name.value ? Arg->name.value : "_"));
+            }
+            bVararg = Fn.vararg;
+        }
+
+        // Harvests members written onto a table (`Owner.Member = value`, methods,
+        // `self.X = ...` inside bodies) plus plain function declarations, so hover,
+        // member autocomplete and signature help all see buffer-authored symbols.
+        // The separator is normalized to '.' in Path to match the dotted path the
+        // editor hands to lookups; a plain function has an empty Owner and bare Path.
+        struct FMembersVisitor : public Luau::AstVisitor
+        {
+            TVector<FLuaAstMemberEntry>* Out;
+
+            // Record an "Owner.Name" member. Fn (optional) supplies params + marks it a function.
+            void Emit(std::string Owner, FString Name, int Line, bool bMethod,
+                      Luau::AstExpr* Val, const Luau::AstExprFunction* Fn)
+            {
+                if (Name.empty()) return;
+
+                FLuaAstMemberEntry E;
+                E.Owner = FString(Owner.c_str(), Owner.size());
+                E.Name  = Name;
+                std::string Path = Owner;
+                if (!Path.empty()) Path.push_back('.');
+                Path.append(Name.c_str(), Name.size());
+                E.Path    = FString(Path.c_str(), Path.size());
+                E.Line    = Line;
+                E.bMethod = bMethod;
+
+                if (Fn)
+                {
+                    E.bFunction = true;
+                    E.ValueHint = "function";
+                    CollectParamNames(*Fn, E.Params, E.bVararg);
+                }
+                else if (const char* Hint = InferValueHint(Val))
+                {
+                    E.ValueHint = Hint;
+                }
+                Out->push_back(eastl::move(E));
+            }
+
+            // Emit from an assignment/function target expression (Owner.Name / Name).
+            void EmitTarget(Luau::AstExpr* Target, Luau::AstExpr* Val, const Luau::AstExprFunction* Fn)
+            {
+                if (auto* Idx = Target ? Target->as<Luau::AstExprIndexName>() : nullptr)
+                {
+                    if (Idx->index.value == nullptr) return;
+                    std::string Owner;
+                    bool bDummy = false;
+                    RenderFunctionName(Idx->expr, Owner, bDummy);
+                    if (Owner.empty()) return;
+                    Emit(Owner, FromAstName(Idx->index), ToOneLine(Idx->location.begin),
+                         Idx->op == ':', Val, Fn);
+                }
+                else if (auto* G = Target ? Target->as<Luau::AstExprGlobal>() : nullptr)
+                {
+                    // Plain `function Foo()` / `Foo = function()` -- a global with no owner.
+                    Emit(std::string(), FromAstName(G->name), ToOneLine(G->location.begin),
+                         false, Val, Fn);
+                }
+            }
+
+            bool visit(Luau::AstStatAssign* node) override
+            {
+                for (size_t I = 0; I < node->vars.size; ++I)
+                {
+                    Luau::AstExpr* Var = node->vars.data[I];
+                    Luau::AstExpr* Val = (I < node->values.size) ? node->values.data[I] : nullptr;
+                    const auto* Fn = Val ? Val->as<Luau::AstExprFunction>() : nullptr;
+                    EmitTarget(Var, Val, Fn);
+                }
+                return true;
+            }
+
+            bool visit(Luau::AstStatFunction* node) override
+            {
+                EmitTarget(node->name, nullptr, node->func);
+                // Descend so `self.X = ...` inside the body is captured too.
+                if (node->func && node->func->body) node->func->body->visit(this);
+                return false;
+            }
+
+            bool visit(Luau::AstStatLocalFunction* node) override
+            {
+                if (node->name && node->name->name.value)
+                {
+                    Emit(std::string(), FromAstName(node->name->name),
+                         ToOneLine(node->name->location.begin), false, nullptr, node->func);
+                }
+                if (node->func && node->func->body) node->func->body->visit(this);
+                return false;
+            }
+
+            bool visit(Luau::AstStatLocal* node) override
+            {
+                // `local F = function(...)` -- capture params under the bare name.
+                for (size_t I = 0; I < node->vars.size; ++I)
+                {
+                    Luau::AstLocal* Var = node->vars.data[I];
+                    Luau::AstExpr* Val = (I < node->values.size) ? node->values.data[I] : nullptr;
+                    const auto* Fn = Val ? Val->as<Luau::AstExprFunction>() : nullptr;
+                    if (Var && Var->name.value && Fn)
+                    {
+                        Emit(std::string(), FromAstName(Var->name),
+                             ToOneLine(Var->location.begin), false, nullptr, Fn);
+                    }
+                }
+                return true;
+            }
+
+            bool visit(Luau::AstStatBlock*) override { return true; }
+            bool visit(Luau::AstStat*) override     { return true; }
+            bool visit(Luau::AstNode*) override     { return false; }
+        };
+
         // Also tracks declaration sites so hovering the declared name (not an AstExprLocal) still resolves.
         struct FResolveLocalVisitor : public Luau::AstVisitor
         {
@@ -496,6 +618,15 @@ namespace Lumina
         Out.clear();
         if (!IsValid()) return;
         FLocalsVisitor V;
+        V.Out = &Out;
+        Impl->Root()->visit(&V);
+    }
+
+    void FLuaAstAnalyzer::CollectMembers(TVector<FLuaAstMemberEntry>& Out) const
+    {
+        Out.clear();
+        if (!IsValid()) return;
+        FMembersVisitor V;
         V.Out = &Out;
         Impl->Root()->visit(&V);
     }

@@ -1,5 +1,7 @@
 #pragma once
 #include "Core/Object/ObjectMacros.h"
+#include "Containers/Name.h"
+#include "Containers/Array.h"
 #include "WorldSettings.generated.h"
 
 
@@ -48,6 +50,12 @@ namespace Lumina
     struct RUNTIME_API SDefaultWorldSettings
     {
         GENERATED_BODY()
+
+        /** Engine systems disabled for this world, by reflected type name. Unknown names are ignored,
+            so deleting a system never breaks load; new systems default to enabled. Driven by the
+            World Editor's Systems panel, not the property grid. */
+        PROPERTY()
+        TVector<FName> DisabledSystems;
 
         /** Entities below this Y position are automatically destroyed. */
         PROPERTY(Editable)
@@ -207,5 +215,61 @@ namespace Lumina
         /** Prevent collision against non-active shared edges on triangle meshes. */
         PROPERTY(Editable, Category = "Physics")
         bool bCheckActiveEdges = true;
+
+        //~ Networking: server-authoritative replication tuning for this world. (Client-side proxy smoothing is
+        //  a global player preference -- see CNetworkSettings.)
+
+        /** Seconds between full transform keyframes (server re-sends every replicated pose so a dropped delta
+         *  self-heals). <= 0 disables keyframes. */
+        PROPERTY(Editable, Category = "Networking", ClampMin = 0.0f)
+        float TransformKeyframeInterval = 0.5f;
+
+        /** Default movement send rate (Hz) for newly replicated entities. */
+        PROPERTY(Editable, Category = "Networking", ClampMin = 0.0f)
+        float DefaultNetUpdateFrequency = 30.0f;
+
+        //~ Interest management (per-client relevancy). Distances are on the XZ ground plane, in meters.
+
+        /** An entity becomes relevant to a client when it crosses inside this radius of the client's pawn. */
+        PROPERTY(Editable, Category = "Networking|Interest", ClampMin = 1.0f)
+        float AOIEnterRadius = 120.0f;
+
+        /** A relevant entity stays relevant until it crosses outside this (larger) radius. Hysteresis to stop
+         *  spawn/despawn thrash at the boundary. Should be >= AOIEnterRadius. */
+        PROPERTY(Editable, Category = "Networking|Interest", ClampMin = 1.0f)
+        float AOILeaveRadius = 150.0f;
+
+        /** After an entity leaves the AOI, wait this long before despawning it on the client (absorbs fast
+         *  boundary crossings; the copy just goes stale meanwhile). */
+        PROPERTY(Editable, Category = "Networking|Interest", ClampMin = 0.0f)
+        float RelevancyGraceSeconds = 1.5f;
+
+        /** Spatial grid cell size (meters) for the relevancy broadphase. ~AOI radius is a good default so a
+         *  client gathers ~4-9 cells. */
+        PROPERTY(Editable, Category = "Networking|Interest", ClampMin = 1.0f)
+        float GridCellSize = 64.0f;
+
+        /** Half-extent (meters) of the replicated world on the XZ plane, centered at the origin. Entities
+         *  outside clamp into the border cells. Sets the grid dimensions. */
+        PROPERTY(Editable, Category = "Networking|Interest", ClampMin = 64.0f)
+        float WorldHalfExtent = 8192.0f;
+
+        //~ Distance LOD tiers. Tier boundaries on the XZ plane, in meters; send rates in Hz.
+
+        /** Max distance for Tier 0 (near): full rate + full precision. */
+        PROPERTY(Editable, Category = "Networking|LOD", ClampMin = 0.0f)
+        float TierNearDistance = 30.0f;
+
+        /** Max distance for Tier 1 (mid). Beyond this up to AOILeaveRadius is Tier 2 (far). */
+        PROPERTY(Editable, Category = "Networking|LOD", ClampMin = 0.0f)
+        float TierMidDistance = 80.0f;
+
+        /** Send rate (Hz) for Tier 1 (mid) entities. */
+        PROPERTY(Editable, Category = "Networking|LOD", ClampMin = 0.0f)
+        float TierMidRate = 10.0f;
+
+        /** Send rate (Hz) for Tier 2 (far) entities. */
+        PROPERTY(Editable, Category = "Networking|LOD", ClampMin = 0.0f)
+        float TierFarRate = 3.0f;
     };
 }

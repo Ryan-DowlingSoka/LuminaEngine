@@ -37,6 +37,7 @@ namespace Lumina::Lua
         TVector<FScriptPropertyEntry>   ExportDefaults;
         TVector<FScriptRpc>             Rpcs;             // --@rpc functions, wire id = index
         TVector<FRef>                   RpcHandlers;      // original fns (the table entry is the dispatch wrapper)
+        TVector<FScriptReplicatedField> ReplicatedFields; // --@replicated fields, wire rep-index = index
         FScriptThreadData               ThreadData;
         
         lua_State*                      PooledCoroutine    = nullptr;

@@ -6,6 +6,7 @@
 #include "Core/Reflection/PropertyCustomization/PropertyCustomization.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Math/Math.h"
+#include "Input/Key.h"
 
 namespace Lumina
 {
@@ -372,10 +373,40 @@ namespace Lumina
         FQuat DisplayValue{};
     };
 
+    // Input-key picker (SKey): a button that, when clicked, "listens" and binds the next keyboard key
+    // or mouse button pressed. Mirrors Unreal's FKey selector.
+    class FKeyPropertyCustomization : public IPropertyTypeCustomization
+    {
+    public:
+
+        static TSharedPtr<FKeyPropertyCustomization> MakeInstance()
+        {
+            return MakeShared<FKeyPropertyCustomization>();
+        }
+
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
+
+    private:
+
+        SKey CachedValue;
+        SKey DisplayValue;
+
+        // True while listening for the bind key. bArmed skips the frame the activating click landed on,
+        // so the click that starts the capture isn't itself bound.
+        bool bCapturing = false;
+        bool bArmed = false;
+
+        // Capture / clear are one-frame discrete edits: Started this frame, Finished the next, so they
+        // form a proper undo transaction (mirrors the object / transform-reset customizations).
+        bool bFinishPending = false;
+    };
+
     class FTransformPropertyCustomization : public IPropertyTypeCustomization
     {
     public:
-        
+
         static TSharedPtr<FTransformPropertyCustomization> MakeInstance()
         {
             return MakeShared<FTransformPropertyCustomization>();

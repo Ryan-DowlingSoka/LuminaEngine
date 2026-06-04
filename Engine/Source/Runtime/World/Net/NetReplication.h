@@ -3,6 +3,7 @@
 #include "Platform/GenericPlatform.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
+#include "Networking/NetworkTypes.h"
 #include "entt/entt.hpp"
 
 namespace Lumina
@@ -14,22 +15,87 @@ namespace Lumina
     struct FNetObjectMap;
     struct FNetAssetMap;
     struct FNetWorldState;
+    struct FScriptRepState;
     enum class ESendMode : uint8;
 
     // Tag, this networked entity has replicated property changes pending (set by World.Net:MarkDirty).
     // The server sends a reliable PropertyUpdate for it next tick, then clears the tag.
     struct FNetDirty {};
 
+    // Per-recipient context for evaluating a script field's net condition while serializing. TargetConnId == 0
+    // means a broadcast write (only Always, and InitialOnly when bInitial, pass).
+    struct FNetRepContext
+    {
+        uint32 TargetConnId = 0;
+        uint32 OwnerConnId  = 0;
+        bool   bInitial     = false; // spawn baseline (InitialOnly fields included)
+    };
+
     namespace Net
     {
+        // Max bytes for one framed message. The frame length prefix is 16-bit, so a single message (e.g. a
+        // transform snapshot) can't exceed this; AppendFramedMessage drops anything larger. Single-sourced
+        // here so the network debug tool can warn as a snapshot approaches the cap.
+        inline constexpr SIZE_T MaxFramedMessageSize = 0xFFFF;
+
         // Reflection-driven entity replication. The same generic path the world serializer uses, keyed by a
         // compact type hash, carrying only Replicated properties. Works for any REFLECT(Component).
 
-        // Server, write one entity's replicated components. Used for both Spawn and PropertyUpdate.
-        void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity);
+        // Compact NetGUID codec. Stable ids are small; dynamic (spawned) ids carry the high bit, which would
+        // varint to 5 bytes -- so the two ranges are interleaved (LSB = dynamic flag) and the remainder
+        // varint-encoded, giving 1-2 bytes for both. Every NetGUID on the wire must go through this pair.
+        void   WriteNetGuid(FNetArchive& Ar, uint32 Guid);
+        uint32 ReadNetGuid (FNetArchive& Ar);
 
-        // Client, recreate/refresh components on Entity.
+        // One serialized --@replicated script field ready for the wire. Bytes already include any minted
+        // object/asset net-index (CollectScriptFields serializes with the State-bound writer hooks).
+        struct FScriptRepFieldOut
+        {
+            uint32              RepIndex = 0;
+            EScriptRepCondition Cond     = EScriptRepCondition::Always;
+            TVector<uint8>      Bytes;
+        };
+
+        // True if a field with this condition is sent to the recipient described by Ctx (Unreal COND_* analog).
+        inline bool RepFieldPasses(EScriptRepCondition Cond, const FNetRepContext& Ctx)
+        {
+            switch (Cond)
+            {
+            case EScriptRepCondition::Always:      return true;
+            case EScriptRepCondition::InitialOnly: return Ctx.bInitial;
+            case EScriptRepCondition::OwnerOnly:   return Ctx.TargetConnId != 0 && Ctx.TargetConnId == Ctx.OwnerConnId;
+            case EScriptRepCondition::SkipOwner:   return Ctx.TargetConnId != 0 && Ctx.TargetConnId != Ctx.OwnerConnId;
+            }
+            return false;
+        }
+
+        // Server, serialize this entity's --@replicated script fields (raw, whitelisted access). bBaseline emits
+        // ALL fields and seeds DiffState; otherwise emits only fields whose serialized bytes changed vs DiffState
+        // (field-granular diff, catches nested-table changes) and updates DiffState. Object/asset refs mint into
+        // State's outgoing maps. Empty when the entity has no live script / no replicated fields.
+        TVector<FScriptRepFieldOut> CollectScriptFields(entt::registry& Registry, entt::entity Entity,
+            FNetWorldState& State, bool bBaseline, FScriptRepState* DiffState);
+
+        // True when Parent is an entity that actually replicates to clients (SNetworkComponent + bReplicates +
+        // bNetLoadOnClient + a NetGUID). A child of such a parent sends its LOCAL transform + the parent's NetGUID
+        // (client reparents + composes, rigid); a child of a non-replicated parent must send WORLD instead, since
+        // the client has no parent to compose against. Both the transform extract and the attachment-link write
+        // gate on this so they stay consistent.
+        bool ParentReplicates(entt::registry& Registry, entt::entity Parent);
+
+        // Server, write one entity's replicated components then the script-rep block (fields from ScriptFields
+        // whose condition passes Ctx). Used for both Spawn (baseline) and PropertyUpdate (diff). Ctx == null is a
+        // broadcast non-initial context; ScriptFields == null writes an empty script block.
+        void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity,
+            const FNetRepContext* Ctx = nullptr, const TVector<FScriptRepFieldOut>* ScriptFields = nullptr);
+
+        // Client, recreate/refresh components on Entity, then apply the script-rep block (whitelisted writes
+        // into the live script table + optional OnRep_<Field>(old) hooks) and the replicated attachment link.
         void ReadEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity);
+
+        // Client, reparent any children that were deferred waiting on NewEntity (NetGUID NewGuid) to spawn.
+        // Call right after registering a freshly-spawned entity's NetGUID in the GuidTable.
+        void DrainPendingAttach(entt::registry& Registry, FNetWorldState& State, uint32 NewGuid, entt::entity NewEntity);
 
         //~ Packet batching. Many small messages per tick are concatenated into one length-prefixed datagram,
         //~ one ENet header and ack instead of N. Every packet on the wire is a batch.

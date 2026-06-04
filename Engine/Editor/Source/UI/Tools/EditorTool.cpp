@@ -573,10 +573,26 @@ namespace Lumina
                 FInputViewportRegistry::Get().SetHoveredViewport(nullptr);
             }
 
-            if (bViewportFocused)
+            FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+            if (Reg.IsGameInputFocused())
             {
-                FInputViewportRegistry::Get().SetFocusedViewport(InputViewport.get());
-                FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
+                void* const ThisWindow = InputViewport->GetNativeWindowHandle();
+                if (Windowing::IsNativeWindowFocused(ThisWindow))
+                {
+                    FInputViewport* Active = Reg.GetActiveViewport();
+                    const bool bActiveWindowFocused = Active != nullptr
+                        && Windowing::IsNativeWindowFocused(Active->GetNativeWindowHandle());
+                    if (!bActiveWindowFocused)
+                    {
+                        Reg.SetActiveViewport(InputViewport.get());
+                        Reg.SetFocusedViewport(InputViewport.get());
+                    }
+                }
+            }
+            else if (bViewportFocused)
+            {
+                Reg.SetFocusedViewport(InputViewport.get());
+                Reg.SetActiveViewport(InputViewport.get());
             }
         }
 
@@ -626,6 +642,41 @@ namespace Lumina
     void FEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
     {
         ImGui::Dummy(ImVec2(0, 0));
+    }
+
+    void FEditorTool::DrawGameFocusIndicator(ImVec2 ViewportSize)
+    {
+        // Shown on whichever viewport is the globally active + game-focused one (game focus is global, the
+        // active viewport can switch windows), so it's obvious input is routed to the game and how to hand
+        // it back.
+        FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+        if (InputViewport == nullptr || World == nullptr || !World->IsGameWorld()
+            || !Reg.IsGameInputFocused() || InputViewport.get() != Reg.GetActiveViewport())
+        {
+            return;
+        }
+
+        ImDrawList* DL = ImGui::GetWindowDrawList();
+
+        // Back out ItemSpacing to land the outline exactly on the image rect.
+        const ImVec2 Spacing = ImGui::GetStyle().ItemSpacing;
+        const ImVec2 Cursor  = ImGui::GetCursorScreenPos();
+        const ImVec2 Min(Cursor.x - Spacing.x, Cursor.y - Spacing.y);
+        const ImVec2 Max(Min.x + ViewportSize.x, Min.y + ViewportSize.y);
+        const ImU32  Accent = IM_COL32(255, 176, 64, 200);
+
+        // Drawn 1px inside the edge so the full 2px stroke stays within the image.
+        DL->AddRect(ImVec2(Min.x + 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Max.y - 1.0f),
+            Accent, 0.0f, 0, 2.0f);
+
+        // Faint, translucent hint in the top-right (clear of the toolbar at top-left).
+        const char*  Hint     = "Shift+F1: Editor focus";
+        const ImVec2 TextSize = ImGui::CalcTextSize(Hint);
+        const float  Pad = 6.0f, Margin = 8.0f;
+        const ImVec2 BgMin(Max.x - TextSize.x - Pad * 2.0f - Margin, Min.y + Margin);
+        const ImVec2 BgMax(BgMin.x + TextSize.x + Pad * 2.0f, BgMin.y + TextSize.y + Pad * 1.5f);
+        DL->AddRectFilled(BgMin, BgMax, IM_COL32(0, 0, 0, 70), 4.0f);
+        DL->AddText(ImVec2(BgMin.x + Pad, BgMin.y + Pad * 0.75f), IM_COL32(235, 235, 235, 120), Hint);
     }
 
     void FEditorTool::FocusViewportToEntity(entt::entity Entity)

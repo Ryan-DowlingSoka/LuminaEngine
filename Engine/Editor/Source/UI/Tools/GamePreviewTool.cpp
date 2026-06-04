@@ -59,6 +59,7 @@ namespace Lumina
 
     void FGamePreviewTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
-        
+        // Mirror the world editor's game-focus indicator so focus reads consistently across tools.
+        DrawGameFocusIndicator(ViewportSize);
     }
 }

@@ -466,6 +466,11 @@ namespace Lumina
         {
            return FParticleParameterCustomization::MakeInstance();
         });
+
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(SKey::StaticStruct()->GetName(), []
+        {
+           return FKeyPropertyCustomization::MakeInstance();
+        });
         
         EditorWindowClass.ClassId                       = ImHashStr("EditorWindowClass");
         EditorWindowClass.DockingAllowUnclassed         = false;
@@ -535,8 +540,16 @@ namespace Lumina
             // captured SECONDARY window's cursor back to Normal every frame (it only honors GLFW_CURSOR_DISABLED
             // on the MAIN window). Leaving the cursor alone while the game owns input lets game capture stick.
             const ImGuiConfigFlags Mask = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard | ImGuiConfigFlags_NoMouseCursorChange;
-            const bool bGameOwnsInput = WorldEditorTool != nullptr && WorldEditorTool->HasSimulatingWorld()
-                                      && FInputViewportRegistry::Get().IsGameInputFocused();
+            // Follow the ACTIVE viewport, not the world editor's PIE flags: an external Game Preview window can
+            // be the active, game-focused one while the world editor isn't the relevant simulator. Gating on the
+            // active game world keeps NoMouseCursorChange set so a captured external window's cursor lock isn't
+            // reset by ImGui's per-frame cursor update.
+            FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+            const FInputViewport* Active = Reg.GetActiveViewport();
+            const bool bGameOwnsInput = Reg.IsGameInputFocused()
+                                      && Active != nullptr
+                                      && Active->GetWorld() != nullptr
+                                      && Active->GetWorld()->IsGameWorld();
             // Reassert while the game owns input; clear ONCE on the way out. Never clear per-frame: the editor
             // camera sets NoMouse itself during RMB-look (via FInputProcessor::SetMouseMode), and clobbering it
             // every frame makes ImGui fight the capture (cursor flicker / camera lock).

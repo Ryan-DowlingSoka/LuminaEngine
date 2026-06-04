@@ -59,22 +59,43 @@ namespace Lumina::NetQuantize
         constexpr float  QuatRange         = 0.70710678118654752440f; // 1/sqrt(2): bound on the 3 smallest components
     }
 
-    void WritePackedVector(FNetArchive& Ar, const FVector3& V)
+    //~ FQuantizedVector
+
+    FQuantizedVector FQuantizedVector::FromVector(const FVector3& V, double Quantum)
     {
-        // Quantize in double so large world coords keep mm precision before the cast.
-        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.x) / PositionQuantum)));
-        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.y) / PositionQuantum)));
-        WriteVarUInt64(Ar, ZigZag(RoundToInt64(static_cast<double>(V.z) / PositionQuantum)));
+        // Quantize in double so large world coords keep precision before the cast.
+        FQuantizedVector Q;
+        Q.X = RoundToInt64(static_cast<double>(V.x) / Quantum);
+        Q.Y = RoundToInt64(static_cast<double>(V.y) / Quantum);
+        Q.Z = RoundToInt64(static_cast<double>(V.z) / Quantum);
+        return Q;
     }
 
-    void ReadPackedVector(FNetArchive& Ar, FVector3& V)
+    FVector3 FQuantizedVector::ToVector(double Quantum) const
     {
-        V.x = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
-        V.y = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
-        V.z = static_cast<float>(UnZigZag(ReadVarUInt64(Ar)) * PositionQuantum);
+        return FVector3(
+            static_cast<float>(static_cast<double>(X) * Quantum),
+            static_cast<float>(static_cast<double>(Y) * Quantum),
+            static_cast<float>(static_cast<double>(Z) * Quantum));
     }
 
-    void WritePackedQuat(FNetArchive& Ar, const FQuat& Q)
+    void FQuantizedVector::Write(FNetArchive& Ar) const
+    {
+        WriteVarUInt64(Ar, ZigZag(X));
+        WriteVarUInt64(Ar, ZigZag(Y));
+        WriteVarUInt64(Ar, ZigZag(Z));
+    }
+
+    void FQuantizedVector::Read(FNetArchive& Ar)
+    {
+        X = UnZigZag(ReadVarUInt64(Ar));
+        Y = UnZigZag(ReadVarUInt64(Ar));
+        Z = UnZigZag(ReadVarUInt64(Ar));
+    }
+
+    //~ FQuantizedQuat
+
+    FQuantizedQuat FQuantizedQuat::FromQuat(const FQuat& Q)
     {
         const float C[4] = { Q.x, Q.y, Q.z, Q.w };
 
@@ -91,40 +112,85 @@ namespace Lumina::NetQuantize
         // so the reader can reconstruct it as +sqrt(...) with no sign bit.
         const float Sign = (C[Largest] < 0.0f) ? -1.0f : 1.0f;
 
-        PutBits(Ar, static_cast<uint64>(Largest), 2);
+        uint16 Out[3] = { 0, 0, 0 };
+        int    o = 0;
         for (int i = 0; i < 4; ++i)
         {
             if (i == Largest) { continue; }
             float A = C[i] * Sign;                       // in [-QuatRange, QuatRange]
             float Norm = (A / QuatRange + 1.0f) * 0.5f;  // -> [0, 1]
             Norm = Norm < 0.0f ? 0.0f : (Norm > 1.0f ? 1.0f : Norm);
-            PutBits(Ar, static_cast<uint64>(Norm * QuatMaxQ + 0.5f), QuatComponentBits);
+            Out[o++] = static_cast<uint16>(Norm * QuatMaxQ + 0.5f);
         }
+
+        FQuantizedQuat R;
+        R.LargestIndex = static_cast<uint8>(Largest);
+        R.A = Out[0];
+        R.B = Out[1];
+        R.C = Out[2];
+        return R;
     }
+
+    FQuat FQuantizedQuat::ToQuat() const
+    {
+        const uint16 In[3] = { A, B, C };
+        float C4[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        float SumSq = 0.0f;
+        int   o = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            if (i == static_cast<int>(LargestIndex)) { continue; }
+            const float Norm = static_cast<float>(In[o++]) / static_cast<float>(QuatMaxQ);
+            const float A4   = (Norm * 2.0f - 1.0f) * QuatRange;
+            C4[i]  = A4;
+            SumSq += A4 * A4;
+        }
+        C4[LargestIndex] = std::sqrt(SumSq < 1.0f ? 1.0f - SumSq : 0.0f);
+
+        // Renormalize: quantization error can push the magnitude slightly off unit.
+        const float LenSq = C4[0] * C4[0] + C4[1] * C4[1] + C4[2] * C4[2] + C4[3] * C4[3];
+        const float Inv   = (LenSq > 1e-12f) ? 1.0f / std::sqrt(LenSq) : 1.0f;
+        FQuat Q;
+        Q.x = C4[0] * Inv;
+        Q.y = C4[1] * Inv;
+        Q.z = C4[2] * Inv;
+        Q.w = C4[3] * Inv;
+        return Q;
+    }
+
+    void FQuantizedQuat::Write(FNetArchive& Ar) const
+    {
+        PutBits(Ar, static_cast<uint64>(LargestIndex), 2);
+        PutBits(Ar, static_cast<uint64>(A), QuatComponentBits);
+        PutBits(Ar, static_cast<uint64>(B), QuatComponentBits);
+        PutBits(Ar, static_cast<uint64>(C), QuatComponentBits);
+    }
+
+    void FQuantizedQuat::Read(FNetArchive& Ar)
+    {
+        LargestIndex = static_cast<uint8>(GetBits(Ar, 2));
+        A = static_cast<uint16>(GetBits(Ar, QuatComponentBits));
+        B = static_cast<uint16>(GetBits(Ar, QuatComponentBits));
+        C = static_cast<uint16>(GetBits(Ar, QuatComponentBits));
+    }
+
+    //~ Free-function delegators (preserve the existing call sites and define the wire format once).
+
+    void WritePackedVector(FNetArchive& Ar, const FVector3& V) { FQuantizedVector::FromVector(V).Write(Ar); }
+
+    void ReadPackedVector(FNetArchive& Ar, FVector3& V)
+    {
+        FQuantizedVector Q;
+        Q.Read(Ar);
+        V = Q.ToVector();
+    }
+
+    void WritePackedQuat(FNetArchive& Ar, const FQuat& Q) { FQuantizedQuat::FromQuat(Q).Write(Ar); }
 
     void ReadPackedQuat(FNetArchive& Ar, FQuat& Q)
     {
-        const int Largest = static_cast<int>(GetBits(Ar, 2));
-
-        float C[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        float SumSq = 0.0f;
-        for (int i = 0; i < 4; ++i)
-        {
-            if (i == Largest) { continue; }
-            const uint32 Quantized = static_cast<uint32>(GetBits(Ar, QuatComponentBits));
-            const float  Norm = static_cast<float>(Quantized) / static_cast<float>(QuatMaxQ);
-            const float  A    = (Norm * 2.0f - 1.0f) * QuatRange;
-            C[i]   = A;
-            SumSq += A * A;
-        }
-        C[Largest] = std::sqrt(SumSq < 1.0f ? 1.0f - SumSq : 0.0f);
-
-        // Renormalize: quantization error can push the magnitude slightly off unit.
-        const float LenSq = C[0] * C[0] + C[1] * C[1] + C[2] * C[2] + C[3] * C[3];
-        const float Inv   = (LenSq > 1e-12f) ? 1.0f / std::sqrt(LenSq) : 1.0f;
-        Q.x = C[0] * Inv;
-        Q.y = C[1] * Inv;
-        Q.z = C[2] * Inv;
-        Q.w = C[3] * Inv;
+        FQuantizedQuat R;
+        R.Read(Ar);
+        Q = R.ToQuat();
     }
 }

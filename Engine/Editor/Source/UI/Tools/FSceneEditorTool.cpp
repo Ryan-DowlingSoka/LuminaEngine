@@ -10,6 +10,7 @@
 #include "Core/Object/ObjectCore.h"
 #include "Core/Object/Package/Package.h"
 #include "EASTL/sort.h"
+#include "Input/InputViewport.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneRenderTypes.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
@@ -903,42 +904,48 @@ namespace Lumina
 
         FTreeNodeDisplay& Display = OutlinerListView.Get<FTreeNodeDisplay>(ItemEntity);
 
-        // Tooltip header. Component list appended below.
-        FString Tooltip;
+        // Styled hover tooltip: title (type icon + name), a dim subtitle, then component chips.
+        const char* TypeIcon = bIsPrefabInstanceRoot ? LE_ICON_PACKAGE_VARIANT_CLOSED
+                             : bIsLockedPrefabChild   ? LE_ICON_LOCK
+                                                      : LE_ICON_CUBE;
+        Display.TooltipTitle = FString(TypeIcon) + " " + NameComponent.Name.c_str();
+
         if (bIsLockedPrefabChild)
         {
-            Tooltip = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.\n";
+            Display.TooltipSubtitle = FString("Prefab child #" + eastl::to_string(entt::to_integral(Entity)) + " — hierarchy locked");
+        }
+        else if (bIsPrefabInstanceRoot)
+        {
+            Display.TooltipSubtitle = FString("Prefab instance #" + eastl::to_string(entt::to_integral(Entity)));
         }
         else
         {
-            Tooltip = FString("Entity: " + eastl::to_string(entt::to_integral(Entity)));
+            Display.TooltipSubtitle = FString("Entity #" + eastl::to_string(entt::to_integral(Entity)));
         }
 
         // Components shown on hover only, they no longer clutter the outliner tree.
-        Tooltip += "\n\nComponents:";
-        bool bAnyComponent = false;
+        Display.TooltipChipHeader = "COMPONENTS";
+        Display.TooltipChips.clear();
         ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, const entt::basic_sparse_set<>& /*Set*/, entt::meta_type Meta)
         {
             using namespace entt::literals;
-            Tooltip += "\n  ";
-            Tooltip += LE_ICON_PUZZLE " ";
+            FString Chip = LE_ICON_PUZZLE " ";
             if (entt::meta_any Resolved = ECS::Utils::InvokeMetaFunc(Meta, "static_struct"_hs))
             {
                 if (CStruct* StructType = Resolved.cast<CStruct*>())
                 {
-                    Tooltip += StructType->MakeDisplayName().c_str();
-                    bAnyComponent = true;
+                    Chip += StructType->MakeDisplayName().c_str();
+                    Display.TooltipChips.emplace_back(eastl::move(Chip));
                     return;
                 }
             }
-            Tooltip += Meta.name();
-            bAnyComponent = true;
+            Chip += Meta.name();
+            Display.TooltipChips.emplace_back(eastl::move(Chip));
         });
-        if (!bAnyComponent)
+        if (Display.TooltipChips.empty())
         {
-            Tooltip += "\n  (none)";
+            Display.TooltipChips.emplace_back("(none)");
         }
-        Display.TooltipText = Tooltip;
 
         Display.bShowDisabledIcon = true;
         Display.bAllowRenaming = !bIsLockedPrefabChild;
@@ -1432,6 +1439,15 @@ namespace Lumina
 
     void FSceneEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
     {
+        // While the game viewport has input focus (an immersive PIE session), hide the whole toolbar so it
+        // doesn't block the view. Whenever the editor is focused -- including during play, once you release the
+        // game's mouse capture -- show the FULL toolbar so every control (view modes, debug toggles, etc.) stays
+        // reachable instead of collapsing to just the Stop button.
+        if (FInputViewportRegistry::Get().IsGameInputFocused())
+        {
+            return;
+        }
+
         const float Scale = ImGuiX::GetUIScale();
         const float Padding = 8.0f * Scale;
         const float ItemSpacing = 6.0f * Scale;
@@ -1462,19 +1478,18 @@ namespace Lumina
             // Leading play/simulate controls (world only); draws its own trailing separator.
             DrawViewportToolbarPlayControls(ButtonSize);
 
-            if (!IsViewportPlaying())
-            {
-                DrawCameraControls(ButtonSize);
+            // The rest of the bar is shown whenever the editor is focused, even mid-play, so debug/view
+            // controls stay reachable (the game-focused case returned early above).
+            DrawCameraControls(ButtonSize);
 
-                ImGui::SameLine();
-                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                ImGui::SameLine();
+            ImGui::SameLine();
+            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+            ImGui::SameLine();
 
-                DrawViewportOptions(ButtonSize);
+            DrawViewportOptions(ButtonSize);
 
-                // Trailing editor-mode selector + active-mode toolbar (world only).
-                DrawViewportToolbarModeSelector(ButtonSize);
-            }
+            // Trailing editor-mode selector + active-mode toolbar (world only).
+            DrawViewportToolbarModeSelector(ButtonSize);
 
             ImGui::EndGroup();
         }

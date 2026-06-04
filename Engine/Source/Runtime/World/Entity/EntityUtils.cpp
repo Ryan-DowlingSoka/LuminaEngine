@@ -7,6 +7,7 @@
 #include "Components/PhysicsComponent.h"
 #include "Components/NameComponent.h"
 #include "Components/RelationshipComponent.h"
+#include "Components/NetworkComponent.h"
 #include "Components/ScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
@@ -23,6 +24,8 @@
 #include "Scripting/Lua/ScriptTypes.h"
 #include "Scripting/Lua/Scripting.h"
 #include "World/World.h"
+#include "World/WorldContext.h"
+#include "World/Net/NetReplication.h"
 #include <atomic>
 
 using namespace entt::literals; 
@@ -497,7 +500,7 @@ namespace Lumina::ECS::Utils
         ParentRelationship.Children++;
     }
     
-    void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
+    void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent, bool bPreserveWorld)
     {
         // Self-parent or circular hierarchy causes an infinite loop in ForEachChild.
         if (Child == Parent)
@@ -519,29 +522,34 @@ namespace Lumina::ECS::Utils
             LOG_ERROR("Cannot create circular hierarchy - parent is a descendant of child!");
             return;
         }
-        
+
         FRelationshipComponent& ChildRelationship = Registry.get_or_emplace<FRelationshipComponent>(Child);
         STransformComponent& ChildTransform = Registry.get<STransformComponent>(Child);
-        
+
         if (ChildRelationship.Parent == Parent)
         {
             return;
         }
 
-        FMatrix4 ChildWorldMatrix = ChildTransform.GetWorldMatrix();
-        FMatrix4 ParentWorldMatrix = FMatrix4(1.0f);
-        
-        if (Parent != entt::null)
+        // Preserve-world: recompute the local transform so the child keeps its world pose. Skipped on a
+        // network client, where the local transform is authoritative (replicated) -- we only relink and let
+        // ResolveAllDirtyTransforms recompose world = parent_world * (replicated) local.
+        FTransform NewLocalTransform;
+        if (bPreserveWorld)
         {
-            ParentWorldMatrix = Registry.get<STransformComponent>(Parent).GetWorldMatrix();
+            const FMatrix4 ChildWorldMatrix  = ChildTransform.GetWorldMatrix();
+            const FMatrix4 ParentWorldMatrix = (Parent != entt::null)
+                ? Registry.get<STransformComponent>(Parent).GetWorldMatrix() : FMatrix4(1.0f);
+            const FMatrix4 NewLocalMatrix = Math::Inverse(ParentWorldMatrix) * ChildWorldMatrix;
+
+            FVector3 Translation, Scale, Skew;
+            FQuat    Rotation;
+            FVector4 Perspective;
+            Math::Decompose(NewLocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
+            NewLocalTransform.Location = Translation;
+            NewLocalTransform.Rotation = Rotation;
+            NewLocalTransform.Scale    = Scale;
         }
-
-        FMatrix4 NewLocalMatrix = Math::Inverse(ParentWorldMatrix) * ChildWorldMatrix;
-
-        FVector3 Translation, Scale, Skew;
-        FQuat Rotation;
-        FVector4 Perspective;
-        Math::Decompose(NewLocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
 
         RemoveFromParent(Registry, Child);
 
@@ -553,8 +561,8 @@ namespace Lumina::ECS::Utils
         {
             ChildRelationship.Parent = entt::null;
         }
-        
-        if (Registry.any_of<SDisabledTag>(Parent))
+
+        if (Parent != entt::null && Registry.any_of<SDisabledTag>(Parent))
         {
             if (!Registry.any_of<SDisabledTag>(Child))
             {
@@ -562,12 +570,30 @@ namespace Lumina::ECS::Utils
             }
         }
 
-        FTransform NewTransform;
-        NewTransform.Location   = Translation;
-        NewTransform.Rotation   = Rotation;
-        NewTransform.Scale      = Scale;
-        
-        ChildTransform.SetLocalTransform(NewTransform);
+        if (bPreserveWorld)
+        {
+            ChildTransform.SetLocalTransform(NewLocalTransform); // marks the transform dirty
+        }
+        else
+        {
+            // Keep the replicated local; recompose world under the new parent next resolve.
+            Registry.emplace_or_replace<FNeedsTransformUpdate>(Child);
+        }
+
+        // Server: a networked entity's attachment change must reach clients. Flag it dirty so the next tick's
+        // PropertyUpdate carries the new parent NetGUID. The is-server gate keeps a client's own replicated
+        // reparent (bPreserveWorld == false) from re-marking dirty.
+        if (CWorld** WorldPtr = Registry.ctx().find<CWorld*>())
+        {
+            if (CWorld* World = *WorldPtr)
+            {
+                const ENetMode Mode = World->GetNetMode();
+                if ((Mode == ENetMode::ListenServer || Mode == ENetMode::DedicatedServer) && Registry.all_of<SNetworkComponent>(Child))
+                {
+                    Registry.emplace_or_replace<FNetDirty>(Child);
+                }
+            }
+        }
     }
 
     void DestroyEntityHierarchy(FEntityRegistry& Registry, entt::entity Entity)

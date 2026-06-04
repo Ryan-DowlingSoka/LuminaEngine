@@ -316,6 +316,24 @@ public:
 	inline void SetHoverCallback(std::function<void(const std::string& word, const std::string& dottedPath)> callback) { hoverCallback = callback; }
 	inline void ClearHoverCallback() { SetHoverCallback(nullptr); }
 
+	// Ctrl/Cmd+Click "go to definition" hook. When set, a modifier+click on an
+	// identifier resolves it through this callback (word + dotted path, same as
+	// the hover callback) instead of adding a multi-cursor; the host is expected
+	// to move the caret to the declaration. Clicks not on an identifier still add
+	// a cursor as usual.
+	inline void SetDefinitionCallback(std::function<void(const std::string& word, const std::string& dottedPath)> callback) { definitionCallback = callback; }
+	inline void ClearDefinitionCallback() { SetDefinitionCallback(nullptr); }
+
+	// Extract the identifier (and any dotted member chain to its left) at the main
+	// caret. Tries the caret cell, then one cell left so a caret resting just past
+	// a word still resolves. Returns false when the caret isn't on an identifier.
+	inline bool GetIdentifierAtCursor(std::string& word, std::string& dotted) {
+		Coordinate c = cursors.getMain().getSelectionEnd();
+		if (extractIdentifierAt(c, word, dotted)) return true;
+		if (c.column > 0) { c.column -= 1; return extractIdentifierAt(c, word, dotted); }
+		return false;
+	}
+
 	// Post-render hook fires inside the editor's BeginChild scope right
 	// before EndChild, so callers can draw inline overlays (color swatches,
 	// gutter widgets, etc.) using the editor's clip rect and the same
@@ -363,6 +381,8 @@ public:
 		identifier,
 		knownIdentifier,
 		comment,
+		annotation,			// directive part of an annotation comment, e.g. --@export / --@rpc
+		annotationArgument,	// the (...) argument list following an annotation directive
 		background,
 		cursor,
 		selection,
@@ -453,6 +473,11 @@ public:
 		// an alternate single line comment character sequence (can be blank if language doesn't have this feature)
 		std::string singleLineCommentAlt;
 
+		// when set, single-line comments whose first non-whitespace content after the comment marker is this
+		// sequence are colored as annotations: the marker + directive name use Color::annotation and a
+		// trailing (...) argument list uses Color::annotationArgument. Empty = comments colored normally.
+		std::string annotationMarker;
+
 		// the start and end character sequence for multiline comments (can be blank language doesn't have this feature)
 		std::string commentStart;
 		std::string commentEnd;
@@ -532,6 +557,13 @@ public:
 		bool inComment;
 		bool inString;
 
+		// True when the popup is anchored immediately after a '.' or ':' member
+		// separator (e.g. "Engine." / "self:"). Lets Enter accept a suggestion in
+		// member-access context (where a newline almost never makes sense) while
+		// leaving Enter as a newline elsewhere, so the auto-showing popup can't
+		// false-complete a plain word the user is just finishing before a newline.
+		bool memberAccess = false;
+
 		// currently selected language (could be nullptr if no language is selected)
 		const Language* language;
 
@@ -555,6 +587,14 @@ public:
 		std::vector<char>        suggestionKinds;
 		std::vector<std::string> suggestionDetails;
 
+		// Optional per-suggestion replacement text. When set (non-empty) for an
+		// index, accepting that suggestion inserts this instead of the displayed
+		// name -- used for snippet expansions (multi-line templates). A single
+		// '\v' (vertical tab) in the text marks where the caret should land after
+		// insertion; it is stripped on accept. Parallel to `suggestions`; may be
+		// empty or shorter, missing/empty slots insert the name as usual.
+		std::vector<std::string> suggestionInsertText;
+
 		// set this to true if you are building the suggestion list asynchronously and provide it later
 		// this way autocomplete is not cancelled if the suggestion list is empty and the user hits tab or enter
 		bool suggestionsPromise = false;
@@ -572,6 +612,12 @@ public:
 		// specifies whether typing (or shortcut) in comments or strings triggers autocomplete
 		bool triggerInComments = false;
 		bool triggerInStrings = false;
+
+		// optional app gate for triggering inside comments. When set and triggerInComments is false, the
+		// app may still allow activation in specific comment contexts (e.g. annotation directives) by
+		// returning true. Receives the populated state (line / searchTerm / inComment). Null = use the
+		// triggerInComments flag alone.
+		std::function<bool(const AutoCompleteState&)> commentTriggerFilter;
 
 		// manual trigger key sequence (default is Ctrl+space on all platforms, even MacOS)
 		// remember Dear ImGui reverses Ctrl and Command on MacOS
@@ -607,6 +653,10 @@ public:
 
 	// configure and activate autocomplete (passing nullptr deactivates it)
 	inline void SetAutoCompleteConfig(const AutoCompleteConfig* config) { autocomplete.setConfig(config); }
+
+	// whether the autocomplete popup is currently showing; hosts use this to
+	// avoid stacking their own popups (e.g. signature help) on top of it
+	inline bool IsAutoCompleteActive() const { return autocomplete.isActive(); }
 
 	// provide autocomplete suggestions asynchronously (in case a callback takes to long and lookup is handled in a separate thread/process)
 	// this call is not threadsafe and must be called from the rendering thread (you must synchronize with your lookup thread yourself)
@@ -1133,6 +1183,10 @@ protected:
 
 		// set color for specified range of glyphs
 		inline void setColor(Line::iterator start, Line::iterator end, Color color) { while (start < end) (start++)->color = color; }
+
+		// color a single-line comment run; splits annotation directives (--@export / --@rpc) into the
+		// annotation / annotationArgument colors when language->annotationMarker is set.
+		void colorizeSingleLineComment(Line::iterator start, Line::iterator end, const Language* language, size_t markerSize);
 	} colorizer;
 
 	// details about bracketed text
@@ -1197,9 +1251,19 @@ protected:
 		inline bool isActive() const { return active; }
 		inline bool hasSuggestions() const { return state.suggestions.size() > 0 || state.suggestionsPromise; }
 		bool isSpecialKeyPressed() const;
+
+		// Whether Enter should accept the highlighted suggestion right now: only
+		// in member-access context or once the user has navigated the list. Keeps
+		// Enter as a newline while plain-word typing so the popup can't steal it.
+		bool acceptOnEnter() const;
 		inline ImGuiKeyChord getTriggerShortcut() const { return configuration.triggerShortcut; }
 		inline Coordinate getStart() const { return startLocation; }
-		inline std::string getReplacement() { return currentSelection < state.suggestions.size() ? state.suggestions[currentSelection] : ""; }
+		inline std::string getReplacement() {
+			if (currentSelection < state.suggestionInsertText.size() && !state.suggestionInsertText[currentSelection].empty()) {
+				return state.suggestionInsertText[currentSelection];
+			}
+			return currentSelection < state.suggestions.size() ? state.suggestions[currentSelection] : "";
+		}
 
 	private:
 		// properties
@@ -1220,6 +1284,12 @@ protected:
 		// render, without this the popup overrides the user's mouse-wheel
 		// scroll on the very next frame.
 		size_t previousSelection = static_cast<size_t>(-1);
+
+		// Set once the user moves the highlight with the arrow keys. Together with
+		// state.memberAccess this gates Enter-to-accept (see acceptOnEnter). Reset
+		// on every suggestion refresh, so it only reflects navigation since the
+		// last time the search term changed.
+		bool selectionNavigated = false;
 
 		// Computed per-refresh from the widest "name + detail" the current
 		// suggestion list contains. Bounded so we never produce a popup
@@ -1394,6 +1464,12 @@ protected:
 	std::function<void(int line)> lineNumberContextMenuCallback;
 	std::function<void(int line, int column)> textContextMenuCallback;
 	std::function<void(const std::string& word, const std::string& dottedPath)> hoverCallback;
+	std::function<void(const std::string& word, const std::string& dottedPath)> definitionCallback;
+
+	// Extract the identifier under `coord` plus any "Foo.Bar:" chain to its left.
+	// Returns false when there's no word at the coordinate. Shared by the hover
+	// callback and Ctrl+Click go-to-definition.
+	bool extractIdentifierAt(const Coordinate& coord, std::string& outWord, std::string& outDotted) const;
 	std::function<void()> postRenderCallback;
 	int contextMenuLine = 0;
 	int contextMenuColumn = 0;

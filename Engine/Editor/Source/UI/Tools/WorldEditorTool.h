@@ -115,6 +115,9 @@ namespace Lumina
         void DrawCursorWorldPositionOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
         void DrawEntityDebugOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
         void DrawOffscreenSelectionIndicators(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
+        // Net interest-management overlay: the spatial grid (occupied cells), per-client AOI circles, and
+        // relevant entities coloured by LOD tier. Draws into the world if it has a live FNetWorldState.
+        void DrawNetworkDebugOverlay();
         
         bool HasSimulatingWorld() const { return bSimulatingWorld || bGamePreviewRunning; }
         
@@ -160,6 +163,7 @@ namespace Lumina
         void HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget) override;
 
         void DrawWorldSettings(bool bFocused);
+        void DrawSystemsPanel(bool bFocused);
         void DrawEntityActionButtons(entt::entity Entity);
         void DrawTagList(entt::entity Entity);
 
@@ -227,6 +231,9 @@ namespace Lumina
 
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
 
+        // Name filter for the Systems panel.
+        ImGuiTextFilter                         SystemsFilter;
+
         TVector<TUniquePtr<IWorldEditorMode>>   EditorModes;
         int32                                   ActiveModeIndex = 0;
 
@@ -247,6 +254,7 @@ namespace Lumina
 
 
         bool                                    bDrawEntityDebugInfo = false;
+        bool                                    bDrawNetworkDebug = false;
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
 

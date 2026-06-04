@@ -404,18 +404,47 @@ namespace Lumina
             return World ? World->GetActiveCameraEntity() : entt::null;
         }
 
-        static entt::entity World_FindByName(CWorld* World, FName Name) { return World ? World->GetEntityByName(Name) : entt::null; }
-        static entt::entity World_FindByTag (CWorld* World, FName Tag)  { return World ? World->GetEntityByTag(Tag)   : entt::null; }
-        static int64        World_GetNumEntities(CWorld* World)         { return World ? (int64)World->GetNumEntities() : 0; }
-        static double       World_GetDeltaTime(CWorld* World)          { return World ? World->GetWorldDeltaTime() : 0.0; }
-        static double       World_GetTimeSinceCreation(CWorld* World)  { return World ? World->GetTimeSinceWorldCreation() : 0.0; }
+        static entt::entity World_FindByName(CWorld* World, FName Name)
+        {
+            return World ? World->GetEntityByName(Name) : entt::null;
+        }
+        
+        static entt::entity World_FindByTag (CWorld* World, FName Tag)
+        {
+            return World ? World->GetEntityByTag(Tag)   : entt::null;
+        }
+        
+        static int64 World_GetNumEntities(CWorld* World)
+        {
+            return World ? (int64)World->GetNumEntities() : 0;
+        }
+        
+        static double World_GetDeltaTime(CWorld* World)
+        {
+            return World ? World->GetWorldDeltaTime() : 0.0;
+        }
+        
+        static double  World_GetTimeSinceCreation(CWorld* World)
+        {
+            return World ? World->GetTimeSinceWorldCreation() : 0.0;
+        }
 
-        static entt::entity World_SpawnPrefab(CWorld* World, FName Path)                  { return World ? World->SpawnPrefab(Path) : entt::null; }
-        static entt::entity World_SpawnPrefabAt(CWorld* World, FName Path, FVector3 Loc)  { return World ? World->SpawnPrefabAt(Path, FTransform(Loc)) : entt::null; }
+        static entt::entity World_SpawnPrefab(CWorld* World, FName Path)
+        {
+            return World ? World->SpawnPrefab(Path) : entt::null;
+        }
+        
+        static entt::entity World_SpawnPrefabAt(CWorld* World, FName Path, FVector3 Loc)
+        {
+            return World ? World->SpawnPrefabAt(Path, FTransform(Loc)) : entt::null;
+        }
 
         // Lifecycle/transform on an ARBITRARY entity id; mirror the ECS.* utilities without the
         // registry arg, so scripts touching spawned ids (not `self`) skip self._Registry. WORLD-space.
-        static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)           { return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null; }
+        static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)
+        {
+            return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null;
+        }
 
         // Bulk-spawn helper: wrap a spawn loop in Begin/EndPhysicsBatch so the N bodies enter the
         // broadphase in one batched pass. Balance on the game thread; BodyIDs valid only after End.
@@ -456,36 +485,41 @@ namespace Lumina
         }
         static void World_RemoveComponent(CWorld* World, entt::entity Entity, Lua::FRef Type)
         {
-            if (World) RemoveComponent_Lua(World->GetEntityRegistry(), Entity, Type);
+            if (World)
+            {
+                RemoveComponent_Lua(World->GetEntityRegistry(), Entity, Type);
+            }
         }
 
         // Parent Child to Parent in the scene graph (preserves Child's world transform; set its local
         // transform afterward for an offset). Pass a null Parent to detach to the root.
         static void World_AttachEntity(CWorld* World, entt::entity Child, entt::entity Parent)
         {
-            if (World) ECS::Utils::ReparentEntity(World->GetEntityRegistry(), Child, Parent);
+            if (World)
+            {
+                ECS::Utils::ReparentEntity(World->GetEntityRegistry(), Child, Parent);
+            }
         }
 
         // Local-space location setter (relative to the parent), unlike World_SetLocation which is world-space.
         static void World_SetLocalLocation(CWorld* World, entt::entity Entity, FVector3 Location)
         {
-            if (World) ECS::Utils::SetEntityLocation(World->GetEntityRegistry(), Entity, Location);
+            if (World)
+            {
+                ECS::Utils::SetEntityLocation(World->GetEntityRegistry(), Entity, Location);
+            }
         }
 
-        // Attach a Luau script to an entity by path. The ScriptPath is replicated, so a server-spawned
-        // entity's script reaches clients (which attach it on receipt) -- giving the entity RPC handlers.
+
         static void World_AddScript(CWorld* World, entt::entity Entity, FStringView Path)
         {
-            if (World == nullptr) { return; }
-            // Clean set/swap: detaches any prior script before attaching the new one. On a server, MarkDirty
-            // the entity to replicate the change.
+            if (World == nullptr)
+            {
+                return;
+            }
             World->SetEntityScript(Entity, Path);
         }
-
-        // Metatable __index for the global World table: resolves subsystem namespaces (World.Physics,
-        // and later World.Audio/Rendering/...) to the CALLING script's world via thread data, so the
-        // single shared table is correct across every world. Direct World.* fields (SpawnPrefab, etc.)
-        // are present on the table and bypass __index; only a missing key lands here.
+        
         static int World_SubsystemIndex(lua_State* L)
         {
             const char* Key = lua_tostring(L, 2);
@@ -1234,6 +1268,16 @@ namespace Lumina
 
         CreateRenderer();
         UIContext = RmlUi::CreateWorldUI(this);
+
+        // Seed the per-world disabled-system set from the saved world settings before registering systems,
+        // so disabled systems are never constructed/started. Tolerant of stale names (ignored below).
+        DisabledSystems.clear();
+        for (const FName& Name : GetDefaultWorldSettings().DisabledSystems)
+        {
+            DisabledSystems.insert(Name);
+        }
+        PendingDisabledSystems = DisabledSystems;
+
         RegisterSystems();
         
         if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
@@ -1249,6 +1293,7 @@ namespace Lumina
         EntityRegistry.on_destroy   <FRelationshipComponent>()      .connect<&ThisClass::OnRelationshipComponentDestroyed>(this);
         EntityRegistry.on_construct <STransformComponent>()         .connect<&ThisClass::OnTransformComponentConstruct>(this);
         EntityRegistry.on_construct <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentConstruct>(this);
+        EntityRegistry.on_update    <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentUpdated>(this);
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
         // Left connected through teardown: fires at clear() to release widget RTs.
         EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
@@ -1343,6 +1388,7 @@ namespace Lumina
         }
 
         EntityRegistry.on_destroy<FRelationshipComponent>().disconnect<&ThisClass::OnRelationshipComponentDestroyed>(this);
+        EntityRegistry.on_update<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentUpdated>(this);
         EntityRegistry.on_destroy<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
         
         ForEachUniqueSystem([&](const FSystemVariant& System)
@@ -1392,6 +1438,10 @@ namespace Lumina
         struct FPopGuard { ~FPopGuard() { FCPUProfiler::Get().PopTarget(); } } PopGuard;
 
         CPU_PROFILE_SCOPE(StageName(Stage));
+
+        // Reconcile any deferred system enable/disable before the gate/tick, so a toggle requested mid-frame
+        // is applied here (between frames) and never inside a running system batch.
+        ApplyPendingSystemChanges();
 
         if (Stage == EUpdateStage::FrameStart)
         {
@@ -2302,6 +2352,48 @@ namespace Lumina
         OnScriptComponentCreated(Entity, ScriptComponent, true);
     }
 
+    void CWorld::OnScriptComponentUpdated(entt::registry& Registry, entt::entity Entity)
+    {
+        // Fired by entt on_update when the component is patched -- on a client this is the replication "OnRep"
+        // for a received SScriptComponent (NetReplication patches each applied component). Reattach only when
+        // the ScriptPath actually changed, so a PropertyUpdate that re-sends an unchanged script is a no-op.
+        SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
+        const FStringView Path = ScriptComponent.ScriptPath.ResolvePath();
+
+        // Already running exactly this script -> nothing to do.
+        if (ScriptComponent.Script != nullptr &&
+            FStringView(ScriptComponent.Script->Path.c_str(), ScriptComponent.Script->Path.size()) == Path)
+        {
+            return;
+        }
+
+        // Nothing attached and this exact path already failed to load -- don't retry every update.
+        if (ScriptComponent.Script == nullptr)
+        {
+            if (FScriptAttachFailed* Failed = Registry.try_get<FScriptAttachFailed>(Entity))
+            {
+                if (FStringView(Failed->Path.c_str(), Failed->Path.size()) == Path)
+                {
+                    return;
+                }
+            }
+        }
+
+        // (Re)load from the now-current ScriptPath. Detaches the old script first if it was swapped.
+        ReloadScriptForComponent(Entity, ScriptComponent);
+
+        if (ScriptComponent.Script == nullptr && !Path.empty())
+        {
+            Registry.emplace_or_replace<FScriptAttachFailed>(Entity).Path.assign(Path.data(), Path.size());
+            LOG_WARN("[Net] Replicated script '{}' failed to load on this peer -- marking failed (won't reload until the path changes or the entity respawns).",
+                FString(Path.data(), Path.size()).c_str());
+        }
+        else
+        {
+            Registry.remove<FScriptAttachFailed>(Entity); // success (or cleared path) clears any prior failure
+        }
+    }
+
     void CWorld::SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
     {
         ScriptComponent.Entity = Entity;
@@ -2585,6 +2677,13 @@ namespace Lumina
             ECS::ETraits Traits = Meta.traits<ECS::ETraits>();
             if (EnumHasAnyFlags(Traits, ECS::ETraits::System))
             {
+                // Skip systems disabled for this world; they are never constructed, started, or ticked.
+                // A stale disabled name (system since renamed/removed) simply matches nothing here.
+                if (const char* Name = Meta.name(); Name && DisabledSystems.count(FName(Name)))
+                {
+                    continue;
+                }
+
                 FEntitySystemWrapper Wrapper;
                 Wrapper.Underlying = Meta;
                 Wrapper.Instance = Meta.construct();
@@ -2593,6 +2692,126 @@ namespace Lumina
                 RegisterSystem(Variant);
             }
         }
+    }
+
+    void CWorld::ApplyPendingSystemChanges()
+    {
+        if (!bSystemsDirty)
+        {
+            return;
+        }
+        bSystemsDirty = false;
+
+        if (PendingDisabledSystems == DisabledSystems)
+        {
+            return;
+        }
+
+        // Snapshot the currently-active unique systems so we can tell which are newly removed/added.
+        THashSet<uint64> BeforeHashes;
+        ForEachUniqueSystem([&](const FSystemVariant& System)
+        {
+            BeforeHashes.insert(eastl::visit([&](const auto& Sys) { return Sys.GetHash(); }, System));
+        });
+
+        // Teardown systems about to be disabled while their wrappers are still live (before the rebuild).
+        ForEachUniqueSystem([&](const FSystemVariant& System)
+        {
+            FName Name = eastl::visit([&](const auto& Sys) { return Sys.GetName(); }, System);
+            if (!Name.IsNone() && PendingDisabledSystems.count(Name) && !DisabledSystems.count(Name))
+            {
+                eastl::visit([&](const auto& Sys) { Sys.Teardown(SystemContext); }, System);
+            }
+        });
+
+        DisabledSystems = PendingDisabledSystems;
+        RegisterSystems();
+
+        // Startup systems that are newly present (were not active before the rebuild).
+        ForEachUniqueSystem([&](const FSystemVariant& System)
+        {
+            const uint64 Hash = eastl::visit([&](const auto& Sys) { return Sys.GetHash(); }, System);
+            if (BeforeHashes.count(Hash) == 0)
+            {
+                eastl::visit([&](const auto& Sys) { Sys.Startup(SystemContext); }, System);
+            }
+        });
+    }
+
+    void CWorld::GetAllSystems(TVector<FSystemInfo>& Out) const
+    {
+        Out.clear();
+
+        for (auto&& [_, Meta] : entt::resolve())
+        {
+            ECS::ETraits Traits = Meta.traits<ECS::ETraits>();
+            if (!EnumHasAnyFlags(Traits, ECS::ETraits::System))
+            {
+                continue;
+            }
+
+            const char* RawName = Meta.name();
+            if (RawName == nullptr)
+            {
+                continue;
+            }
+
+            FSystemInfo& Info = Out.emplace_back();
+            Info.Name     = FName(RawName);
+            Info.bEnabled = PendingDisabledSystems.count(Info.Name) == 0;
+
+            // Stages come from the system's reflected PriorityList (construct a throwaway wrapper to read it).
+            FEntitySystemWrapper Wrapper;
+            Wrapper.Underlying = Meta;
+            Wrapper.Instance   = Meta.construct();
+            const FUpdatePriorityList& Priorities = Wrapper.GetUpdatePriorityList();
+            for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
+            {
+                if (Priorities.IsStageEnabled((EUpdateStage)i))
+                {
+                    Info.Stages.push_back((EUpdateStage)i);
+                }
+            }
+        }
+    }
+
+    bool CWorld::IsSystemEnabled(FName System) const
+    {
+        return PendingDisabledSystems.count(System) == 0;
+    }
+
+    void CWorld::SetSystemEnabled(FName System, bool bEnabled)
+    {
+        if (System.IsNone())
+        {
+            return;
+        }
+
+        const bool bCurrentlyEnabled = PendingDisabledSystems.count(System) == 0;
+        if (bCurrentlyEnabled == bEnabled)
+        {
+            return;
+        }
+
+        if (bEnabled)
+        {
+            PendingDisabledSystems.erase(System);
+        }
+        else
+        {
+            PendingDisabledSystems.insert(System);
+        }
+
+        // Persist immediately into the world-settings component (safe to mutate; not the live system list).
+        // The actual system-list rebuild is deferred to the next frame via ApplyPendingSystemChanges.
+        SDefaultWorldSettings& Settings = GetDefaultWorldSettings();
+        Settings.DisabledSystems.clear();
+        for (const FName& Name : PendingDisabledSystems)
+        {
+            Settings.DisabledSystems.push_back(Name);
+        }
+
+        bSystemsDirty = true;
     }
 
     void CWorld::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)

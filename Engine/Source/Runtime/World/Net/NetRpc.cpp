@@ -37,9 +37,11 @@ namespace Lumina::Net
 
         constexpr int    MaxRpcArgDepth  = 16;          // guards against cyclic/oversized tables
         constexpr uint32 MaxRpcStringLen = 1u << 20;    // 1 MiB sanity cap on a malformed length
+    } // anonymous
 
-        // Serialize one Lua value (tag + payload) at Index. Stack-neutral.
-        void SerializeLuaValue(lua_State* L, int Index, FNetArchive& Ar, int Depth)
+    // Serialize one Lua value (tag + payload) at Index. Stack-neutral. Public: shared by RPC arg marshaling
+    // and script-field replication (NetReplication).
+    void SerializeLuaValue(lua_State* L, int Index, FNetArchive& Ar, int Depth)
         {
             Index = lua_absindex(L, Index);
 
@@ -188,7 +190,11 @@ namespace Lumina::Net
                     TVector<char> Buffer;
                     Buffer.resize(Len);
                     Ar.Serialize(Buffer.data(), static_cast<int64>(Len));
-                    if (Ar.HasError()) { lua_pushnil(L); break; }
+                    if (Ar.HasError())
+                    {
+                        lua_pushnil(L); 
+                        break;
+                    }
                     lua_pushlstring(L, Buffer.data(), Len);
                 }
                 break;
@@ -238,6 +244,8 @@ namespace Lumina::Net
             }
         }
 
+    namespace
+    {
         // Pack an RPC invocation, reading args from the live Lua stack at [FirstArgIndex, top]. Object args
         // mint indices into State's outgoing package map, flushed as exports before this packet.
         void WriteRpcPacket(TVector<uint8>& Buffer, lua_State* L, int FirstArgIndex, uint32 NetGUID, uint16 RpcId, FNetWorldState& State)

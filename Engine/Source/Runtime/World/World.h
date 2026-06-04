@@ -221,9 +221,31 @@ namespace Lumina
 
         const TVector<FScheduledSystem>& GetSystemsForUpdateStage(EUpdateStage Stage);
 
+        // One reflected engine system, as surfaced to the World Editor's Systems panel.
+        struct FSystemInfo
+        {
+            FName                   Name;
+            bool                    bEnabled = true;
+            TVector<EUpdateStage>   Stages;     // stages this system participates in
+        };
+
+        // Enumerate every reflected engine system (alphabetical by reflected name) plus whether it is
+        // currently enabled for this world. Reflects the pending (intended) state, so a UI checkbox
+        // updates instantly even though the actual system list rebuild is deferred to the next frame.
+        void GetAllSystems(TVector<FSystemInfo>& Out) const;
+
+        // Whether System (by reflected name) is enabled for this world (reads the pending state).
+        bool IsSystemEnabled(FName System) const;
+
+        // Enable/disable a system for this world. Persists to SDefaultWorldSettings immediately and
+        // defers the live system-list rebuild to the start of the next frame (ApplyPendingSystemChanges),
+        // so it is safe to call mid-frame.
+        void SetSystemEnabled(FName System, bool bEnabled);
+
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnTransformComponentConstruct(entt::registry& Registry, entt::entity Entity);
         void OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity);
+        void OnScriptComponentUpdated(entt::registry& Registry, entt::entity Entity);
         void SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
@@ -291,10 +313,15 @@ namespace Lumina
         void DestroyRenderer();
         
         void OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event);
-        
+
         void InitializeScriptEntities();
         bool RegisterSystem(const FSystemVariant& NewSystem);
         void TickSystems(FSystemContext& Context);
+
+        // Applies a deferred enable/disable request (set via SetSystemEnabled): tears down newly-disabled
+        // systems, rebuilds the stage lists honoring DisabledSystems, then starts up newly-enabled ones.
+        // Called at the top of Update() so it never runs inside a system batch. No-op unless bSystemsDirty.
+        void ApplyPendingSystemChanges();
 
         // Whether a script's lifecycle runs in this world. Editor worlds run only scripts defining
         // OnEditorUpdate; every other world type runs all scripts.
@@ -314,6 +341,13 @@ namespace Lumina
         TUniquePtr<FWorldUIContext>                         UIContext;
         
         TVector<FScheduledSystem>                           SystemUpdateList[(int32)EUpdateStage::Max];
+
+        // Reflected systems disabled for this world, by name. DisabledSystems is the applied state used by
+        // RegisterSystems; PendingDisabledSystems is the editor-requested next state. They diverge only
+        // between a SetSystemEnabled call and the next ApplyPendingSystemChanges (which reconciles them).
+        THashSet<FName>                                     DisabledSystems;
+        THashSet<FName>                                     PendingDisabledSystems;
+        bool                                                bSystemsDirty = false;
 
         // Subscription to FScriptingContext::OnScriptLoaded; re-binds matching SScriptComponents
         // on reload. Populated in InitializeWorld, removed in TeardownWorld.

@@ -7,6 +7,7 @@ namespace Lumina
 {
     struct FModuleInfo;
     class CWorld;
+    class CClass;
 
     struct FCoreDelegates
     {
@@ -30,5 +31,9 @@ namespace Lumina
         // Fired when a tracked text asset (.luau/.rml/.rcss) is renamed/moved (args = old VFS path,
         // new VFS path). Open file editors retarget their path so a later save writes the new file.
         RUNTIME_API static TMulticastDelegate<void, FStringView, FStringView> OnContentFileRenamed;
+
+        // Fired after FConfig::SaveSettings persists a CDeveloperSettings class (arg = that CClass*).
+        // Lets open editors live-refresh from their settings instead of waiting for a reopen.
+        RUNTIME_API static TMulticastDelegate<void, CClass*>         OnSettingsSaved;
     };
 }

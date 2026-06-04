@@ -24,6 +24,15 @@ namespace Lumina
     {
         FString         DisplayName;
         FString         TooltipText;
+
+        // Optional rich tooltip. When TooltipTitle is set or TooltipChips is non-empty, the tree
+        // draws a styled tooltip (accent title + dim subtitle + a wrapped row of "chip" pills)
+        // instead of the plain TooltipText. Each chip string is drawn verbatim (icons included).
+        FString             TooltipTitle;
+        FString             TooltipSubtitle;
+        FString             TooltipChipHeader;   // small dim caps label above the chips (e.g. "COMPONENTS")
+        TVector<FString>    TooltipChips;
+
         ImVec4          DisplayColor = ImVec4(0.725f, 0.725f, 0.725f, 1.0f);
 
         // Optional: tinted overdraw of DisplayName's leading glyph. Must match the icon DisplayName starts with.

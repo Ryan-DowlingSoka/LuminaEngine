@@ -8,70 +8,11 @@
 #include "Assets/AssetRef.h"
 #include "Networking/INetworkTransport.h"
 #include "World/Net/NetGUID.h"
+#include "World/Net/NetReplicationGraph.h"
 
 namespace Lumina
 {
     class CObject;
-    // One timestamped transform sample for client snapshot interpolation. Time is server time.
-    struct FNetInterpSample
-    {
-        double   Time = 0.0;
-        FVector3 Pos;
-        FQuat    Rot;
-    };
-
-    // Per-entity ring of recent samples for a SimulatedProxy. Client renders InterpDelay behind newest
-    // server time, lerping between bracketing samples.
-    struct FNetInterpState
-    {
-        static constexpr int Capacity = 12;
-        FNetInterpSample Samples[Capacity];
-        int Count = 0; // valid samples
-        int Head  = 0; // physical index of the oldest
-
-        FNetInterpSample& Logical(int Index) { return Samples[(Head + Index) % Capacity]; }
-
-        void Push(double Time, const FVector3& Pos, const FQuat& Rot)
-        {
-            if (Count < Capacity)
-            {
-                Samples[(Head + Count) % Capacity] = { Time, Pos, Rot };
-                ++Count;
-            }
-            else
-            {
-                Samples[Head] = { Time, Pos, Rot }; // overwrite oldest
-                Head = (Head + 1) % Capacity;
-            }
-        }
-
-        // Pose at RenderTime. Clamps at the ends, lerps between bracketing samples otherwise.
-        void Evaluate(double RenderTime, FVector3& OutPos, FQuat& OutRot)
-        {
-            if (Count == 1 || RenderTime <= Logical(0).Time)
-            {
-                OutPos = Logical(0).Pos; OutRot = Logical(0).Rot; return;
-            }
-            if (RenderTime >= Logical(Count - 1).Time)
-            {
-                OutPos = Logical(Count - 1).Pos; OutRot = Logical(Count - 1).Rot; return;
-            }
-            for (int i = 0; i < Count - 1; ++i)
-            {
-                FNetInterpSample& A = Logical(i);
-                FNetInterpSample& B = Logical(i + 1);
-                if (RenderTime >= A.Time && RenderTime <= B.Time)
-                {
-                    const double Span = B.Time - A.Time;
-                    const float  T    = (Span > 1e-9) ? static_cast<float>((RenderTime - A.Time) / Span) : 0.0f;
-                    OutPos = Math::Mix(A.Pos, B.Pos, T);
-                    OutRot = Math::Slerp(A.Rot, B.Rot, T);
-                    return;
-                }
-            }
-            OutPos = Logical(Count - 1).Pos; OutRot = Logical(Count - 1).Rot;
-        }
-    };
 
     // The server's reserved peer id (authority, owns connection 0).
     inline constexpr uint32 ServerPeerId = 0;
@@ -113,6 +54,26 @@ namespace Lumina
         uint32                      NextIndex = 1;  // 0 is null
     };
 
+    // Replication-layer instrumentation for the network debug tool. Per-tick fields are refreshed by the
+    // server send path each tick; Peak/OversizedSnapshotDrops are cumulative.
+    struct FNetReplicationStats
+    {
+        uint32 MovementFrameBytes      = 0; // size of the LARGEST TransformSnapshot frame this tick (vs cap)
+        uint32 MovementTotalBytes      = 0; // total transform bytes this tick across all chunked frames
+        uint32 MovementEntityCount     = 0; // total entities sent this tick
+        uint16 MovementChunks          = 0; // number of snapshot frames the entities were split across
+        uint32 PeakMovementFrameBytes  = 0; // high-water mark of the largest single frame
+        uint32 OversizedSnapshotDrops  = 0; // frames that still exceeded the cap (should stay 0 with chunking)
+        uint32 ReliableBatchBytes      = 0; // last tick's reliable datagram size
+        uint32 UnreliableBatchBytes    = 0; // last tick's unreliable datagram size
+        uint16 SpawnsSent              = 0; // last tick (summed across clients)
+        uint16 DespawnsSent            = 0; // last tick (summed across clients)
+        uint16 PropertyUpdatesSent     = 0; // last tick
+        bool   bKeyframeThisTick       = false;
+        uint32 RelevantAvg             = 0; // avg relevant entities per client (interest management)
+        uint32 RelevantMax             = 0; // max relevant entities on any one client
+    };
+
     // Per-world networking state.
     struct FNetWorldState
     {
@@ -134,12 +95,8 @@ namespace Lumina
         // Client side, set once the link to the server is established.
         bool                          bClientConnected = false;
 
-        // Server side, force the next transform snapshot to be a full baseline. Set on init and on each
-        // client connect so late joiners get current poses for stopped entities.
-        bool                          bForceMovementResend = true;
-
-        // Server side, seconds since the last full keyframe. Periodically re-arms bForceMovementResend so
-        // a dropped delta self-heals.
+        // Server side, seconds since the last full keyframe. Periodically re-arms every client's
+        // FNetClientView::bForceBaseline so a dropped delta self-heals.
         float                         TimeSinceKeyframe = 0.0f;
 
         // NetGUID to entity map for this world. Stable ids are adopted once at init.
@@ -161,16 +118,14 @@ namespace Lumina
         // Client side, ClientReady sent to the server once the link is up.
         bool                          bClientReadySent = false;
 
-        //~ Client snapshot interpolation for SimulatedProxy movement.
+        //~ Client snapshot interpolation for SimulatedProxy movement. Per-entity sample rings live on the
+        //  entity's FRepTransform component; this state is the global render clock shared by all of them.
 
-        // Per-NetGUID sample rings. Only SimulatedProxy entities are buffered. Pruned when the entity is gone.
-        THashMap<uint32, FNetInterpState> InterpStates;
-
-        // Newest server time seen, and the running serverClock minus clientClock estimate.
+        // Newest server time seen, and the running serverClock minus clientClock estimate. The interp delay
+        // (seconds behind newest server time) is sourced from CNetworkSettings, not stored here.
         double                        LatestServerTime = 0.0;
         double                        ClockOffset      = 0.0;
         bool                          bClockInitialized = false;
-        double                        InterpDelay      = 0.1; // seconds behind newest server time
 
         // Net-index caches. Outgoing maps this peer mints and exports; incoming maps are kept per sender
         // connection id since the index space is sender-owned.
@@ -178,5 +133,30 @@ namespace Lumina
         FNetAssetMap                     OutAssets;
         THashMap<uint32, FNetObjectMap>  InObjects;
         THashMap<uint32, FNetAssetMap>   InAssets;
+
+        // Replication-layer instrumentation surfaced by the network debug tool.
+        FNetReplicationStats             Stats;
+
+        //~ Interest management (server). Built once per tick, reused across clients.
+
+        // Flat SoA snapshot of all movement-replicating entities this tick.
+        FNetExtract                      Extract;
+        // CSR spatial grid over the extract (XZ counting sort).
+        FNetGrid                         Grid;
+        // connId -> record index of the entity that connection owns (its pawn), for O(1) viewpoint lookup.
+        THashMap<uint32, uint32>         OwnerToRecord;
+        // Per-connection relevancy + send-schedule. Created on connect, erased on disconnect. Never touches
+        // GuidTable (which stays the global entity-lifetime map).
+        THashMap<uint32, FNetClientView> ClientViews;
+
+        // Per-tick scratch: reliable PropertyUpdate datagrams that must go to specific clients (entities with
+        // owner-conditioned --@replicated fields). Built by ReplicateDirtyProperties, flushed by
+        // ServerReplicateRelevant AFTER net-index exports so the recipient can resolve any referenced index.
+        THashMap<uint32, TVector<uint8>> PendingClientReliable;
+
+        // Client: replicated children whose parent hasn't spawned yet. Key = child entity (integral id, so the
+        // map needs no entt hasher), value = desired parent NetGUID. Drained when that parent spawns
+        // (ApplySpawnEntity), since relevancy spawn order isn't guaranteed.
+        THashMap<uint32, uint32> PendingAttach;
     };
 }

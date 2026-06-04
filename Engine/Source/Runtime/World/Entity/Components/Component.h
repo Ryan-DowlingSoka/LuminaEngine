@@ -13,6 +13,12 @@ namespace Lumina
 {
     namespace Meta
     {
+        template<typename T>
+        concept EmptyComponent = eastl::is_empty_v<T>;
+        
+        template<typename T>
+        concept NonEmptyComponent = !eastl::is_empty_v<T>;
+        
         template<typename TComponent>
         bool HasComponent(entt::registry& Registry, entt::entity Entity)
         {
@@ -31,25 +37,29 @@ namespace Lumina
             Registry.clear<TComponent>();
         }
 
-        template<typename TComponent>
-        decltype(auto) EmplaceComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
+        template<NonEmptyComponent TComponent>
+        TComponent& EmplaceComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
         {
-            if constexpr (eastl::is_empty_v<TComponent>)
-            {
-                Registry.emplace<TComponent>(Entity);
-            }
-            else
-            {
-                return Registry.emplace_or_replace<TComponent>(Entity, Any ? Any.cast<const TComponent&>() : TComponent{});
-            }
+            return Registry.emplace_or_replace<TComponent>(Entity, Any ? Any.cast<const TComponent&>() : TComponent{});
+        }
+        
+        template<EmptyComponent TComponent>
+        void EmplaceComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
+        {
+            Registry.emplace<TComponent>(Entity);
         }
         
         template<typename TComponent>
         TComponent& PatchComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
         {
+            // An empty Any means signal-only: bump the version and fire on_update without overwriting (the
+            // caller already mutated the component in place, e.g. network apply). A valid Any assigns.
             return Registry.patch<TComponent>(Entity, [&](TComponent& Type)
             {
-                Type = Any.cast<const TComponent&>();
+                if (Any)
+                {
+                    Type = Any.cast<const TComponent&>();
+                }
             });
         }
 
