@@ -28,7 +28,7 @@
 //   FFoo Foo;
 //   PA::Counter(Foo) = 42;             // Data -> int&
 //   int R = PA::Compute(Foo, 5);       // Method Call
-//   PA::Reset(Foo);                    // Resolves to Reset()  at the call site
+//   PA::Reset(Foo);                    // Resolves to Reset() at the call site
 //   PA::Reset(Foo, 7);                 // Resolves to Reset(int) at the call site
 //   PA::sCount() = 7;                  // Static Data -> int&
 //   PA::sBump(2);                      // Static Function
