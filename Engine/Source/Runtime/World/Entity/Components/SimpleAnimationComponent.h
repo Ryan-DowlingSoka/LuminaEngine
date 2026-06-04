@@ -29,7 +29,7 @@ namespace Lumina
         GENERATED_BODY()
 
         /** The animation asset to play on the skeletal mesh. */
-        PROPERTY(Script, Editable, Category = "Animation")
+        PROPERTY(Script, Editable, Replicated, Category = "Animation")
         TObjectPtr<CAnimation> Animation;
 
         /** Current playback position within the animation (seconds). */
@@ -37,15 +37,15 @@ namespace Lumina
         float CurrentTime = 0.0f;
 
         /** Playback rate multiplier (1.0 = normal speed, 2.0 = double speed). */
-        PROPERTY(Script, Editable, Category = "Animation")
+        PROPERTY(Script, Editable, Replicated, Category = "Animation")
         float PlaybackSpeed = 1.0f;
 
         /** When true, the animation restarts automatically upon completion. */
-        PROPERTY(Script, Editable, Category = "Animation")
+        PROPERTY(Script, Editable, Replicated, Category = "Animation")
         bool bLooping = true;
 
         /** When true, the animation is currently advancing. */
-        PROPERTY(Script, Editable, Category = "Animation")
+        PROPERTY(Script, Editable, Replicated, Category = "Animation")
         bool bPlaying = true;
 
         /** Overrides the active animation asset's root-motion lock for this entity (see ERootMotionLockMode). */

@@ -60,6 +60,7 @@
 #include "World/Net/NetWorldState.h"
 #include "World/Net/NetRole.h"
 #include "World/Net/NetReplication.h"
+#include "World/Net/ScriptRepState.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "Scripting/Lua/ScriptTypeRegistry.h"
 #include "Scripting/Lua/Stack.h"
@@ -69,6 +70,7 @@
 #include "UI/RmlUiBridge.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/entity/systems/EntitySystem.h"
+#include "WorldLuaSubsystem.h"
 
 // Lets Lua bindings take a leading CWorld* the invoker fills from the calling script's thread data,
 // so they bind with SetFunction and need no lua_State plumbing. Must precede RegisterLuaModule.
@@ -520,25 +522,21 @@ namespace Lumina
             World->SetEntityScript(Entity, Path);
         }
         
+        // World.<Subsystem> dispatch. The key is resolved against FWorldLuaSubsystemRegistry and the
+        // accessor is called with the script's active world, so the single shared World table stays
+        // correct across every world. Subsystems (Physics, Net, game-defined) register their accessor
+        // rather than being hardcoded here -- see RegisterLuaModule.
         static int World_SubsystemIndex(lua_State* L)
         {
             const char* Key = lua_tostring(L, 2);
-            if (Key == nullptr) { lua_pushnil(L); return 1; }
-
-            const auto* TD = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
-            CWorld* World = TD ? TD->World : nullptr;
-            if (World == nullptr) { lua_pushnil(L); return 1; }
-
-            if (strcmp(Key, "Physics") == 0)
+            CWorld* World = Key != nullptr ? Lua::TLuaContext<CWorld*>::Get(L) : nullptr;
+            if (World != nullptr)
             {
-                Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene());
-                return 1;
-            }
-
-            if (strcmp(Key, "Net") == 0)
-            {
-                Lua::TStack<FNetLuaInterface*>::Push(L, World->GetNetInterface());
-                return 1;
+                if (FWorldLuaSubsystemPush Push = FWorldLuaSubsystemRegistry::Get().Find(Key))
+                {
+                    Push(L, World);
+                    return 1;
+                }
             }
 
             lua_pushnil(L);
@@ -560,7 +558,10 @@ namespace Lumina
         // reparenting (unlike ECS.SetEntityLocation, which writes local space directly).
         static void World_SetLocation(CWorld* World, entt::entity Entity, FVector3 Location)
         {
-            if (World == nullptr) return;
+            if (World == nullptr)
+            {
+                return;
+            }
             FEntityRegistry& Registry = World->GetEntityRegistry();
             FTransform WorldTransform;
             WorldTransform.Location = Location;
@@ -661,36 +662,6 @@ namespace Lumina
         static bool World_FractureAt(CWorld* World, entt::entity Entity, float X, float Y, float Z, TOptional<float> Strength)
         {
             return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, FVector3(X, Y, Z), Strength.value_or(0.0f));
-        }
-
-        //~ World.Debug.* -- screen-space debug text + world debug shapes. Dev/Debug only (no-op in Shipping).
-        static void World_Debug_DrawText(CWorld* World, FStringView Text, TOptional<FVector4> Color)
-        {
-            if (World) World->DrawDebugText(FString(Text), Color.value_or(FVector4(1.0f)));
-        }
-        static void World_Debug_DrawLine(CWorld* World, FVector3 Start, FVector3 End, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawLine(Start, End, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
-        }
-        static void World_Debug_DrawBox(CWorld* World, FVector3 Center, FVector3 HalfExtents, FQuat Rotation, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawBox(Center, HalfExtents, Rotation, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
-        }
-        static void World_Debug_DrawSphere(CWorld* World, FVector3 Center, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawSphere(Center, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
-        }
-        static void World_Debug_DrawCapsule(CWorld* World, FVector3 Start, FVector3 End, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawCapsule(Start, End, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
-        }
-        static void World_Debug_DrawCone(CWorld* World, FVector3 Apex, FVector3 Direction, float AngleRadians, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawCone(Apex, Direction, AngleRadians, Length, Color, 16, 4, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
-        }
-        static void World_Debug_DrawArrow(CWorld* World, FVector3 Start, FVector3 Direction, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
-        {
-            if (World) World->DrawArrow(Start, Direction, Length, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
         }
 
         // RT is a handle from Engine.LoadObject("/Game/X"); color defaults to opaque red (blood).
@@ -851,6 +822,37 @@ namespace Lumina
         }
     }
 
+    //~ World.Debug.* -- screen-space debug text + world debug shapes, forwarded to this world's draw
+    // interface. Trailing args are optional; Dev/Debug only (the draws are no-ops in Shipping).
+    void FWorldDebugInterface::DrawText(FStringView Text, TOptional<FVector4> Color)
+    {
+        if (World) World->DrawDebugText(FString(Text), Color.value_or(FVector4(1.0f)));
+    }
+    void FWorldDebugInterface::DrawLine(FVector3 Start, FVector3 End, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawLine(Start, End, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+    void FWorldDebugInterface::DrawBox(FVector3 Center, FVector3 HalfExtents, FQuat Rotation, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawBox(Center, HalfExtents, Rotation, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+    void FWorldDebugInterface::DrawSphere(FVector3 Center, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawSphere(Center, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+    void FWorldDebugInterface::DrawCapsule(FVector3 Start, FVector3 End, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawCapsule(Start, End, Radius, Color, 16, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+    void FWorldDebugInterface::DrawCone(FVector3 Apex, FVector3 Direction, float AngleRadians, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawCone(Apex, Direction, AngleRadians, Length, Color, 16, 4, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+    void FWorldDebugInterface::DrawArrow(FVector3 Start, FVector3 Direction, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration)
+    {
+        if (World) World->DrawArrow(Start, Direction, Length, Color, Thickness.value_or(1.0f), bDepthTest.value_or(true), Duration.value_or(0.0f));
+    }
+
     CWorld::CWorld()
         : SingletonEntity(entt::null)
         , SystemContext(this)
@@ -858,6 +860,7 @@ namespace Lumina
         , TriangleBatcherComponent(nullptr)
     {
         NetInterface.World = this;
+        DebugInterface.World = this;
     }
 
     void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength, float Hardness, CTexture* BrushMask)
@@ -1066,21 +1069,37 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
         WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
 
-        // World.Debug.* -- screen-space debug text + world debug shapes. Trailing args (thickness, depth-test,
-        // duration) are optional. Dev/Debug only (DrawText is a no-op in Shipping).
-        {
-            Lua::FRef DebugTable = WorldTable.NewTable("Debug");
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawText>   ("DrawText");    // DrawText(text [, color])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawLine>   ("DrawLine");    // DrawLine(start, end, color [, thickness, depthTest, duration])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawBox>    ("DrawBox");     // DrawBox(center, halfExtents, rotation, color [, ...])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawSphere> ("DrawSphere");  // DrawSphere(center, radius, color [, ...])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawCapsule>("DrawCapsule"); // DrawCapsule(start, end, radius, color [, ...])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawCone>   ("DrawCone");    // DrawCone(apex, direction, angleRadians, length, color [, ...])
-            DebugTable.SetFunction<&LuaBinds::World_Debug_DrawArrow>  ("DrawArrow");   // DrawArrow(start, direction, length, color [, ...])
-        }
+        // World.Debug namespace. Reached as World.Debug:DrawLine(...) (colon -- it's a userdata facade,
+        // like World.Net). Trailing args (thickness, depth-test, duration) are optional; Dev/Debug only.
+        GlobalRef.NewClass<FWorldDebugInterface>("WorldDebug")
+            .AddFunction<&FWorldDebugInterface::DrawText>("DrawText")
+                .AddComment("Screen-space debug text for this frame: DrawText(text [, color]).")
+            .AddFunction<&FWorldDebugInterface::DrawLine>("DrawLine")
+                .AddComment("DrawLine(start, finish, color [, thickness, depthTest, duration]).")
+            .AddFunction<&FWorldDebugInterface::DrawBox>("DrawBox")
+                .AddComment("DrawBox(center, halfExtents, rotation, color [, thickness, depthTest, duration]).")
+            .AddFunction<&FWorldDebugInterface::DrawSphere>("DrawSphere")
+                .AddComment("DrawSphere(center, radius, color [, thickness, depthTest, duration]).")
+            .AddFunction<&FWorldDebugInterface::DrawCapsule>("DrawCapsule")
+                .AddComment("DrawCapsule(start, finish, radius, color [, thickness, depthTest, duration]).")
+            .AddFunction<&FWorldDebugInterface::DrawCone>("DrawCone")
+                .AddComment("DrawCone(apex, direction, angleRadians, length, color [, thickness, depthTest, duration]).")
+            .AddFunction<&FWorldDebugInterface::DrawArrow>("DrawArrow")
+                .AddComment("DrawArrow(start, direction, length, color [, thickness, depthTest, duration]).")
+            .Register();
 
-        // World.<Subsystem> namespaces (World.Physics, ...) resolve per script through this metatable
-        // so the single shared World table is correct across every world. See World_SubsystemIndex.
+        // Engine-provided World.<Subsystem> namespaces. Each is a per-world C++ facade reached through the
+        // shared World table's metatable (see World_SubsystemIndex); the LuauType feeds the editor snippet
+        // below. Game modules can add their own with RegisterWorldLuaSubsystem during their Lua bootstrap.
+        RegisterWorldLuaSubsystem("Physics", "PhysicsScene",
+            [](lua_State* L, CWorld* World) { Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene()); });
+        RegisterWorldLuaSubsystem("Net", "NetInterface",
+            [](lua_State* L, CWorld* World) { Lua::TStack<FNetLuaInterface*>::Push(L, World->GetNetInterface()); });
+        RegisterWorldLuaSubsystem("Debug", "WorldDebug",
+            [](lua_State* L, CWorld* World) { Lua::TStack<FWorldDebugInterface*>::Push(L, World->GetDebugInterface()); });
+
+        // World.<Subsystem> namespaces resolve per script through this metatable so the single shared
+        // World table is correct across every world. See World_SubsystemIndex.
         {
             lua_State* L = GlobalRef.GetState();
             WorldTable.Push();
@@ -1092,24 +1111,26 @@ namespace Lumina
         }
 
 #if WITH_EDITOR
-        // Editor type for the World table. Subsystem types (PhysicsScene, ...) are auto-derived from
-        // their NewClass bindings above; here we only state how they hang off World. `[string]: any`
-        // keeps the not-yet-typed flat World.* helpers (FindByName, SpawnPrefab, ...) error-free.
-        Lua::FScriptTypeRegistry::Get().RegisterSnippet("World",
-            "declare World: {\n"
-            "    Physics: PhysicsScene,\n"
-            "    Net: NetInterface,\n"
-            "    Debug: {\n"
-            "        DrawText: (text: string, color: vector?) -> (),\n"
-            "        DrawLine: (start: vector, finish: vector, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "        DrawBox: (center: vector, halfExtents: vector, rotation: any, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "        DrawSphere: (center: vector, radius: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "        DrawCapsule: (start: vector, finish: vector, radius: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "        DrawCone: (apex: vector, direction: vector, angleRadians: number, length: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "        DrawArrow: (start: vector, direction: vector, length: number, color: vector, thickness: number?, depthTest: boolean?, duration: number?) -> (),\n"
-            "    },\n"
+        // Editor type for the World table. Subsystem fields are generated from the registry (whatever
+        // RegisterWorldLuaSubsystem declared a LuauType for), so a game-defined subsystem is typed
+        // without editing this snippet. `[string]: any` keeps the not-yet-typed flat World.* helpers
+        // (FindByName, SpawnPrefab, ...) error-free.
+        FString WorldSnippet = "declare World: {\n";
+        for (const FWorldLuaSubsystemRegistry::FEntry& Entry : FWorldLuaSubsystemRegistry::Get().GetEntries())
+        {
+            if (Entry.LuauType != nullptr)
+            {
+                WorldSnippet += "    ";
+                WorldSnippet += Entry.Name.c_str();
+                WorldSnippet += ": ";
+                WorldSnippet += Entry.LuauType;
+                WorldSnippet += ",\n";
+            }
+        }
+        WorldSnippet +=
             "    [string]: any,\n"
-            "}\n");
+            "}\n";
+        Lua::FScriptTypeRegistry::Get().RegisterSnippet("World", WorldSnippet);
 #endif
 
         // RenderTarget.Paint(target, u, v, radius [, r, g, b, a [, strength [, hardness]]])
@@ -1373,13 +1394,20 @@ namespace Lumina
     
     void CWorld::TeardownWorld()
     {
-        FlushRenderingCommands();
-        GRenderContext->WaitIdle();
+        // No render thread / RHI / audio device in a headless process.
+        if (!GIsHeadless)
+        {
+            FlushRenderingCommands();
+            GRenderContext->WaitIdle();
+        }
 
         RmlUi::DestroyWorldUI(this);
         UIContext.reset();
 
-        GAudioContext->StopAllSounds();
+        if (GAudioContext != nullptr)
+        {
+            GAudioContext->StopAllSounds();
+        }
 
         if (ScriptReloadedHandle.IsValid())
         {
@@ -1389,7 +1417,7 @@ namespace Lumina
 
         EntityRegistry.on_destroy<FRelationshipComponent>().disconnect<&ThisClass::OnRelationshipComponentDestroyed>(this);
         EntityRegistry.on_update<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentUpdated>(this);
-        EntityRegistry.on_destroy<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
+        EntityRegistry.on_construct<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
         
         ForEachUniqueSystem([&](const FSystemVariant& System)
         {
@@ -1530,6 +1558,13 @@ namespace Lumina
 
         RmlUi::TickWorldUI(this);
         RmlUi::TickWorldWidgets(this);
+
+        // Renderer-less worlds (headless process or dedicated server) have nothing to extract. The
+        // RmlUi ticks above are safe no-ops when uninitialized; bail before touching RenderScene.
+        if (RenderScene == nullptr)
+        {
+            return;
+        }
 
         // SCameraSystem resolves the active view + post-process volumes into this
         // singleton at the tail of the update; we just forward it to the renderer.
@@ -2180,6 +2215,13 @@ namespace Lumina
 
     void CWorld::CreateRenderer()
     {
+        // Headless process or dedicated-server world: no RHI / nothing to display. Leaving RenderScene
+        // null makes Extract/Render skip this world (see ExtractWorlds/RenderWorlds and Extract()).
+        if (!ShouldRender())
+        {
+            return;
+        }
+
         if (!RenderScene)
         {
             RenderScene = MakeUnique<FForwardRenderScene>(this);
@@ -2244,6 +2286,13 @@ namespace Lumina
     ENetMode CWorld::GetNetMode() const
     {
         return OwningContext ? OwningContext->NetMode : ENetMode::Standalone;
+    }
+
+    bool CWorld::ShouldRender() const
+    {
+        // GetNetMode() is valid during InitializeWorld because CreateWorldContext sets OwningContext
+        // (and its NetMode) before calling InitializeWorld -- keep that ordering.
+        return !GIsHeadless && GetNetMode() != ENetMode::DedicatedServer;
     }
 
     CWorld* CWorld::DuplicateWorld(CWorld* OwningWorld)
@@ -2659,6 +2708,12 @@ namespace Lumina
             if (SScriptComponent* Component = EntityRegistry.try_get<SScriptComponent>(Entity))
             {
                 ReloadScriptForComponent(Entity, *Component);
+                
+                if (NetIsServerMode(GetNetMode()) && EntityRegistry.all_of<SNetworkComponent>(Entity))
+                {
+                    EntityRegistry.remove<FScriptRepState>(Entity);
+                    EntityRegistry.emplace_or_replace<FNetDirty>(Entity);
+                }
             }
         }
     }
@@ -2816,6 +2871,10 @@ namespace Lumina
 
     void CWorld::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)
     {
+        if (RenderScene == nullptr)
+        {
+            return;
+        }
         RenderScene->DrawBillboard(Image, Location, Scale);
     }
 

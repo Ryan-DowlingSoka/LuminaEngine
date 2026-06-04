@@ -332,4 +332,72 @@ namespace Lumina
             Current->NetSerialize(Ar, Current->GetValuePtr<void>(Data));
         }
     }
+
+    // Same predicate as NetSerializeProperties; centralized so the count, the writer-side diff, and the
+    // reader-side mask all walk the identical replicated-field set in the identical order.
+    static bool IsNetReplicatedField(const FProperty* P)
+    {
+        return P->ShouldSerialize() && !P->IsEditorOnly() && P->IsReplicated();
+    }
+
+    uint32 CStruct::GetNetReplicatedPropertyCount() const
+    {
+        uint32 Count = 0;
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (IsNetReplicatedField(Current))
+            {
+                ++Count;
+            }
+        }
+        return Count;
+    }
+
+    void CStruct::NetSerializeReplicatedToBuffers(const FNetArchive& HookSource, void* Data, TVector<TVector<uint8>>& OutPerField) const
+    {
+        OutPerField.clear();
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (!IsNetReplicatedField(Current))
+            {
+                continue;
+            }
+
+            TVector<uint8> FieldBytes;
+            FNetArchive Tmp(FieldBytes);
+            // Copy the net-index hooks so refs mint into the same maps as the live archive would.
+            Tmp.EntityToNetGUID    = HookSource.EntityToNetGUID;
+            Tmp.NetGUIDToEntity    = HookSource.NetGUIDToEntity;
+            Tmp.ObjectToNetIndex   = HookSource.ObjectToNetIndex;
+            Tmp.NetIndexToObject   = HookSource.NetIndexToObject;
+            Tmp.AssetRefToNetIndex = HookSource.AssetRefToNetIndex;
+            Tmp.NetIndexToAssetRef = HookSource.NetIndexToAssetRef;
+            Tmp.NameToNetIndex     = HookSource.NameToNetIndex;
+            Tmp.NetIndexToName     = HookSource.NetIndexToName;
+
+            Current->NetSerialize(Tmp, Current->GetValuePtr<void>(Data));
+            OutPerField.push_back(eastl::move(FieldBytes));
+        }
+    }
+
+    void CStruct::NetReadReplicatedMasked(FNetArchive& Ar, void* Data, const uint8* Mask) const
+    {
+        uint32 Index = 0;
+        for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
+        {
+            if (!IsNetReplicatedField(Current))
+            {
+                continue;
+            }
+
+            const bool bPresent = (Mask[Index >> 3] & (1u << (Index & 7))) != 0;
+            if (bPresent)
+            {
+                Current->NetSerialize(Ar, Current->GetValuePtr<void>(Data));
+                // Writer emitted each changed field as a whole-byte buffer; skip to the next byte boundary.
+                Ar.AlignToByte();
+            }
+            ++Index;
+        }
+    }
 }

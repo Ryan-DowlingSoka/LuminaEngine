@@ -1514,7 +1514,8 @@ namespace Lumina
 
         if (ImGui::BeginPopup("CameraSettings", ImGuiWindowFlags_NoMove))
         {
-            STransformComponent& CameraTransform = GetSceneRegistry().get<STransformComponent>(EditorEntity);
+            // The editor camera (EditorEntity) lives in the tool's own World, not the observed world.
+            STransformComponent& CameraTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
             ImGui::SeparatorText(LE_ICON_VIDEO " Camera Settings");
 
@@ -1553,11 +1554,11 @@ namespace Lumina
             ImGui::Separator();
             if (ImGui::Button("Reset Position", ImVec2(-1, 0)))
             {
-                GetSceneRegistry().get<STransformComponent>(EditorEntity).SetLocation(FVector3(0.0f));
+                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(FVector3(0.0f));
             }
             if (ImGui::Button("Reset Rotation", ImVec2(-1, 0)))
             {
-                GetSceneRegistry().get<STransformComponent>(EditorEntity).SetRotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f));
+                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetRotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f));
             }
             ImGui::Spacing();
             if (ImGui::Button("Close", ImVec2(-1, 0)))
@@ -2266,17 +2267,22 @@ namespace Lumina
             const float ButtonWidth = ImGui::GetFrameHeight(); // square, matches the search field height
 
             // Shared "Add" menu (empty / primitives / components / prefabs), identical in both tools.
+            // Disabled while inspecting a foreign world -- spawning would author into that world using this
+            // tool's editor camera, which is inspect-only here.
+            const bool bForeign = IsInspectingForeignWorld();
+            ImGui::BeginDisabled(bForeign);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.3f, 0.8f));
             if (ImGuiX::IconButton(LE_ICON_PLUS, "##AddToSceneGraph", 0xFFFFFFFF, ImVec2(ButtonWidth, ButtonWidth)))
             {
                 ImGui::OpenPopup("AddToEntityMenu");
             }
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered())
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             {
-                ImGui::SetTooltip("Add a new entity.");
+                ImGui::SetTooltip(bForeign ? "Inspecting another world - switch back to add entities." : "Add a new entity.");
             }
             DrawAddToEntityOrWorldPopup();
+            ImGui::EndDisabled();
 
             ImGui::SameLine();
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ButtonWidth - Style.FramePadding.x);
@@ -2326,6 +2332,8 @@ namespace Lumina
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
+
+        DrawOutlinerWorldSelector();
 
         {
             ImGui::Text(LE_ICON_FORMAT_LIST_NUMBERED " Total Entities: %s", eastl::to_string(CountOutlinerEntities()).c_str());

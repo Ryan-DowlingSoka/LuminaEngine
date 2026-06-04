@@ -34,6 +34,10 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Tight: a compact net index when the archive binds the name-index hooks (string exported once via
+        // NameExport), else the raw string.
+        RUNTIME_API void NetSerialize(FNetArchive& Ar, void* Value) override;
+
     };
-    
+
 }

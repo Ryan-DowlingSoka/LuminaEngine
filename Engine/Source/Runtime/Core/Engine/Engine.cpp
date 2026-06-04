@@ -61,6 +61,8 @@ namespace Lumina
 {
     RUNTIME_API FEngine* GEngine;
 
+    RUNTIME_API bool GIsHeadless = false;
+
     static FRHIViewportRef EngineViewport;
 
     static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
@@ -171,7 +173,12 @@ namespace Lumina
         FConsoleRegistry::Get().LoadFromConfig();
         
         basisu::basisu_encoder_init();
-        Audio::Initialize();
+        // Headless dedicated server has no audio device, no GPU, and no window. Skip those subsystems;
+        // physics/network/task/Lua all still run.
+        if (!GIsHeadless)
+        {
+            Audio::Initialize();
+        }
         Network::Initialize();
         Task::Initialize();
         Physics::Initialize();
@@ -180,11 +187,14 @@ namespace Lumina
 
         GPhysicsThread = Memory::New<FPhysicsThread>();
         GPhysicsThread->Start();
-        
-        GRenderManager = Memory::New<FRenderManager>();
-        GRenderManager->Initialize();
-        EngineViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Engine Viewport");
-        
+
+        if (!GIsHeadless)
+        {
+            GRenderManager = Memory::New<FRenderManager>();
+            GRenderManager->Initialize();
+            EngineViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Engine Viewport");
+        }
+
         Lua::Initialize();
 
         ProcessNewlyLoadedCObjects();
@@ -199,7 +209,11 @@ namespace Lumina
 
         // Bake the default world-text font on the main thread (the render extract runs on workers and only
         // reads it). Lazy elsewhere, but force it here so the first text draw never initializes off-thread.
-        CFontManager::Get();
+        // No text is rendered headless, so skip the TTF load.
+        if (!GIsHeadless)
+        {
+            CFontManager::Get();
+        }
 
         GWorldManager = Memory::New<FWorldManager>();
 
@@ -225,7 +239,12 @@ namespace Lumina
         ProcessNewlyLoadedCObjects();
         #endif
         
-        RmlUi::Initialize();
+        // RmlUi renders through our render interface; nothing to draw headless. Skipping init makes
+        // every per-world RmlUi call (CreateWorldUI/Tick/Render/Destroy) a safe no-op.
+        if (!GIsHeadless)
+        {
+            RmlUi::Initialize();
+        }
 
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PostEngineInit);
         ProcessNewlyLoadedCObjects();
@@ -243,11 +262,15 @@ namespace Lumina
 
         // Drain render thread + GPU before UI teardown: RmlUi::Shutdown frees widget RTs an
         // in-flight frame may still sample (bindless) -- freeing under the GPU is a UAF.
-        FlushRenderingCommands();
-        GRenderContext->WaitIdle();
+        // No renderer exists headless.
+        if (!GIsHeadless)
+        {
+            FlushRenderingCommands();
+            GRenderContext->WaitIdle();
 
-        // UI before renderer: RmlUi's shutdown releases resources through our render interface.
-        RmlUi::Shutdown();
+            // UI before renderer: RmlUi's shutdown releases resources through our render interface.
+            RmlUi::Shutdown();
+        }
 
         #if USING(WITH_EDITOR)
         DeveloperToolUI->Deinitialize(UpdateContext);
@@ -264,9 +287,12 @@ namespace Lumina
         EngineViewport.SafeRelease();
         
         Lua::Shutdown();
-        
-        Memory::Delete(GRenderManager);
-        GRenderManager = nullptr;
+
+        if (GRenderManager)
+        {
+            Memory::Delete(GRenderManager);
+            GRenderManager = nullptr;
+        }
 
         // Stop the worker before Physics::Shutdown so no in-flight step touches Jolt globals being destroyed.
         if (GPhysicsThread)
@@ -278,7 +304,10 @@ namespace Lumina
 
         Physics::Shutdown();
         // Audio's per-frame pump runs on the task pool, so drain/free it before the task system stops.
-        Audio::Shutdown();
+        if (!GIsHeadless)
+        {
+            Audio::Shutdown();
+        }
         Network::Shutdown();
         Task::Shutdown();
 
@@ -306,12 +335,16 @@ namespace Lumina
 #endif
 
         // Drain queued audio commands on the task pool (outside the minimized gate so audio keeps up).
-        Audio::Update();
+        if (!GIsHeadless)
+        {
+            Audio::Update();
+        }
 
         // Service the network transport every frame (outside the minimized gate so connections stay alive).
         Network::Update();
 
-        if (!Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
+        // Headless has no window to query; always run the tick body. Short-circuits before the null deref.
+        if (GIsHeadless || !Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
             {
                 LUMINA_PROFILE_SECTION_COLORED("FrameStart", tracy::Color::Red);
@@ -332,7 +365,10 @@ namespace Lumina
                 ProcessPendingOpenLevel();
                 ProcessPendingTravel();
 
-                GRenderManager->FrameStart(UpdateContext);
+                if (!GIsHeadless)
+                {
+                    GRenderManager->FrameStart(UpdateContext);
+                }
 
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->StartFrame(UpdateContext);
@@ -340,7 +376,10 @@ namespace Lumina
                 #endif
 
                 // Reclaim hidden-world renderers after the grace window expires.
-                GWorldManager->ReclaimIdleRenderers(UpdateContext.GetFrameStartTime());
+                if (!GIsHeadless)
+                {
+                    GWorldManager->ReclaimIdleRenderers(UpdateContext.GetFrameStartTime());
+                }
 
                 GWorldManager->UpdateWorlds(UpdateContext);
 
@@ -416,18 +455,26 @@ namespace Lumina
 
                 // Freed packages may own GPU resources captured by in-flight render lambdas;
                 // gate the drain on the queue being empty. Skip the wait when nothing is pending.
+                // No render thread headless: drain packages directly.
                 if (CPackage::HasPendingDestroys())
                 {
                     LUMINA_PROFILE_SECTION_COLORED("WaitForRender (Package Teardown)", tracy::Color::Crimson);
-                    FlushRenderingCommands();
+                    if (!GIsHeadless)
+                    {
+                        FlushRenderingCommands();
+                    }
                     CPackage::DrainPendingDestroys();
                 }
 
                 // Per-world UI ticks inside each world's Extract; only editor preview contexts remain global.
-                RmlUi::TickEditorContexts();
-                GWorldManager->ExtractWorlds();
+                // Extract/FrameEnd push GPU work; nothing to render headless.
+                if (!GIsHeadless)
+                {
+                    RmlUi::TickEditorContexts();
+                    GWorldManager->ExtractWorlds();
 
-                GRenderManager->FrameEnd();
+                    GRenderManager->FrameEnd();
+                }
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 
@@ -711,10 +758,19 @@ namespace Lumina
 
     void FEngine::LoadStartupMap()
     {
-        // Priority: explicit Project.GameStartupMap > first CookRoots entry, so a project
-        // that only declares CookRoots[] works without the legacy single-map field.
-        const FStringView GameMapView = GetDefault<CProjectSettings>()->GameStartupMap.GetPath();
-        FString RawMapName(GameMapView.data(), GameMapView.size());
+        // Priority: -map= command line > explicit Project.GameStartupMap > first CookRoots entry, so a
+        // project that only declares CookRoots[] works without the legacy single-map field, and a server
+        // can be pointed at a specific map at launch.
+        FString RawMapName;
+        if (TOptional<FFixedString> MapArg = GCommandLine->Get("map"))
+        {
+            RawMapName.assign(MapArg.value().c_str(), MapArg.value().size());
+        }
+        if (RawMapName.empty())
+        {
+            const FStringView GameMapView = GetDefault<CProjectSettings>()->GameStartupMap.GetPath();
+            RawMapName.assign(GameMapView.data(), GameMapView.size());
+        }
         if (RawMapName.empty())
         {
             const TVector<FCookRoot> Roots = GetCookRoots();
@@ -736,6 +792,20 @@ namespace Lumina
         const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
         // DISPLAY, survives Shipping; first diagnostic to look at on a black screen.
         LOG_DISPLAY("LoadStartupMap: loading '{}' (resolved '{}').", RawMapName.c_str(), MapName.c_str());
+
+        // Headless dedicated server: host the map (clientless, non-rendered) on -port instead of opening
+        // it standalone and binding a viewport. The deferred host travel runs at the first FrameStart.
+        if (GIsHeadless)
+        {
+            uint16 Port = 7777;
+            if (TOptional<int> PortArg = GCommandLine->GetInt("port"))
+            {
+                Port = static_cast<uint16>(PortArg.value());
+            }
+            LOG_DISPLAY("[Net] Starting dedicated server on port {} hosting '{}'.", Port, MapName.c_str());
+            HostDedicatedLevel(FStringView(MapName.c_str(), MapName.size()), Port);
+            return;
+        }
 
         CWorld* SourceWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
         if (SourceWorld == nullptr)
@@ -836,7 +906,11 @@ namespace Lumina
                 return;
             }
 
-            const ENetMode ColdNetMode = (bPendingHostOverride && bPendingHostListen) ? ENetMode::ListenServer : ENetMode::Standalone;
+            ENetMode ColdNetMode = ENetMode::Standalone;
+            if (bPendingHostOverride && bPendingHostListen)
+            {
+                ColdNetMode = bPendingHostDedicated ? ENetMode::DedicatedServer : ENetMode::ListenServer;
+            }
             FWorldContext* NewContext = GWorldManager->CreateWorldContext(ColdWorld, EWorldType::Game, ColdNetMode);
             if (NewContext != nullptr)
             {
@@ -854,7 +928,8 @@ namespace Lumina
                 Primary->SetWorld(ColdWorld);
             }
 
-            bPendingHostOverride = false;
+            bPendingHostOverride  = false;
+            bPendingHostDedicated = false;
             FCoreDelegates::OnWorldTravelled.Broadcast(nullptr, ColdWorld);
             return;
         }
@@ -872,9 +947,17 @@ namespace Lumina
         // A host-level OpenLevel overrides the role/port on the world it travels to.
         if (bPendingHostOverride)
         {
-            NetMode = bPendingHostListen ? ENetMode::ListenServer : ENetMode::Standalone;
+            if (bPendingHostListen)
+            {
+                NetMode = bPendingHostDedicated ? ENetMode::DedicatedServer : ENetMode::ListenServer;
+            }
+            else
+            {
+                NetMode = ENetMode::Standalone;
+            }
             NetPort = PendingHostPort;
-            bPendingHostOverride = false;
+            bPendingHostOverride  = false;
+            bPendingHostDedicated = false;
         }
 
         // Carry a live CLIENT connection across the travel so a Welcome-driven map load doesn't drop the
@@ -940,6 +1023,16 @@ namespace Lumina
         OpenLevel(URL);
     }
 
+    void FEngine::HostDedicatedLevel(FStringView Map, uint16 Port)
+    {
+        FURL URL;
+        URL.Map.assign(Map.data(), Map.size());
+        URL.Port       = Port;
+        URL.bListen    = true;
+        URL.bDedicated = true;
+        OpenLevel(URL);
+    }
+
     void FEngine::ConnectToServer(FStringView Host, uint16 Port)
     {
         FURL URL;
@@ -984,9 +1077,10 @@ namespace Lumina
         }
 
         // Host / standalone: travel to the map, then stamp the role + port onto the new world's context.
-        bPendingHostOverride = true;
-        bPendingHostListen   = URL.bListen;
-        PendingHostPort      = URL.Port;
+        bPendingHostOverride  = true;
+        bPendingHostListen    = URL.bListen;
+        bPendingHostDedicated = URL.bDedicated;
+        PendingHostPort       = URL.Port;
         Travel(URL.Map);
     }
 

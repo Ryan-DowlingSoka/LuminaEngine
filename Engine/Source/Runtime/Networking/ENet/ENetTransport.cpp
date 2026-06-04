@@ -405,6 +405,12 @@ namespace Lumina
         return ToConnectionState(Peer->state);
     }
 
+    uint32 FENetTransport::GetReliableBacklogBytes(FConnectionHandle Connection) const
+    {
+        ENetPeer* Peer = Impl->FindPeer(Connection);
+        return Peer != nullptr ? static_cast<uint32>(Peer->reliableDataInTransit) : 0;
+    }
+
     FNetworkStats FENetTransport::GetStats() const
     {
         FNetworkStats Stats;

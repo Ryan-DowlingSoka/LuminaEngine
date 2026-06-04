@@ -32,6 +32,7 @@ namespace Lumina
         ClientReady       = 10,// client to server, map loaded, request baseline
         ObjectExport      = 11,// CObject net-index map
         AssetExport       = 12,// FAssetRef net-index map
+        NameExport        = 13,// FName net-index map
     };
 
     // CObject-ref net-index cache. A referenced object is sent as a compact varint index; the index/GUID
@@ -48,10 +49,22 @@ namespace Lumina
     // FAssetRef net-index cache. Same export-once model as FNetObjectMap, keyed by GUID else Path.
     struct FNetAssetMap
     {
-        THashMap<FString, uint32>   KeyToIndex;     // outgoing asset key index
+        THashMap<FName, uint32>     KeyToIndex;     // outgoing asset key index
         THashMap<uint32, FAssetRef> IndexToRef;     // outgoing on assign, incoming from export
         TVector<uint32>             PendingExports; // outgoing, assigned but not yet sent
         uint32                      NextIndex = 1;  // 0 is null
+    };
+    
+    // FName net-index cache. FName IDs are an XXHash64 of the string (deterministic across peers), but a peer
+    // can only resolve the text once it has interned it. So the string is exported once over a reliable stream,
+    // keyed by a compact varint index, then every later reference is just that index. Same export-once model as
+    // FNetObjectMap/FNetAssetMap. One struct, both directions.
+    struct FNetNameMap
+    {
+        THashMap<FName, uint32> KeyToIndex;     // outgoing name -> index
+        THashMap<uint32, FName> IndexToName;    // outgoing on assign, incoming from export
+        TVector<uint32>         PendingExports; // outgoing, assigned but not yet sent
+        uint32                  NextIndex = 1;  // 0 is NAME_None
     };
 
     // Replication-layer instrumentation for the network debug tool. Per-tick fields are refreshed by the
@@ -129,8 +142,10 @@ namespace Lumina
         // connection id since the index space is sender-owned.
         FNetObjectMap                    OutObjects;
         FNetAssetMap                     OutAssets;
+        FNetNameMap                      OutNames;
         THashMap<uint32, FNetObjectMap>  InObjects;
         THashMap<uint32, FNetAssetMap>   InAssets;
+        THashMap<uint32, FNetNameMap>    InNames;
 
         // Replication-layer instrumentation surfaced by the network debug tool.
         FNetReplicationStats             Stats;
@@ -139,10 +154,13 @@ namespace Lumina
 
         // Flat SoA snapshot of all movement-replicating entities this tick.
         FNetExtract                      Extract;
+        
         // CSR spatial grid over the extract (XZ counting sort).
         FNetGrid                         Grid;
+        
         // connId -> record index of the entity that connection owns (its pawn), for O(1) viewpoint lookup.
         THashMap<uint32, uint32>         OwnerToRecord;
+        
         // Per-connection relevancy + send-schedule. Created on connect, erased on disconnect. Never touches
         // GuidTable (which stays the global entity-lifetime map).
         THashMap<uint32, FNetClientView> ClientViews;

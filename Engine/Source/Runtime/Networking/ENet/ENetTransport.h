@@ -29,6 +29,8 @@ namespace Lumina
 
         EConnectionState GetConnectionState(FConnectionHandle Connection) const override;
 
+        uint32 GetReliableBacklogBytes(FConnectionHandle Connection) const override;
+
         FNetworkStats GetStats() const override;
         void          GetConnectionStats(TVector<FConnectionStats>& OutStats) const override;
 

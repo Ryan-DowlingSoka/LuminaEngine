@@ -38,6 +38,10 @@ namespace Lumina
 
         virtual EConnectionState GetConnectionState(FConnectionHandle Connection) const = 0;
 
+        // Bytes of reliable data sent to this connection but not yet acknowledged (in flight). Used as a
+        // backpressure signal for property replication. Default 0 for backends that don't expose it.
+        virtual uint32 GetReliableBacklogBytes(FConnectionHandle Connection) const { return 0; }
+
         //~ Debug/telemetry (optional; default empty for backends that don't track it).
         virtual FNetworkStats GetStats() const { return {}; }
         virtual void          GetConnectionStats(TVector<FConnectionStats>& OutStats) const {}

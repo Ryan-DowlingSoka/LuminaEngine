@@ -14,8 +14,10 @@ namespace Lumina
     struct FConnectionHandle;
     struct FNetObjectMap;
     struct FNetAssetMap;
+    struct FNetNameMap;
     struct FNetWorldState;
     struct FScriptRepState;
+    struct FComponentRepState;
     enum class ESendMode : uint8;
 
     // Tag, this networked entity has replicated property changes pending (set by World.Net:MarkDirty).
@@ -41,8 +43,11 @@ namespace Lumina
         // Reflection-driven entity replication. The same generic path the world serializer uses, keyed by a
         // compact type hash, carrying only Replicated properties. Works for any REFLECT(Component).
 
+        // Hash of the wire protocol
+        uint32 GetProtocolHash();
+
         // Compact NetGUID codec. Stable ids are small; dynamic (spawned) ids carry the high bit, which would
-        // varint to 5 bytes -- so the two ranges are interleaved (LSB = dynamic flag) and the remainder
+        // varint to 5 bytes, so the two ranges are interleaved (LSB = dynamic flag) and the remainder
         // varint-encoded, giving 1-2 bytes for both. Every NetGUID on the wire must go through this pair.
         void   WriteNetGuid(FNetArchive& Ar, uint32 Guid);
         uint32 ReadNetGuid (FNetArchive& Ar);
@@ -55,6 +60,23 @@ namespace Lumina
             EScriptRepCondition Cond     = EScriptRepCondition::Always;
             TVector<uint8>      Bytes;
         };
+
+        // One replicated component's diff result, ready for the wire. Block = [changed-field bitmask
+        // (ceil(NumRepFields/8) bytes)] ++ [each changed field's whole-byte serialization, in field order].
+        // Recipient-independent (native components carry no per-client conditions), so one Block is reused
+        // for every recipient. Built by CollectComponentFields; written verbatim by WriteEntityComponents.
+        struct FComponentRepOut
+        {
+            uint32         WireIndex = 0;
+            TVector<uint8> Block;
+        };
+
+        // Server, diff this entity's replicated native components against DiffState (per-field byte compare,
+        // mirrors CollectScriptFields). bBaseline emits ALL components + ALL fields (mask all-ones) and seeds
+        // DiffState; otherwise emits only components with >=1 changed field, each carrying a changed-field
+        // bitmask, and updates DiffState. Object/asset/name refs mint into State's outgoing maps.
+        TVector<FComponentRepOut> CollectComponentFields(entt::registry& Registry, entt::entity Entity,
+            FNetWorldState& State, bool bBaseline, FComponentRepState* DiffState);
 
         // True if a field with this condition is sent to the recipient described by Ctx (Unreal COND_* analog).
         inline bool RepFieldPasses(EScriptRepCondition Cond, const FNetRepContext& Ctx)
@@ -83,11 +105,13 @@ namespace Lumina
         // gate on this so they stay consistent.
         bool ParentReplicates(entt::registry& Registry, entt::entity Parent);
 
-        // Server, write one entity's replicated components then the script-rep block (fields from ScriptFields
-        // whose condition passes Ctx). Used for both Spawn (baseline) and PropertyUpdate (diff). Ctx == null is a
-        // broadcast non-initial context; ScriptFields == null writes an empty script block.
+        // Server, write one entity's replicated component blocks (from Components, precomputed by
+        // CollectComponentFields) then the script-rep block (fields from ScriptFields whose condition passes
+        // Ctx). Used for both Spawn (baseline) and PropertyUpdate (diff). Ctx == null is a broadcast non-initial
+        // context; null Components/ScriptFields write an empty component/script block respectively.
         void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity,
-            const FNetRepContext* Ctx = nullptr, const TVector<FScriptRepFieldOut>* ScriptFields = nullptr);
+            const FNetRepContext* Ctx = nullptr, const TVector<FScriptRepFieldOut>* ScriptFields = nullptr,
+            const TVector<FComponentRepOut>* Components = nullptr);
 
         // Client, recreate/refresh components on Entity, then apply the script-rep block (whitelisted writes
         // into the live script table + optional OnRep_<Field>(old) hooks) and the replicated attachment link.
@@ -123,5 +147,7 @@ namespace Lumina
         void ApplyObjectExport(FNetObjectMap& Map, const uint8* Data, SIZE_T Size);
         void BuildAssetExport(const FNetAssetMap& Map, const TVector<uint32>& Indices, TVector<uint8>& OutMsg);
         void ApplyAssetExport(FNetAssetMap& Map, const uint8* Data, SIZE_T Size);
+        void BuildNameExport(const FNetNameMap& Map, const TVector<uint32>& Indices, TVector<uint8>& OutMsg);
+        void ApplyNameExport(FNetNameMap& Map, const uint8* Data, SIZE_T Size);
     }
 }

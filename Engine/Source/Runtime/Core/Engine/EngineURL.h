@@ -12,8 +12,9 @@ namespace Lumina
     {
         FString Map;            // world asset path, e.g. "/Game/Maps/NewWorld"
         FString Host;           // remote host; empty => local (host / standalone)
-        uint16  Port    = 7777;
-        bool    bListen = false;
+        uint16  Port      = 7777;
+        bool    bListen    = false;
+        bool    bDedicated = false; // listen as a clientless, non-rendered dedicated server
 
         bool IsClient() const { return !Host.empty(); }
 

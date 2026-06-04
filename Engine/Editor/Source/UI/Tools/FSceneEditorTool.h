@@ -78,8 +78,19 @@ namespace Lumina
         NODISCARD const THashSet<entt::entity>& GetSelectedEntities() const { return SelectedEntities; }
         NODISCARD entt::entity GetLastSelectedEntity() const { return LastSelectedEntity; }
 
-        // The registry holding the scene's entities (the live/preview world's registry).
-        NODISCARD FEntityRegistry& GetSceneRegistry() const { return World->GetEntityRegistry(); }
+        // The world whose scene the outliner/details/selection currently inspect. Defaults to the
+        // tool's own World; the world editor can repoint it at another live world (e.g. a networked
+        // client/server) for inspect-only viewing. Null means "follow World".
+        NODISCARD CWorld* GetObservedWorld() const { return ObservedWorld != nullptr ? ObservedWorld : World.Get(); }
+        // True while inspecting a world other than the tool's own (authoring/gizmo are suppressed).
+        NODISCARD bool IsInspectingForeignWorld() const { return ObservedWorld != nullptr && ObservedWorld != World.Get(); }
+
+        // The registry holding the scene's entities (the observed world's registry).
+        NODISCARD FEntityRegistry& GetSceneRegistry() const { return GetObservedWorld()->GetEntityRegistry(); }
+
+        // Outliner observes this world instead of World (null/own-world = follow World). Subclasses
+        // that switch worlds set it; the base only reads it through GetObservedWorld/GetSceneRegistry.
+        CWorld*                 ObservedWorld = nullptr;
 
         // Mirror a row's selected visual into the outliner tree.
         void SyncOutlinerRowSelection(entt::entity Entity, bool bSelected);
@@ -126,6 +137,9 @@ namespace Lumina
 
         // The whole "Scene Graph" panel (add button + search + filter + count + tree) is shared.
         void DrawOutliner(bool bFocused);
+        // Hook: extra row drawn between the search toolbar and the entity tree. The world editor
+        // draws its live-world selector here when networked play has more than one world.
+        virtual void DrawOutlinerWorldSelector() {}
         // Component-type filter checklist (shown in the panel's filter popup).
         void DrawFilterOptions();
         // Count of entities currently shown in the outliner (IsOutlinerEntityVisible).

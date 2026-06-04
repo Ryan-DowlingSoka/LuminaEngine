@@ -43,9 +43,13 @@ int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
     GEditorEngine = &EdEngine;
     GEngine = GEditorEngine;
     #else
+    // -server boots a packaged dedicated server: no window, no RHI, no audio, no UI. Must be set
+    // before the window is created and before GEngine->Init().
+    GIsHeadless = Parsed.Has("server");
+
     FEngine Engine{};
     GEngine = &Engine;
-    
+
     FCoreDelegates::OnPreEngineInit.AddLambda([]
     {
         GEngine->MountCookedRuntime();

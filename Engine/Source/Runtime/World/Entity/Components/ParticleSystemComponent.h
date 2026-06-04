@@ -49,7 +49,7 @@ namespace Lumina
         SParticleSystemComponent& operator=(SParticleSystemComponent&&) noexcept = default;
 
         /** The particle system asset that drives this emitter. */
-        PROPERTY(Editable, Category = "Particle System")
+        PROPERTY(Editable, Replicated, Category = "Particle System")
         TObjectPtr<CParticleSystem> ParticleSystem;
 
         /** Local-space offset applied to the emitter origin relative to the entity transform. */
@@ -65,7 +65,7 @@ namespace Lumina
         float TimeScale = 1.0f;
 
         /** Whether the emitter is currently spawning new particles. Existing particles keep simulating. */
-        PROPERTY(Editable, Category = "Particle System")
+        PROPERTY(Editable, Replicated, Category = "Particle System")
         bool bEmit = true;
 
         /** Auto-trigger the asset's BurstCount the first frame the component is active. */

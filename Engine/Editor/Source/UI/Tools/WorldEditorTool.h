@@ -144,9 +144,18 @@ namespace Lumina
         /** Play-in-editor settings popup (player count + net mode), opened from the play controls. */
         void DrawPlaySettingsPopup();
 
-        /** Rebind OnEntityCreated/OnEntityDestroyed observers to the current World's registry. */
+        /** Rebind OnEntityCreated/OnEntityDestroyed observers to the observed world's registry. */
         void RebindRegistryObservers();
         void UnbindRegistryObservers();
+
+        // Inspect-only world switching: point the outliner/details/selection at NewWorld without touching
+        // the viewport or PIE lifecycle (those stay anchored on World). Pass null (or World) to follow World
+        // again. Unbinds the old observers, clears selection/details/tree, rebinds, and resyncs selection.
+        void SetObservedWorld(CWorld* NewWorld);
+
+        // Outliner row that lists every live play world (server/clients) when more than one exists, so the
+        // user can switch which world's scene graph is shown. Calls SetObservedWorld on pick.
+        void DrawOutlinerWorldSelector() override;
 
         /** Engine-driven world travel: drop everything tied to OldWorld and re-bind to NewWorld. ProxyWorld is preserved. */
         void OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld);
@@ -203,6 +212,10 @@ namespace Lumina
         } SelectionBox;
         
         TObjectPtr<CWorld>                      ProxyWorld;
+
+        // Hidden, non-rendered server world spawned for "Play as Dedicated Server" (owned by
+        // FWorldManager via StartPIE/StopPIE). Null unless the PIE net mode is DedicatedServer.
+        CWorld*                                 PIEDedicatedServerWorld = nullptr;
 
         // Editor entity in ProxyWorld, tracked separately from EditorEntity (active World) so
         // PIE/Simulate can restore the editor world even if Travel swaps it mid-session.

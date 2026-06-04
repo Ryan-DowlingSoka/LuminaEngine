@@ -94,10 +94,7 @@ namespace Lumina
             }
             return NetStorage.get(Entity).LocalRole != ENetRole::AutonomousProxy;
         };
-
-        //~ Parallel phase. Per-entity writes to disjoint STransformComponent slots are safe; SetFromNetwork
-        //  deliberately does NOT mark dirty (MarkDirty mutates the transform pool under a mutex, which is not
-        //  ParallelFor-safe). No structural changes, no GuidTable lookups here.
+        
         Task::ParallelFor(Count, [&](const Task::FParallelRange& Range)
         {
             for (uint32 i = Range.Start; i < Range.End; ++i)
@@ -120,8 +117,14 @@ namespace Lumina
                 {
                     TargetDelay = BufferIntervals * Interval;
                 }
-                if (Rep.SmoothedInterpDelay < 0.0) { Rep.SmoothedInterpDelay = TargetDelay; }
-                else { Rep.SmoothedInterpDelay += (TargetDelay - Rep.SmoothedInterpDelay) * 0.1; }
+                if (Rep.SmoothedInterpDelay < 0.0)
+                {
+                    Rep.SmoothedInterpDelay = TargetDelay;
+                }
+                else
+                {
+                    Rep.SmoothedInterpDelay += (TargetDelay - Rep.SmoothedInterpDelay) * 0.1;
+                }
                 const double RenderTime = ServerRenderNow - Rep.SmoothedInterpDelay;
 
                 FVector3 Pos;
@@ -131,7 +134,7 @@ namespace Lumina
                 // Scale isn't interpolated; apply the latest replicated value, else keep the local scale.
                 const FVector3 Scale = Rep.bHasScale ? Rep.CurrentScaleQ.ToVector(NetQuantize::ScaleQuantum)
                                                      : T.GetLocalScale();
-                T.SetFromNetwork(Pos, Rot, Scale);
+                T.SetRaw(Pos, Rot, Scale);
             }
         }, 16);
 

@@ -768,6 +768,27 @@ namespace Lumina
 
     void FWorldEditorTool::Update(const FUpdateContext& UpdateContext)
     {
+        // If the world we were inspecting was torn down (client disconnect, PIE stop, travel), its registry
+        // and our observers went with it. Forget the dead connection WITHOUT disconnecting (the signal storage
+        // is already freed), then fall back to observing our own World. Pointer compares only -- no deref of
+        // a possibly-dangling ObservedWorld.
+        if (ObservedWorld != nullptr && (GWorldManager == nullptr || GWorldManager->FindContext(ObservedWorld) == nullptr))
+        {
+            ObservedRegistry = nullptr; // its registry is gone; make UnbindRegistryObservers a no-op
+            ObservedWorld = nullptr;
+            PropertyTables.clear();
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
+            OutlinerListView.ClearTree();
+            OutlinerListView.MarkTreeDirty();
+            EntityToTreeNode.clear();
+            PendingOutlinerAdds.clear();
+            RebindRegistryObservers();      // now binds to World
+            ResyncSelectionFromRegistry();
+        }
+
         FEditorTool::Update(UpdateContext);
 
         // Esc requested an end to the play session (queued from OnEvent).
@@ -3226,6 +3247,12 @@ namespace Lumina
 
     void FWorldEditorTool::SetWorld(CWorld* InWorld)
     {
+        // Stop inspecting any foreign world (while its registry is still alive) before swapping the document.
+        if (IsInspectingForeignWorld())
+        {
+            SetObservedWorld(nullptr);
+        }
+
         // Unbind observers from whatever registry we're actually observing (tracked), then RebindRegistryObservers
         // below re-binds to the new World. Clearing selection tags is on the current World's registry.
         UnbindRegistryObservers();
@@ -3463,7 +3490,9 @@ namespace Lumina
         case ENetMode::Standalone:      return ENetMode::Standalone;
         case ENetMode::Client:          return ENetMode::Client;
         case ENetMode::ListenServer:    return PlayerIndex == 0 ? ENetMode::ListenServer : ENetMode::Client;
-        case ENetMode::DedicatedServer: return PlayerIndex == 0 ? ENetMode::DedicatedServer : ENetMode::Client;
+        // Dedicated server is a separate hidden world (spawned in SetWorldPlayInEditor); every visible
+        // player is a client.
+        case ENetMode::DedicatedServer: return ENetMode::Client;
         }
         return ENetMode::Standalone;
     }
@@ -3522,7 +3551,8 @@ namespace Lumina
         // observer into this tool when it is later torn down.
         UnbindRegistryObservers();
 
-        FEntityRegistry& Registry = World->GetEntityRegistry();
+        // Observe the inspected world (defaults to World; may be a foreign live world for inspect-only viewing).
+        FEntityRegistry& Registry = GetObservedWorld()->GetEntityRegistry();
         Registry.on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
         // Hook on SNameComponent (not entt::entity) so we don't add an outliner row before the entity has a name.
@@ -3531,12 +3561,141 @@ namespace Lumina
         ObservedRegistry = &Registry;
     }
 
+    void FWorldEditorTool::SetObservedWorld(CWorld* NewWorld)
+    {
+        // Sentinel: observing the tool's own world is "follow World" (ObservedWorld == nullptr).
+        CWorld* Target = (NewWorld == World.Get()) ? nullptr : NewWorld;
+        if (Target == ObservedWorld)
+        {
+            return;
+        }
+
+        // Caller guarantees the currently-observed registry is still alive here (foreign worlds are reset
+        // before teardown; the dead-world case is handled by the validation in Update, not this path).
+        UnbindRegistryObservers();
+
+        // Old entt handles + component pointers mean nothing against the new registry.
+        PropertyTables.clear();
+        SelectedEntities.clear();
+        LastSelectedEntity = entt::null;
+        DetailsEntity = entt::null;
+        bDetailsDirty = true;
+
+        ObservedWorld = Target;
+
+        OutlinerListView.ClearTree();
+        OutlinerListView.MarkTreeDirty();
+        EntityToTreeNode.clear();
+        PendingOutlinerAdds.clear();
+
+        RebindRegistryObservers();      // binds to GetObservedWorld()
+        ResyncSelectionFromRegistry();  // adopt any selection tags already on the observed world
+    }
+
+    void FWorldEditorTool::DrawOutlinerWorldSelector()
+    {
+        if (GWorldManager == nullptr)
+        {
+            return;
+        }
+
+        // Candidates: this tool's own world plus every live play world (Game/Simulation). Other tools'
+        // editor preview worlds (mesh/prefab/etc.) are excluded so the selector only appears for play.
+        TVector<FWorldContext*> Candidates;
+        for (const TUniquePtr<FWorldContext>& Ctx : GWorldManager->GetContexts())
+        {
+            CWorld* CtxWorld = Ctx->World.Get();
+            if (CtxWorld == nullptr)
+            {
+                continue;
+            }
+            if (CtxWorld == World.Get() || Ctx->Type == EWorldType::Game || Ctx->Type == EWorldType::Simulation)
+            {
+                Candidates.push_back(Ctx.get());
+            }
+        }
+
+        if (Candidates.size() <= 1)
+        {
+            // Nothing to switch between (normal single-world editing).
+            return;
+        }
+
+        auto NetModeTag = [](ENetMode Mode) -> const char*
+        {
+            switch (Mode)
+            {
+            case ENetMode::Standalone:      return "Standalone";
+            case ENetMode::Client:          return "Client";
+            case ENetMode::ListenServer:    return "Server (Listen)";
+            case ENetMode::DedicatedServer: return "Server (Dedicated)";
+            }
+            return "Unknown";
+        };
+
+        auto WorldLabel = [&](const FWorldContext& Ctx) -> FString
+        {
+            FString Label = NetModeTag(Ctx.NetMode);
+            if (!Ctx.MapPath.empty())
+            {
+                Label += " - ";
+                Label += Ctx.MapPath;
+            }
+            if (Ctx.Type == EWorldType::Editor)
+            {
+                Label += " (editor)";
+            }
+            return Label;
+        };
+
+        CWorld* Observed = GetObservedWorld();
+        FString Preview = "World: ";
+        if (FWorldContext* ObservedCtx = GWorldManager->FindContext(Observed))
+        {
+            Preview += WorldLabel(*ObservedCtx);
+        }
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##WorldSelector", Preview.c_str()))
+        {
+            for (FWorldContext* Ctx : Candidates)
+            {
+                CWorld* CtxWorld = Ctx->World.Get();
+                const bool bSelected = (CtxWorld == Observed);
+                if (ImGui::Selectable(WorldLabel(*Ctx).c_str(), bSelected))
+                {
+                    SetObservedWorld(CtxWorld);
+                }
+                if (bSelected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (IsInspectingForeignWorld())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.75f, 0.2f, 1.0f));
+            ImGui::TextWrapped(LE_ICON_EYE " Inspecting another world. The viewport still shows your own, so selection gizmos won't appear here.");
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::Spacing();
+    }
+
     void FWorldEditorTool::OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld)
     {
         // Only react if Travel swapped the world this tool is displaying.
         if (OldWorld != World.Get() || NewWorld == nullptr)
         {
             return;
+        }
+
+        // Stop inspecting any foreign world before World changes underneath us (its registry is still alive here).
+        if (IsInspectingForeignWorld())
+        {
+            SetObservedWorld(nullptr);
         }
 
         // Drop pointers into the torn-down world before rebinding.
@@ -3579,6 +3738,13 @@ namespace Lumina
             return;
         }
 
+        // Detach from any inspected foreign world while its registry is still alive -- stopping play tears
+        // those worlds down, which would otherwise leave our observers dangling.
+        if (IsInspectingForeignWorld())
+        {
+            SetObservedWorld(nullptr);
+        }
+
         if (bShouldPlay)
         {
             bGamePreviewRunning = true;
@@ -3597,6 +3763,18 @@ namespace Lumina
             ProxyWorld = World;
             ProxyEditorEntity = EditorEntity;
 
+            // Dedicated server: spawn a hidden, non-rendered server world (no viewport) before the player
+            // worlds. Its DedicatedServer net mode makes CreateRenderer a no-op, so it stays invisible
+            // while the editor renders the client worlds, and it listens for the clients on loopback:7777.
+            if (PlaySettings.NetMode == ENetMode::DedicatedServer)
+            {
+                PIEDedicatedServerWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::DedicatedServer);
+                if (PIEDedicatedServerWorld == nullptr)
+                {
+                    LOG_WARN("Failed to start the dedicated-server world for PIE.");
+                }
+            }
+
             // PIE world owned by FWorldManager; RebindToWorld is a pointer-only swap. StartPIE
             // returns null when the world can't be duplicated, so bail before rebinding to null.
             CWorld* PIEWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ResolvePlayerNetMode(0));
@@ -3604,6 +3782,11 @@ namespace Lumina
             {
                 LOG_WARN("Cannot Play '{0}': world has no package (save the world before playing).", World->GetName().c_str());
                 ImGuiX::Notifications::NotifyError("Cannot Play: save the world first.");
+                if (PIEDedicatedServerWorld != nullptr)
+                {
+                    GWorldManager->StopPIE(PIEDedicatedServerWorld);
+                    PIEDedicatedServerWorld = nullptr;
+                }
                 World->SetActive(true);
                 ProxyWorld = nullptr;
                 ProxyEditorEntity = entt::null;
@@ -3630,6 +3813,13 @@ namespace Lumina
         {
             // Tear down extra player preview worlds (FEditorUI) before the primary teardown below.
             OnGamePreviewStopRequested.Broadcast();
+
+            // Tear down the hidden dedicated-server world, if one was spawned.
+            if (PIEDedicatedServerWorld != nullptr)
+            {
+                GWorldManager->StopPIE(PIEDedicatedServerWorld);
+                PIEDedicatedServerWorld = nullptr;
+            }
 
             PropertyTables.clear();
             SelectedEntities.clear();
@@ -3699,6 +3889,12 @@ namespace Lumina
 
     void FWorldEditorTool::SetWorldNewSimulate(bool bShouldSimulate)
     {
+        // Detach from any inspected foreign world (registry still alive) before simulate teardown/setup.
+        if (IsInspectingForeignWorld())
+        {
+            SetObservedWorld(nullptr);
+        }
+
         if (bShouldSimulate == bSimulatingWorld)
         {
             return;

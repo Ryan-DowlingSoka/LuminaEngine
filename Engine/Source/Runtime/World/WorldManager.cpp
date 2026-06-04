@@ -113,7 +113,8 @@ namespace Lumina
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
-            if (World == nullptr || World->IsSuspended())
+            // Skip renderer-less worlds (dedicated server) so the editor never extracts an invisible world.
+            if (World == nullptr || World->IsSuspended() || World->GetRenderer() == nullptr)
             {
                 continue;
             }
@@ -129,7 +130,7 @@ namespace Lumina
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
-            if (World == nullptr || World->IsSuspended())
+            if (World == nullptr || World->IsSuspended() || World->GetRenderer() == nullptr)
             {
                 continue;
             }

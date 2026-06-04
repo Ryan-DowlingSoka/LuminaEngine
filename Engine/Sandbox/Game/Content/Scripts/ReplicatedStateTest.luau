@@ -16,7 +16,6 @@ Script.Team = "Red"
 
 function Script:OnReady()
     self.Timer = 0.0
-   
 end
 
 function Script:OnUpdate(DeltaTime)
@@ -45,7 +44,7 @@ end
 
 -- OnRep hooks run on the CLIENT after a replicated field is applied; `old` is the prior value.
 function Script:OnRep_Health(old)
-    print(self.Health)
+    
 end
 
 function Script:OnRep_Stats(old)

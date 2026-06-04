@@ -42,7 +42,7 @@ namespace Lumina
         double LastRenderedTime = -1.0;
         
         /** The skeletal mesh asset to render and animate for this component. */
-        PROPERTY(Editable, Category = "Mesh")
+        PROPERTY(Editable, Replicated, Category = "Mesh")
         TObjectPtr<CSkeletalMesh> SkeletalMesh;
 
         // Sized to the skeleton's bone count by the animation system (0 when unused). The render scene

@@ -18,8 +18,8 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
-        // Network: a raw pointer is meaningless across peers, so send the referenced object's stable GUID
-        // and resolve it on the receiver (assets have deterministic/persistent GUIDs identical on both ends).
+        // Send the referenced object's stable GUID and resolve it on the receiver
+        // (assets have deterministic/persistent GUIDs identical on both ends).
         RUNTIME_API void NetSerialize(FNetArchive& Ar, void* Value) override;
 
         // Assign through TObjectPtr; a raw memcpy (base impl) would skip the strong-ref

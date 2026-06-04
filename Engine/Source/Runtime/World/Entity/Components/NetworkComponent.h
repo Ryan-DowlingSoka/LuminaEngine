@@ -33,7 +33,7 @@ namespace Lumina
         /** How many times per second this entity's movement is sent (caps the send rate; clients interpolate
          *  between updates). <= 0 sends every tick. Replicated so the owning client throttles its sends to match. */
         PROPERTY(Editable, Replicated, Category = "Networking")
-        float NetUpdateFrequency = 30.0f;
+        float NetUpdateFrequency = 60.0f;
 
         //~ Runtime net state (derived per-peer; not serialized). Read-only debug visibility.
 
@@ -55,9 +55,6 @@ namespace Lumina
 
         // Client-only latch. A proxy's physics body switched to Kinematic so the local sim no longer
         // fights replicated transforms. Set once the body exists.
-        bool     bProxyPhysicsConfigured = false;
-
-        // Movement send-cache and the throttle accumulator moved to the transient FRepTransform component
-        // (quantized last-sent pose + TimeSinceLastSend), so networking state is off the gameplay component.
+        bool bProxyPhysicsConfigured = false;
     };
 }

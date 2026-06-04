@@ -26,6 +26,7 @@ namespace Lumina
         NETREC_Dynamic        = 1 << 1, // dynamic (runtime-spawned) NetGUID -> needs per-client spawn/despawn
         NETREC_Changed        = 1 << 2, // pose changed since last extract (global "did it move at all" gate)
         NETREC_ScaleChanged   = 1 << 3, // scale changed since last sent
+        NETREC_Movement       = 1 << 4, // replicates a streamed transform (has FRepTransform); else spawn/relevancy only
     };
 
     // Per-thread scratch for the parallel extract (append-local, merged serially). Reused across ticks.

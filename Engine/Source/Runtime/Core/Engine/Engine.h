@@ -111,6 +111,9 @@ namespace Lumina
         /** Convenience: open Map as a listen server on Port. */
         RUNTIME_API void HostLevel(FStringView Map, uint16 Port = 7777);
 
+        /** Convenience: open Map as a dedicated (clientless, non-rendered) server on Port. */
+        RUNTIME_API void HostDedicatedLevel(FStringView Map, uint16 Port = 7777);
+
         /** Convenience: connect to Host:Port as a client. The server tells us which level to load (Welcome). */
         RUNTIME_API void ConnectToServer(FStringView Host, uint16 Port = 7777);
 
@@ -147,9 +150,10 @@ namespace Lumina
         bool                    bHasPendingOpen = false;
 
         // Host-level OpenLevel travels to a map, then applies this role/port to the new world's context.
-        bool                    bPendingHostOverride = false;
-        bool                    bPendingHostListen   = false;
-        uint16                  PendingHostPort      = 7777;
+        bool                    bPendingHostOverride  = false;
+        bool                    bPendingHostListen    = false;
+        bool                    bPendingHostDedicated = false;
+        uint16                  PendingHostPort       = 7777;
 
         // Set while ProcessPendingTravel runs a Welcome-driven client travel: the new world's net system
         // adopts this live transport instead of opening a fresh connection.
@@ -176,4 +180,9 @@ namespace Lumina
     };
     
     RUNTIME_API extern FEngine* GEngine;
+
+    // True for a packaged dedicated-server process (-server): no window, no RHI, no audio, no UI.
+    // Set in LuminaMain before the window/engine exist. Always false in WITH_EDITOR builds; the
+    // in-editor dedicated server is gated per-world by NetMode, not by this flag.
+    RUNTIME_API extern bool GIsHeadless;
 }

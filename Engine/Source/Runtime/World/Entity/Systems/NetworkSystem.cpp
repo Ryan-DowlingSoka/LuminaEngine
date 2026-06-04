@@ -98,6 +98,7 @@ namespace Lumina
         // AutonomousProxy for entities it owns and SimulatedProxy for the rest. Run every tick.
         void RefreshNetRoles(entt::registry& Registry, const FNetWorldState& State, bool bServer)
         {
+            LUMINA_PROFILE_SCOPE();
             for (entt::entity Entity : Registry.view<SNetworkComponent>())
             {
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
@@ -119,11 +120,15 @@ namespace Lumina
         // it changes or a client joins.
         void BroadcastOwnership(entt::registry& Registry, TVector<uint8>& Batch)
         {
+            LUMINA_PROFILE_SCOPE();
             auto View = Registry.view<SNetworkComponent>();
             uint16 Count = 0;
             for (entt::entity Entity : View)
             {
-                if (View.get<SNetworkComponent>(Entity).bNetLoadOnClient) { ++Count; }
+                if (View.get<SNetworkComponent>(Entity).bNetLoadOnClient)
+                {
+                    ++Count;
+                }
             }
             if (Count == 0)
             {
@@ -174,7 +179,13 @@ namespace Lumina
 
         bool VectorContains(const TVector<uint32>& V, uint32 Value)
         {
-            for (uint32 X : V) { if (X == Value) { return true; } }
+            for (uint32 X : V)
+            {
+                if (X == Value)
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -184,7 +195,8 @@ namespace Lumina
         // Serialize one SpawnEntity message for a specific recipient (TargetConn). Carries the script-rep
         // baseline: all --@replicated fields eligible for that recipient (InitialOnly included), seeding the
         // entity's diff snapshot so subsequent PropertyUpdates send only changes.
-        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, uint32 TargetConn, TVector<uint8>& OutMsg)
+        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, uint32 TargetConn,
+            const FVector3& Pos, const FQuat& Rot, const FVector3& Scale, TVector<uint8>& OutMsg)
         {
             FNetArchive Writer(OutMsg);
             Net::BindWriters(Writer, State);
@@ -195,17 +207,20 @@ namespace Lumina
 
             FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
             TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/true, &Diff);
+            FComponentRepState& CompDiff = Registry.get_or_emplace<FComponentRepState>(Entity);
+            TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Entity, State, /*bBaseline*/true, &CompDiff);
             const FNetRepContext Ctx{ TargetConn, Owner, /*bInitial*/true };
-            Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields);
+            Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields, &Comps);
+            
+            NetQuantize::FQuantizedVector::FromVector(Pos).Write(Writer);
+            NetQuantize::FQuantizedQuat::FromQuat(Rot).Write(Writer);
+            NetQuantize::FQuantizedVector::FromVector(Scale, NetQuantize::ScaleQuantum).Write(Writer);
         }
         
-        // Server lifetime maintenance for dynamic entities ONLY: assign NetGUIDs to new ones and unregister
-        // the GUIDs of destroyed ones. Does NOT emit spawn/despawn -- those are per-client (relevancy-driven,
-        // in ServerReplicateRelevant). KnownSpawnedGuids is the global existence set used to detect destruction;
-        // the per-client diff sees a destroyed entity as GuidTable.Find() == null. (Rule: AOI never unregisters
-        // a GUID -- only true world-destroy, here.)
+        // Server lifetime maintenance for dynamic entities ONLY.
         void MaintainDynamicLifetime(entt::registry& Registry, FNetWorldState& State)
         {
+            LUMINA_PROFILE_SCOPE();
             auto View = Registry.view<SNetworkComponent>();
 
             for (entt::entity Entity : View)
@@ -254,6 +269,7 @@ namespace Lumina
         
         void ReplicateStableDespawns(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
         {
+            LUMINA_PROFILE_SCOPE();
             for (size_t i = 0; i < State.KnownStableGuids.size(); )
             {
                 const uint32 Guid = State.KnownStableGuids[i];
@@ -283,20 +299,76 @@ namespace Lumina
         // native components + changed --@replicated script fields (field-granular diff), then clears the tag.
         // Entities with owner-filtered (OwnerOnly/SkipOwner) script fields send per-client (deferred into
         // PendingClientReliable so exports precede them); all others take the single reliable broadcast.
-        void ReplicateDirtyProperties(entt::registry& Registry, FNetWorldState& State, TVector<uint8>& Batch)
+        void ReplicateDirtyProperties(entt::registry& Registry, FNetWorldState& State, double NowTime, TVector<uint8>& Batch)
         {
-            auto View = Registry.view<SNetworkComponent, FNetDirty>();
-            for (entt::entity Entity : View)
+            LUMINA_PROFILE_SCOPE();
+            const CNetworkSettings* Settings = GetDefault<CNetworkSettings>();
+            const int32 BudgetBytes = Settings ? Settings->MaxReliablePropertyBytesPerTick : 0;
+            const int32 PauseBytes  = Settings ? Settings->ReliableBacklogPauseBytes : 0;
+
+            // Adaptive backpressure: if any client's un-acked reliable backlog is already high, the link is
+            // saturated -- pause NEW property updates this tick and let it drain. Every dirty entity stays
+            // FNetDirty, so nothing is lost; it just waits. (Broadcast model: one slow client pauses all.)
+            if (PauseBytes > 0 && State.Transport != nullptr)
             {
-                SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (!Net.bReplicates || Net.NetGUID.Value == 0)
+                uint32 MaxBacklog = 0;
+                for (uint32 ConnId : State.ConnectedClientIds)
                 {
-                    continue;
+                    MaxBacklog = std::max(MaxBacklog, State.Transport->GetReliableBacklogBytes(FConnectionHandle{ ConnId }));
                 }
+                if (MaxBacklog >= static_cast<uint32>(PauseBytes))
+                {
+                    return;
+                }
+            }
+
+            // Snapshot the dirty, replicating set and clear the flag from ones that can't replicate (so they
+            // don't re-evaluate every tick). LastReplicatedTime drives oldest-first scheduling below.
+            struct FDirtyEntry { entt::entity Entity; double LastTime; uint32 Guid; };
+            TVector<FDirtyEntry> Dirty;
+            {
+                auto View = Registry.view<SNetworkComponent, FNetDirty>();
+                for (entt::entity Entity : View)
+                {
+                    const SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
+                    if (!Net.bReplicates || Net.NetGUID.Value == 0)
+                    {
+                        Registry.remove<FNetDirty>(Entity);
+                        continue;
+                    }
+                    const FComponentRepState* Cs = Registry.try_get<FComponentRepState>(Entity);
+                    Dirty.push_back({ Entity, Cs ? Cs->LastReplicatedTime : 0.0, Net.NetGUID.Value });
+                }
+            }
+
+            // Oldest-replicated first (GUID tie-break for determinism) so the per-tick byte budget below can
+            // spread a backlog across ticks without ever starving a single entity.
+            eastl::sort(Dirty.begin(), Dirty.end(), [](const FDirtyEntry& A, const FDirtyEntry& B)
+            {
+                return (A.LastTime != B.LastTime) ? (A.LastTime < B.LastTime) : (A.Guid < B.Guid);
+            });
+
+            int32 BytesThisTick = 0;
+            for (const FDirtyEntry& D : Dirty)
+            {
+                // Soft per-tick cap: stop once over budget. Remaining entities keep FNetDirty and replicate on
+                // a later tick -- this is what bounds the reliable queue. We only Collect (which advances the
+                // diff baseline) entities we actually send, so a deferred entity's change is never lost.
+                if (BudgetBytes > 0 && BytesThisTick >= BudgetBytes)
+                {
+                    break;
+                }
+
+                const entt::entity Entity = D.Entity;
+                SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
 
                 // Diff the --@replicated script fields once (recipient-independent); updates the snapshot.
                 FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
                 TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/false, &Diff);
+
+                // Diff the native replicated component fields once (recipient-independent); updates the snapshot.
+                FComponentRepState& CompDiff = Registry.get_or_emplace<FComponentRepState>(Entity);
+                TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Entity, State, /*bBaseline*/false, &CompDiff);
 
                 bool bOwnerConditioned = false;
                 for (const Net::FScriptRepFieldOut& F : Fields)
@@ -308,41 +380,50 @@ namespace Lumina
                     }
                 }
 
-                auto WriteUpdate = [&](TVector<uint8>& Dest, const FNetRepContext& Ctx)
+                auto WriteUpdate = [&](TVector<uint8>& Dest, const FNetRepContext& Ctx) -> int32
                 {
+                    const size_t Before = Dest.size();
                     TVector<uint8> Buffer;
                     FNetArchive Writer(Buffer);
                     Net::BindWriters(Writer, State);
                     uint8 Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
                     Writer << Type;
                     Net::WriteNetGuid(Writer, Net.NetGUID.Value);
-                    Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields);
+                    Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields, &Comps);
                     Net::AppendFramedMessage(Dest, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                    return static_cast<int32>(Dest.size() - Before);
                 };
 
                 if (!bOwnerConditioned)
                 {
                     // Common path: native components + changed Always fields, one reliable broadcast.
                     const FNetRepContext Ctx{ /*TargetConn*/0, Net.OwningConnectionId, /*bInitial*/false };
-                    WriteUpdate(Batch, Ctx);
+                    BytesThisTick += WriteUpdate(Batch, Ctx);
                 }
                 else
                 {
-                    // Owner-filtered fields present: per recipient (native re-serialized per client).
+                    // Owner-filtered script fields present: per recipient (the native component blocks are
+                    // recipient-independent and reused; only the script block is condition-filtered per Ctx).
                     for (uint32 ConnId : State.ConnectedClientIds)
                     {
                         const FNetRepContext Ctx{ ConnId, Net.OwningConnectionId, /*bInitial*/false };
-                        WriteUpdate(State.PendingClientReliable[ConnId], Ctx);
+                        BytesThisTick += WriteUpdate(State.PendingClientReliable[ConnId], Ctx);
                     }
                 }
+
+                CompDiff.LastReplicatedTime = NowTime; // mark sent -> drives the oldest-first fairness above
+                Registry.remove<FNetDirty>(Entity);    // sent this tick; deferred entities keep the flag
                 ++State.Stats.PropertyUpdatesSent;
             }
-            Registry.clear<FNetDirty>();
+
+            LUMINA_PROFILE_VALUE("Net/DirtyEntities",  static_cast<int64>(Dirty.size()));
+            LUMINA_PROFILE_VALUE("Net/DirtyPropBytes", static_cast<int64>(BytesThisTick));
         }
         
         // Client, create + link a server-spawned entity, then apply its components.
         void ApplySpawnEntity(entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
+            LUMINA_PROFILE_SCOPE();
             FNetArchive Reader(Data, Size);
             uint8 Type = 0;
             Reader << Type;
@@ -356,6 +437,22 @@ namespace Lumina
             Net::BindReaders(Reader, State, SenderConn);
             const entt::entity Entity = Registry.create();
             Net::ReadEntityComponents(Reader, Registry, Entity);
+
+            // Spawn pose
+            NetQuantize::FQuantizedVector QPos;   
+            QPos.Read(Reader);
+            NetQuantize::FQuantizedQuat   QRot;   
+            QRot.Read(Reader);
+            NetQuantize::FQuantizedVector QScale; 
+            QScale.Read(Reader);
+            
+            if (!Reader.HasError())
+            {
+                if (STransformComponent* T = Registry.try_get<STransformComponent>(Entity))
+                {
+                    T->SetRaw(QPos.ToVector(), QRot.ToQuat(), QScale.ToVector(NetQuantize::ScaleQuantum));
+                }
+            }
 
             SNetworkComponent& Net = Registry.get_or_emplace<SNetworkComponent>(Entity);
             Net.NetGUID            = FNetGUID{ Guid };
@@ -371,6 +468,7 @@ namespace Lumina
         // Client, apply a reliable property delta to an existing entity.
         void ApplyPropertyUpdate(entt::registry& Registry, FNetWorldState& State, uint32 SenderConn, const uint8* Data, SIZE_T Size)
         {
+            LUMINA_PROFILE_SCOPE();
             FNetArchive Reader(Data, Size);
             uint8 Type = 0;
             Reader << Type;
@@ -491,8 +589,7 @@ namespace Lumina
         // Quantize a local pose into the entity's send-cache, change-detect by exact integer compare, honor the
         // NetUpdateFrequency throttle, and (on a positive decision) refresh the cache. Returns true to send;
         // bOutScale says whether scale changed / a baseline is forced and must ride along on the wire.
-        bool PrepareTransformSend(SNetworkComponent& Net, FRepTransform& Rep, const FVector3& Pos, const FQuat& Rot,
-            const FVector3& Scale, float DeltaTime, bool bForceResend, bool& bOutScale)
+        bool PrepareTransformSend(SNetworkComponent& Net, FRepTransform& Rep, const FVector3& Pos, const FQuat& Rot, const FVector3& Scale, float DeltaTime, bool bForceResend, bool& bOutScale)
         {
             Rep.TimeSinceLastSend += DeltaTime;
 
@@ -533,6 +630,7 @@ namespace Lumina
         // the (exclusive) SNetworkSystem, so the structural changes here are safe.
         void EnsureRepTransforms(entt::registry& Registry)
         {
+            LUMINA_PROFILE_SCOPE();
             for (entt::entity Entity : Registry.view<SNetworkComponent>())
             {
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
@@ -554,18 +652,12 @@ namespace Lumina
                 }
             }
         }
-
-        // Server -> clients, INTEREST-MANAGED. Builds the shared SoA extract + spatial grid once, then per client
-        // gathers the entities in its AOI, diffs against what it already knows (reliable spawn on enter / despawn
-        // after a grace timer on leave), and sends only those entities' transforms (unreliable, chunked). Done in
-        // two phases: phase A builds the per-client buffers (spawns MINT object/asset net-indices); then the index
-        // exports + the reliable broadcast batch go out; then phase B flushes the per-client buffers -- so a client
-        // always learns an index before any spawn (broadcast or per-client) that references it. GuidTable is never
-        // touched here (lifetime-only).
+        
         void ServerReplicateRelevant(entt::registry& Registry, FNetWorldState& State,
             const SDefaultWorldSettings& Settings, float DeltaTime,
             float ServerTime, TVector<uint8>& ReliableBroadcast)
         {
+            LUMINA_PROFILE_SCOPE();
             NetGraph::BuildExtract(Registry, State.Extract, State.OwnerToRecord);
             NetGraph::BuildGrid(State.Extract, Settings, State.Grid);
 
@@ -591,6 +683,8 @@ namespace Lumina
             // --- Phase A: gather + relevancy diff per client; build reliable (spawn/despawn) + transform records ---
             for (uint32 ci = 0; ci < NumClients; ++ci)
             {
+                // One zone per client: the AOI gather + relevancy hashmap diff is the cache-heavy inner loop.
+                LUMINA_PROFILE_SECTION("Relevancy/Client");
                 const uint32 ConnId = State.ConnectedClientIds[ci];
                 FNetClientView& CV  = State.ClientViews[ConnId];
 
@@ -659,7 +753,10 @@ namespace Lumina
                             if (Ent != entt::null)
                             {
                                 TVector<uint8> Buf;
-                                WriteSpawnMessage(Registry, State, Ent, Guid, Ex.OwnerConn[Rec], ConnId, Buf);
+                                const FVector3 SpawnPos   = Ex.Pos[Rec];
+                                const FQuat    SpawnRot   = Ex.Rot[Rec].ToQuat();
+                                const FVector3 SpawnScale = Ex.Scale[Rec].ToVector(NetQuantize::ScaleQuantum);
+                                WriteSpawnMessage(Registry, State, Ent, Guid, Ex.OwnerConn[Rec], ConnId, SpawnPos, SpawnRot, SpawnScale, Buf);
                                 Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
                                 ++SpawnsSum;
                                 E.bBaselinePending = true; // spawn carried the pose; hold the transform one tick
@@ -668,6 +765,27 @@ namespace Lumina
                         else
                         {
                             E.bNeedsBaseline = true; // stable entity: client has it from the map; send current pose once
+
+                            // replicated property changes the server made since map load
+                            // baseline; refs minted here are flushed by the export step before this reliable batch.
+                            const entt::entity Ent = State.GuidTable.Find(FNetGUID{ Guid });
+                            if (Ent != entt::null && Registry.valid(Ent) && Registry.any_of<FScriptRepState, FComponentRepState>(Ent))
+                            {
+                                FScriptRepState& SDiff = Registry.get_or_emplace<FScriptRepState>(Ent);
+                                TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Ent, State, /*bBaseline*/true, &SDiff);
+                                FComponentRepState& CDiff = Registry.get_or_emplace<FComponentRepState>(Ent);
+                                TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Ent, State, /*bBaseline*/true, &CDiff);
+
+                                TVector<uint8> Buf;
+                                FNetArchive W(Buf);
+                                Net::BindWriters(W, State);
+                                uint8 PType = static_cast<uint8>(ENetMessage::PropertyUpdate);
+                                W << PType;
+                                Net::WriteNetGuid(W, Guid);
+                                const FNetRepContext Ctx{ ConnId, Ex.OwnerConn[Rec], /*bInitial*/true };
+                                Net::WriteEntityComponents(W, Registry, Ent, &Ctx, &Fields, &Comps);
+                                Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
+                            }
                         }
                         CV.Relevant.emplace(Guid, E);
                     }
@@ -713,6 +831,8 @@ namespace Lumina
                     const uint32 Guid = Ex.Guid[Rec];
                     auto It = CV.Relevant.find(Guid);
                     if (It == CV.Relevant.end()) { continue; }
+                    // Non-movement entities don't stream a transform -- their pose rode the spawn baseline.
+                    if (!(Ex.Flags[Rec] & NETREC_Movement)) { continue; }
                     FRelevantEntry& E = It->second;
                     E.TimeSinceSent += DeltaTime;
                     if (E.bBaselinePending) { E.bBaselinePending = false; continue; } // spawn carried the pose
@@ -747,6 +867,11 @@ namespace Lumina
                 RelevantMax  = std::max(RelevantMax, static_cast<uint32>(CV.Relevant.size()));
             }
 
+            // Per-tick cost drivers -- correlate timeline spikes against these plots in Tracy.
+            LUMINA_PROFILE_VALUE("Net/RelevantMax", static_cast<int64>(RelevantMax));
+            LUMINA_PROFILE_VALUE("Net/Spawns",      static_cast<int64>(SpawnsSum));
+            LUMINA_PROFILE_VALUE("Net/Despawns",    static_cast<int64>(DespawnsSum));
+
             // --- Exports first (all this-tick spawns have now minted their indices), then the reliable broadcast
             //     batch, so every client learns an index before any spawn that references it. ---
             if (!State.OutObjects.PendingExports.empty())
@@ -762,6 +887,13 @@ namespace Lumina
                 Net::BuildAssetExport(State.OutAssets, State.OutAssets.PendingExports, ExportMsg);
                 Net::BroadcastFramed(*State.Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
                 State.OutAssets.PendingExports.clear();
+            }
+            if (!State.OutNames.PendingExports.empty())
+            {
+                TVector<uint8> ExportMsg;
+                Net::BuildNameExport(State.OutNames, State.OutNames.PendingExports, ExportMsg);
+                Net::BroadcastFramed(*State.Transport, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                State.OutNames.PendingExports.clear();
             }
             if (!ReliableBroadcast.empty())
             {
@@ -881,8 +1013,7 @@ namespace Lumina
 
         // Decode one transform record into an entity's FRepTransform ring. Shared by the client snapshot and the
         // server's client-transform receive. Returns false on a decode error so the caller breaks the batch.
-        bool ReadTransformIntoRing(entt::registry& Registry, FNetWorldState& State, FNetArchive& Reader, double SampleTime,
-            bool bSkipAutonomous, uint32 OwnerGate)
+        bool ReadTransformIntoRing(entt::registry& Registry, FNetWorldState& State, FNetArchive& Reader, double SampleTime, bool bSkipAutonomous, uint32 OwnerGate)
         {
             // Decode mirrors WriteTransformRecord: tier byte selects the position quantum + rotation precision.
             uint8 TierByte = 0;
@@ -953,6 +1084,7 @@ namespace Lumina
         // Client, buffer each received pose into the entity's ring; the interp system writes the smoothed pose.
         void ApplyTransformSnapshot(entt::registry& Registry, FNetWorldState& State, const uint8* Data, SIZE_T Size)
         {
+            LUMINA_PROFILE_SCOPE();
             FNetArchive Reader(Data, Size);
             uint8 Type = 0;
             Reader << Type; // ENetMessage::TransformSnapshot (already routed by the caller)
@@ -996,6 +1128,8 @@ namespace Lumina
 
     void SNetworkSystem::Update(const FSystemContext& Context) noexcept
     {
+        LUMINA_PROFILE_SCOPE();
+        
         entt::registry& Registry = Context.GetRegistry();
 
         CWorld* World = Registry.ctx().get<CWorld*>();
@@ -1087,10 +1221,14 @@ namespace Lumina
 
         // Pump the transport. Surface connect/disconnect, and on the client apply incoming snapshots.
         TVector<FNetworkEvent> Events;
-        State->Transport->Service(Events);
+        {
+            LUMINA_PROFILE_SECTION("Net/Service"); // ENet host service (socket recv + reliability)
+            State->Transport->Service(Events);
+        }
 
         for (const FNetworkEvent& Event : Events)
         {
+            LUMINA_PROFILE_SECTION("Net/Event"); // one zone per received event (Data carries a message batch)
             switch (Event.Type)
             {
             case ENetworkEventType::Connected:
@@ -1116,9 +1254,11 @@ namespace Lumina
                         const FString& MapPath = SrvCtx->MapPath;
                         TVector<uint8> WelcomeBuf;
                         FNetArchive WWriter(WelcomeBuf);
-                        uint8  WType = static_cast<uint8>(ENetMessage::Welcome);
-                        uint16 Len   = static_cast<uint16>(MapPath.size());
+                        uint8  WType  = static_cast<uint8>(ENetMessage::Welcome);
+                        uint32 WProto = Net::GetProtocolHash();
+                        uint16 Len    = static_cast<uint16>(MapPath.size());
                         WWriter << WType;
+                        WWriter << WProto; // client refuses the connection on a protocol/build mismatch
                         WWriter << Len;
                         if (Len > 0)
                         {
@@ -1167,8 +1307,7 @@ namespace Lumina
             case ENetworkEventType::Data:
             {
                 // Every packet is a batch of length-framed messages; split + dispatch each by its type byte.
-                Net::ForEachFramedMessage(Event.Data.data(), static_cast<SIZE_T>(Event.Data.size()),
-                    [&](const uint8* Msg, SIZE_T MsgSize)
+                Net::ForEachFramedMessage(Event.Data.data(), Event.Data.size(), [&](const uint8* Msg, SIZE_T MsgSize)
                 {
                     if (MsgSize == 0)
                     {
@@ -1193,7 +1332,7 @@ namespace Lumina
                             if (!Reader.HasError())
                             {
                                 State->LocalPeerId = PeerId;
-                                LOG_DISPLAY("[Net][Client] Assigned peer id {}", PeerId);
+                                LOG_DISPLAY("[Net][Client] Assigned Peer ID: {}", PeerId);
                             }
                         }
                         break;
@@ -1231,9 +1370,22 @@ namespace Lumina
                         if (!bServer)
                         {
                             FNetArchive Reader(Msg, MsgSize);
-                            uint8  Type = 0;
-                            uint16 Len  = 0;
+                            uint8  Type  = 0;
+                            uint32 Proto = 0;
+                            uint16 Len   = 0;
                             Reader << Type;
+                            Reader << Proto;
+
+                            // Refuse a build/protocol mismatch instead of corrupting the replication stream
+                            // (the component-type table, RPC ids, and field order all assume same-build peers).
+                            if (Proto != Net::GetProtocolHash())
+                            {
+                                LOG_ERROR("[Net][Client] Protocol mismatch (server {:#x}, client {:#x}) -- disconnecting. Client and server builds differ.",
+                                    Proto, Net::GetProtocolHash());
+                                State->Transport->Disconnect(Event.Connection, /*Reason*/1, /*bForce*/false);
+                                break;
+                            }
+
                             Reader << Len;
                             FString MapPath;
                             if (!Reader.HasError() && Len > 0 && Len < 4096)
@@ -1258,6 +1410,23 @@ namespace Lumina
                     case ENetMessage::ClientReady:
                         if (bServer)
                         {
+                            // Validate the client's protocol/build hash before accepting any replication from
+                            // it; a mismatched client would corrupt the server's view, so kick it.
+                            {
+                                FNetArchive RReader(Msg, MsgSize);
+                                uint8  RType  = 0;
+                                uint32 RProto = 0;
+                                RReader << RType;
+                                RReader << RProto;
+                                if (RReader.HasError() || RProto != Net::GetProtocolHash())
+                                {
+                                    LOG_WARN("[Net][Server] Kicking client {}: protocol mismatch (client {:#x}, server {:#x}).",
+                                        Event.Connection.Value, RProto, Net::GetProtocolHash());
+                                    State->Transport->Disconnect(Event.Connection, /*Reason*/1, /*bForce*/false);
+                                    break;
+                                }
+                            }
+
                             // Late-join initial sync, catch this connection up to the current world without
                             // re-baseline this client's relevant entities; ownership re-sent below.
                             State->ClientViews[Event.Connection.Value].bForceBaseline = true;
@@ -1292,6 +1461,19 @@ namespace Lumina
                                 Net::SendFramed(*State->Transport, Event.Connection, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
                             }
 
+                            if (!State->OutNames.IndexToName.empty()) // name index table for the joiner
+                            {
+                                TVector<uint32> AllIndices;
+                                AllIndices.reserve(State->OutNames.IndexToName.size());
+                                for (const auto& Pair : State->OutNames.IndexToName)
+                                {
+                                    AllIndices.push_back(Pair.first);
+                                }
+                                TVector<uint8> ExportMsg;
+                                Net::BuildNameExport(State->OutNames, AllIndices, ExportMsg);
+                                Net::SendFramed(*State->Transport, Event.Connection, ExportMsg.data(), static_cast<SIZE_T>(ExportMsg.size()), 0, ESendMode::Reliable);
+                            }
+
                             // Replay stable entities the server destroyed at runtime. The joiner loaded the
                             // level fresh, so tell it to remove the copies it would have created.
                             if (!State->DestroyedStableGuids.empty())
@@ -1319,6 +1501,9 @@ namespace Lumina
                         break;
                     case ENetMessage::AssetExport:
                         Net::ApplyAssetExport(State->InAssets[Event.Connection.Value], Msg, MsgSize);
+                        break;
+                    case ENetMessage::NameExport:
+                        Net::ApplyNameExport(State->InNames[Event.Connection.Value], Msg, MsgSize);
                         break;
                     case ENetMessage::ScriptRpc:
                         // Either side can receive (server gets Server RPCs; client gets Multicast/Client).
@@ -1368,7 +1553,7 @@ namespace Lumina
                 // their net-indices and those index exports are sent -- so clients resolve indices in order.
                 TVector<uint8> ReliableBatch;
                 ReplicateStableDespawns(Registry, *State, ReliableBatch);
-                ReplicateDirtyProperties(Registry, *State, ReliableBatch);
+                ReplicateDirtyProperties(Registry, *State, Context.GetTime(), ReliableBatch);
                 if (State->bOwnershipDirty)
                 {
                     BroadcastOwnership(Registry, ReliableBatch);
@@ -1393,8 +1578,10 @@ namespace Lumina
                 State->bClientReadySent = true;
                 TVector<uint8> Buffer;
                 FNetArchive Writer(Buffer);
-                uint8 Type = static_cast<uint8>(ENetMessage::ClientReady);
+                uint8  Type  = static_cast<uint8>(ENetMessage::ClientReady);
+                uint32 Proto = Net::GetProtocolHash();
                 Writer << Type;
+                Writer << Proto; // server kicks the connection on a protocol/build mismatch
                 Net::SendFramed(*State->Transport, State->ServerConnection, Buffer.data(), static_cast<SIZE_T>(Buffer.size()), 0, ESendMode::Reliable);
             }
 

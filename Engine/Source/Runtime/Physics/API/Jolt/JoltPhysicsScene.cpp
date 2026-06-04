@@ -1093,7 +1093,7 @@ namespace Lumina::Physics
             }
 
             STransformComponent& TransformComponent = TransformStorage.get(Entity);
-            TransformComponent.SetFromPhysics(InterpStaging.CurrPos[i],
+            TransformComponent.SetRaw(InterpStaging.CurrPos[i],
                 FQuat(InterpStaging.CurrQw[i], InterpStaging.CurrQx[i], InterpStaging.CurrQy[i], InterpStaging.CurrQz[i]));
             Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
         }

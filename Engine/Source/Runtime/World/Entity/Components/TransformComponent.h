@@ -244,20 +244,17 @@ namespace Lumina
             Entity = InEntity;
         }
         
-        void SetFromPhysics(const FVector3& Location, const FQuat& Rotation)
+        void SetRaw(const FVector3& Location, const FQuat& Rotation)
         {
             LocalTransform.Location = Location;
             LocalTransform.Rotation = Rotation;
         }
-
-        // Write a network-resolved local pose WITHOUT marking dirty. The replication interp pass calls this
-        // from a parallel body (MarkDirty mutates the transform pool under a mutex, which is not ParallelFor-
-        // safe); the caller emplaces FNeedsTransformUpdate and resolves serially. Mirrors SetFromPhysics.
-        void SetFromNetwork(const FVector3& Location, const FQuat& Rotation, const FVector3& InScale)
+        
+        void SetRaw(const FVector3& Location, const FQuat& Rotation, const FVector3& Scale)
         {
             LocalTransform.Location = Location;
             LocalTransform.Rotation = Rotation;
-            LocalTransform.Scale    = InScale;
+            LocalTransform.Scale    = Scale;
         }
 
     public:

@@ -3,6 +3,7 @@
 #include "NetWorldState.h"
 #include "NetRpc.h"
 #include "ScriptRepState.h"
+#include "Core/Profiler/Profile.h"
 #include "Core/Serialization/NetArchive.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/Object.h"
@@ -81,8 +82,11 @@ namespace Lumina::Net
                         T.ByIndex.push_back({ HashStructName(St->GetName()), Type, St });
                     }
                 }
-                eastl::sort(T.ByIndex.begin(), T.ByIndex.end(),
-                    [](const FReplType& A, const FReplType& B) { return A.Hash < B.Hash; });
+                eastl::sort(T.ByIndex.begin(), T.ByIndex.end(),[](const FReplType& A, const FReplType& B)
+                {
+                    return A.Hash < B.Hash;
+                });
+                
                 for (uint32 i = 0; i < static_cast<uint32>(T.ByIndex.size()); ++i)
                 {
                     T.HashToIndex[T.ByIndex[i].Hash] = i;
@@ -142,7 +146,7 @@ namespace Lumina::Net
                 lua_rawsetfield(L, TableIdx, FieldName.c_str());  // [table][old][new](table[field] = new)
 
                 // OnRep_<Field>(self, old) if the script defines it (the script analog of native on_update).
-                const FString HookName = FString("OnRep_") + FString(FieldName.c_str());
+                const FFixedString HookName = FFixedString("OnRep_") + FieldName.c_str();
                 lua_rawgetfield(L, TableIdx, HookName.c_str());  // [table][old][new][hookOrNil]
                 if (lua_isfunction(L, -1))
                 {
@@ -240,6 +244,23 @@ namespace Lumina::Net
         return PNet != nullptr && PNet->bReplicates && PNet->bNetLoadOnClient && PNet->NetGUID.Value != 0;
     }
 
+    uint32 GetProtocolHash()
+    {
+        // Bump on any hand-rolled wire-format change (message layout, codec) that reflection won't catch.
+        constexpr uint32 NetProtocolVersion = 1;
+
+        // FNV-1a over the version + the sorted replicated-component name-hashes. Same build => same table
+        // order => same hash; a differing component set on either peer flips it.
+        uint32 H = 2166136261u;
+        auto Combine = [&H](uint32 V) { H ^= V; H *= 16777619u; };
+        Combine(NetProtocolVersion);
+        for (const FReplType& T : ReplTypes().ByIndex)
+        {
+            Combine(T.Hash);
+        }
+        return H;
+    }
+
     void WriteNetGuid(FNetArchive& Ar, uint32 Guid)
     {
         const uint32 Encoded = (Guid >= NetGUID_DynamicStart)
@@ -254,16 +275,17 @@ namespace Lumina::Net
         return (Encoded & 1u) ? (NetGUID_DynamicStart + (Encoded >> 1)) : (Encoded >> 1);
     }
 
-    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity, const FNetRepContext* Ctx, const TVector<FScriptRepFieldOut>* ScriptFields)
+    TVector<FComponentRepOut> CollectComponentFields(entt::registry& Registry, entt::entity Entity, FNetWorldState& State, bool bBaseline, FComponentRepState* DiffState)
     {
-        struct FComp
-        {
-            uint32 Index;
-            void* Ptr;
-            CStruct* Struct;
-        };
-        
-        TVector<FComp> Comps;
+        LUMINA_PROFILE_SCOPE();
+        TVector<FComponentRepOut> Out;
+
+        // Hook-carrier: BindWriters sets the object/asset/name net-index hooks that NetSerializeReplicatedToBuffers
+        // copies onto each per-field temp archive, so refs mint into State's outgoing maps (and queue exports)
+        // exactly as the live write would. The scratch buffer itself is never written to.
+        TVector<uint8> HookScratch;
+        FNetArchive HookSrc(HookScratch);
+        Net::BindWriters(HookSrc, State);
 
         const FReplTypeTable& Types = ReplTypes();
         for (auto [Id, Set] : Registry.storage())
@@ -287,15 +309,82 @@ namespace Lumina::Net
             {
                 continue; // not a known replicated type (shouldn't happen for a reflected component)
             }
-            Comps.push_back({ It->second, Set.value(Entity), St });
+
+            const uint32 WireIndex = It->second;
+            void* Ptr = Set.value(Entity);
+
+            // Current per-field bytes; compare to the last-sent baseline to build the changed-field mask.
+            TVector<TVector<uint8>> Cur;
+            St->NetSerializeReplicatedToBuffers(HookSrc, Ptr, Cur);
+            const uint32 N = static_cast<uint32>(Cur.size());
+
+            TVector<TVector<uint8>>* Base = nullptr;
+            if (DiffState != nullptr)
+            {
+                Base = &DiffState->LastSent[WireIndex];
+                if (static_cast<uint32>(Base->size()) != N)
+                {
+                    Base->assign(N, TVector<uint8>{}); // first sight / layout change -> all fields count as changed
+                }
+            }
+
+            const uint32 MaskBytes = (N + 7) / 8;
+            TVector<uint8> Mask(MaskBytes, 0);
+            bool bAny = false;
+            for (uint32 i = 0; i < N; ++i)
+            {
+                const bool bChanged = bBaseline || Base == nullptr || (*Base)[i] != Cur[i];
+                if (bChanged)
+                {
+                    Mask[i >> 3] |= static_cast<uint8>(1u << (i & 7));
+                    bAny = true;
+                }
+                if (Base != nullptr)
+                {
+                    (*Base)[i] = Cur[i];
+                }
+            }
+
+            // On a delta, skip a component with no changed fields. On a baseline, keep it even when it has
+            // no replicated fields so the client still emplaces the (possibly tag-only) component.
+            if (!bBaseline && !bAny)
+            {
+                continue;
+            }
+
+            FComponentRepOut C;
+            C.WireIndex = WireIndex;
+            C.Block.insert(C.Block.end(), Mask.begin(), Mask.end());
+            for (uint32 i = 0; i < N; ++i)
+            {
+                if (Mask[i >> 3] & (1u << (i & 7)))
+                {
+                    C.Block.insert(C.Block.end(), Cur[i].begin(), Cur[i].end());
+                }
+            }
+            Out.push_back(eastl::move(C));
         }
 
-        uint16 Count = static_cast<uint16>(Comps.size());
+        return Out;
+    }
+
+    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity, const FNetRepContext* Ctx, const TVector<FScriptRepFieldOut>* ScriptFields, const TVector<FComponentRepOut>* Components)
+    {
+        LUMINA_PROFILE_SCOPE();
+        // Component blocks precomputed by CollectComponentFields: [varint wire type id][changed-field bitmask
+        // ++ changed fields]. Recipient-independent, so the same blocks serve every recipient.
+        uint16 Count = Components ? static_cast<uint16>(Components->size()) : 0;
         Ar << Count;
-        for (FComp& C : Comps)
+        if (Components != nullptr)
         {
-            WriteVarUInt(Ar, C.Index); // compact type id (was a 4-byte hash)
-            C.Struct->NetSerializeProperties(Ar, C.Ptr);
+            for (const FComponentRepOut& C : *Components)
+            {
+                WriteVarUInt(Ar, C.WireIndex);
+                if (!C.Block.empty())
+                {
+                    Ar.Serialize(const_cast<uint8*>(C.Block.data()), static_cast<int64>(C.Block.size()));
+                }
+            }
         }
 
         // Script-rep block: --@replicated fields whose net condition passes Ctx. Always present (count 0 when
@@ -324,10 +413,7 @@ namespace Lumina::Net
                 }
             }
         }
-
-        // Attachment link: the parent's NetGUID (0 = unparented, or a parent that doesn't replicate to clients
-        // -- in which case BuildExtract sends this entity's WORLD transform so it still lands correctly).
-        // Stateful: rides the spawn baseline + every dirty update; the client resolves it and reparents.
+        
         uint32 ParentGuid = 0;
         if (const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
             Rel && Rel->Parent != entt::null && ParentReplicates(Registry, Rel->Parent))
@@ -340,6 +426,7 @@ namespace Lumina::Net
     TVector<FScriptRepFieldOut> CollectScriptFields(entt::registry& Registry, entt::entity Entity,
         FNetWorldState& State, bool bBaseline, FScriptRepState* DiffState)
     {
+        LUMINA_PROFILE_SCOPE();
         TVector<FScriptRepFieldOut> Out;
 
         SScriptComponent* SC = Registry.valid(Entity) ? Registry.try_get<SScriptComponent>(Entity) : nullptr;
@@ -365,6 +452,11 @@ namespace Lumina::Net
         Script->Reference.Push();                  // [table]
         const int TableIdx = lua_gettop(L);
 
+        // Reused across fields, entities, and ticks: every field serializes to compare against its baseline,
+        // but only CHANGED fields need a kept buffer. The common (unchanged) case now does zero heap allocs.
+        // Server-only path on the game thread, so a thread-local scratch is safe.
+        static thread_local TVector<uint8> Scratch;
+
         for (uint32 i = 0; i < N; ++i)
         {
             const Lua::FScriptReplicatedField& Field = Script->ReplicatedFields[i];
@@ -372,32 +464,30 @@ namespace Lumina::Net
             // Serialize with the outgoing object/asset hooks bound so any
             // CObject/asset ref mints a net-index that the existing export step flushes before this message.
             lua_rawgetfield(L, TableIdx, Field.Name.c_str()); // [table][value]
-            TVector<uint8> Bytes;
+            Scratch.clear();
             {
-                FNetArchive Writer(Bytes);
+                FNetArchive Writer(Scratch);
                 Net::BindWriters(Writer, State);
                 Net::SerializeLuaValue(L, -1, Writer, 0);
             }
             lua_pop(L, 1);                                     // [table]
 
-            bool bChanged = true;
-            if (!bBaseline && DiffState != nullptr)
+            const bool bChanged = bBaseline || DiffState == nullptr || (DiffState->LastSent[i] != Scratch);
+            if (!bChanged)
             {
-                bChanged = (DiffState->LastSent[i] != Bytes);
-            }
-            if (DiffState != nullptr)
-            {
-                DiffState->LastSent[i] = Bytes; // seed (baseline) or update (diff)
+                continue; // unchanged: baseline already current, nothing to send -- no copy, no alloc
             }
 
-            if (bBaseline || bChanged)
+            if (DiffState != nullptr)
             {
-                FScriptRepFieldOut F;
-                F.RepIndex = i;
-                F.Cond     = Field.Condition;
-                F.Bytes    = eastl::move(Bytes);
-                Out.push_back(eastl::move(F));
+                DiffState->LastSent[i].assign(Scratch.begin(), Scratch.end()); // seed (baseline) or update (diff)
             }
+
+            FScriptRepFieldOut F;
+            F.RepIndex = i;
+            F.Cond     = Field.Condition;
+            F.Bytes.assign(Scratch.begin(), Scratch.end());
+            Out.push_back(eastl::move(F));
         }
 
         lua_pop(L, 1); // table
@@ -406,6 +496,7 @@ namespace Lumina::Net
 
     void ReadEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
     {
+        LUMINA_PROFILE_SCOPE();
         uint16 Count = 0;
         Ar << Count;
 
@@ -439,7 +530,20 @@ namespace Lumina::Net
                 return;
             }
 
-            // Write replicated props into the live component, preserving non-replicated fields. Emplace a
+            // Changed-field bitmask: width is the struct's replicated-field count (same on both peers).
+            const uint32 N = St->GetNetReplicatedPropertyCount();
+            const uint32 MaskBytes = (N + 7) / 8;
+            TVector<uint8> Mask(MaskBytes, 0);
+            if (MaskBytes > 0)
+            {
+                Ar.Serialize(Mask.data(), static_cast<int64>(MaskBytes));
+                if (Ar.HasError())
+                {
+                    return;
+                }
+            }
+
+            // Apply only the changed replicated fields into the live component, preserving the rest. Emplace a
             // default first if absent.
             void* Ptr = FindComponentPtr(Registry, Entity, Type);
             if (Ptr == nullptr)
@@ -451,7 +555,7 @@ namespace Lumina::Net
 
             if (Ptr != nullptr)
             {
-                St->NetSerializeProperties(Ar, Ptr);
+                St->NetReadReplicatedMasked(Ar, Ptr, Mask.data());
                 Applied.push_back(Type);
             }
             else
@@ -597,27 +701,54 @@ namespace Lumina::Net
             auto It = Map.IndexToRef.find(Index);
             return It != Map.IndexToRef.end() ? It->second : FAssetRef();
         }
+
+        // Get-or-assign a stable index for a name, keyed by the FName itself so it dedupes.
+        uint32 NetName_GetOrAssign(FNetNameMap& Map, const FName& Name)
+        {
+            if (Name.IsNone()) { return 0; }
+            auto It = Map.KeyToIndex.find(Name);
+            if (It != Map.KeyToIndex.end()) { return It->second; }
+            const uint32 Index = Map.NextIndex++;
+            Map.KeyToIndex[Name]   = Index;
+            Map.IndexToName[Index] = Name;
+            Map.PendingExports.push_back(Index);
+            return Index;
+        }
+
+        FName NetName_Resolve(FNetNameMap& Map, uint32 Index)
+        {
+            if (Index == 0) { return FName(); }
+            auto It = Map.IndexToName.find(Index);
+            return It != Map.IndexToName.end() ? It->second : FName();
+        }
     }
 
     void BindWriters(FNetArchive& Ar, FNetWorldState& State)
     {
         Ar.ObjectToNetIndex   = [&State](CObject* O)         { return NetObj_GetOrAssign(State.OutObjects, O); };
         Ar.AssetRefToNetIndex = [&State](const FAssetRef& R) { return NetAsset_GetOrAssign(State.OutAssets, R); };
+        Ar.NameToNetIndex     = [&State](const FName& N)     { return NetName_GetOrAssign(State.OutNames, N); };
     }
 
     void BindReaders(FNetArchive& Ar, FNetWorldState& State, uint32 SenderConn)
     {
         FNetObjectMap& InObj = State.InObjects[SenderConn]; // operator[] default-creates the per-connection entry
         FNetAssetMap&  InAst = State.InAssets[SenderConn];
-        
+        FNetNameMap&   InNme = State.InNames[SenderConn];
+
         Ar.NetIndexToObject   = [&InObj](uint32 I)
         {
             return NetObj_Resolve(InObj, I);
         };
-        
+
         Ar.NetIndexToAssetRef = [&InAst](uint32 I, FAssetRef& Out)
         {
             Out = NetAsset_Resolve(InAst, I);
+        };
+
+        Ar.NetIndexToName     = [&InNme](uint32 I, FName& Out)
+        {
+            Out = NetName_Resolve(InNme, I);
         };
     }
 
@@ -695,6 +826,41 @@ namespace Lumina::Net
             Ref.Path = Path;
             Ref.Guid = Guid;
             Map.IndexToRef[Index] = Ref;
+        }
+    }
+
+    void BuildNameExport(const FNetNameMap& Map, const TVector<uint32>& Indices, TVector<uint8>& OutMsg)
+    {
+        FNetArchive Writer(OutMsg);
+        uint8  Type  = static_cast<uint8>(ENetMessage::NameExport);
+        uint16 Count = static_cast<uint16>(Indices.size());
+        Writer << Type;
+        Writer << Count;
+        for (uint32 Index : Indices)
+        {
+            auto It = Map.IndexToName.find(Index);
+            if (It == Map.IndexToName.end()) { continue; }
+            FString Str = It->second.ToString();
+            Writer << Index;
+            Writer << Str;
+        }
+    }
+
+    void ApplyNameExport(FNetNameMap& Map, const uint8* Data, SIZE_T Size)
+    {
+        FNetArchive Reader(Data, Size);
+        uint8  Type  = 0;
+        uint16 Count = 0;
+        Reader << Type;
+        Reader << Count;
+        for (uint16 i = 0; i < Count; ++i)
+        {
+            uint32  Index = 0;
+            FString Str;
+            Reader << Index;
+            Reader << Str;
+            if (Reader.HasError()) { break; }
+            Map.IndexToName[Index] = FName(Str); // interns the string in this peer's name table
         }
     }
 }

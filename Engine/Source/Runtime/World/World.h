@@ -35,6 +35,7 @@ namespace Lumina
     struct FWorldContext;
     class CTexture;
     class CTextureRenderTarget;
+    class CWorld;
     enum class ENetMode : uint8;
 }
 
@@ -45,6 +46,23 @@ namespace Lumina
     {
         FString  Text;
         FVector4 Color = FVector4(1.0f);
+    };
+
+    // Lua-facing facade for the World.Debug namespace. One instance lives on each CWorld and is reached
+    // as World.Debug (registered via RegisterWorldLuaSubsystem, exactly like World.Net). Screen-space
+    // debug text + world debug shapes; trailing args (thickness, depth-test, duration) are optional.
+    // Dev/Debug only -- the draws are no-ops in Shipping. Methods forward to this world's draw interface.
+    struct FWorldDebugInterface
+    {
+        CWorld* World = nullptr;
+
+        void DrawText(FStringView Text, TOptional<FVector4> Color);
+        void DrawLine(FVector3 Start, FVector3 End, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
+        void DrawBox(FVector3 Center, FVector3 HalfExtents, FQuat Rotation, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
+        void DrawSphere(FVector3 Center, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
+        void DrawCapsule(FVector3 Start, FVector3 End, float Radius, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
+        void DrawCone(FVector3 Apex, FVector3 Direction, float AngleRadians, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
+        void DrawArrow(FVector3 Start, FVector3 Direction, float Length, FVector4 Color, TOptional<float> Thickness, TOptional<bool> bDepthTest, TOptional<float> Duration);
     };
 
     REFLECT()
@@ -178,6 +196,9 @@ namespace Lumina
 
         /** Lua-facing net query facade (World.Net). */
         NODISCARD FNetLuaInterface* GetNetInterface() { return &NetInterface; }
+
+        /** Lua-facing debug-draw facade (World.Debug). */
+        NODISCARD FWorldDebugInterface* GetDebugInterface() { return &DebugInterface; }
         
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
@@ -215,6 +236,10 @@ namespace Lumina
         static CWorld* DuplicateWorld(CWorld* OwningWorld);
 
         IRenderScene* GetRenderer() const { return RenderScene.get(); }
+
+        // A world renders only when the process has a real RHI (not headless) and the world isn't a
+        // dedicated server (which is invisible even in the editor). Gates RenderScene creation.
+        NODISCARD bool ShouldRender() const;
 
         // Per-world UI (Rml context + documents); created in InitializeWorld, freed in TeardownWorld.
         FWorldUIContext* GetUIContext() const { return UIContext.get(); }
@@ -368,8 +393,9 @@ namespace Lumina
 
         FWorldContext*                                      OwningContext = nullptr;
 
-        // Lua-facing facade bound under World.Net; .World points back at this world.
+        // Lua-facing facades bound under World.Net / World.Debug; .World points back at this world.
         FNetLuaInterface                                    NetInterface;
+        FWorldDebugInterface                                DebugInterface;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
 

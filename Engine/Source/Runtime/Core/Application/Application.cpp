@@ -2,6 +2,7 @@
 #include "Application.h"
 #include "Assets/AssetManager/AssetManager.h"
 #include "Core/CommandLine/CommandLine.h"
+#include "Core/Engine/Engine.h"
 #include "Core/Module/ModuleManager.h"
 #include "Core/Windows/Window.h"
 #include "Core/Windows/WindowTypes.h"
@@ -28,22 +29,30 @@ namespace Lumina
         LOG_TRACE("Initializing Lumina");
 
         PreInitStartup();
-        CreateApplicationWindow();
+
+        // Headless dedicated server: no window, no input viewport, no rendering surface.
+        if (!GIsHeadless)
+        {
+            CreateApplicationWindow();
+        }
 
         EventProcessor.RegisterEventHandler(&FInputViewportRegistry::Get(), (int32)EInputLayer::Viewport);
 
         #if !WITH_EDITOR
-        PrimaryViewport = MakeUnique<FInputViewport>();
-        const FUIntVector2 WinExtent = MainWindow->GetExtent();
-        PrimaryViewport->SetWindowRect(0, 0, int(WinExtent.x), int(WinExtent.y));
-        PrimaryViewport->SetRenderTargetSize(WinExtent.x, WinExtent.y);
-        PrimaryViewport->SetHovered(true);
-        PrimaryViewport->SetFocused(true);
+        if (!GIsHeadless)
+        {
+            PrimaryViewport = MakeUnique<FInputViewport>();
+            const FUIntVector2 WinExtent = MainWindow->GetExtent();
+            PrimaryViewport->SetWindowRect(0, 0, int(WinExtent.x), int(WinExtent.y));
+            PrimaryViewport->SetRenderTargetSize(WinExtent.x, WinExtent.y);
+            PrimaryViewport->SetHovered(true);
+            PrimaryViewport->SetFocused(true);
 
-        FInputViewportRegistry::Get().Register(PrimaryViewport.get());
-        FInputViewportRegistry::Get().SetActiveViewport(PrimaryViewport.get());
-        FInputViewportRegistry::Get().SetHoveredViewport(PrimaryViewport.get());
-        FInputViewportRegistry::Get().SetFocusedViewport(PrimaryViewport.get());
+            FInputViewportRegistry::Get().Register(PrimaryViewport.get());
+            FInputViewportRegistry::Get().SetActiveViewport(PrimaryViewport.get());
+            FInputViewportRegistry::Get().SetHoveredViewport(PrimaryViewport.get());
+            FInputViewportRegistry::Get().SetFocusedViewport(PrimaryViewport.get());
+        }
         #endif
 
         GEngine->Init();
@@ -53,16 +62,22 @@ namespace Lumina
         {
             LUMINA_PROFILE_FRAME();
 
-            MainWindow->ProcessMessages();
+            if (!GIsHeadless)
+            {
+                MainWindow->ProcessMessages();
 
-            // Run before the world ticks so script OnUpdate observes handler effects.
-            FInputViewportRegistry::Get().DispatchActions();
+                // Run before the world ticks so script OnUpdate observes handler effects.
+                FInputViewportRegistry::Get().DispatchActions();
+            }
 
             bool bApplicationWantsExit = ShouldExit();
 
             bEngineWantsExit = !GEngine->Update(bApplicationWantsExit);
 
-            FInputViewportRegistry::Get().EndFrame(GEngine->GetDeltaTime());
+            if (!GIsHeadless)
+            {
+                FInputViewportRegistry::Get().EndFrame(GEngine->GetDeltaTime());
+            }
         }
 
         LOG_TRACE("Shutting down Lumina");
@@ -136,6 +151,11 @@ namespace Lumina
 
     bool FApplication::ShouldExit() const
     {
+        // No window to poll for a close request when headless; exit is request-driven only.
+        if (GIsHeadless)
+        {
+            return bExitRequested;
+        }
         return MainWindow->ShouldClose() || bExitRequested;
     }
 }

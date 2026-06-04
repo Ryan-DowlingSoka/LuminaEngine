@@ -12,7 +12,7 @@ namespace Lumina
         GENERATED_BODY()
 
         /** Display name of the entity shown in the editor hierarchy. */
-        PROPERTY(ReadOnly)
+        PROPERTY(ReadOnly, Replicated)
         FName Name;
     };
 }

@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "StringProperty.h"
+#include "Containers/Name.h"
+#include "Core/Serialization/NetArchive.h"
 
 namespace Lumina
 {
@@ -23,6 +25,41 @@ namespace Lumina
     {
         FName* StringValue = (FName*)Value;
         Ar << *StringValue;
+    }
+
+    void FNameProperty::NetSerialize(FNetArchive& Ar, void* Value)
+    {
+        FName* NameValue = static_cast<FName*>(Value);
+
+        if (Ar.IsWriting())
+        {
+            // Indexed path (replication): a compact net index; the string is exported once via NameExport.
+            if (Ar.NameToNetIndex)
+            {
+                WriteVarUInt(Ar, NameValue->IsNone() ? 0u : Ar.NameToNetIndex(*NameValue));
+                return;
+            }
+
+            Ar << *NameValue;
+        }
+        else
+        {
+            if (Ar.NetIndexToName)
+            {
+                const uint32 Index = ReadVarUInt(Ar);
+                if (Index != 0)
+                {
+                    Ar.NetIndexToName(Index, *NameValue);
+                }
+                else
+                {
+                    *NameValue = FName();
+                }
+                return;
+            }
+
+            Ar << *NameValue;
+        }
     }
 
     bool FStringProperty::Identical(const void* ValueA, const void* ValueB) const

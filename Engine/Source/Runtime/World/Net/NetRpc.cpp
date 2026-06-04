@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "NetRpc.h"
+
+#include <algorithm>
 #include "NetWorldState.h"
 #include "NetReplication.h"
 #include "World/World.h"
@@ -9,6 +11,7 @@
 #include "Scripting/Lua/ScriptTypes.h"
 #include "Scripting/Lua/Class.h"
 #include "Networking/INetworkTransport.h"
+#include "Core/Profiler/Profile.h"
 #include "Core/Serialization/NetArchive.h"
 #include "Log/Log.h"
 #include "lua.h"
@@ -77,11 +80,10 @@ namespace Lumina::Net
                     WriteTag(ELuaArgType::String);
                     size_t Len = 0;
                     const char* Str = lua_tolstring(L, Index, &Len);
-                    uint32 Len32 = static_cast<uint32>(Len);
-                    Ar << Len32;
-                    if (Len32 > 0)
+                    WriteVarUInt(Ar, static_cast<uint32>(Len)); // 1 byte for the common short string
+                    if (Len > 0)
                     {
-                        Ar.Serialize(const_cast<char*>(Str), static_cast<int64>(Len32));
+                        Ar.Serialize(const_cast<char*>(Str), static_cast<int64>(Len));
                     }
                 }
                 break;
@@ -175,8 +177,7 @@ namespace Lumina::Net
 
             case ELuaArgType::String:
                 {
-                    uint32 Len = 0;
-                    Ar << Len;
+                    const uint32 Len = ReadVarUInt(Ar);
                     if (Ar.HasError() || Len > MaxRpcStringLen)
                     {
                         lua_pushnil(L);
@@ -187,12 +188,20 @@ namespace Lumina::Net
                         lua_pushlstring(L, "", 0);
                         break;
                     }
+                    // Fast path: push straight from the source buffer (lua_pushlstring interns its own copy),
+                    // skipping our intermediate heap buffer. Falls back to a copy when the cursor isn't
+                    // byte-aligned (e.g. a string nested in a table right after a 1-bit bool).
+                    if (const uint8* InPlace = Ar.ReadBytesInPlace(static_cast<int64>(Len)))
+                    {
+                        lua_pushlstring(L, reinterpret_cast<const char*>(InPlace), Len);
+                        break;
+                    }
                     TVector<char> Buffer;
                     Buffer.resize(Len);
                     Ar.Serialize(Buffer.data(), static_cast<int64>(Len));
                     if (Ar.HasError())
                     {
-                        lua_pushnil(L); 
+                        lua_pushnil(L);
                         break;
                     }
                     lua_pushlstring(L, Buffer.data(), Len);
@@ -259,7 +268,7 @@ namespace Lumina::Net
 
             const int Top = lua_gettop(L);
             int Available = (FirstArgIndex <= Top) ? (Top - FirstArgIndex + 1) : 0;
-            if (Available > 255) { Available = 255; }
+            Available = std::min(Available, 255);
             uint8 ArgCount = static_cast<uint8>(Available);
             Writer << ArgCount;
             for (uint8 i = 0; i < ArgCount; ++i)
@@ -330,17 +339,43 @@ namespace Lumina::Net
                 {
                     TVector<uint8> Msg;
                     Net::BuildObjectExport(State->OutObjects, State->OutObjects.PendingExports, Msg);
-                    if (bBroadcast) Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
-                    else            Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    if (bBroadcast)
+                    {
+                        Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
+                    else
+                    {
+                        Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
                     State->OutObjects.PendingExports.clear();
                 }
                 if (!State->OutAssets.PendingExports.empty())
                 {
                     TVector<uint8> Msg;
                     Net::BuildAssetExport(State->OutAssets, State->OutAssets.PendingExports, Msg);
-                    if (bBroadcast) Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
-                    else            Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    if (bBroadcast)
+                    {
+                        Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
+                    else
+                    {
+                        Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
                     State->OutAssets.PendingExports.clear();
+                }
+                if (!State->OutNames.PendingExports.empty())
+                {
+                    TVector<uint8> Msg;
+                    Net::BuildNameExport(State->OutNames, State->OutNames.PendingExports, Msg);
+                    if (bBroadcast)
+                    {
+                        Net::BroadcastFramed(*State->Transport, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
+                    else
+                    {
+                        Net::SendFramed(*State->Transport, Dest, Msg.data(), static_cast<SIZE_T>(Msg.size()), 0, ESendMode::Reliable);
+                    }
+                    State->OutNames.PendingExports.clear();
                 }
             };
 
@@ -445,6 +480,7 @@ namespace Lumina::Net
 
     void ReceiveScriptRpc(CWorld* World, FConnectionHandle Sender, const uint8* Data, SIZE_T Size)
     {
+        LUMINA_PROFILE_SCOPE();
         if (World == nullptr)
         {
             return;

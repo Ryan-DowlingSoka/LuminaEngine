@@ -11,6 +11,30 @@ namespace Lumina::Lua
             return (C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || (C >= '0' && C <= '9') || C == '_';
         }
 
+        bool IsKnownDirectiveName(FStringView Name)
+        {
+            return Name == "export" || Name == "replicated" || Name == "rpc";
+        }
+
+        // True if the line contains an "@export"/"@replicated"/"@rpc" token anywhere. Used to spot a
+        // malformed annotation (a directive whose @ isn't glued to the leading --) so it can be flagged.
+        bool ContainsKnownDirective(FStringView Line)
+        {
+            size_t i = 0;
+            while ((i = Line.find('@', i)) != FStringView::npos)
+            {
+                const size_t NameStart = i + 1;
+                size_t End = NameStart;
+                while (End < Line.size() && IsIdentChar(Line[End])) ++End;
+                if (IsKnownDirectiveName(Line.substr(NameStart, End - NameStart)))
+                {
+                    return true;
+                }
+                i = NameStart;
+            }
+            return false;
+        }
+
         FStringView Trim(FStringView S)
         {
             size_t B = 0;
@@ -101,8 +125,10 @@ namespace Lumina::Lua
             }
         }
 
-        // Apply all "@name(args)" tokens on one comment line into the pending annotation. When Diags is
-        // non-null, also reports duplicate parameters (Line/Col/EndCol locate the annotation comment).
+        // Apply the single leading "--@name(args)" directive into the pending annotation. The directive's
+        // @ must come immediately after the -- comment marker, so Line (trimmed) begins with "--@" and
+        // there is at most one directive per line. When Diags is non-null, also reports duplicate
+        // parameters (Line/Col/EndCol locate the annotation comment).
         void ParseAnnotationLine(FStringView Line, FScriptMemberAnnotation& Pending, bool& bAnyPending,
                                  int DiagLine, int DiagCol, int DiagEndCol,
                                  TVector<FScriptAnnotationDiagnostic>* Diags)
@@ -124,26 +150,25 @@ namespace Lumina::Lua
                 Diags->push_back(eastl::move(D));
             };
 
-            size_t i = 0;
-            while ((i = Line.find('@', i)) != FStringView::npos)
+            // Line begins with "--@"; the directive name starts right after the '@' at index 2.
+            const size_t NameStart = 3;
+            size_t i = NameStart;
+            while (i < Line.size() && IsIdentChar(Line[i])) ++i;
+            FStringView Name = Line.substr(NameStart, i - NameStart);
+
+            FStringView Args;
+            if (i < Line.size() && Line[i] == '(')
             {
-                ++i;
-                const size_t NameStart = i;
-                while (i < Line.size() && IsIdentChar(Line[i])) ++i;
-                FStringView Name = Line.substr(NameStart, i - NameStart);
-
-                FStringView Args;
-                if (i < Line.size() && Line[i] == '(')
+                const size_t Open = i + 1;
+                const size_t Close = Line.find(')', Open);
+                if (Close != FStringView::npos)
                 {
-                    const size_t Open = i + 1;
-                    const size_t Close = Line.find(')', Open);
-                    if (Close != FStringView::npos)
-                    {
-                        Args = Line.substr(Open, Close - Open);
-                        i = Close + 1;
-                    }
+                    Args = Line.substr(Open, Close - Open);
+                    i = Close + 1;
                 }
+            }
 
+            {
                 if (Name == "export")
                 {
                     if (Pending.bExport) FlagDuplicateDirective("export");
@@ -268,7 +293,11 @@ namespace Lumina::Lua
                 const int Col    = int(Lead) + 1;
                 const int EndCol = int(RawEnd) + 1;
 
-                if (Trimmed.size() >= 3 && Trimmed[0] == '-' && Trimmed[1] == '-' && Trimmed.find('@') != FStringView::npos)
+                const bool bComment = Trimmed.size() >= 2 && Trimmed[0] == '-' && Trimmed[1] == '-';
+
+                // An annotation's '@' must come immediately after the '--' (i.e. the comment is "--@...").
+                // Anything between the '--' and the '@' means it is NOT an annotation.
+                if (bComment && Trimmed.size() >= 3 && Trimmed[2] == '@')
                 {
                     if (!bAnyPending)
                     {
@@ -280,8 +309,25 @@ namespace Lumina::Lua
                     continue;
                 }
 
+                // A comment that glues characters between the '--' and a directive keyword (e.g.
+                // "--asdadad@export(...)") is almost certainly a malformed annotation -- flag it so the
+                // typo is visible rather than silently ignored. Prose comments conventionally put a space
+                // after '--' (Trimmed[2] is whitespace), so a sentence merely mentioning @export is spared.
+                if (bComment && OutDiags != nullptr && Trimmed.size() >= 3
+                    && Trimmed[2] != ' ' && Trimmed[2] != '\t'
+                    && ContainsKnownDirective(Trimmed))
+                {
+                    FScriptAnnotationDiagnostic D;
+                    D.Line      = LineNo;
+                    D.Column    = Col;
+                    D.EndColumn = EndCol;
+                    D.Message   = "Annotation directive must come immediately after '--' (e.g. '--@export'); "
+                                  "remove the characters between '--' and '@'.";
+                    OutDiags->push_back(eastl::move(D));
+                }
+
                 // Plain comments and blank lines don't break an annotation from its declaration.
-                if (Trimmed.empty() || (Trimmed.size() >= 2 && Trimmed[0] == '-' && Trimmed[1] == '-'))
+                if (Trimmed.empty() || bComment)
                 {
                     continue;
                 }

@@ -63,7 +63,7 @@ namespace Lumina::PrivateAccess
         };                                                                                   \
         template struct TTagInstaller<Tag, Tag::TPtr, &ClassType::MemberName>;               \
         template<typename... TArgs>                                                          \
-            requires std::is_invocable_v<Tag::TPtr, TArgs...>                                \
+        requires std::is_invocable_v<Tag::TPtr, TArgs...>                                    \
         constexpr decltype(auto) MemberName(TArgs&&... Args)                                 \
         {                                                                                    \
             return std::invoke(GetMemberPtr(Tag{}), std::forward<TArgs>(Args)...);           \

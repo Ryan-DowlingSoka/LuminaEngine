@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "NetArchive.h"
+
+#include <algorithm>
 #include "Memory/Memcpy.h"
 
 namespace Lumina
@@ -36,10 +38,7 @@ namespace Lumina
             (*WriteBytes)[ByteIndex] &= static_cast<uint8>(~(1u << BitIndex));
         }
         ++BitCursor;
-        if (BitCursor > TotalBits)
-        {
-            TotalBits = BitCursor;
-        }
+        TotalBits = std::max(BitCursor, TotalBits);
     }
 
     uint32 FNetArchive::ReadBit()
@@ -79,10 +78,7 @@ namespace Lumina
                 }
                 Memory::Memcpy(WriteBytes->data() + ByteIndex, Bytes, static_cast<size_t>(ByteCount));
                 BitCursor += NumBits;
-                if (BitCursor > TotalBits)
-                {
-                    TotalBits = BitCursor;
-                }
+                TotalBits = std::max(BitCursor, TotalBits);
             }
             else
             {
@@ -142,6 +138,46 @@ namespace Lumina
         }
     }
 
+    void FNetArchive::AlignToByte()
+    {
+        const int64 Rem = BitCursor & 7;
+        if (Rem == 0)
+        {
+            return;
+        }
+        const int64 Pad = 8 - Rem;
+        if (IsWriting())
+        {
+            for (int64 i = 0; i < Pad; ++i)
+            {
+                WriteBit(0u);
+            }
+        }
+        else
+        {
+            BitCursor += Pad;
+            if (BitCursor > TotalBits)
+            {
+                SetHasError(true);
+            }
+        }
+    }
+
+    const uint8* FNetArchive::ReadBytesInPlace(int64 NumBytes)
+    {
+        if (!IsReading() || NumBytes < 0 || (BitCursor & 7) != 0)
+        {
+            return nullptr;
+        }
+        if (BitCursor + NumBytes * 8 > TotalBits)
+        {
+            return nullptr; // out of range -- let the caller's Serialize fallback flag the error
+        }
+        const uint8* Ptr = ReadBytes + (BitCursor >> 3);
+        BitCursor += NumBytes * 8;
+        return Ptr;
+    }
+
     void WriteVarUInt(FNetArchive& Ar, uint32 Value)
     {
         while (Value >= 0x80)
@@ -162,7 +198,10 @@ namespace Lumina
         do
         {
             Ar << Byte;
-            if (Ar.HasError()) { break; }
+            if (Ar.HasError())
+            {
+                break;
+            }
             Value |= static_cast<uint32>(Byte & 0x7F) << Shift;
             Shift += 7;
         }

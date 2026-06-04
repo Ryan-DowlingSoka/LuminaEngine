@@ -32,20 +32,21 @@ namespace Lumina
 		AssignedType OriginalValue;
 	};
 
+	/** Forces an atomic value to return to its original value when this goes out of scope */
 	template <typename AtomicType>
 	requires(eastl::atomic<AtomicType>::is_always_lock_free)
 	struct TGuardAtomicValue : private INonCopyable
 	{
 	    NODISCARD TGuardAtomicValue(eastl::atomic<AtomicType>& InAtomic, AtomicType NewValue)
 	        : AtomicRef(InAtomic)
-	        , OriginalValue(InAtomic.load(std::memory_order_relaxed)) // capture original value
+	        , OriginalValue(InAtomic.load(std::memory_order_relaxed))
 	    {
-	        AtomicRef.store(NewValue, std::memory_order_relaxed); // set new value
+	        AtomicRef.store(NewValue, std::memory_order_relaxed);
 	    }
 	
 	    ~TGuardAtomicValue()
 	    {
-	        AtomicRef.store(OriginalValue, std::memory_order_relaxed); // reset to original
+	        AtomicRef.store(OriginalValue, std::memory_order_relaxed);
 	    }
 	
 	    FORCEINLINE const AtomicType& GetOriginalValue() const
@@ -59,7 +60,7 @@ namespace Lumina
 	};
 
 	template<typename T>
-	requires(eastl::is_integral_v<T>)
+	requires(eastl::is_integral_v<T> && eastl::atomic<T>::is_always_lock_free)
 	struct TAtomicScopeGuard : private INonCopyable
 	{
 	    eastl::atomic<T>& Ref;

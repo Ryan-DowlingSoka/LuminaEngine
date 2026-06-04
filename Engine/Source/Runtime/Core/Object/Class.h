@@ -122,6 +122,21 @@ namespace Lumina
          *  honoring a custom StructOps serializer. Used by FProperty::NetSerialize for nested structs. */
         RUNTIME_API void NetSerializeAll(FNetArchive& Ar, void* Data) const;
 
+        //~ Per-field net delta helpers. The PROPERTY(Replicated) set/order is identical on both peers (same
+        //~ build), so a changed-field bitmask is self-describing on the wire -- no per-field tags or sizes.
+
+        /** Count of replicated fields (the bitmask width). Same walk/filter as NetSerializeProperties. */
+        RUNTIME_API uint32 GetNetReplicatedPropertyCount() const;
+
+        /** Writer-side diff support: serialize each replicated field into its own whole-byte buffer so the
+         *  caller can compare against the last-sent baseline. Net-index hooks are copied from HookSource so
+         *  object/asset/name refs mint exactly as they would on the live archive. */
+        RUNTIME_API void NetSerializeReplicatedToBuffers(const FNetArchive& HookSource, void* Data, TVector<TVector<uint8>>& OutPerField) const;
+
+        /** Reader side: for each field whose Mask bit is set, deserialize it then byte-align (matching the
+         *  whole-byte field buffers the writer emitted). Fields whose bit is clear keep their current value. */
+        RUNTIME_API void NetReadReplicatedMasked(FNetArchive& Ar, void* Data, const uint8* Mask) const;
+
         /** Structured (named-field) variant; drives each property's SerializeItem. Used by the
          *  JSON backend so reflected data round-trips through human-readable named fields. */
         RUNTIME_API void SerializeTaggedProperties(IStructuredArchive::FRecord Record, void* Data, void const* Defaults = nullptr) const;

@@ -13,6 +13,12 @@ namespace Lumina
 
 	void SAudioSystem::Teardown(const FSystemContext& Context) noexcept
 	{
+		// No audio device in a headless dedicated server (Audio::Initialize is skipped).
+		if (GAudioContext == nullptr)
+		{
+			return;
+		}
+
 		// Stop all sounds owned by audio source components in this world.
 		auto View = Context.CreateView<SAudioSourceComponent>();
 		View.each([](SAudioSourceComponent& Audio)
@@ -40,7 +46,13 @@ namespace Lumina
 	void SAudioSystem::Update(const FSystemContext& SystemContext) noexcept
 	{
 		LUMINA_PROFILE_SCOPE();
-		
+
+		// No audio device in a headless dedicated server (Audio::Initialize is skipped).
+		if (GAudioContext == nullptr)
+		{
+			return;
+		}
+
 		auto&& XFormStorage = SystemContext.GetStorage<STransformComponent>();
 
 		{

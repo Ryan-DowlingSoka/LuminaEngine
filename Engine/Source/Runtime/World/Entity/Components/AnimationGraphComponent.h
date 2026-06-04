@@ -18,7 +18,7 @@ namespace Lumina
         GENERATED_BODY()
 
         /** Compiled animation graph asset evaluated each frame for this entity. */
-        PROPERTY(Script, Editable, Category = "Animation")
+        PROPERTY(Script, Editable, Replicated, Category = "Animation")
         TObjectPtr<CAnimationGraph> Graph;
 
         /**
