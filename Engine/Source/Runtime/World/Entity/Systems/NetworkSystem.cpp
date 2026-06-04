@@ -35,7 +35,6 @@ namespace Lumina
 {
     namespace
     {
-        // Loopback port for in-editor listen-server PIE. CVar-ize when real connections land.
         constexpr uint16 NetDefaultPort = 7777;
 
         bool IsServerMode(ENetMode Mode)
@@ -77,10 +76,10 @@ namespace Lumina
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
                 if (!Net.bNetLoadOnClient)
                 {
-                    continue; // server-only, never gets a network identity
+                    continue;
                 }
                 Net.NetGUID            = FNetGUID{ StableId++ };
-                Net.OwningConnectionId = 0; // unowned until the server assigns it (SetOwner)
+                Net.OwningConnectionId = 0;
                 State.GuidTable.Register(Net.NetGUID, Entity);
 
                 // Server tracks live stable ids so a level entity destroyed at runtime can be despawned to
@@ -143,7 +142,7 @@ namespace Lumina
             for (entt::entity Entity : View)
             {
                 SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (!Net.bNetLoadOnClient) { continue; } // server-only, not replicated
+                if (!Net.bNetLoadOnClient) { continue; }
                 Net::WriteNetGuid(Writer, Net.NetGUID.Value);
                 WriteVarUInt(Writer, Net.OwningConnectionId);
             }
@@ -177,20 +176,6 @@ namespace Lumina
             }
         }
 
-        bool VectorContains(const TVector<uint32>& V, uint32 Value)
-        {
-            for (uint32 X : V)
-            {
-                if (X == Value)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // Net-index cache helpers live in the Net namespace (NetReplication.cpp) so the RPC path can share
-        // them. See the package-map notes there.
 
         // Serialize one SpawnEntity message for a specific recipient (TargetConn). Carries the script-rep
         // baseline: all --@replicated fields eligible for that recipient (InitialOnly included), seeding the
@@ -217,52 +202,39 @@ namespace Lumina
             NetQuantize::FQuantizedVector::FromVector(Scale, NetQuantize::ScaleQuantum).Write(Writer);
         }
         
-        // Server lifetime maintenance for dynamic entities ONLY.
+        // Server: when a networked entity is destroyed, drop its dynamic NetGUID so the per-client relevancy diff
+        // sees Find()==null next tick and despawns it. Runs on the game thread (entt signals are synchronous,
+        // same as the net system), so the GuidTable mutation is safe.
+        void OnNetworkComponentDestroyed(entt::registry& Registry, entt::entity Entity)
+        {
+            FNetWorldState* State = Registry.ctx().find<FNetWorldState>();
+            if (State == nullptr)
+            {
+                return;
+            }
+            CWorld** WorldPtr = Registry.ctx().find<CWorld*>(); // find (not get): ctx may be gone during world teardown
+            CWorld*  World    = WorldPtr ? *WorldPtr : nullptr;
+            if (World == nullptr || !IsServerMode(World->GetNetMode()))
+            {
+                return;
+            }
+            const SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
+            if (Net.NetGUID.Value >= NetGUID_DynamicStart) // stable GUIDs handled by ReplicateStableDespawns
+            {
+                State->GuidTable.Unregister(Net.NetGUID);
+            }
+        }
+
+        // Server: assign NetGUIDs to newly-spawned dynamic entities (destruction is handled by the on_destroy hook).
         void MaintainDynamicLifetime(entt::registry& Registry, FNetWorldState& State)
         {
             LUMINA_PROFILE_SCOPE();
-            auto View = Registry.view<SNetworkComponent>();
-
-            for (entt::entity Entity : View)
+            for (auto [Entity, Net] : Registry.view<SNetworkComponent>().each())
             {
-                SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (!Net.bNetLoadOnClient)
-                {
-                    continue; // server-only, never replicated to clients
-                }
-                if (Net.NetGUID.Value == 0)
+                if (Net.bNetLoadOnClient && Net.NetGUID.Value == 0)
                 {
                     Net.NetGUID = State.GuidTable.AllocateDynamic();
                     State.GuidTable.Register(Net.NetGUID, Entity);
-                }
-            }
-
-            TVector<uint32> Live;
-            for (entt::entity Entity : View)
-            {
-                SNetworkComponent& Net = View.get<SNetworkComponent>(Entity);
-                if (Net.NetGUID.Value < NetGUID_DynamicStart || !Net.bReplicates || !Net.bNetLoadOnClient)
-                {
-                    continue;
-                }
-                Live.push_back(Net.NetGUID.Value);
-                if (!VectorContains(State.KnownSpawnedGuids, Net.NetGUID.Value))
-                {
-                    State.KnownSpawnedGuids.push_back(Net.NetGUID.Value);
-                }
-            }
-
-            for (size_t i = 0; i < State.KnownSpawnedGuids.size(); )
-            {
-                const uint32 Guid = State.KnownSpawnedGuids[i];
-                if (!VectorContains(Live, Guid))
-                {
-                    State.GuidTable.Unregister(FNetGUID{ Guid }); // destroyed; per-client diff will despawn it
-                    State.KnownSpawnedGuids.erase(State.KnownSpawnedGuids.begin() + i);
-                }
-                else
-                {
-                    ++i;
                 }
             }
         }
@@ -626,8 +598,7 @@ namespace Lumina
         }
 
         // Add FRepTransform to entities that replicate movement, drop it from those that no longer qualify, and
-        // keep the NetGUID mirror current. Mirrors ConfigureProxyPhysics's lazy, idempotent approach. Runs on
-        // the (exclusive) SNetworkSystem, so the structural changes here are safe.
+        // keep the NetGUID mirror current. Runs on the (exclusive) SNetworkSystem, so structural changes are safe.
         void EnsureRepTransforms(entt::registry& Registry)
         {
             LUMINA_PROFILE_SCOPE();
@@ -648,7 +619,7 @@ namespace Lumina
                 }
                 else if (bQualifies)
                 {
-                    Registry.get<FRepTransform>(Entity).NetGUID = Net.NetGUID.Value; // keep fresh after adoption
+                    Registry.get<FRepTransform>(Entity).NetGUID = Net.NetGUID.Value;
                 }
             }
         }
@@ -658,6 +629,7 @@ namespace Lumina
             float ServerTime, TVector<uint8>& ReliableBroadcast)
         {
             LUMINA_PROFILE_SCOPE();
+            ++State.RelevancyTick; // relevancy generation stamp for this tick
             NetGraph::BuildExtract(Registry, State.Extract, State.OwnerToRecord);
             NetGraph::BuildGrid(State.Extract, Settings, State.Grid);
 
@@ -677,13 +649,15 @@ namespace Lumina
             TVector<TVector<FTransformSendRecord>> ClientRecords;  ClientRecords.resize(NumClients);
 
             uint32 RelevantSum = 0, RelevantMax = 0, SpawnsSum = 0, DespawnsSum = 0;
-            TVector<uint32>      Gathered;
-            TVector<ENetLODTier> GatheredTier;
 
-            // --- Phase A: gather + relevancy diff per client; build reliable (spawn/despawn) + transform records ---
+            // AOI records gathered for one client, copied from the grid's cell-ordered arrays so the relevancy
+            // diff reads the hot fields (find key, flags, tier) contiguously. Reused across clients.
+            struct FGathered { uint32 Rec; uint32 Guid; uint8 Flags; ENetLODTier Tier; };
+            TVector<FGathered> Gathered;
+
+            // --- Phase A: per-client gather + relevancy diff + spawn/despawn/transform records ---
             for (uint32 ci = 0; ci < NumClients; ++ci)
             {
-                // One zone per client: the AOI gather + relevancy hashmap diff is the cache-heavy inner loop.
                 LUMINA_PROFILE_SECTION("Relevancy/Client");
                 const uint32 ConnId = State.ConnectedClientIds[ci];
                 FNetClientView& CV  = State.ClientViews[ConnId];
@@ -693,7 +667,6 @@ namespace Lumina
                 const FVector3 VP = Ex.WorldPos[VpIt->second]; // viewpoint in world space
 
                 Gathered.clear();
-                GatheredTier.clear();
                 int32 Vcx, Vcz;
                 Grid.CellCoords(VP, Vcx, Vcz);
                 for (int32 cz = Vcz - CellRadius; cz <= Vcz + CellRadius; ++cz)
@@ -705,46 +678,49 @@ namespace Lumina
                         const int32 Cell = Grid.CellIndex(cx, cz);
                         for (int32 s = Grid.CellStart[Cell]; s < Grid.CellStart[Cell + 1]; ++s)
                         {
-                            const uint32 Rec = Grid.SortedRecords[s];
-                            const FVector3& P = Ex.WorldPos[Rec]; // world-space relevancy
+                            const FVector3& P = Grid.SortedWorldPos[s];
                             const float DX = P.x - VP.x;
                             const float DZ = P.z - VP.z;
-                            ENetLODTier Tier = NetGraph::TierForDistanceSq(DX * DX + DZ * DZ, Settings);
+                            ENetLODTier Tier  = NetGraph::TierForDistanceSq(DX * DX + DZ * DZ, Settings);
+                            const uint8 Flags = Grid.SortedFlags[s];
                             if (Tier == ENetLODTier::Cull)
                             {
-                                if (!(Ex.Flags[Rec] & NETREC_AlwaysRelevant)) { continue; }
+                                if (!(Flags & NETREC_AlwaysRelevant)) { continue; }
                                 Tier = ENetLODTier::Far;
                             }
-                            Gathered.push_back(Rec);
-                            GatheredTier.push_back(Tier);
+                            Gathered.push_back({ Grid.SortedRecords[s], Grid.SortedGuid[s], Flags, Tier });
                         }
                     }
                 }
 
-                for (auto& KV : CV.Relevant) { KV.second.bRelevant = false; }
+                // An entry is "relevant this tick" iff its RelevantTick == State.RelevancyTick.
+                TVector<uint8>&                Reliable = ClientReliable[ci];
+                TVector<FTransformSendRecord>& Records  = ClientRecords[ci];
 
-                TVector<uint8>& Reliable = ClientReliable[ci];
-                for (size_t g = 0; g < Gathered.size(); ++g)
+                // Single pass: relevancy diff (spawn/baseline on enter) + transform-record build.
+                for (const FGathered& G : Gathered)
                 {
-                    const uint32 Rec  = Gathered[g];
-                    const uint32 Guid = Ex.Guid[Rec];
-                    const bool   bDyn = (Ex.Flags[Rec] & NETREC_Dynamic) != 0;
+                    const uint32 Rec   = G.Rec;
+                    const uint32 Guid  = G.Guid;
+                    const uint8  Flags = G.Flags;
+                    const bool   bDyn  = (Flags & NETREC_Dynamic) != 0;
+
+                    FRelevantEntry* EntryPtr;
                     auto It = CV.Relevant.find(Guid);
                     if (It == CV.Relevant.end())
                     {
                         // Hysteresis: a NEW entity only becomes relevant inside the (smaller) enter radius;
-                        // existing ones stay relevant out to the leave radius (the gather bound above). Always
-                        // include AlwaysRelevant entities.
-                        if (!(Ex.Flags[Rec] & NETREC_AlwaysRelevant))
+                        // existing ones stay relevant out to the leave radius (the gather bound above).
+                        if (!(Flags & NETREC_AlwaysRelevant))
                         {
-                            const FVector3& P = Ex.WorldPos[Rec]; // world-space relevancy
+                            const FVector3& P = Ex.WorldPos[Rec];
                             const float DDX = P.x - VP.x;
                             const float DDZ = P.z - VP.z;
                             if (DDX * DDX + DDZ * DDZ > EnterR2) { continue; }
                         }
                         FRelevantEntry E;
-                        E.Tier         = GatheredTier[g];
-                        E.bRelevant    = true;
+                        E.Tier         = G.Tier;
+                        E.RelevantTick = State.RelevancyTick;
                         E.bDynamic     = bDyn;
                         E.TimeOutOfAOI = 0.0f;
                         if (bDyn)
@@ -766,8 +742,8 @@ namespace Lumina
                         {
                             E.bNeedsBaseline = true; // stable entity: client has it from the map; send current pose once
 
-                            // replicated property changes the server made since map load
-                            // baseline; refs minted here are flushed by the export step before this reliable batch.
+                            // Join-in-progress: send the level entity's current replicated state once if it ever
+                            // changed; refs minted here are flushed by the export step before this reliable batch.
                             const entt::entity Ent = State.GuidTable.Find(FNetGUID{ Guid });
                             if (Ent != entt::null && Registry.valid(Ent) && Registry.any_of<FScriptRepState, FComponentRepState>(Ent))
                             {
@@ -787,20 +763,59 @@ namespace Lumina
                                 Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
                             }
                         }
-                        CV.Relevant.emplace(Guid, E);
+                        EntryPtr = &CV.Relevant.emplace(Guid, E).first->second; // used immediately, before any rehash
                     }
                     else
                     {
-                        It->second.bRelevant    = true;
-                        It->second.Tier         = GatheredTier[g];
+                        It->second.RelevantTick = State.RelevancyTick;
+                        It->second.Tier         = G.Tier;
                         It->second.TimeOutOfAOI = 0.0f;
+                        EntryPtr = &It->second;
+                    }
+
+                    // Transform stream (movement entities only; a non-movement pose rode the spawn baseline).
+                    if (Flags & NETREC_Movement)
+                    {
+                        FRelevantEntry& E = *EntryPtr;
+                        E.TimeSinceSent += DeltaTime;
+                        if (E.bBaselinePending)
+                        {
+                            E.bBaselinePending = false; // spawn carried the pose; hold the transform one tick
+                        }
+                        else
+                        {
+                            const bool bChanged  = (Flags & NETREC_Changed) != 0;
+                            const bool bScaleChg = (Flags & NETREC_ScaleChanged) != 0;
+                            const bool bBaseline = CV.bForceBaseline || E.bNeedsBaseline;
+
+                            // Rate LOD: Near every changed tick; Mid/Far throttle to tier rate; baseline bypasses.
+                            float Period = 0.0f;
+                            if (E.Tier == ENetLODTier::Mid)      { Period = (Settings.TierMidRate > 0.0f) ? 1.0f / Settings.TierMidRate : 0.0f; }
+                            else if (E.Tier == ENetLODTier::Far) { Period = (Settings.TierFarRate > 0.0f) ? 1.0f / Settings.TierFarRate : 0.0f; }
+                            const bool bCadence = (Period <= 0.0f) || (E.TimeSinceSent >= Period);
+
+                            if (bBaseline || (bChanged && bCadence))
+                            {
+                                E.bNeedsBaseline = false;
+                                E.TimeSinceSent  = 0.0f;
+                                FTransformSendRecord R;
+                                R.Guid   = Guid;
+                                R.Tier   = E.Tier;
+                                R.Pos    = Ex.Pos[Rec];
+                                R.Rot    = Ex.Rot[Rec].ToQuat();
+                                R.bScale = bScaleChg || bBaseline;
+                                R.Scale  = Ex.Scale[Rec].ToVector(NetQuantize::ScaleQuantum);
+                                Records.push_back(R);
+                            }
+                        }
                     }
                 }
 
+                // Expire entries not seen relevant this tick (left the AOI / destroyed) -> grace then despawn.
                 for (auto It = CV.Relevant.begin(); It != CV.Relevant.end(); )
                 {
                     FRelevantEntry& E = It->second;
-                    if (!E.bRelevant)
+                    if (E.RelevantTick != State.RelevancyTick)
                     {
                         const uint32 Guid = It->first;
                         const bool bDestroyed = (State.GuidTable.Find(FNetGUID{ Guid }) == entt::null);
@@ -824,50 +839,11 @@ namespace Lumina
                     ++It;
                 }
 
-                TVector<FTransformSendRecord>& Records = ClientRecords[ci];
-                for (size_t g = 0; g < Gathered.size(); ++g)
-                {
-                    const uint32 Rec  = Gathered[g];
-                    const uint32 Guid = Ex.Guid[Rec];
-                    auto It = CV.Relevant.find(Guid);
-                    if (It == CV.Relevant.end()) { continue; }
-                    // Non-movement entities don't stream a transform -- their pose rode the spawn baseline.
-                    if (!(Ex.Flags[Rec] & NETREC_Movement)) { continue; }
-                    FRelevantEntry& E = It->second;
-                    E.TimeSinceSent += DeltaTime;
-                    if (E.bBaselinePending) { E.bBaselinePending = false; continue; } // spawn carried the pose
-
-                    const bool bChanged  = (Ex.Flags[Rec] & NETREC_Changed) != 0;
-                    const bool bScaleChg = (Ex.Flags[Rec] & NETREC_ScaleChanged) != 0;
-                    const bool bBaseline = CV.bForceBaseline || E.bNeedsBaseline;
-
-                    // Rate LOD: Near sends every changed tick; Mid/Far throttle to their tier rate. A baseline
-                    // (newly relevant / keyframe) always sends regardless of cadence.
-                    float Period = 0.0f;
-                    if (E.Tier == ENetLODTier::Mid)      { Period = (Settings.TierMidRate > 0.0f) ? 1.0f / Settings.TierMidRate : 0.0f; }
-                    else if (E.Tier == ENetLODTier::Far) { Period = (Settings.TierFarRate > 0.0f) ? 1.0f / Settings.TierFarRate : 0.0f; }
-                    const bool bCadence = (Period <= 0.0f) || (E.TimeSinceSent >= Period);
-
-                    if (!(bBaseline || (bChanged && bCadence))) { continue; }
-                    E.bNeedsBaseline = false;
-                    E.TimeSinceSent  = 0.0f;
-
-                    FTransformSendRecord R;
-                    R.Guid   = Guid;
-                    R.Tier   = E.Tier;
-                    R.Pos    = Ex.Pos[Rec];
-                    R.Rot    = Ex.Rot[Rec].ToQuat();
-                    R.bScale = bScaleChg || bBaseline;
-                    R.Scale  = Ex.Scale[Rec].ToVector(NetQuantize::ScaleQuantum);
-                    Records.push_back(R);
-                }
-
                 CV.bForceBaseline = false;
                 RelevantSum += static_cast<uint32>(CV.Relevant.size());
                 RelevantMax  = std::max(RelevantMax, static_cast<uint32>(CV.Relevant.size()));
             }
 
-            // Per-tick cost drivers -- correlate timeline spikes against these plots in Tracy.
             LUMINA_PROFILE_VALUE("Net/RelevantMax", static_cast<int64>(RelevantMax));
             LUMINA_PROFILE_VALUE("Net/Spawns",      static_cast<int64>(SpawnsSum));
             LUMINA_PROFILE_VALUE("Net/Despawns",    static_cast<int64>(DespawnsSum));
@@ -1173,6 +1149,9 @@ namespace Lumina
 
             if (bServer)
             {
+                // Unregister a destroyed entity's dynamic GUID the instant it dies (server only, connected once).
+                Registry.on_destroy<SNetworkComponent>().connect<&OnNetworkComponentDestroyed>();
+
                 State->Transport.reset(Network::CreateTransport());
 
                 FListenParams Params;
@@ -1219,16 +1198,17 @@ namespace Lumina
             return;
         }
 
-        // Pump the transport. Surface connect/disconnect, and on the client apply incoming snapshots.
-        TVector<FNetworkEvent> Events;
+        // Reuse the events buffer across ticks; Service appends, so clear it first.
+        TVector<FNetworkEvent>& Events = State->ServiceEvents;
+        Events.clear();
         {
-            LUMINA_PROFILE_SECTION("Net/Service"); // ENet host service (socket recv + reliability)
+            LUMINA_PROFILE_SECTION("Net/Service");
             State->Transport->Service(Events);
         }
 
         for (const FNetworkEvent& Event : Events)
         {
-            LUMINA_PROFILE_SECTION("Net/Event"); // one zone per received event (Data carries a message batch)
+            LUMINA_PROFILE_SECTION("Net/Event");
             switch (Event.Type)
             {
             case ENetworkEventType::Connected:

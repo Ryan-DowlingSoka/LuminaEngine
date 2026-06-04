@@ -291,7 +291,12 @@ namespace Lumina
             }
             ImGui::BulletText("Networked Entities: %d", NetworkedEntities);
             ImGui::BulletText("NetGUID Table: %d entries", (int)State->GuidTable.GuidToEntity.size());
-            ImGui::BulletText("Dynamic Spawns Tracked: %d", (int)State->KnownSpawnedGuids.size());
+            uint32 DynamicSpawns = 0;
+            for (const auto& Pair : State->GuidTable.GuidToEntity)
+            {
+                if (Pair.first >= NetGUID_DynamicStart) { ++DynamicSpawns; }
+            }
+            ImGui::BulletText("Dynamic Spawns Tracked: %d", (int)DynamicSpawns);
         }
 
         // --- Transport totals + throughput ---

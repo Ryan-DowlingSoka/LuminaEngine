@@ -115,8 +115,8 @@ namespace Lumina
         // NetGUID to entity map for this world. Stable ids are adopted once at init.
         FNetGUIDTable                 GuidTable;
 
-        // Server side, dynamic NetGUIDs already sent to clients. Diffed each tick to emit spawn/despawn.
-        TVector<uint32>               KnownSpawnedGuids;
+        // Dynamic-entity destruction is event-driven (on_destroy<SNetworkComponent> -> GuidTable.Unregister),
+        // so there's no per-tick live-set to maintain -- MaintainDynamicLifetime only assigns GUIDs.
 
         // Server side, adopted stable NetGUIDs still live. Diffed each tick so a level entity destroyed at
         // runtime is despawned for clients.
@@ -164,6 +164,13 @@ namespace Lumina
         // Per-connection relevancy + send-schedule. Created on connect, erased on disconnect. Never touches
         // GuidTable (which stays the global entity-lifetime map).
         THashMap<uint32, FNetClientView> ClientViews;
+
+        // Incremented once per ServerReplicateRelevant tick. An FRelevantEntry is "relevant this tick" when
+        // its RelevantTick == this, which replaces a full-map "reset every entry to not-relevant" pass.
+        uint64                           RelevancyTick = 0;
+
+        // Reused buffer for the per-tick transport Service() drain (avoids reallocating it every frame).
+        TVector<FNetworkEvent>           ServiceEvents;
 
         // Per-tick scratch: reliable PropertyUpdate datagrams that must go to specific clients (entities with
         // owner-conditioned --@replicated fields). Built by ReplicateDirtyProperties, flushed by

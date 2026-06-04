@@ -75,8 +75,13 @@ namespace Lumina
         float           CellSize = 64.0f;
         int32           DimX     = 0;
         int32           DimZ     = 0;
-        TVector<int32>  CellStart;         // size NumCells()+1
-        TVector<uint32> SortedRecords;     // size = record count
+        TVector<int32>    CellStart;       // size NumCells()+1
+        TVector<uint32>   SortedRecords;   // size = record count (extract record index, in cell order)
+        // Parallel to SortedRecords, duplicated in cell order so the per-client AOI distance/cull check reads
+        // contiguously instead of gathering scattered Extract.WorldPos[Rec]/Flags[Rec] (the hot cache miss).
+        TVector<FVector3> SortedWorldPos;
+        TVector<uint8>    SortedFlags;
+        TVector<uint32>   SortedGuid;
 
         int32 NumCells() const { return DimX * DimZ; }
 
@@ -103,7 +108,7 @@ namespace Lumina
         ENetLODTier Tier             = ENetLODTier::Near;
         float       TimeSinceSent    = 1.0e9f; // large -> first eligible send (Stage 2 rate LOD)
         float       TimeOutOfAOI     = 0.0f;   // grace accumulator once outside the leave radius
-        bool        bRelevant        = true;   // inside the leave radius this tick
+        uint64      RelevantTick     = 0;      // == FNetWorldState::RelevancyTick when seen relevant this tick
         bool        bDynamic         = false;  // runtime-spawned -> per-client spawn/despawn applies
         bool        bBaselinePending = false;  // dynamic entity spawned this tick; hold its transform one tick (spawn carried the pose)
         bool        bNeedsBaseline   = false;  // stable entity newly relevant -> send its current pose once even if unchanged

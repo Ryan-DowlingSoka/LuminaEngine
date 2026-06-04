@@ -193,6 +193,9 @@ namespace Lumina::NetGraph
         // Counting sort: count -> prefix-sum -> scatter.
         Grid.CellStart.assign(NumCells + 1, 0);
         Grid.SortedRecords.resize(N);
+        Grid.SortedWorldPos.resize(N);
+        Grid.SortedFlags.resize(N);
+        Grid.SortedGuid.resize(N);
 
         for (uint32 i = 0; i < N; ++i)
         {
@@ -213,8 +216,12 @@ namespace Lumina::NetGraph
         {
             int32 cx, cz;
             Grid.CellCoords(Extract.WorldPos[i], cx, cz);
-            const int32 c = Grid.CellIndex(cx, cz);
-            Grid.SortedRecords[Cursor[c]++] = i;
+            const int32 c   = Grid.CellIndex(cx, cz);
+            const int32 Dst = Cursor[c]++;
+            Grid.SortedRecords[Dst]  = i;
+            Grid.SortedWorldPos[Dst] = Extract.WorldPos[i]; // duplicate in cell order for the hot AOI scan
+            Grid.SortedFlags[Dst]    = Extract.Flags[i];
+            Grid.SortedGuid[Dst]     = Extract.Guid[i];
         }
     }
 
