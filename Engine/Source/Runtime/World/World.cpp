@@ -691,24 +691,22 @@ namespace Lumina
         }
     }
 
-    bool FNetLuaInterface::IsServer() const     { return World != nullptr && NetIsServerMode(World->GetNetMode()); }
+    bool FNetLuaInterface::IsServer() const     { return World != nullptr && World->IsNetServer(); }
     bool FNetLuaInterface::IsClient() const     { return World != nullptr && World->GetNetMode() == ENetMode::Client; }
     bool FNetLuaInterface::IsStandalone() const { return World == nullptr || World->GetNetMode() == ENetMode::Standalone; }
     bool FNetLuaInterface::IsNetworked() const  { return !IsStandalone(); }
 
     int32 FNetLuaInterface::GetConnectedClients() const
     {
-        if (World == nullptr) { return 0; }
-        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        return State != nullptr ? State->ConnectedClients : 0;
+        return World != nullptr ? World->GetConnectedClientCount() : 0;
     }
 
     bool FNetLuaInterface::IsConnected() const
     {
         if (World == nullptr) { return false; }
-        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        if (State == nullptr) { return false; }
-        return IsServer() ? State->ConnectedClients > 0 : State->bClientConnected;
+        if (World->IsNetServer()) { return World->GetConnectedClientCount() > 0; }
+        const FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
+        return State != nullptr && State->bClientConnected;
     }
 
     uint32 FNetLuaInterface::GetUniqueId() const
@@ -2290,6 +2288,17 @@ namespace Lumina
     ENetMode CWorld::GetNetMode() const
     {
         return OwningContext ? OwningContext->NetMode : ENetMode::Standalone;
+    }
+
+    bool CWorld::IsNetServer() const
+    {
+        return NetIsServerMode(GetNetMode());
+    }
+
+    int32 CWorld::GetConnectedClientCount() const
+    {
+        const FNetWorldState* State = EntityRegistry.ctx().find<FNetWorldState>();
+        return State != nullptr ? State->ConnectedClients : 0;
     }
 
     bool CWorld::ShouldRender() const

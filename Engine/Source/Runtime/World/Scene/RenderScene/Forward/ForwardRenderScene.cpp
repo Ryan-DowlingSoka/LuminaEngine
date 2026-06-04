@@ -47,6 +47,7 @@
 #include "World/Subsystems/WorldSettings.h"
 #include "Renderer/SMAA/AreaTex.h"
 #include "Renderer/SMAA/SearchTex.h"
+#include "TaskSystem/FiberSync.h"
 
 namespace Lumina
 {
@@ -938,15 +939,14 @@ namespace Lumina
             FEntityRegistry& Registry = World->GetEntityRegistry();
             TAtomic<uint32> LightCount{0};
             
-
             auto DirectionalView    = Registry.view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
-            auto SpotLightView      = Registry.view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto PointLightView     = Registry.view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto CharacterView      = Registry.view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto CameraView         = Registry.view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto BillboardView      = Registry.view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto WidgetView         = Registry.view<SWidgetComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto TextView           = Registry.view<STextComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto SpotLightView      = Registry.view<SSpotLightComponent>(entt::exclude<SDisabledTag>);
+            auto PointLightView     = Registry.view<SPointLightComponent>(entt::exclude<SDisabledTag>);
+            auto CharacterView      = Registry.view<SCharacterControllerComponent>(entt::exclude<SDisabledTag>);
+            auto CameraView         = Registry.view<SCameraComponent>(entt::exclude<SDisabledTag>);
+            auto BillboardView      = Registry.view<SBillboardComponent>(entt::exclude<SDisabledTag>);
+            auto WidgetView         = Registry.view<SWidgetComponent>(entt::exclude<SDisabledTag>);
+            auto TextView           = Registry.view<STextComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto TriangleBatcherView = Registry.view<FTriangleBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
@@ -1120,7 +1120,11 @@ namespace Lumina
             });
             
             FLineBatcherComponent* LineBatcher = nullptr;
-            LineBatcherView.each([&](FLineBatcherComponent& C) { if (LineBatcher == nullptr) LineBatcher = &C; });
+            LineBatcherView.each([&](FLineBatcherComponent& C) { if (LineBatcher == nullptr)
+                    {
+                        LineBatcher = &C;
+                    }
+                });
             const uint32 LineChunkCount = (LineBatcher != nullptr) ? PrepareBatchedLines(*LineBatcher) : 0u;
 
             if (LineChunkCount > 0)
@@ -1155,13 +1159,13 @@ namespace Lumina
                 const FFrustum& WidgetFrustum = SceneGlobalData.CullData.Frustum;
                 const bool      bCullWidgets   = SceneGlobalData.CullData.bFrustumCull != 0u;
 
-                WidgetView.each([&](entt::entity Entity, SWidgetComponent& WidgetComponent, const STransformComponent& TransformComponent)
+                WidgetView.each([&](entt::entity Entity, SWidgetComponent& WidgetComponent)
                 {
                     FWidgetRuntime& Runtime = WidgetComponent.Runtime;
 
                     // Frustum cull against the authoritative view (same one meshes use). Transform+size only,
                     // so it works pre-build; drives whether TickWorldWidgets lays out + rasterizes the RT.
-                    const FMatrix4 World = TransformComponent.GetWorldMatrix();
+                    const FMatrix4 World = TransformStorage.get(Entity).GetWorldMatrix();
                     const FVector3 Center = FVector3(World[3]);
                     const float ScaleXY = Math::Max(Math::Length(FVector3(World[0])), Math::Length(FVector3(World[1])));
                     const float Radius  = 0.5f * Math::Length(WidgetComponent.WorldSize) * Math::Max(1.0f, ScaleXY);
@@ -1223,7 +1227,7 @@ namespace Lumina
 
                 TVector<FShapedGlyph> Shaped;
 
-                TextView.each([&](entt::entity Entity, STextComponent& TextComponent, const STransformComponent& TransformComponent)
+                TextView.each([&](entt::entity Entity, STextComponent& TextComponent)
                 {
                     if (TextComponent.Text.empty())
                     {
@@ -1247,7 +1251,7 @@ namespace Lumina
                         return;
                     }
 
-                    const FMatrix4 World  = TransformComponent.GetWorldMatrix();
+                    const FMatrix4 World  = TransformStorage.get(Entity).GetWorldMatrix();
                     const FVector3 Origin = FVector3(World[3]);
 
                     const float HAlign = (TextComponent.HorizontalAlign == ETextHorizontalAlign::Left)   ? 0.0f
@@ -1329,7 +1333,7 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Process Billboard Primitives");
 
-                BillboardView.each([this, &BillboardInstances](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
+                BillboardView.each([this, &BillboardInstances, &TransformStorage](entt::entity Entity, const SBillboardComponent& BillboardComponent)
                 {
                     if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
                     {
@@ -1338,7 +1342,7 @@ namespace Lumina
 
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetResourceID();
-                    Billboard.Position              = TransformComponent.WorldTransform.Location;
+                    Billboard.Position              = TransformStorage.get(Entity).WorldTransform.Location;
                     Billboard.Size                  = BillboardComponent.Scale;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 });
@@ -1358,28 +1362,28 @@ namespace Lumina
                     };
 
                     // Skip editor viewport camera so the billboard doesn't sit on the user's view.
-                    CameraView.each([&](entt::entity Entity, SCameraComponent&, const STransformComponent& Transform)
+                    CameraView.each([&](entt::entity Entity, SCameraComponent&)
                     {
                         if (Registry.all_of<FEditorComponent>(Entity))
                         {
                             return;
                         }
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::CameraIcon, FColor::White);
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::CameraIcon, FColor::White);
                     });
 
-                    CharacterView.each([&](entt::entity Entity, SCharacterControllerComponent&, const STransformComponent& Transform)
+                    CharacterView.each([&](entt::entity Entity, SCharacterControllerComponent&)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::CharacterIcon, FColor::White);
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::CharacterIcon, FColor::White);
                     });
 
-                    PointLightView.each([&](entt::entity Entity, const SPointLightComponent& Light, const STransformComponent& Transform)
+                    PointLightView.each([&](entt::entity Entity, const SPointLightComponent& Light)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::PointLightIcon, FVector4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::PointLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
-                    SpotLightView.each([&](entt::entity Entity, const SSpotLightComponent& Light, const STransformComponent& Transform)
+                    SpotLightView.each([&](entt::entity Entity, const SSpotLightComponent& Light)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SpotLightIcon, FVector4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::SpotLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
                     DirectionalView.each([&](entt::entity Entity, const SDirectionalLightComponent& Light)
@@ -1394,10 +1398,9 @@ namespace Lumina
                         EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, FVector4(1.0f));
                     });
 
-                    auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                    ParticleView.each([&](entt::entity Entity, const SParticleSystemComponent&, const STransformComponent& Transform)
+                    ParticleView.each([&](entt::entity Entity, const SParticleSystemComponent&)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::ParticleSystemIcon, FVector4(1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::ParticleSystemIcon, FVector4(1.0f));
                     });
                 }
                 #endif
@@ -1429,7 +1432,7 @@ namespace Lumina
                     if (PointLightView.contains(Entity))
                     {
                         auto& PointLight = PointLightView.get<SPointLightComponent>(Entity);
-                        auto& Transform = PointLightView.get<STransformComponent>(Entity);
+                        auto& Transform = TransformStorage.get(Entity);
                         ProcessPointLight(PointLight, Transform, LightCount);
                     }
                 }
@@ -1446,7 +1449,7 @@ namespace Lumina
                     if (SpotLightView.contains(Entity))
                     {
                         auto& SpotLight = SpotLightView.get<SSpotLightComponent>(Entity);
-                        auto& Transform = SpotLightView.get<STransformComponent>(Entity);
+                        auto& Transform = TransformStorage.get(Entity);
                         ProcessSpotLight(SpotLight, Transform, LightCount);
                     }
                 }
@@ -4540,7 +4543,6 @@ namespace Lumina
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.SetIndirectParams(IndirectArgsBuffer);
-            // Cull/skinning outputs read via BDA -> declare the UAV->shader-read barrier.
             GraphicsState.Reads(MeshletDrawListBuf);
             GraphicsState.Reads(PreSkinnedBuf);
 

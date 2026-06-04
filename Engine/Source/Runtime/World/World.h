@@ -174,6 +174,12 @@ namespace Lumina
         /** Shorthand for GetWorldContext()->NetMode; returns Standalone when no context is set. */
         NODISCARD ENetMode GetNetMode() const;
 
+        /** True when this world is the network authority (listen or dedicated server). */
+        NODISCARD bool IsNetServer() const;
+
+        /** Server-side count of currently connected clients; 0 on clients and standalone worlds. */
+        NODISCARD int32 GetConnectedClientCount() const;
+
         /** Lua-facing net query facade (World.Net). */
         NODISCARD FNetLuaInterface* GetNetInterface() { return &NetInterface; }
 

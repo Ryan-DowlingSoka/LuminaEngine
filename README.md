@@ -12,7 +12,7 @@
 [![Vulkan](https://img.shields.io/badge/Vulkan-renderer-red)](https://www.vulkan.org/)
 [![Discord](https://img.shields.io/discord/1193738186892005387?label=Discord&logo=discord)](https://discord.gg/xQSB7CRzQE)
 
-[Blog](https://www.dr-elliot.com) &bull; [Discord](https://discord.gg/xQSB7CRzQE) &bull; [Documentation](#documentation)
+[Website](https://luminagameengine.com) &bull; [Discord](https://discord.gg/xQSB7CRzQE) &bull; [Documentation](https://luminagameengine.com/getting-started/introduction/)
 
 </div>
 
@@ -55,6 +55,9 @@ Lumina is a modern C++ game engine built from the ground up with Vulkan. It is
 designed for learning and experimentation with real-world engine architecture,
 demonstrating professional design patterns including a reflection system, an
 ECS-based gameplay layer, and modern rendering techniques.
+
+> [!NOTE]
+> For more detailed information, go to: https://luminagameengine.com
 
 It is well suited for:
 
@@ -263,6 +266,8 @@ Lumina supports the following asset formats:
 ---
 
 ## Documentation
+
+[Getting Started](https://luminagameengine.com/getting-started/introduction/)
 
 ### Coding Standards
 

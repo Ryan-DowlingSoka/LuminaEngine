@@ -646,12 +646,12 @@ namespace Lumina
 
     void FEditorTool::DrawGameFocusIndicator(ImVec2 ViewportSize)
     {
-        // Shown on whichever viewport is the globally active + game-focused one (game focus is global, the
-        // active viewport can switch windows), so it's obvious input is routed to the game and how to hand
-        // it back.
+        // The Shift+F1 hint shows on every visible game viewport while game input is focused (focus is
+        // global), so a user looking at any preview -- including a docked client Game Preview that isn't the
+        // active viewport -- always sees how to hand input back. The accent border marks the one viewport
+        // input is actually routed to.
         FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
-        if (InputViewport == nullptr || World == nullptr || !World->IsGameWorld()
-            || !Reg.IsGameInputFocused() || InputViewport.get() != Reg.GetActiveViewport())
+        if (InputViewport == nullptr || World == nullptr || !World->IsGameWorld() || !Reg.IsGameInputFocused())
         {
             return;
         }
@@ -663,11 +663,15 @@ namespace Lumina
         const ImVec2 Cursor  = ImGui::GetCursorScreenPos();
         const ImVec2 Min(Cursor.x - Spacing.x, Cursor.y - Spacing.y);
         const ImVec2 Max(Min.x + ViewportSize.x, Min.y + ViewportSize.y);
-        const ImU32  Accent = IM_COL32(255, 176, 64, 200);
 
-        // Drawn 1px inside the edge so the full 2px stroke stays within the image.
-        DL->AddRect(ImVec2(Min.x + 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Max.y - 1.0f),
-            Accent, 0.0f, 0, 2.0f);
+        // Accent border only on the active viewport -- the one actually receiving input.
+        if (InputViewport.get() == Reg.GetActiveViewport())
+        {
+            const ImU32 Accent = IM_COL32(255, 176, 64, 200);
+            // Drawn 1px inside the edge so the full 2px stroke stays within the image.
+            DL->AddRect(ImVec2(Min.x + 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Max.y - 1.0f),
+                Accent, 0.0f, 0, 2.0f);
+        }
 
         // Faint, translucent hint in the top-right (clear of the toolbar at top-left).
         const char*  Hint     = "Shift+F1: Editor focus";

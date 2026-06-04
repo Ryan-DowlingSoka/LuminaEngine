@@ -132,6 +132,10 @@ namespace Lumina
 
         NODISCARD virtual bool IsSingleWindowTool() const { return false; }
 
+        // When false, the tool's window opens floating instead of auto-docking into the main dockspace on
+        // first appearance. The user can still dock it manually afterwards.
+        NODISCARD virtual bool ShouldOpenDocked() const { return true; }
+
         NODISCARD virtual uint32 GetUniqueTypeID() const = 0;
         NODISCARD virtual char const* GetUniqueTypeName() const = 0;
 
@@ -329,6 +333,7 @@ namespace Lumina
         
         ImGuiID                             CurrDockID = 0;
         ImGuiID                             DesiredDockID = 0;      // The dock we wish to be in
+        bool                                bInitialDockApplied = false; // One-shot: first-frame dock policy (e.g. force-undock) has run
         ImGuiID                             CurrLocationID = 0;     // Current Dock node we are docked into _OR_ window ID if floating window
         ImGuiID                             PrevLocationID = 0;     // Previous dock node we are docked into _OR_ window ID if floating window
         ImGuiID                             CurrDockspaceID = 0;    // Dockspace ID ~~ Hash of LocationID + DocType (with MYEDITOR_CONFIG_SAME_LOCATION_SHARE_LAYOUT=1)

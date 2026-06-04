@@ -1328,11 +1328,19 @@ namespace Lumina
             ImGui::SetNextWindowDockID(EditorTool->GetDesiredDockID());
             EditorTool->DesiredDockID = 0;
         }
-        else
+        else if (EditorTool->ShouldOpenDocked())
         {
             ImGui::SetNextWindowDockID(TopLevelDockspaceID, ImGuiCond_FirstUseEver);
         }
-        
+        else if (!EditorTool->bInitialDockApplied)
+        {
+            // Force floating on first appearance, overriding any dock state restored from imgui.ini by window
+            // name. Applied once so the user can still dock the window manually afterwards.
+            ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+        }
+
+        EditorTool->bInitialDockApplied = true;
+
         ImGuiWindowFlags WindowFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar;
         if (EditorTool->IsUnsavedDocument())
         {
@@ -1506,7 +1514,13 @@ namespace Lumina
 
         if (Tool->HasWorld())
         {
-            Tool->GetWorld()->SetActive(bVisible);
+            // A server world must keep simulating even while its tool is hidden, otherwise tabbing onto a
+            // client's Game Preview freezes every player. Not gated on client count: a suspended server never
+            // ticks its transport, so it could never accept the first connection -- which deadlocks when a
+            // client preview spawns already docked over the server's tool and hides it on frame one.
+            CWorld* ToolWorld = Tool->GetWorld();
+            const bool bKeepAlive = bVisible || ToolWorld->IsNetServer();
+            ToolWorld->SetActive(bKeepAlive);
         }
         
         if (!bVisible)
