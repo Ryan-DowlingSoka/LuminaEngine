@@ -25,6 +25,20 @@ namespace Lumina
         FNetInterpSample& Logical(int Index) { return Samples[(Head + Index) % Capacity]; }
         const FNetInterpSample& Newest() const { return Samples[(Head + Count - 1) % Capacity]; }
 
+        // Average spacing between buffered samples (seconds), i.e. this entity's effective send interval.
+        // 0 when there aren't yet two samples. Drives the adaptive interp delay so low-rate (LOD-far) proxies
+        // buffer enough to interpolate instead of extrapolate.
+        double AverageInterval() const
+        {
+            if (Count < 2)
+            {
+                return 0.0;
+            }
+            const double Oldest = Samples[Head % Capacity].Time;
+            const double NewestT = Samples[(Head + Count - 1) % Capacity].Time;
+            return (NewestT - Oldest) / static_cast<double>(Count - 1);
+        }
+
         void Push(double Time, const FVector3& Pos, const FQuat& Rot)
         {
             if (Count < Capacity)
@@ -103,6 +117,11 @@ namespace Lumina
 
         //~ Receive side. Timestamped sample ring for interpolation/extrapolation.
         FNetInterpState Ring;
+
+        // Smoothed per-entity interpolation delay (seconds). Eased toward max(InterpDelay, BufferIntervals *
+        // Ring.AverageInterval()) so the render clock stays behind this entity's actual sample rate (no routine
+        // extrapolation/snap) and a tier/rate change ramps the delay instead of rewinding. -1 = uninitialized.
+        double SmoothedInterpDelay = -1.0;
 
         // Latest received scale (not interpolated; applied directly). Valid once bHasScale is set.
         NetQuantize::FQuantizedVector CurrentScaleQ;

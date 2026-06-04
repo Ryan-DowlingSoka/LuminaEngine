@@ -1309,7 +1309,7 @@ namespace Lumina
                                 State->Transport->Send(Event.Connection, DespawnBatch.data(), static_cast<SIZE_T>(DespawnBatch.size()), 0, ESendMode::Reliable);
                             }
 
-                            LOG_DISPLAY("[Net][Server] Client {} ready; sent index tables (entities arrive via relevancy)", Event.Connection.Value);
+                            LOG_DISPLAY("[Net][Server] Client {} ready; sent index tables", Event.Connection.Value);
                         }
                         break;
                     case ENetMessage::ObjectExport:

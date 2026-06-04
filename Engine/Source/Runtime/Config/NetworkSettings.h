@@ -6,27 +6,27 @@
 
 namespace Lumina
 {
-    // Client-side proxy-smoothing preferences (global, player-local). Server-authoritative / world-spatial
-    // replication tuning (interest management, LOD tiers, keyframe + send rate) lives per-world on
-    // SDefaultWorldSettings. Read on the CDO via GetDefault<CNetworkSettings>().
+    // Client-side proxy-smoothing preferences.
     REFLECT(MinimalAPI, ConfigFile = "/Config/NetworkSettings.json", DisplayName = "Networking", Category = "Engine")
     class CNetworkSettings : public CDeveloperSettings
     {
         GENERATED_BODY()
     public:
 
-        /** Seconds a SimulatedProxy renders behind the newest received server time. Higher = smoother under
-         *  jitter/loss but laggier. */
+        /** Floor for how many seconds a SimulatedProxy renders behind the newest received server time. */
         PROPERTY(Editable, Category = "Replication", ClampMin = 0.0f, ClampMax = 1.0f)
-        float InterpDelay = 0.1f;
+        float InterpDelay = 0.04f;
 
-        /** Extrapolate a proxy's position from its last velocity when render time runs past the newest sample
-         *  (e.g. under packet loss), instead of freezing on the last pose. Rotation is always held. */
+        /** Dead-reckon a proxy's position from its last velocity when render time runs past the newest sample. */
         PROPERTY(Editable, Category = "Replication")
-        bool bEnableExtrapolation = true;
+        bool bEnableExtrapolation = false;
 
         /** Maximum seconds to extrapolate past the newest sample before clamping. */
         PROPERTY(Editable, Category = "Replication", ClampMin = 0.0f, ClampMax = 1.0f)
         float MaxExtrapolation = 0.25f;
+
+        /** Per-entity interpolation buffer depth, in multiples of the entity's measured send interval. */
+        PROPERTY(Editable, Category = "Replication", ClampMin = 1.0f, ClampMax = 3.0f)
+        float InterpBufferIntervals = 1.5f;
     };
 }

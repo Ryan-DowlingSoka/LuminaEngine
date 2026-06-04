@@ -120,12 +120,10 @@ namespace Lumina
 
         //~ Client snapshot interpolation for SimulatedProxy movement. Per-entity sample rings live on the
         //  entity's FRepTransform component; this state is the global render clock shared by all of them.
-
-        // Newest server time seen, and the running serverClock minus clientClock estimate. The interp delay
-        // (seconds behind newest server time) is sourced from CNetworkSettings, not stored here.
-        double                        LatestServerTime = 0.0;
-        double                        ClockOffset      = 0.0;
-        bool                          bClockInitialized = false;
+        double                        LatestServerTime   = 0.0;
+        double                        ServerPlaybackTime = 0.0;
+        double                        ClockOffset        = 0.0; // legacy (unused by the smooth clock)
+        bool                          bClockInitialized  = false;
 
         // Net-index caches. Outgoing maps this peer mints and exports; incoming maps are kept per sender
         // connection id since the index space is sender-owned.

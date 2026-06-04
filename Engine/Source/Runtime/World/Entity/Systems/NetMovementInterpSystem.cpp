@@ -18,7 +18,8 @@ namespace Lumina
     // write domain (same convention as SAnimationSystem's root-motion pass).
     FSystemAccess SNetMovementInterpSystem::Access = FSystemAccess{}
         .Write<STransformComponent>()
-        .Read<FRepTransform, SNetworkComponent>();
+        .Write<FRepTransform>()               // per-entity SmoothedInterpDelay is updated in the parallel body
+        .Read<SNetworkComponent>();
 
     void SNetMovementInterpSystem::Update(const FSystemContext& Context) noexcept
     {
@@ -45,22 +46,35 @@ namespace Lumina
         //  the parallel body would race. Track the server/client offset with a gentle EMA so RenderTime stays
         //  ~InterpDelay behind the newest received server time and advances with the local frame clock.
         const CNetworkSettings* Settings = GetDefault<CNetworkSettings>();
-        const double InterpDelay  = Settings ? static_cast<double>(Settings->InterpDelay) : 0.1;
-        const bool   bExtrapolate = Settings ? Settings->bEnableExtrapolation : true;
-        const double MaxExtrap    = Settings ? static_cast<double>(Settings->MaxExtrapolation) : 0.25;
+        const double InterpDelay     = Settings ? static_cast<double>(Settings->InterpDelay) : 0.1;
+        const bool   bExtrapolate    = Settings ? Settings->bEnableExtrapolation : true;
+        const double MaxExtrap       = Settings ? static_cast<double>(Settings->MaxExtrapolation) : 0.25;
+        const double BufferIntervals = Settings ? static_cast<double>(Settings->InterpBufferIntervals) : 1.5;
 
-        const double ClientNow = Context.GetTime();
+        // Smooth render clock: advance by local dt and gently rate-match the newest server time, so the clock
+        // doesn't saw-tooth with the (bursty) send cadence the way an offset-EMA does. Snap only on a big desync.
+        const double Dt = Context.GetDeltaTime();
         if (!State->bClockInitialized)
         {
-            State->ClockOffset       = State->LatestServerTime - ClientNow;
-            State->bClockInitialized = true;
+            State->ServerPlaybackTime = State->LatestServerTime;
+            State->bClockInitialized  = true;
         }
         else
         {
-            const double Measured = State->LatestServerTime - ClientNow;
-            State->ClockOffset += (Measured - State->ClockOffset) * 0.02;
+            State->ServerPlaybackTime += Dt;
+            const double Error = State->LatestServerTime - State->ServerPlaybackTime;
+            if (Error > 0.5 || Error < -0.5)
+            {
+                State->ServerPlaybackTime = State->LatestServerTime; // join / big hitch -> resync
+            }
+            else
+            {
+                const double Rate = Dt * 4.0; // close drift over ~0.25s
+                State->ServerPlaybackTime += Error * (Rate < 1.0 ? Rate : 1.0);
+            }
         }
-        const double RenderTime = ClientNow + State->ClockOffset - InterpDelay;
+        // The per-entity interp delay is subtracted in the parallel body so each proxy stays behind its OWN rate.
+        const double ServerRenderNow = State->ServerPlaybackTime;
 
         auto&& RepStorage       = Registry.storage<FRepTransform>();
         auto&& NetStorage       = Registry.storage<SNetworkComponent>();
@@ -96,6 +110,19 @@ namespace Lumina
 
                 FRepTransform&       Rep = RepStorage.get(Entity);
                 STransformComponent& T   = TransformStorage.get(Entity);
+
+                // Adaptive delay: stay ~BufferIntervals send-intervals behind THIS entity's sample rate, so a
+                // low-rate (LOD-far) proxy interpolates between real samples instead of extrapolating + snapping.
+                // Eased per tick so a tier/rate change ramps the delay rather than rewinding the render clock.
+                const double Interval = Rep.Ring.AverageInterval();
+                double TargetDelay = InterpDelay;
+                if (Interval > 0.0 && BufferIntervals * Interval > TargetDelay)
+                {
+                    TargetDelay = BufferIntervals * Interval;
+                }
+                if (Rep.SmoothedInterpDelay < 0.0) { Rep.SmoothedInterpDelay = TargetDelay; }
+                else { Rep.SmoothedInterpDelay += (TargetDelay - Rep.SmoothedInterpDelay) * 0.1; }
+                const double RenderTime = ServerRenderNow - Rep.SmoothedInterpDelay;
 
                 FVector3 Pos;
                 FQuat    Rot;
