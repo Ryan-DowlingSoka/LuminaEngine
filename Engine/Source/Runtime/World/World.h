@@ -119,68 +119,48 @@ namespace Lumina
         /** Render thread: emit the scene's draw commands from FrameIndex's snapshot. */
         void Render(ICommandList& CmdList, uint8 FrameIndex) const;
         
-        FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
 
-        FUNCTION(Script)
         entt::entity SpawnPrefab(const FName& Path);
 
         /** Like SpawnPrefab(Path), but positions the spawned root at SpawnTransform and
          *  optionally reparents under Parent (entt::null = world root). */
-        FUNCTION(Script)
         entt::entity SpawnPrefabAt(const FName& Path, const FTransform& SpawnTransform, entt::entity Parent = entt::null);
 
         // Shatter a destructible entity into physics-driven fragments. Origin = blast point;
         // Strength = outward launch m/s (0 uses ExplosionStrength). No-op without an unbroken SDestructibleComponent.
-        FUNCTION(Script)
         bool FractureEntity(entt::entity Entity, const FVector3& Origin, float Strength = 0.0f);
         
-        FUNCTION(Script)
         void SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback);
         
-        FUNCTION(Script)
         FEntityRegistry& GetEntityRegistry() { return EntityRegistry; }
         
-        FUNCTION(Script)
         Physics::IPhysicsScene* GetPhysicsScene() const { return PhysicsScene.get(); }
         
-        FUNCTION(Script)
         STransformComponent& GetEntityTransform(entt::entity Entity);
         
-        FUNCTION(Script)
         FVector3 GetEntityLocation(entt::entity Entity);
         
-        FUNCTION(Script)
         void SetEntityLocation(entt::entity Entity, FVector3 Location);
         
-        FUNCTION(Script)
         void SetEntityRotation(entt::entity Entity, FQuat Rotation);
         
-        FUNCTION(Script)
         FVector3 TranslateEntity(entt::entity Entity, FVector3 Translation);
         
-        FUNCTION(Script)
         uint32 GetNumEntities() const;
         
-        FUNCTION(Script)
         SDefaultWorldSettings& GetDefaultWorldSettings();
         
-        FUNCTION(Script)
         bool EntityHasTag(entt::entity Entity, const FName& Tag);
         
-        FUNCTION(Script)
         entt::entity GetEntityByTag(const FName& Tag);
         
-        FUNCTION(Script)
         entt::entity GetEntityByName(const FName& Name);
 
-        FUNCTION(Script)
         TOptional<SRayResult> CastRay(const SRayCastSettings& Settings);
 
-        FUNCTION(Script)
         TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
         
-        FUNCTION(Script)
         EUpdateStage GetUpdateStage() const;
 
         FTimerManager& GetTimerManager() { return EntityRegistry.ctx().get<FTimerManager>(); }

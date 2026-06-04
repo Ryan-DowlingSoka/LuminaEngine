@@ -61,6 +61,18 @@ namespace Lumina
 
     bool FInputContext::OnEvent(FEvent& Event)
     {
+        // Build an SKey for a mouse button, taking the modifier chord from the cached modifier state
+        // (mouse events carry no modifier flags of their own).
+        auto MouseKeyWithMods = [this](EMouseKey Button) -> SKey
+        {
+            SKey K;
+            K.SetMouseButton(Button);
+            K.bCtrl  = (CachedModifierState & 1) != 0;
+            K.bShift = (CachedModifierState & 2) != 0;
+            K.bAlt   = (CachedModifierState & 4) != 0;
+            return K;
+        };
+
         if (Event.IsA<FMouseMovedEvent>())
         {
             FMouseMovedEvent& MouseEvent = Event.As<FMouseMovedEvent>();
@@ -73,6 +85,14 @@ namespace Lumina
             WindowToContext(MouseEvent.GetX(), MouseEvent.GetY(), Cx, Cy);
             MouseX = Cx;
             MouseY = Cy;
+
+            SInputEvent Ev;
+            Ev.Type   = EInputEventType::MouseMove;
+            Ev.MouseX = MouseX;
+            Ev.MouseY = MouseY;
+            Ev.DeltaX = MouseEvent.GetDeltaX();
+            Ev.DeltaY = MouseEvent.GetDeltaY();
+            FrameEvents.push_back(Ev);
         }
         else if (Event.IsA<FMouseButtonPressedEvent>())
         {
@@ -80,6 +100,13 @@ namespace Lumina
             const uint32 MouseCode = (uint32)MouseButtonEvent.GetButton();
             MouseStates[MouseCode]        = Input::EMouseState::Pressed;
             MouseKeyDownTimes[MouseCode]  = 0.0f;
+
+            SInputEvent Ev;
+            Ev.Type   = EInputEventType::MouseDown;
+            Ev.Key    = MouseKeyWithMods(MouseButtonEvent.GetButton());
+            Ev.MouseX = MouseX;
+            Ev.MouseY = MouseY;
+            FrameEvents.push_back(Ev);
         }
         else if (Event.IsA<FMouseButtonReleasedEvent>())
         {
@@ -87,6 +114,13 @@ namespace Lumina
             const uint32 MouseCode = (uint32)MouseButtonEvent.GetButton();
             MouseStates[MouseCode]        = Input::EMouseState::Released;
             MouseKeyDownTimes[MouseCode]  = -1.0f;
+
+            SInputEvent Ev;
+            Ev.Type   = EInputEventType::MouseUp;
+            Ev.Key    = MouseKeyWithMods(MouseButtonEvent.GetButton());
+            Ev.MouseX = MouseX;
+            Ev.MouseY = MouseY;
+            FrameEvents.push_back(Ev);
         }
         else if (Event.IsA<FKeyPressedEvent>())
         {
@@ -95,12 +129,29 @@ namespace Lumina
             KeyStates[KeyCode] = KeyEvent.IsRepeat()
                 ? Input::EKeyState::Repeated
                 : Input::EKeyState::Pressed;
+
+            SInputEvent Ev;
+            Ev.Type    = EInputEventType::KeyDown;
+            Ev.bRepeat = KeyEvent.IsRepeat();
+            Ev.Key.SetKey(KeyEvent.GetKeyCode());
+            Ev.Key.bCtrl  = KeyEvent.IsCtrlDown();
+            Ev.Key.bShift = KeyEvent.IsShiftDown();
+            Ev.Key.bAlt   = KeyEvent.IsAltDown();
+            FrameEvents.push_back(Ev);
         }
         else if (Event.IsA<FKeyReleasedEvent>())
         {
             FKeyReleasedEvent& KeyEvent = Event.As<FKeyReleasedEvent>();
             const uint32 KeyCode = (uint32)KeyEvent.GetKeyCode();
             KeyStates[KeyCode] = Input::EKeyState::Released;
+
+            SInputEvent Ev;
+            Ev.Type = EInputEventType::KeyUp;
+            Ev.Key.SetKey(KeyEvent.GetKeyCode());
+            Ev.Key.bCtrl  = KeyEvent.IsCtrlDown();
+            Ev.Key.bShift = KeyEvent.IsShiftDown();
+            Ev.Key.bAlt   = KeyEvent.IsAltDown();
+            FrameEvents.push_back(Ev);
         }
         else if (Event.IsA<FMouseScrolledEvent>())
         {
@@ -110,6 +161,13 @@ namespace Lumina
             MouseStates[KeyCode] = MouseZ > 0.0
                 ? Input::EMouseState::Up
                 : Input::EMouseState::Held;
+
+            SInputEvent Ev;
+            Ev.Type   = EInputEventType::MouseScroll;
+            Ev.Scroll = MouseEvent.GetOffset();
+            Ev.MouseX = MouseX;
+            Ev.MouseY = MouseY;
+            FrameEvents.push_back(Ev);
         }
 
         return false;
@@ -140,6 +198,8 @@ namespace Lumina
         MouseDeltaX = 0.0;
         MouseDeltaY = 0.0;
         MouseZ      = 0.0;
+
+        FrameEvents.clear();
     }
 
     void FInputContext::ResetState()
@@ -153,6 +213,7 @@ namespace Lumina
         CachedModifierState = 0;
         // Without this a focus regain fires a spurious Released callback.
         ActionDownLastFrame.clear();
+        FrameEvents.clear();
     }
 
     bool FInputContext::WasActionDownLastFrame(FName ActionName) const
@@ -226,7 +287,7 @@ namespace Lumina
     void FInputContext::UpdateActionEdgeState()
     {
         const FInputActionMap& Map = FInputActionMap::Get();
-        for (const FInputAction& Action : Map.GetAllActions())
+        for (const SInputAction& Action : Map.GetAllActions())
         {
             const bool bDownNow = Map.IsActionDown(Action.Name, *this);
             ActionDownLastFrame[Action.Name] = bDownNow;

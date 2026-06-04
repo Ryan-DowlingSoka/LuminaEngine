@@ -1,4 +1,3 @@
-local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
 --@export(ClampMin=0, Units="m/s", Category="Player", Tooltip="Free-fly speed")

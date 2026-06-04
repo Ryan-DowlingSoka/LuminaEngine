@@ -1688,7 +1688,17 @@ void TextEditor::handleCharacter(ImWchar character) {
 	// Fire autocomplete on word chars and on common member-access triggers.
 	// Without this, typing `foo.` or `foo:` never opens the popup until the
 	// user types another letter, which makes `.<member>` UX feel broken.
-	if (CodePoint::isWord(character) || character == '.' || character == ':') {
+	// '/' also triggers, but only inside a string literal, so path-like string
+	// arguments (e.g. asset paths "/Game/...") offer completions without popping
+	// the list for arithmetic division in ordinary code.
+	bool slashInString = false;
+	if (character == '/') {
+		auto loc = cursors.getMain().getSelectionEnd();
+		if (loc.column >= 2) {
+			slashInString = document.getColor(Coordinate(loc.line, loc.column - 2)) == Color::string;
+		}
+	}
+	if (CodePoint::isWord(character) || character == '.' || character == ':' || slashInString) {
 		if (autocomplete.startTyping(cursors)) {
 			makeCursorVisible();
 		}
@@ -4800,6 +4810,7 @@ static ImU32 kindBadgeColor(char kind) {
 		case 'v': return IM_COL32(160, 200, 140, 255); // value (number/string/bool)
 		case 'k': return IM_COL32(200, 130, 220, 255); // keyword
 		case 's': return IM_COL32(120, 160, 245, 255); // snippet (template expansion)
+		case 'a': return IM_COL32(230, 160, 100, 255); // asset (path completion)
 		case 'i': return IM_COL32(180, 180, 180, 255); // identifier (buffer scrape)
 		default:  return IM_COL32(150, 150, 150, 255);
 	}
@@ -4909,7 +4920,10 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 			}
 
 			if(state.inString && !configuration.triggerInStrings) {
-				return false;
+				// the app may opt specific string contexts back in (e.g. asset path arguments)
+				if (!configuration.stringTriggerFilter || !configuration.stringTriggerFilter(state)) {
+					return false;
+				}
 			}
 
 			// get initial list of suggestions from the app

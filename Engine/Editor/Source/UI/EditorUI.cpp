@@ -104,7 +104,6 @@
 #include "Tools/Debug/ConsoleVariableEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
-#include "Tools/Debug/InputActionEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
 #include "Tools/Debug/SettingsEditorTool.h"
 #include "Settings/EditorSettings.h"
@@ -2169,7 +2168,6 @@ namespace Lumina
         ImGui::Separator();
 
         DrawToolMenuItem<FAssetRegistryEditorTool>(LE_ICON_DATABASE " Asset Registry", this);
-        DrawToolMenuItem<FInputActionEditorTool>(LE_ICON_KEYBOARD " Input Actions", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
         DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);

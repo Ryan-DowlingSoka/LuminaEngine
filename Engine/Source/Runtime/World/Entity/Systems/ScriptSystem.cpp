@@ -2,6 +2,8 @@
 #include "ScriptSystem.h"
 #include "SystemSingletons.h"
 #include "Core/Profiler/CPUProfiler.h"
+#include "Input/InputContext.h"
+#include "Input/InputViewport.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "World/World.h"
 #include "World/Subsystems/WorldSettings.h"
@@ -80,6 +82,47 @@ namespace Lumina
         });
     }
 
+    // Event-driven input hook: delivers each discrete input event that arrived this frame to every
+    // script defining OnInput. Game/simulation worlds only (editor scripts use OnEditorUpdate). Reads
+    // (does not consume) the world viewport's frame-event queue, which the input registry clears in
+    // EndFrame -- so every OnInput script in the world sees the same events.
+    static void RunInputDispatch(const FSystemContext& Context)
+    {
+        const EWorldType WorldType = Context.GetWorldType();
+        if (WorldType != EWorldType::Game && WorldType != EWorldType::Simulation)
+        {
+            return;
+        }
+
+        CWorld* World = Context.GetRegistry().ctx().get<CWorld*>();
+        const FInputViewport* Viewport = FInputViewportRegistry::Get().FindViewportForWorld(World);
+        if (Viewport == nullptr)
+        {
+            return;
+        }
+
+        const TVector<SInputEvent>& Events = Viewport->GetContext().GetFrameEvents();
+        if (Events.empty())
+        {
+            return;
+        }
+
+        auto View = Context.CreateView<SScriptComponent, FScriptHasInputFn>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
+        View.each([&](entt::entity, SScriptComponent& ScriptComponent)
+        {
+            const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
+            if (!Script)
+            {
+                return;
+            }
+            Script->PublishThreadContext();
+            for (const SInputEvent& Event : Events)
+            {
+                ScriptComponent.InputFunc.Call(Script->Reference, Event);
+            }
+        });
+    }
+
     void SScriptSystem::Update(const FSystemContext& Context) noexcept
     {
         LUMINA_PROFILE_SCOPE();
@@ -123,6 +166,7 @@ namespace Lumina
             break;
         case EUpdateStage::PrePhysics:
             {
+                RunInputDispatch(Context);
                 auto View = Context.CreateView<SScriptComponent, FScriptHasUpdateFn, FUpdateStage_PrePhysics>(entt::exclude<SDisabledTag, SScriptDisabledTag>);
                 View.each(IterateGroup);
                 RunFixedUpdate(Context);

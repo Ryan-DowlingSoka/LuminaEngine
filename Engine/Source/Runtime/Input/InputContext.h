@@ -5,6 +5,7 @@
 #include "Events/KeyCodes.h"
 #include "Events/MouseCodes.h"
 #include "Input/Input.h"
+#include "Input/InputEvent.h"
 #include "Input/InputMode.h"
 #include "Scripting/Lua/Reference.h"
 
@@ -81,6 +82,10 @@ namespace Lumina
         double GetMouseXRaw() const { return MouseX; }
         double GetMouseYRaw() const { return MouseY; }
 
+        // Discrete events that arrived this frame, in order. Populated by OnEvent, drained (read) by the
+        // script OnInput dispatch during the world update, cleared in EndFrame.
+        const TVector<SInputEvent>& GetFrameEvents() const { return FrameEvents; }
+
         RUNTIME_API void EndFrame(double DeltaSeconds);
 
         // Drops state when focus is taken so a release we never saw doesn't latch.
@@ -136,6 +141,7 @@ namespace Lumina
 
         THashMap<FName, bool>          ActionDownLastFrame;
         TVector<FActionCallback>       ActionCallbacks;
+        TVector<SInputEvent>           FrameEvents;
         uint64                         NextCallbackId = 1;
     };
 }

@@ -94,8 +94,7 @@ namespace Lumina
         bool bInitialized = false;
     };
 
-    // Stateless executor: walks a CAnimationGraph's bytecode against a
-    // per-instance FAnimGraphVMState and produces GPU skinning matrices.
+    // Stateless executor.
     class RUNTIME_API FAnimationGraphVM
     {
     public:
@@ -103,10 +102,7 @@ namespace Lumina
         // Sizes register files / state slots / parameters from the graph; call when the graph asset changes.
         static void InitState(const CAnimationGraph* Graph, FAnimGraphVMState& State);
 
-        // Executes the bytecode for one frame. DeltaTime advances playback
-        // clocks; the resolved skinning matrices are written to OutMatrices.
-        // When bLockRoot is set and RootBoneIndex is valid, the final pose's root bone is pinned to
-        // the bind pose before skinning (root-motion lock); extraction through the graph is not yet supported.
+        // Executes the bytecode for one frame.
         static void Execute(const CAnimationGraph* Graph,
                             FSkeletonResource* Skeleton,
                             float DeltaTime,

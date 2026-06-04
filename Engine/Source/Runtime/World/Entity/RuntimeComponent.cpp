@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "RuntimeComponent.h"
 
+#include <algorithm>
+
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Containers/Array.h"
@@ -122,10 +124,7 @@ namespace Lumina
         }
 
         uint32 NewCap = (Capacity == 0) ? 8u : Capacity * 2u;
-        if (NewCap < Count)
-        {
-            NewCap = Count;
-        }
+        NewCap = std::max(NewCap, Count);
 
         uint8* NewBuf = static_cast<uint8*>(Memory::Malloc((size_t)NewCap * Stride, ElemAlign));
 
@@ -383,13 +382,6 @@ namespace Lumina
         uint16 RuntimeComponentTag()
         {
             return Lua::TClassTraits<FDynamicComponentTag>::Tag();
-        }
-
-        bool IsVectorStruct(CStruct* S)
-        {
-            return S == TBaseStructure<FVector2>::Get()
-                || S == TBaseStructure<FVector3>::Get()
-                || S == TBaseStructure<FVector4>::Get();
         }
 
         FRuntimeComponentStorage* ResolveRefStorage(const FRuntimeComponentRef& Ref, void*& OutData, CStruct*& OutLayout)

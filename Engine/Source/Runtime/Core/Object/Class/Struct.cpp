@@ -299,8 +299,7 @@ namespace Lumina
 
     void CStruct::NetSerializeProperties(FNetArchive& Ar, void* Data) const
     {
-        // No tags, no count, no size prefixes: both peers walk the same PROPERTY(Replicated) fields in
-        // the same order. NetSerialize reads or writes per the archive's mode.
+        // Walk the same PROPERTY(Replicated) fields. NetSerialize reads or writes per the archive's mode.
         for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
         {
             if (!Current->ShouldSerialize() || Current->IsEditorOnly() || !Current->IsReplicated())

@@ -133,6 +133,19 @@ function EntityScript:OnDetach() end
 --     the editor-mode counterpart to OnUpdate. Use for tool-style preview /
 --     gizmo logic.
 --
+--   function MyScript:OnInput(Event) ... end
+--     Event-driven input -- fires once per discrete key/mouse event for the
+--     world's focused viewport (play mode only), instead of polling. No
+--     SInputComponent needed. The Event fields (all read-only):
+--       Event.Type   -- "KeyDown" | "KeyUp" | "MouseDown" | "MouseUp" | "MouseMove" | "MouseScroll"
+--       Event.Key    -- key/button name for Key*/Mouse* events ("Space", "A", "Left"), "" otherwise
+--       Event.Ctrl / Event.Shift / Event.Alt -- modifier chord held with the event
+--       Event.Repeat -- KeyDown only: true on OS auto-repeat
+--       Event.X / Event.Y           -- cursor position (render-target space)
+--       Event.DeltaX / Event.DeltaY -- MouseMove motion
+--       Event.Scroll                -- MouseScroll signed wheel delta
+--     e.g.  if Event.Type == "KeyDown" and Event.Key == "Space" then self:Jump() end
+--
 -- Physics contact callbacks (define any; the engine skips delivery if absent):
 --   function MyScript:OnContactBegin(Event) ... end -- solid impact began
 --   function MyScript:OnContactEnd(Event)   ... end -- solid contact ended

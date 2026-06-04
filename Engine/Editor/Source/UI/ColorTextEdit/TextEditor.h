@@ -619,6 +619,12 @@ public:
 		// triggerInComments flag alone.
 		std::function<bool(const AutoCompleteState&)> commentTriggerFilter;
 
+		// optional app gate for triggering inside string literals. When set and triggerInStrings is false,
+		// the app may still allow activation in specific string contexts (e.g. asset path arguments like
+		// "/Game/...") by returning true. Receives the populated state (line / searchTerm / inString).
+		// Null = use the triggerInStrings flag alone.
+		std::function<bool(const AutoCompleteState&)> stringTriggerFilter;
+
 		// manual trigger key sequence (default is Ctrl+space on all platforms, even MacOS)
 		// remember Dear ImGui reverses Ctrl and Command on MacOS
 #if __APPLE__

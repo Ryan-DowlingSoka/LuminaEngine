@@ -925,6 +925,10 @@ namespace Lumina
         // latched physics snapshot. Overloaded getters are static_cast to pick the entity version.
         using PScene = Physics::IPhysicsScene;
         GlobalRef.NewClass<PScene>("PhysicsScene")
+            .AddFunction<&PScene::CastRay>("RayCast")
+                .AddComment("Casts a ray into the physics scene")
+            .AddFunction<&PScene::CastSphere>("SphereCast")
+                .AddComment("Casts a sphere into the physics scene")
             .AddFunction<&PScene::GetEntityBodyID>("GetBodyID")
                 .AddComment("Jolt body id backing the entity, or 0 if it has no rigid body.")
             .AddFunction<&PScene::ActivateBody>("ActivateBody")
@@ -2488,6 +2492,7 @@ namespace Lumina
         // No base no-op fallback (see ScriptComponent.h): invalid FRef means "not defined".
         ScriptComponent.FixedUpdateFunc     = ScriptComponent.Script->Reference["OnFixedUpdate"];
         ScriptComponent.EditorUpdateFunc    = ScriptComponent.Script->Reference["OnEditorUpdate"];
+        ScriptComponent.InputFunc           = ScriptComponent.Script->Reference["OnInput"];
 
         ScriptComponent.ContactBeginFunc    = ScriptComponent.Script->Reference["OnContactBegin"];
         ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
@@ -2578,6 +2583,11 @@ namespace Lumina
             EntityRegistry.emplace_or_replace<FScriptHasEditorUpdateFn>(Entity);
         else
             EntityRegistry.remove<FScriptHasEditorUpdateFn>(Entity);
+
+        if (ScriptComponent.InputFunc.IsValid())
+            EntityRegistry.emplace_or_replace<FScriptHasInputFn>(Entity);
+        else
+            EntityRegistry.remove<FScriptHasInputFn>(Entity);
     }
 
     void CWorld::OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady)

@@ -1,7 +1,3 @@
--- Server-authoritative mover. Attached by the server (RpcTest) to a replicated cube; its ScriptPath
--- replicates, so clients attach it too, but the IsServer guard makes it inert there. The cube therefore
--- moves only on the server, and clients see the motion purely through movement replication + interpolation.
-local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
 local Radius = 4.0

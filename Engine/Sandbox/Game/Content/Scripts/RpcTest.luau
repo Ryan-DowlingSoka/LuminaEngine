@@ -1,4 +1,3 @@
-local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
 -- Server-authored spawn: CreateEntity + components + ownership + pawn script; the net layer replicates it.

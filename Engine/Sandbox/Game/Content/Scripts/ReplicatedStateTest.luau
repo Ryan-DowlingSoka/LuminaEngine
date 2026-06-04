@@ -1,4 +1,3 @@
-local EntityScript = require("Stdlib/EntityScript")
 local Script: EntityScript = EntityScript.new()
 
 --@export(Category = "Replicated", ClampMin = 0, ClampMax = 100)

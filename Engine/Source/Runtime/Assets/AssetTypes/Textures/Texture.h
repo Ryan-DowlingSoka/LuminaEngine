@@ -22,10 +22,10 @@ namespace Lumina
         // sRGB color (albedo, emissive, UI). Default for unrecognized filenames.
         SRGB,
 
-        // Tangent-space normal map; currently linear, future BC5_UNORM with shader Z reconstruct.
+        // Tangent-space normal map; stored BC5_UNORM (RG), shader reconstructs Z.
         NormalMap,
 
-        // Packed PBR data (ORM/MRA/etc); currently linear, future per-channel BC4.
+        // Packed PBR data (ORM/MRA/etc); stored BC7_UNORM.
         PackedData,
 
         // HDR equirectangular panorama; stored uncompressed float16 so IBL convolution sees radiances.

@@ -1,14 +1,10 @@
 #include "pch.h"
 #include "InputActionMap.h"
 
-#include "Config/Config.h"
-#include "Core/Engine/Engine.h"
+#include "Config/InputSettings.h"
+#include "Core/Object/ObjectCore.h"
 #include "Input/InputContext.h"
 #include "Log/Log.h"
-#include "Paths/Paths.h"
-#include "Platform/Filesystem/FileHelper.h"
-
-#include "nlohmann/json.hpp"
 
 namespace Lumina
 {
@@ -217,62 +213,8 @@ namespace Lumina
 
     namespace
     {
-        bool ParseBinding(const nlohmann::json& Json, FInputBinding& OutBinding)
-        {
-            if (!Json.is_object())
-            {
-                return false;
-            }
-
-            const std::string Type = Json.value("Type", std::string("Key"));
-
-            if (Type == "Key")
-            {
-                const std::string KeyName = Json.value("Key", std::string());
-                OutBinding.Type = EInputBindingType::Key;
-                OutBinding.Key  = FInputActionMap::KeyFromString(FStringView(KeyName.c_str(), KeyName.size()));
-                if (OutBinding.Key == EKey::Num)
-                {
-                    return false;
-                }
-            }
-            else if (Type == "MouseButton")
-            {
-                const std::string ButtonName = Json.value("Button", std::string());
-                OutBinding.Type        = EInputBindingType::MouseButton;
-                OutBinding.MouseButton = FInputActionMap::MouseButtonFromString(FStringView(ButtonName.c_str(), ButtonName.size()));
-                if (OutBinding.MouseButton == EMouseKey::Num)
-                {
-                    return false;
-                }
-            }
-            else if (Type == "Axis1D")
-            {
-                const std::string PosName = Json.value("Positive", std::string());
-                const std::string NegName = Json.value("Negative", std::string());
-                OutBinding.Type         = EInputBindingType::Axis1D;
-                OutBinding.AxisPositive = FInputActionMap::KeyFromString(FStringView(PosName.c_str(), PosName.size()));
-                OutBinding.AxisNegative = FInputActionMap::KeyFromString(FStringView(NegName.c_str(), NegName.size()));
-                OutBinding.AxisScale    = Json.value("Scale", 1.0f);
-                if (OutBinding.AxisPositive == EKey::Num && OutBinding.AxisNegative == EKey::Num)
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                LOG_WARN("[InputActions] Unknown binding type '{}'.", Type.c_str());
-                return false;
-            }
-
-            OutBinding.bRequireCtrl  = Json.value("Ctrl",  false);
-            OutBinding.bRequireShift = Json.value("Shift", false);
-            OutBinding.bRequireAlt   = Json.value("Alt",   false);
-            return true;
-        }
-
-        // Required modifiers must be down; un-required modifiers don't suppress.
-        bool ModifiersSatisfied(const FInputBinding& Binding, const FInputContext& Context)
+        // Required modifiers (from the SKey chord) must be down; un-required modifiers don't suppress.
+        bool ModifiersSatisfied(const SKey& Key, const FInputContext& Context)
         {
             const int Mods = Context.GetCachedModifierState();
             // Rml::Input::KeyModifier: KM_CTRL=1, KM_SHIFT=2, KM_ALT=4, KM_META=8.
@@ -280,10 +222,22 @@ namespace Lumina
             const bool ShiftDown = (Mods & 2) != 0;
             const bool AltDown   = (Mods & 4) != 0;
 
-            if (Binding.bRequireCtrl  && !CtrlDown)  return false;
-            if (Binding.bRequireShift && !ShiftDown) return false;
-            if (Binding.bRequireAlt   && !AltDown)   return false;
+            if (Key.bCtrl  && !CtrlDown)  return false;
+            if (Key.bShift && !ShiftDown) return false;
+            if (Key.bAlt   && !AltDown)   return false;
             return true;
+        }
+
+        // Is this binding's key/button held this frame, with its modifier chord satisfied?
+        bool IsSKeyDown(const SKey& Key, const FInputContext& Context)
+        {
+            if (!Key.IsValid() || !ModifiersSatisfied(Key, Context))
+            {
+                return false;
+            }
+            if (Key.IsKeyboard()) return Context.IsKeyDownRaw(Key.Key);
+            if (Key.IsMouse())    return Context.IsMouseButtonDownRaw(Key.MouseButton);
+            return false;
         }
     }
 
@@ -293,173 +247,56 @@ namespace Lumina
         return Instance;
     }
 
-    bool FInputActionMap::LoadFromConfig()
+    void FInputActionMap::RebuildFromSettings()
     {
-        if (GConfig == nullptr)
+        Actions = GetDefault<CInputSettings>()->Actions;
+        Lookup.clear();
+        for (int32 i = 0; i < int32(Actions.size()); ++i)
         {
-            return false;
+            Lookup[Actions[i].Name] = i;
         }
-        const nlohmann::json* Node = GConfig->GetRaw("Input.Actions");
-        if (Node == nullptr || !Node->is_object())
-        {
-            // Leave manual registrations alone if the project ships no JSON.
-            return false;
-        }
-
-        Actions.clear();
-        for (auto It = Node->begin(); It != Node->end(); ++It)
-        {
-            const std::string& ActionName = It.key();
-            const nlohmann::json& ActionJson = It.value();
-            if (!ActionJson.is_object())
-            {
-                LOG_WARN("[InputActions] '{}' is not an object, skipping.", ActionName.c_str());
-                continue;
-            }
-
-            FInputAction Action;
-            Action.Name = FName(ActionName.c_str());
-            Action.bRunsInUI = ActionJson.value("RunsInUI", false);
-
-            const auto BindingsIt = ActionJson.find("Bindings");
-            if (BindingsIt == ActionJson.end() || !BindingsIt->is_array())
-            {
-                LOG_WARN("[InputActions] '{}' has no Bindings array.", ActionName.c_str());
-                continue;
-            }
-
-            for (const auto& BindingJson : *BindingsIt)
-            {
-                FInputBinding Binding;
-                if (ParseBinding(BindingJson, Binding))
-                {
-                    Action.Bindings.push_back(Binding);
-                }
-                else
-                {
-                    LOG_WARN("[InputActions] '{}' has an invalid binding entry.", ActionName.c_str());
-                }
-            }
-
-            if (!Action.Bindings.empty())
-            {
-                Actions.push_back(std::move(Action));
-            }
-        }
-
         LOG_INFO("[InputActions] Loaded {} actions.", Actions.size());
-        return true;
     }
 
-    void FInputActionMap::RegisterAction(FInputAction Action)
+    const SInputAction* FInputActionMap::FindAction(FName Name) const
     {
-        for (FInputAction& Existing : Actions)
-        {
-            if (Existing.Name == Action.Name)
-            {
-                Existing = std::move(Action);
-                return;
-            }
-        }
-        Actions.push_back(std::move(Action));
+        const auto It = Lookup.find(Name);
+        return It != Lookup.end() ? &Actions[It->second] : nullptr;
     }
 
-    void FInputActionMap::UnregisterAction(FName Name)
-    {
-        for (auto It = Actions.begin(); It != Actions.end(); ++It)
-        {
-            if (It->Name == Name)
-            {
-                Actions.erase(It);
-                return;
-            }
-        }
-    }
-
-    void FInputActionMap::Clear()
-    {
-        Actions.clear();
-    }
-
-    const FInputAction* FInputActionMap::FindAction(FName Name) const
-    {
-        for (const FInputAction& A : Actions)
-        {
-            if (A.Name == Name)
-            {
-                return &A;
-            }
-        }
-        return nullptr;
-    }
-
-    bool FInputActionMap::PassesUIGate(const FInputAction& Action, const FInputContext& Context) const
+    bool FInputActionMap::PassesUIGate(const SInputAction& Action, const FInputContext& Context) const
     {
         return Action.bRunsInUI || Context.GetInputMode() != EInputMode::UI;
     }
 
-    bool FInputActionMap::EvaluateDown(const FInputAction& Action, const FInputContext& Context) const
+    bool FInputActionMap::EvaluateDown(const SInputAction& Action, const FInputContext& Context) const
     {
-        for (const FInputBinding& Binding : Action.Bindings)
+        for (const SInputActionBinding& Binding : Action.Bindings)
         {
-            if (!ModifiersSatisfied(Binding, Context))
+            if (IsSKeyDown(Binding.Key, Context))
             {
-                continue;
-            }
-
-            switch (Binding.Type)
-            {
-            case EInputBindingType::Key:
-                if (Binding.Key != EKey::Num && Context.IsKeyDownRaw(Binding.Key))
-                {
-                    return true;
-                }
-                break;
-            case EInputBindingType::MouseButton:
-                if (Binding.MouseButton != EMouseKey::Num && Context.IsMouseButtonDownRaw(Binding.MouseButton))
-                {
-                    return true;
-                }
-                break;
-            case EInputBindingType::Axis1D:
-                {
-                    const bool Pos = Binding.AxisPositive != EKey::Num && Context.IsKeyDownRaw(Binding.AxisPositive);
-                    const bool Neg = Binding.AxisNegative != EKey::Num && Context.IsKeyDownRaw(Binding.AxisNegative);
-                    if (Pos || Neg)
-                    {
-                        return true;
-                    }
-                }
-                break;
+                return true;
             }
         }
         return false;
     }
 
-    float FInputActionMap::EvaluateAxis(const FInputAction& Action, const FInputContext& Context) const
+    float FInputActionMap::EvaluateAxis(const SInputAction& Action, const FInputContext& Context) const
     {
         float Sum = 0.0f;
-        for (const FInputBinding& Binding : Action.Bindings)
+        for (const SInputActionBinding& Binding : Action.Bindings)
         {
-            if (Binding.Type != EInputBindingType::Axis1D)
+            if (IsSKeyDown(Binding.Key, Context))
             {
-                continue;
+                Sum += Binding.Scale;
             }
-            if (!ModifiersSatisfied(Binding, Context))
-            {
-                continue;
-            }
-            float Local = 0.0f;
-            if (Binding.AxisPositive != EKey::Num && Context.IsKeyDownRaw(Binding.AxisPositive)) Local += 1.0f;
-            if (Binding.AxisNegative != EKey::Num && Context.IsKeyDownRaw(Binding.AxisNegative)) Local -= 1.0f;
-            Sum += Local * Binding.AxisScale;
         }
         return Sum;
     }
 
     bool FInputActionMap::IsActionDown(FName Name, const FInputContext& Context) const
     {
-        const FInputAction* Action = FindAction(Name);
+        const SInputAction* Action = FindAction(Name);
         if (Action == nullptr || !PassesUIGate(*Action, Context))
         {
             return false;
@@ -469,7 +306,7 @@ namespace Lumina
 
     bool FInputActionMap::IsActionPressed(FName Name, const FInputContext& Context) const
     {
-        const FInputAction* Action = FindAction(Name);
+        const SInputAction* Action = FindAction(Name);
         if (Action == nullptr || !PassesUIGate(*Action, Context))
         {
             return false;
@@ -481,7 +318,7 @@ namespace Lumina
 
     bool FInputActionMap::IsActionReleased(FName Name, const FInputContext& Context) const
     {
-        const FInputAction* Action = FindAction(Name);
+        const SInputAction* Action = FindAction(Name);
         if (Action == nullptr || !PassesUIGate(*Action, Context))
         {
             return false;
@@ -493,87 +330,11 @@ namespace Lumina
 
     float FInputActionMap::GetActionAxis(FName Name, const FInputContext& Context) const
     {
-        const FInputAction* Action = FindAction(Name);
+        const SInputAction* Action = FindAction(Name);
         if (Action == nullptr || !PassesUIGate(*Action, Context))
         {
             return 0.0f;
         }
         return EvaluateAxis(*Action, Context);
-    }
-
-    void FInputActionMap::SetActions(TVector<FInputAction> NewActions)
-    {
-        Actions = std::move(NewActions);
-    }
-
-    bool FInputActionMap::SaveToProjectConfig() const
-    {
-        if (GEngine == nullptr || !GEngine->HasLoadedProject())
-        {
-            LOG_WARN("[InputActions] SaveToProjectConfig: no project is loaded.");
-            return false;
-        }
-
-        const FStringView  ProjectPathView = GEngine->GetProjectPath();
-        FFixedString       ProjectPath;
-        ProjectPath.assign(ProjectPathView.data(), ProjectPathView.size());
-        const FFixedString TargetPath = Paths::Combine(ProjectPath, "Config", "InputActions.json");
-
-        nlohmann::json Root;
-        nlohmann::json& ActionsJson = Root["Input"]["Actions"];
-        ActionsJson = nlohmann::json::object();
-
-        for (const FInputAction& Action : Actions)
-        {
-            nlohmann::json ActionJson;
-            ActionJson["Bindings"] = nlohmann::json::array();
-            if (Action.bRunsInUI)
-            {
-                ActionJson["RunsInUI"] = true;
-            }
-
-            for (const FInputBinding& Binding : Action.Bindings)
-            {
-                nlohmann::json BindingJson;
-                switch (Binding.Type)
-                {
-                case EInputBindingType::Key:
-                    BindingJson["Type"] = "Key";
-                    BindingJson["Key"]  = std::string(KeyToString(Binding.Key).c_str());
-                    break;
-                case EInputBindingType::MouseButton:
-                    BindingJson["Type"]   = "MouseButton";
-                    BindingJson["Button"] = std::string(MouseButtonToString(Binding.MouseButton).c_str());
-                    break;
-                case EInputBindingType::Axis1D:
-                    BindingJson["Type"]     = "Axis1D";
-                    BindingJson["Positive"] = std::string(KeyToString(Binding.AxisPositive).c_str());
-                    BindingJson["Negative"] = std::string(KeyToString(Binding.AxisNegative).c_str());
-                    if (Binding.AxisScale != 1.0f)
-                    {
-                        BindingJson["Scale"] = Binding.AxisScale;
-                    }
-                    break;
-                }
-
-                if (Binding.bRequireCtrl)  BindingJson["Ctrl"]  = true;
-                if (Binding.bRequireShift) BindingJson["Shift"] = true;
-                if (Binding.bRequireAlt)   BindingJson["Alt"]   = true;
-
-                ActionJson["Bindings"].push_back(std::move(BindingJson));
-            }
-
-            ActionsJson[Action.Name.ToString().c_str()] = std::move(ActionJson);
-        }
-
-        const std::string Serialized = Root.dump(4);
-        if (!FileHelper::SaveStringToFile(FStringView(Serialized.c_str(), Serialized.size()), FStringView(TargetPath.c_str(), TargetPath.size())))
-        {
-            LOG_ERROR("[InputActions] Failed to write '{}'.", TargetPath.c_str());
-            return false;
-        }
-
-        LOG_INFO("[InputActions] Saved {} actions to '{}'.", Actions.size(), TargetPath.c_str());
-        return true;
     }
 }

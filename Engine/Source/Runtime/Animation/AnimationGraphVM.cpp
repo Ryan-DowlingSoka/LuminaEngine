@@ -488,9 +488,9 @@ namespace Lumina
                 const uint16 BoneIdx  = Reader.Read<uint16>();
                 const uint16 SpaceReg = Reader.Read<uint16>();
                 const uint16 ModeReg  = Reader.Read<uint16>();
-                const FVector3 T     = Reader.Read<FVector3>();
-                const FQuat R     = Reader.Read<FQuat>();
-                const FVector3 S     = Reader.Read<FVector3>();
+                const FVector3 T      = Reader.Read<FVector3>();
+                const FQuat R         = Reader.Read<FQuat>();
+                const FVector3 S      = Reader.Read<FVector3>();
                 const uint16 Dst      = Reader.Read<uint16>();
 
                 if (Src < NumPose && Dst < NumPose)
@@ -525,7 +525,7 @@ namespace Lumina
                 const uint16 RootIdx  = Reader.Read<uint16>();
                 const uint16 MidIdx   = Reader.Read<uint16>();
                 const uint16 EndIdx   = Reader.Read<uint16>();
-                const FVector3 Pole  = Reader.Read<FVector3>();
+                const FVector3 Pole   = Reader.Read<FVector3>();
                 const uint16 Dst      = Reader.Read<uint16>();
 
                 if (Src < NumPose && Dst < NumPose)

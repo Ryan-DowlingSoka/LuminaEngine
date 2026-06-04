@@ -2,40 +2,46 @@
 
 #include "Containers/Array.h"
 #include "Containers/Name.h"
-#include "Events/KeyCodes.h"
-#include "Events/MouseCodes.h"
+#include "Core/Object/ObjectMacros.h"
+#include "Input/Key.h"
+#include "InputAction.generated.h"
 
 namespace Lumina
 {
-    enum class EInputBindingType : uint8
+    // One physical binding for an action: an SKey (keyboard/mouse, with its own Ctrl/Shift/Alt chord)
+    // plus a scale used only by axis actions.
+    REFLECT()
+    struct RUNTIME_API SInputActionBinding
     {
-        Key,
-        MouseButton,
-        Axis1D,
+        GENERATED_BODY()
+
+        PROPERTY(Editable)
+        SKey Key;
+
+        // Axis actions only: value contributed while Key is held (e.g. +1 / -1). Ignored for digital.
+        PROPERTY(Editable)
+        float Scale = 1.0f;
     };
 
-    struct FInputBinding
+    // A named gameplay input. Digital actions fire when any bound key is down; axis actions sum the
+    // Scale of every held binding.
+    REFLECT()
+    struct RUNTIME_API SInputAction
     {
-        EInputBindingType Type = EInputBindingType::Key;
+        GENERATED_BODY()
 
-        // EKey::Num / EMouseKey::Num is the unbound sentinel.
-        EKey      Key         = EKey::Num;
-        EMouseKey MouseButton = EMouseKey::Num;
+        PROPERTY(Editable)
+        FName Name;
 
-        EKey  AxisPositive = EKey::Num;
-        EKey  AxisNegative = EKey::Num;
-        float AxisScale    = 1.0f;
+        // Axis = sum of held bindings' Scale; Digital = any bound key down.
+        PROPERTY(Editable)
+        bool bAxis = false;
 
-        bool bRequireCtrl  = false;
-        bool bRequireShift = false;
-        bool bRequireAlt   = false;
-    };
+        // Keep firing while the active context is in EInputMode::UI (pause / save hotkeys).
+        PROPERTY(Editable)
+        bool bRunsInUI = false;
 
-    struct FInputAction
-    {
-        FName                  Name;
-        TVector<FInputBinding> Bindings;
-        // True keeps the action firing while the active context is EInputMode::UI.
-        bool                   bRunsInUI = false;
+        PROPERTY(Editable)
+        TVector<SInputActionBinding> Bindings;
     };
 }

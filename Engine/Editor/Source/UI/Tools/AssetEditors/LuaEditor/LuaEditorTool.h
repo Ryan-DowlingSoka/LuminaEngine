@@ -51,6 +51,11 @@ namespace Lumina
         // given context, filtered by Partial. Used inside `--@...` comments where Lua symbols don't apply.
         void FillAnnotationCompletions(TextEditor::AutoCompleteState& State,
                                        ELuaAnnotationContext Context, FStringView Partial);
+
+        // Asset-path autocomplete: when the cursor sits inside a string literal whose content begins
+        // with '/', offers matching asset registry paths (e.g. Asset.Hard("/Game/Meshes/Crate")).
+        // Filters by the path typed so far; accepting inserts the remainder so the full path lands.
+        void FillAssetPathCompletions(TextEditor::AutoCompleteState& State);
         void OnHoverIdentifier(const std::string& Word, const std::string& DottedPath);
 
         // Populates DocumentOutline with clickable function/local declarations.

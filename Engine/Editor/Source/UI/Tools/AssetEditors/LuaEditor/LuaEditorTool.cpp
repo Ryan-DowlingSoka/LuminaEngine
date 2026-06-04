@@ -1,5 +1,6 @@
 #include "LuaEditorTool.h"
 
+#include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Config/Config.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/ObjectCore.h"
@@ -16,6 +17,8 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+
+#include <EASTL/sort.h>
 
 #include <algorithm>
 #include <random>
@@ -461,6 +464,26 @@ namespace Lumina
             return LuaAnnotations::Classify(FStringView(Line.data(), Line.size()),
                                             static_cast<int>(State.searchTermEndIndex), Partial)
                    != ELuaAnnotationContext::None;
+        };
+        // Strings don't normally trigger completion, but an asset-path argument (a string literal whose
+        // content starts with '/', e.g. Asset.Hard("/Game/...")) should offer registry-path completions.
+        AutoCompleteCfg.stringTriggerFilter = [this](const TextEditor::AutoCompleteState& State) -> bool
+        {
+            const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
+            const int TabSize = std::max(1, CodeEditor.GetTabSize());
+            int Byte = 0, Vis = 0;
+            while (Byte < (int)Line.size() && Vis < (int)State.searchTermEndColumn)
+            {
+                Vis += (Line[Byte] == '\t') ? (TabSize - (Vis % TabSize)) : 1;
+                ++Byte;
+            }
+            FStringHit Hit;
+            if (!FindStringAt(Line, Byte, Hit))
+            {
+                return false;
+            }
+            const int ContentStart = Hit.StartCol + 1;
+            return Byte > ContentStart && Line[ContentStart] == '/';
         };
         CodeEditor.SetAutoCompleteConfig(&AutoCompleteCfg);
 
@@ -2017,12 +2040,143 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::FillAssetPathCompletions(TextEditor::AutoCompleteState& State)
+    {
+        const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
+        const int TabSize = std::max(1, CodeEditor.GetTabSize());
+
+        auto ColToByte = [TabSize](const std::string& S, int Col) -> int
+        {
+            int Vis = 0, I = 0;
+            while (I < (int)S.size() && Vis < Col)
+            {
+                Vis += (S[I] == '\t') ? (TabSize - (Vis % TabSize)) : 1;
+                ++I;
+            }
+            return I;
+        };
+
+        const int CursorByte = ColToByte(Line, static_cast<int>(State.searchTermEndColumn));
+        FStringHit Hit;
+        if (!FindStringAt(Line, CursorByte, Hit))
+        {
+            return;
+        }
+
+        const int ContentStart = Hit.StartCol + 1;
+        if (CursorByte <= ContentStart || Line[ContentStart] != '/')
+        {
+            return; // not an asset-style path string
+        }
+
+        // The path typed so far (string content up to the cursor) drives filtering.
+        const std::string Partial = Line.substr(ContentStart, CursorByte - ContentStart);
+
+        // The editor replaces [word-start, word-end] on accept, so the already-typed prefix before that
+        // anchor stays put -- each suggestion only inserts the remainder of its path from the anchor on.
+        const int AnchorByte = ColToByte(Line, static_cast<int>(State.searchTermStartColumn));
+        const int PrefixLen  = std::clamp(AnchorByte - ContentStart, 0, static_cast<int>(Partial.size()));
+
+        // Highlight the typed path prefix in the popup rows rather than just the trailing word segment.
+        State.searchTerm = Partial;
+
+        auto StartsWithCI = [](FStringView Path, const std::string& Pre) -> bool
+        {
+            if (Path.size() < Pre.size())
+            {
+                return false;
+            }
+            for (size_t I = 0; I < Pre.size(); ++I)
+            {
+                if (std::tolower((unsigned char)Path[I]) != std::tolower((unsigned char)Pre[I]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        struct FMatch { FString Path; FString Detail; char Kind; };
+        TVector<FMatch> Matches;
+
+        FAssetRegistry& Registry = FAssetRegistry::Get();
+
+        // Registry paths carry the on-disk extension (.lasset / .luau / .rml / .rcss). Asset refs resolve
+        // with or without it, so insert the cleaner extension-less virtual path the user is typing.
+        for (const auto& Asset : Registry.GetAssets())
+        {
+            const FStringView Path = VFS::RemoveExtension(FStringView(Asset->Path.c_str(), Asset->Path.size()));
+            if (StartsWithCI(Path, Partial) && Path.size() != Partial.size())
+            {
+                FMatch& M = Matches.emplace_back();
+                M.Path = FString(Path.data(), Path.size());
+                M.Detail = FString(Asset->AssetClass.c_str());
+                M.Kind = 'a';
+            }
+        }
+
+        auto KindLabel = [](ETextAssetKind K) -> const char*
+        {
+            switch (K)
+            {
+                case ETextAssetKind::LuaScript:     return "Script";
+                case ETextAssetKind::RmlDocument:   return "UI Document";
+                case ETextAssetKind::RmlStyleSheet: return "Stylesheet";
+                default:                            return "Text";
+            }
+        };
+        for (const auto& Text : Registry.GetTextAssets())
+        {
+            const FStringView Path = VFS::RemoveExtension(FStringView(Text->Path.c_str(), Text->Path.size()));
+            if (StartsWithCI(Path, Partial) && Path.size() != Partial.size())
+            {
+                FMatch& M = Matches.emplace_back();
+                M.Path = FString(Path.data(), Path.size());
+                M.Detail = FString(KindLabel(Text->Kind));
+                M.Kind = 'a';
+            }
+        }
+
+        // Shorter (closer) paths first, then alphabetical -- the next folder/asset down surfaces at the top.
+        eastl::sort(Matches.begin(), Matches.end(), [](const FMatch& A, const FMatch& B)
+        {
+            if (A.Path.size() != B.Path.size())
+            {
+                return A.Path.size() < B.Path.size();
+            }
+            return A.Path < B.Path;
+        });
+
+        constexpr size_t MaxSuggestions = 100;
+        const size_t Count = std::min<size_t>(Matches.size(), MaxSuggestions);
+        State.suggestions.reserve(Count);
+        State.suggestionInsertText.reserve(Count);
+        State.suggestionKinds.reserve(Count);
+        State.suggestionDetails.reserve(Count);
+        for (size_t I = 0; I < Count; ++I)
+        {
+            const FMatch& M = Matches[I];
+            State.suggestions.emplace_back(M.Path.c_str(), M.Path.size());
+            State.suggestionInsertText.emplace_back(M.Path.c_str() + PrefixLen, M.Path.size() - PrefixLen);
+            State.suggestionKinds.push_back(M.Kind);
+            State.suggestionDetails.emplace_back(M.Detail.c_str(), M.Detail.size());
+        }
+    }
+
     void FLuaEditorTool::OnAutoCompleteRequest(TextEditor::AutoCompleteState& State)
     {
         State.suggestions.clear();
         State.suggestionKinds.clear();
         State.suggestionDetails.clear();
         State.suggestionInsertText.clear();
+
+        // Asset-path argument inside a string literal ("/Game/..."): offer registry paths and return.
+        // The stringTriggerFilter has already vetted the context, but Ctrl+Space / re-anchors land here too.
+        if (State.inString)
+        {
+            FillAssetPathCompletions(State);
+            return;
+        }
 
         // Annotation DSL (--@export / --@rpc / --@replicated): offer directive + argument completions so
         // the comment directives autocomplete like language constructs. Handled before the Lua symbol path

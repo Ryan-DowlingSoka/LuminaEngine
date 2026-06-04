@@ -18,6 +18,7 @@ namespace Lumina
     struct FScriptHasUpdateFn       {};
     struct FScriptHasFixedUpdateFn  {};
     struct FScriptHasEditorUpdateFn {};
+    struct FScriptHasInputFn        {};
 
     // Client marker, a replicated ScriptPath that failed to load on this peer. Stops the re-attach from
     // reloading it every tick. Holds the failed path so a changed ScriptPath still retries.
@@ -48,6 +49,10 @@ namespace Lumina
         // No no-op fallback, so an undefined hook leaves the FRef invalid and the tick is skipped.
         Lua::FRef       FixedUpdateFunc;
         Lua::FRef       EditorUpdateFunc;
+
+        // Optional. Invoked once per discrete input event (key/mouse) for the world's focused viewport,
+        // letting scripts react to input as it happens instead of polling SInputComponent.
+        Lua::FRef       InputFunc;
 
         // Optional physics-event hooks, cached at attach; the physics scene invokes them on contact
         // begin/end. Contact = solid collision, Overlap = sensor/trigger.

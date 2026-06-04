@@ -15,6 +15,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Input/InputActionMap.h"
 #include "Input/InputContext.h"
+#include "Input/InputEvent.h"
 #include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
 #include "Luau/include/lua.h"
@@ -806,6 +807,13 @@ namespace Lumina::Lua
             .Register();
     }
 
+    // Resolve the SInputEvent backing an OnInput-style userdata (arg 1 == self for a property getter).
+    static SInputEvent* InputEventSelf(lua_State* State)
+    {
+        auto* Header = static_cast<Lua::TUserdataHeader<SInputEvent>*>(lua_touserdata(State, 1));
+        return Header ? Header->Underlying() : nullptr;
+    }
+
     static void RegisterInputLibrary(lua_State* L, FRef& GlobalsRef)
     {
         // Only viewport/window-scoped knobs live on the global Input table; per-frame gameplay queries
@@ -915,6 +923,35 @@ namespace Lumina::Lua
                     if (*It == Id) { Self.ActionCallbackIds.erase(It); break; }
                 }
             }>("UnbindAction")
+            .Register();
+
+        // The event passed to a script's OnInput(event). Field-style access; Type/Key are strings to
+        // match the rest of the input API ("KeyDown", "Space", "Left", ...).
+        GlobalsRef.NewClass<SInputEvent>("SInputEvent")
+            .AddRawProperty("Type", [](lua_State* State) -> int
+            {
+                if (const SInputEvent* E = InputEventSelf(State)) { lua_pushstring(State, InputEventTypeToString(E->Type)); return 1; }
+                return 0;
+            })
+            .AddRawProperty("Key", [](lua_State* State) -> int
+            {
+                const SInputEvent* E = InputEventSelf(State);
+                if (E == nullptr) { return 0; }
+                const FString Name = E->Key.IsMouse()
+                    ? FInputActionMap::MouseButtonToString(E->Key.MouseButton)
+                    : FInputActionMap::KeyToString(E->Key.Key);
+                lua_pushlstring(State, Name.c_str(), Name.size());
+                return 1;
+            })
+            .AddRawProperty("Ctrl",  [](lua_State* State) -> int { if (const SInputEvent* E = InputEventSelf(State)) { lua_pushboolean(State, E->Key.bCtrl);  return 1; } return 0; })
+            .AddRawProperty("Shift", [](lua_State* State) -> int { if (const SInputEvent* E = InputEventSelf(State)) { lua_pushboolean(State, E->Key.bShift); return 1; } return 0; })
+            .AddRawProperty("Alt",   [](lua_State* State) -> int { if (const SInputEvent* E = InputEventSelf(State)) { lua_pushboolean(State, E->Key.bAlt);   return 1; } return 0; })
+            .AddProperty<&SInputEvent::bRepeat>("Repeat")
+            .AddProperty<&SInputEvent::MouseX>("X")
+            .AddProperty<&SInputEvent::MouseY>("Y")
+            .AddProperty<&SInputEvent::DeltaX>("DeltaX")
+            .AddProperty<&SInputEvent::DeltaY>("DeltaY")
+            .AddProperty<&SInputEvent::Scroll>("Scroll")
             .Register();
     }
 

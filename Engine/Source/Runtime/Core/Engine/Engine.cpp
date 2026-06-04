@@ -21,6 +21,7 @@
 #include "encoder/basisu_enc.h"
 #include "FileSystem/FileSystem.h"
 #include "FileSystem/PakFileSystem.h"
+#include "Config/InputSettings.h"
 #include "Input/InputActionMap.h"
 #include "Input/InputViewport.h"
 #include "Pak/PakArchive.h"
@@ -169,7 +170,17 @@ namespace Lumina
         }
         
         FCoreDelegates::OnPreEngineInit.BroadcastAndClear();
-        
+
+        // Rebuild the runtime action map whenever the Input settings are saved in the editor.
+        // Engine-lifetime subscription; the handle is intentionally not retained.
+        (void)FCoreDelegates::OnSettingsSaved.AddLambda([](CClass* Class)
+        {
+            if (Class == CInputSettings::StaticClass())
+            {
+                FInputActionMap::Get().RebuildFromSettings();
+            }
+        });
+
         FConsoleRegistry::Get().LoadFromConfig();
         
         basisu::basisu_encoder_init();
@@ -725,7 +736,7 @@ namespace Lumina
         LoadProjectScript(FString(ModuleView.data(), ModuleView.size()));
 
         // Must run after GConfig->LoadPath but before any OnReady script body.
-        FInputActionMap::Get().LoadFromConfig();
+        FInputActionMap::Get().RebuildFromSettings();
 
         CreateGameInstance();
         LoadStartupMap();
@@ -1223,7 +1234,7 @@ namespace Lumina
             LoadProjectScript(FString(ScriptView.data(), ScriptView.size()));
         }
 
-        FInputActionMap::Get().LoadFromConfig();
+        FInputActionMap::Get().RebuildFromSettings();
 
         // Project DLL: cooker stashes Project.Name in config to resolve "<Name>-<Config>.dll" next to the exe.
         ProjectName = GConfig->Get<std::string>("Project.Name").c_str();
