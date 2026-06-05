@@ -464,19 +464,6 @@ namespace Lumina
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
 
-                // Freed packages may own GPU resources captured by in-flight render lambdas;
-                // gate the drain on the queue being empty. Skip the wait when nothing is pending.
-                // No render thread headless: drain packages directly.
-                if (CPackage::HasPendingDestroys())
-                {
-                    LUMINA_PROFILE_SECTION_COLORED("WaitForRender (Package Teardown)", tracy::Color::Crimson);
-                    if (!GIsHeadless)
-                    {
-                        FlushRenderingCommands();
-                    }
-                    CPackage::DrainPendingDestroys();
-                }
-
                 // Per-world UI ticks inside each world's Extract; only editor preview contexts remain global.
                 // Extract/FrameEnd push GPU work; nothing to render headless.
                 if (!GIsHeadless)
@@ -1277,6 +1264,11 @@ namespace Lumina
 
     void FEngine::LoadProjectScript(FStringView Path)
     {
+        if (!VFS::Exists(Path))
+        {
+            return;
+        }
+        
         if (ProjectScript)
         {
             if (auto Ref = ProjectScript->Reference["OnUnload"])

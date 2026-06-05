@@ -44,7 +44,7 @@ namespace Lumina
         }
         
         template<EmptyComponent TComponent>
-        void EmplaceComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
+        void EmplaceComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any&)
         {
             Registry.emplace<TComponent>(Entity);
         }
@@ -52,8 +52,6 @@ namespace Lumina
         template<typename TComponent>
         TComponent& PatchComponent(entt::registry& Registry, entt::entity Entity, const entt::meta_any& Any)
         {
-            // An empty Any means signal-only: bump the version and fire on_update without overwriting (the
-            // caller already mutated the component in place, e.g. network apply). A valid Any assigns.
             return Registry.patch<TComponent>(Entity, [&](TComponent& Type)
             {
                 if (Any)

@@ -34,6 +34,10 @@ namespace Lumina
 
         static void RegisterLuaModule(Lua::FRef& GlobalRef);
 
+        // Yields the running coroutine and schedules a one-shot timer (tied to its owner entity) to resume
+        // it after Seconds. Shared by Timer:Wait and the global Wait()/Task.Wait(). Returns lua_yield(L, 0).
+        static int WaitImpl(struct lua_State* L, float Seconds, FTimerManager* TimerManager);
+
         FTimerHandle SetTimer(float Rate, FTimerCallback Callback, bool bLoop = false, float FirstDelay = -1.0f);
         FTimerHandle SetTimerForEntity(entt::entity Owner, float Rate, FTimerCallback Callback, bool bLoop = false, float FirstDelay = -1.0f);
 

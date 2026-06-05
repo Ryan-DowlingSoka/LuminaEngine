@@ -1,5 +1,16 @@
 #pragma once
 
+// Win32 hygiene
+#ifndef NODRAWTEXT
+#define NODRAWTEXT
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef NORESOURCE
+#define NORESOURCE
+#endif
+
 // Standard library: only headers that are small, ubiquitous, or pulled transitively by EASTL.
 #include <memory>
 #include <string>

@@ -400,12 +400,6 @@ namespace Lumina
         return true;
     }
     
-    namespace
-    {
-        FMutex                GPendingDestroyMutex;
-        TVector<CPackage*>    GPendingDestroyPackages;
-    }
-
     bool CPackage::DestroyPackage(CPackage* PackageToDestroy)
     {
         if (PackageToDestroy == nullptr || PackageToDestroy->HasAnyFlag(OF_MarkedDestroy))
@@ -447,89 +441,62 @@ namespace Lumina
             LOG_ERROR("DestroyPackage: failed to remove package file {}", PackagePath);
         }
 
-        // Object-graph mutation deferred to DrainPendingDestroys; running it
-        // here would tear CMesh* / buffer refs out from under the render thread.
+        // A deleted package has nothing to save; clear dirty so it can't surface in save prompts.
+        PackageToDestroy->ClearDirty();
+
+        // Mark first so FindObject (name + GUID) stops resolving it immediately -- a deleted asset is
+        // unreachable by identity even while its husk is torn down below.
         PackageToDestroy->SetFlag(OF_MarkedDestroy);
+
+        // Synchronous teardown.
+        TVector<CObject*> ExportObjects;
+        ExportObjects.reserve(20);
+        GetObjectsWithPackage(PackageToDestroy, ExportObjects);
+
+        // Null every live reference to the exported assets across the whole object graph.
+        for (CObject* ExportObject : ExportObjects)
         {
-            FScopeLock Lock(GPendingDestroyMutex);
-            GPendingDestroyPackages.push_back(PackageToDestroy);
-        }
-
-        return true;
-    }
-
-    bool CPackage::HasPendingDestroys()
-    {
-        FScopeLock Lock(GPendingDestroyMutex);
-        return !GPendingDestroyPackages.empty();
-    }
-
-    void CPackage::DrainPendingDestroys()
-    {
-        TVector<CPackage*> Local;
-        {
-            FScopeLock Lock(GPendingDestroyMutex);
-            if (GPendingDestroyPackages.empty())
+            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
             {
-                return;
+                continue;
             }
-            Local.swap(GPendingDestroyPackages);
-        }
-
-        for (CPackage* PackageToDestroy : Local)
-        {
-            if (PackageToDestroy == nullptr)
+            if (!ExportObject->IsAsset())
             {
                 continue;
             }
 
-            TVector<CObject*> ExportObjects;
-            ExportObjects.reserve(20);
-            GetObjectsWithPackage(PackageToDestroy, ExportObjects);
-
-            for (CObject* ExportObject : ExportObjects)
+            FObjectReferenceReplacerArchive Ar(ExportObject, nullptr);
+            for (TObjectIterator<CObject> Itr; Itr; ++Itr)
             {
-                if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+                if (CObject* Object = *Itr)
                 {
-                    continue;
-                }
-
-                if (!ExportObject->IsAsset())
-                {
-                    continue;
-                }
-
-                FObjectReferenceReplacerArchive Ar(ExportObject, nullptr);
-                for (TObjectIterator<CObject> Itr; Itr; ++Itr)
-                {
-                    if (CObject* Object = *Itr)
-                    {
-                        Object->Serialize(Ar);
-                    }
+                    Object->Serialize(Ar);
                 }
             }
-
-            for (CObject* ExportObject : ExportObjects)
-            {
-                if (ExportObject == nullptr || ExportObject == PackageToDestroy)
-                {
-                    continue;
-                }
-
-                if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
-                {
-                    continue;
-                }
-
-                ExportObject->ConditionalBeginDestroy();
-            }
-
-            PackageToDestroy->ExportTable.clear();
-            PackageToDestroy->ImportTable.clear();
-
-            PackageToDestroy->RemoveFromRoot();
-            PackageToDestroy->ConditionalBeginDestroy();
         }
+
+        // Free the now-unreferenced assets. ConditionalBeginDestroy is a no-op for any still held by a
+        // non-reflected strong ref (e.g. an open editor, which closes on its own deferred queue and releases).
+        for (CObject* ExportObject : ExportObjects)
+        {
+            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+            {
+                continue;
+            }
+            if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
+            {
+                continue;
+            }
+
+            ExportObject->ConditionalBeginDestroy();
+        }
+
+        PackageToDestroy->ExportTable.clear();
+        PackageToDestroy->ImportTable.clear();
+        PackageToDestroy->RemoveFromRoot();
+        PackageToDestroy->ConditionalBeginDestroy();
+
+        return true;
     }
 
     CPackage* CPackage::FindPackageByPath(FStringView Path)

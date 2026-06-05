@@ -37,6 +37,7 @@ namespace Lumina
         {
             GlyphLookup.emplace(Glyphs[i].Codepoint, i);
         }
+        ++ShapeVersion;
     }
 
     const FFontGlyph* CFont::FindGlyph(uint32 Codepoint) const

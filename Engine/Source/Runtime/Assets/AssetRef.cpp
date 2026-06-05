@@ -14,7 +14,7 @@ namespace Lumina
             // Indexed path (replication): a compact net index; Path+GUID are exported once via AssetExport.
             if (Ar.AssetRefToNetIndex)
             {
-                ResolvePath(); // heal/back-fill the GUID so the export keys on a stable identity
+                std::ignore = ResolvePath(); // heal/back-fill the GUID so the export keys on a stable identity
                 WriteVarUInt(Ar, IsNull() ? 0u : Ar.AssetRefToNetIndex(*this));
                 return;
             }

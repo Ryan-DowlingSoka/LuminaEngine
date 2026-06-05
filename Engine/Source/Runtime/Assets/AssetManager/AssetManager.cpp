@@ -81,9 +81,7 @@ namespace Lumina
             return Handle.Get();
         }
 
-        // An async load for this asset is already in flight. Don't block on its handle: a sync request
-        // can be re-entrant (e.g. fired from a PostLoad while the same asset is mid-load), and blocking
-        // would self-deadlock. Return the current in-memory object.
+        // An async load for this asset is already in flight.
         return FindObject<CObject>(RequestedAsset);
     }
 

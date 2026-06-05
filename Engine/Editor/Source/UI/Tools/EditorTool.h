@@ -187,6 +187,9 @@ namespace Lumina
         /** Push current orbit state onto the editor entity's transform. */
         void ApplyOrbitTransform();
 
+        void BeginEditorLookCapture();
+        void EndEditorLookCapture();
+
     public:
 
         /** Free/Orbit combo for DrawViewportOverlayElements overrides. */
@@ -200,6 +203,8 @@ namespace Lumina
         
         /** Draw the optional viewport for this tool window, returns true if focused. */
         virtual bool DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture);
+
+        void UpdateViewportInput(const FUpdateContext& UpdateContext);
 
         /** Draws overlay elements on the viewport for tool actions. */
         virtual void DrawViewportToolbar(const FUpdateContext& UpdateContext);

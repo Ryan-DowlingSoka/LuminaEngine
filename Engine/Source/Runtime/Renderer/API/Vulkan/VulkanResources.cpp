@@ -504,9 +504,7 @@ namespace Lumina
             return;
         }
 
-        // Adaptive sizing. Grow immediately if the last recording overran the slice (it spilled to the
-        // pool) so a heavy scene snaps to the fast path within one recording. Otherwise re-evaluate every
-        // kFastRingEvalWindow recordings against the window peak -- this is where we shrink back down.
+        // Adaptive sizing. Grow immediately if the last recording overran the slice.
         uint64 TargetSlice = 0;
         if (LastDemand > FastRingSliceSize)
         {
@@ -566,9 +564,7 @@ namespace Lumina
                                         && Size <= kFastRingMaxSlice;
         if (bFastPathCandidate)
         {
-            // Demand tracking for adaptive sizing: mirror the bump as a "virtual" offset that ignores the
-            // current slice capacity, so it measures the true bytes this recording wants -- including any
-            // that spill below. Reset per recording in BeginFrame; drives grow/shrink there.
+            // Demand tracking for adaptive sizing.
             FastRingFrameDemand = Align<uint64>(FastRingFrameDemand, Alignment) + Size;
 
             // Create lazily after warmup, sized to the demand seen so far (not a fixed worst case). Triggered

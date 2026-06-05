@@ -447,7 +447,21 @@ namespace Lumina
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%s %u", Heap.bDeviceLocal ? LE_ICON_EXPANSION_CARD : LE_ICON_MEMORY, Heap.HeapIndex);
                 ImGui::SameLine();
-                ImGui::TextDisabled(Heap.bDeviceLocal ? "Device" : "Host");
+                const char* Kind = Heap.bReBAR ? "Device (ReBAR)"
+                                 : Heap.bDeviceLocal ? (Heap.bHostVisible ? "Device (BAR)" : "Device")
+                                 : "Host";
+                if (Heap.bReBAR)
+                {
+                    ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1.0f), "%s", Kind);
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::SetTooltip("CPU-writable VRAM.");
+                    }
+                }
+                else
+                {
+                    ImGui::TextDisabled("%s", Kind);
+                }
 
                 ImGui::TableSetColumnIndex(1);
                 const float Frac = (Heap.BudgetBytes > 0)
@@ -472,6 +486,43 @@ namespace Lumina
         ImGui::TextDisabled("Allocator: %s in %u allocations across %u blocks.",
             ImGuiX::FormatSize((size_t)GPUStats.TotalAllocated).c_str(),
             GPUStats.TotalAllocations, GPUStats.TotalBlocks);
+
+        ImGui::Spacing();
+        DrawUploadPath();
+    }
+
+    void FMemoryProfilerEditorTool::DrawUploadPath()
+    {
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Upload path (FUploadManager)");
+        ImGui::Spacing();
+
+        if (!GPUStats.bUploadPoolValid)
+        {
+            ImGui::TextColored(ImVec4(0.92f, 0.70f, 0.25f, 1.0f),
+                LE_ICON_ALERT " Upload pool unavailable - chunk uploads use the default allocator (slower).");
+            return;
+        }
+
+        const bool bFastPath = GPUStats.bUploadDeviceLocal && GPUStats.bUploadHostVisible;
+        if (bFastPath)
+        {
+            ImGui::TextColored(ImVec4(0.50f, 0.90f, 0.60f, 1.0f),
+                LE_ICON_CHECK " Fast path: writing CPU data straight into VRAM (DeviceLocal + HostVisible).");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.92f, 0.70f, 0.25f, 1.0f),
+                LE_ICON_ALERT " Fallback: uploads land in host (system RAM) - no ReBAR/BAR window in use.");
+        }
+
+        // The memory-type flags VMA actually selected, plus which heap it draws from.
+        FString Flags;
+        if (GPUStats.bUploadDeviceLocal)  { Flags += "DEVICE_LOCAL "; }
+        if (GPUStats.bUploadHostVisible)  { Flags += "HOST_VISIBLE "; }
+        if (GPUStats.bUploadHostCoherent) { Flags += "HOST_COHERENT "; }
+
+        ImGui::TextDisabled("Memory type %u -> heap %u  [%s]",
+            GPUStats.UploadMemoryType, GPUStats.UploadHeapIndex, Flags.c_str());
     }
 
     void FMemoryProfilerEditorTool::DrawResourceCounts()
@@ -1022,7 +1073,7 @@ namespace Lumina
         {
             const float Frac = (H.BudgetBytes > 0) ? (float)((double)H.UsageBytes / (double)H.BudgetBytes) : 0.0f;
             R += FString().sprintf("| %u | %s | %s | %s | %.1f%% | %s | %u | %u |\n",
-                H.HeapIndex, H.bDeviceLocal ? "Device" : "Host",
+                H.HeapIndex, H.bReBAR ? "Device (ReBAR)" : H.bDeviceLocal ? (H.bHostVisible ? "Device (BAR)" : "Device") : "Host",
                 SizeBoth(H.UsageBytes).c_str(), SizeBoth(H.BudgetBytes).c_str(), Frac * 100.0f,
                 SizeBoth(H.AllocatedBytes).c_str(), H.BlockCount, H.AllocationCount);
         }

@@ -444,7 +444,10 @@ namespace Lumina
             };
             for (const char* R : Reserved)
             {
-                if (Name == R) return true;
+                if (Name == R)
+                {
+                    return true;
+                }
             }
             return false;
         }

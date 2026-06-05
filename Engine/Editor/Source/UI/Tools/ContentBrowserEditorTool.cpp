@@ -6,6 +6,7 @@
 #include "Assets/AssetRegistry/TextAssetSidecar.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Assets/Factories/Factory.h"
+#include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Core/Object/Package/Package.h"
 #include "EASTL/sort.h"
 #include "FileSystem/FileSystem.h"
@@ -814,6 +815,16 @@ namespace Lumina
                             return;
                         }
                     }
+                }
+
+                // Deleting a prefab asset deletes its placed instances in every open world (Unreal-style).
+                // Pin it first: dropping the instances' strong SourcePrefab refs could otherwise free the
+                // prefab out from under OnDestroyAsset/DestroyPackage below. Detached subtrees are untracked
+                // and survive automatically.
+                TObjectPtr<CObject> KeepAlive = AliveObject;
+                if (AliveObject != nullptr && AliveObject->IsA<CPrefab>())
+                {
+                    static_cast<CPrefab*>(AliveObject)->DestroyAllInstancesInLoadedWorlds();
                 }
 
                 if (AliveObject)

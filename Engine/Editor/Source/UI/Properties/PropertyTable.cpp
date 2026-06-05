@@ -12,6 +12,7 @@
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "Tools/UI/ImGui/EditorColors.h"
 
 namespace Lumina
 {
@@ -19,8 +20,8 @@ namespace Lumina
     static constexpr float      ChildIndentStep = 14.0f;
     static constexpr uint32     ArrayControlSeed = 428768833;
     static constexpr float      ResetColumnWidth = 22.0f;
-    static constexpr ImU32      ModifiedMarkerColor = IM_COL32(245, 175, 0, 255);
-    static constexpr ImU32      CategoryBgColor = IM_COL32(38, 38, 42, 255);
+    static ImU32 ModifiedMarkerColor() { return EditorColors::U32(EditorColors::Warning()); }
+    static ImU32 CategoryBgColor()     { return EditorColors::U32(EditorColors::RowBg()); }
 
     // Caller passes explicit Y bounds; the table row's bottom isn't queryable until after row finalization.
     static void DrawModifiedMarker(float RowTopY, float RowBottomY)
@@ -32,7 +33,7 @@ namespace Lumina
         }
         const float X = Table->Columns[0].MinX;
         ImGui::GetWindowDrawList()->AddRectFilled(
-            ImVec2(X, RowTopY), ImVec2(X + 2.5f, RowBottomY), ModifiedMarkerColor);
+            ImVec2(X, RowTopY), ImVec2(X + 2.5f, RowBottomY), ModifiedMarkerColor());
     }
 
     static bool IsFixedHeightPropertyType(EPropertyTypeFlags Type)
@@ -257,7 +258,7 @@ namespace Lumina
                 if (bDiffers && !bReadOnly && !IsReadOnly() && !bMultipleValues)
                 {
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
-                    if (ImGuiX::FlatButton(LE_ICON_REFRESH "##Reset", ImVec2(ResetColumnWidth - 2, 22), ModifiedMarkerColor))
+                    if (ImGuiX::FlatButton(LE_ICON_REFRESH "##Reset", ImVec2(ResetColumnWidth - 2, 22), ModifiedMarkerColor()))
                     {
                         PerformResetToDefault();
                     }
@@ -564,7 +565,7 @@ namespace Lumina
     void FArrayPropertyRow::DrawEditor(bool bReadOnly)
     {
         const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->GetValuePtr());
-        ImGui::TextColored(ImVec4(0.24f, 0.24f, 0.24f, 1.0f), "%llu Elements", static_cast<unsigned long long>(ElementCount));
+        ImGui::TextColored(EditorColors::TextMuted(), "%llu Elements", static_cast<unsigned long long>(ElementCount));
     }
 
     float FArrayPropertyRow::GetMeasuredHeaderTextWidth() const
@@ -946,17 +947,17 @@ namespace Lumina
     {
         // Categories paint both row cells with a darker background to read as
         // a visual section break independent of the row-bg alternation.
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, CategoryBgColor);
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, CategoryBgColor);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, CategoryBgColor());
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, CategoryBgColor());
 
         ImGui::Dummy(ImVec2(Offset, 0));
         ImGui::SameLine();
 
         ImGui::SetNextItemOpen(bExpanded);
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(255, 255, 255, 16));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(255, 255, 255, 12));
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 220, 222, 255));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorColors::U32(EditorColors::RowBgActive()));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorColors::U32(EditorColors::RowBgHovered()));
+        ImGui::PushStyleColor(ImGuiCol_Text, EditorColors::TextPrimary());
         bExpanded = ImGui::CollapsingHeader(Category.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopStyleColor(4);
     }
@@ -1132,8 +1133,8 @@ namespace Lumina
             ImGuiTableFlags_RowBg;
 
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 3));
-        ImGui::PushStyleColor(ImGuiCol_TableRowBg, IM_COL32(30, 30, 32, 255));
-        ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, IM_COL32(34, 34, 36, 255));
+        ImGui::PushStyleColor(ImGuiCol_TableRowBg, EditorColors::U32(EditorColors::PanelBg()));
+        ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, EditorColors::U32(EditorColors::RowBg()));
         ImGui::PushID(this);
         
         float HeaderColumnWidth = 0.0f;

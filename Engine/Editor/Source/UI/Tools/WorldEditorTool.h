@@ -70,12 +70,15 @@ namespace Lumina
         void PushCreatePrefabFromSelectionModal();
         void PushCreatePrefabModalForEntity(entt::entity Entity);
 
-        // Script attach context-menu helpers (only offered when the entity has no SScriptComponent).
-        // DrawScriptAttachMenuItems renders the inline "Attach Script" dropdown + "Attach New Script"
-        // entry and is shared between the outliner and viewport menus.
+        // Script context-menu helpers, shared between the outliner and viewport menus. The inline
+        // assign/change dropdown is always offered; "Remove Script" only when one is present.
         void DrawScriptAttachMenuItems(entt::entity Entity);
         void PushAttachNewScriptModal(entt::entity Entity);
-        void AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath);
+        void AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath);  // attaches or swaps
+        void RemoveScriptFromEntity(entt::entity Entity);
+
+        // Refreshes the outliner when a script component is added/removed (the row's script toggle).
+        void OnEntityScriptChanged(entt::registry& Registry, entt::entity Entity);
 
 		void OnSave() override;
 

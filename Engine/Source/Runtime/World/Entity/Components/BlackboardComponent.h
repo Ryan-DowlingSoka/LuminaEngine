@@ -66,8 +66,7 @@ namespace Lumina
 
     private:
 
-        // Live per-instance values, keyed by name. Not serialized -- runtime only,
-        // reset from the schema defaults on init (matching Unreal's blackboard).
+        // Live per-instance values, keyed by name.
         THashMap<FName, FBlackboardValue> Values;
 
         // Schema the Values store was seeded from; re-seed when it changes.

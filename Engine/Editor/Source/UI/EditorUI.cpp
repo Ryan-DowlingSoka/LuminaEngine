@@ -1634,6 +1634,7 @@ namespace Lumina
 
                             Tool->bViewportFocused = ImGui::IsWindowFocused();
                             Tool->bViewportHovered = ImGui::IsWindowHovered();
+                            Tool->UpdateViewportInput(UpdateContext);
                             Tool->DrawViewport(UpdateContext, ViewportTexture);
                         }
 
@@ -1654,6 +1655,7 @@ namespace Lumina
 
                             Tool->bViewportFocused = ImGui::IsWindowFocused();
                             Tool->bViewportHovered = ImGui::IsWindowHovered();
+                            Tool->UpdateViewportInput(UpdateContext);
                             Tool->DrawViewport(UpdateContext, ViewportTexture);
                         }
 
@@ -1743,6 +1745,13 @@ namespace Lumina
         for (TObjectIterator<CPackage> Itr; Itr; ++Itr)
         {
             CPackage* Package = *Itr;
+
+            // A package marked for destruction (a deleted asset awaiting the deferred drain) has nothing to
+            // save; never prompt for it.
+            if (Package->HasAnyFlag(OF_MarkedDestroy))
+            {
+                continue;
+            }
 
             if (Package->IsDirty())
             {

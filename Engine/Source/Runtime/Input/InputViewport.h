@@ -67,6 +67,8 @@ namespace Lumina
         RUNTIME_API FInputViewport* GetHoveredViewport() const { return HoveredViewport; }
         RUNTIME_API FInputViewport* GetFocusedViewport() const { return FocusedViewport; }
 
+        RUNTIME_API const FInputContext& GetRawInput() const { return *RawInput; }
+
         // Whether the game (the active viewport's world) currently owns input. Defaults true so a packaged
         // build just works; the editor flips it (Shift+F1 / Play / Stop). The gate is global, not per-tool,
         // so it survives a single global active viewport across multiple PIE preview windows. Releasing it
@@ -93,6 +95,8 @@ namespace Lumina
 
     private:
 
+        FInputViewportRegistry();
+
         void ApplyActiveCursorMode();
 
         TVector<FInputViewport*> Viewports;
@@ -100,5 +104,6 @@ namespace Lumina
         FInputViewport* HoveredViewport = nullptr;
         FInputViewport* FocusedViewport = nullptr;
         bool            bGameInputFocused = true;
+        TUniquePtr<FInputContext> RawInput;
     };
 }

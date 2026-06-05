@@ -15,6 +15,7 @@ Script.Team = "Red"
 
 function Script:OnReady()
     self.Timer = 0.0
+        
 end
 
 function Script:OnUpdate(DeltaTime)

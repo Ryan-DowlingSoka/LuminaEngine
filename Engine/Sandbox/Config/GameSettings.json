@@ -5,7 +5,8 @@
         "GameInstanceClass": "",
         "GameStartupMap": "/Game/NewWorld.lasset",
         "LuaModuleFile": {
-            "Path": "asdasd"
+            "Guid": "",
+            "Path": ""
         }
     }
 }

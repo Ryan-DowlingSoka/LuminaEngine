@@ -20,9 +20,7 @@ namespace Lumina
         bool  IsNetworked() const;    // client or server
         bool  IsConnected() const;    // server: >=1 client; client: link to server established
         int32 GetConnectedClients() const;
-
-        //~ Per-peer identity + per-entity roles/ownership (Unreal model).
-
+        
         /** This peer's unique id: 0 (ServerPeerId) on the server; the server-assigned id on a client. */
         uint32 GetUniqueId() const;
 

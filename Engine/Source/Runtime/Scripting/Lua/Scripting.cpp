@@ -30,6 +30,7 @@
 #include "Core/Plugin/PluginManager.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "World/World.h"
+#include "Scripting/Lua/Async.h"
 #include "World/Entity/RuntimeComponent.h"
 #include "World/Entity/Components/InputComponent.h"
 #include "UI/RmlUiBridge.h"
@@ -43,353 +44,8 @@
 
 namespace Lumina::Lua
 {
-    FClassBuilder::FClassBuilder(lua_State* InL, FStringView InName)
-        : L(InL)
-        , Name(InName)
-    {
-        luaL_newmetatable(L, InName.data()); // [MT]
 
-        lua_pushstring(L, InName.data());
-        lua_rawsetfield(L, -2, "__typename");
-    }
-
-    FClassBuilder& FClassBuilder::SetSuperClass(FStringView InParentName)
-    {
-        ParentName = InParentName;
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::EnableTypeId()
-    {
-        bHasTypeId = true;
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::AddMethod(FStringView FuncName, lua_CFunction Func)
-    {
-        FMethodEntry Entry;
-        Entry.Name   = FuncName;
-        Entry.Invoke = Func;
-        Methods.push_back(Entry);
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::AddProperty(FStringView PropName, lua_CFunction Getter, lua_CFunction Setter)
-    {
-        FPropertyEntry Entry;
-        Entry.Name   = PropName;
-        Entry.Getter = Getter;
-        Entry.Setter = Setter;
-        Properties.push_back(Entry);
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::AddMetamethod(FStringView MetaName, lua_CFunction Func)
-    {
-        // Stack on entry: [MT]
-        lua_pushcfunction(L, Func, MetaName.data()); // [MT, func]
-        lua_rawsetfield(L, -2, MetaName.data());     // [MT]
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::Register(int UserdataTag)
-    {
-        // Stack on entry: [MT]
-
-        const uint32 TypeIdHash = bHasTypeId ? Hash::FNV1a::GetHash32(Name.data()) : 0u;
-
-        for (auto& Method : Methods)
-        {
-            Method.Atom = static_cast<int16>(Hash::FNV1a::GetHash16(Method.Name.data()));
-        }
-        for (auto& Prop   : Properties)
-        {
-            Prop.Hash   = Hash::FNV1a::GetHash32(Prop.Name.data());
-        }
-
-        // Single hop captures the full ancestry; parent already merged its own.
-        TVector<FMethodEntry>   MergedMethods = Methods;
-        TVector<FPropertyEntry> MergedProps   = Properties;
-
-        if (!ParentName.empty())
-        {
-            luaL_getmetatable(L, ParentName.data()); // [MT, ParentMT|nil]
-            if (lua_istable(L, -1))
-            {
-                lua_rawgetfield(L, -1, "__lumina_methods"); // [MT, ParentMT, ParentMethods|nil]
-                if (lua_isuserdata(L, -1))
-                {
-                    const auto* ParentTable = static_cast<const Internal::FEntryTable<FMethodEntry>*>(lua_touserdata(L, -1));
-                    const FMethodEntry* B = ParentTable->Entries();
-                    const FMethodEntry* E = B + ParentTable->Count;
-                    for (const FMethodEntry* It = B; It != E; ++It)
-                    {
-                        const bool bExists = eastl::any_of(MergedMethods.begin(), MergedMethods.end(),[&](const FMethodEntry& Existing)
-                        {
-                            return Existing.Name == It->Name;
-                        });
-                        
-                        if (!bExists)
-                        {
-                            MergedMethods.push_back(*It);
-                        }
-                    }
-                }
-                lua_pop(L, 1); // [MT, ParentMT]
-
-                lua_rawgetfield(L, -1, "__lumina_properties"); // [MT, ParentMT, ParentProps|nil]
-                if (lua_isuserdata(L, -1))
-                {
-                    const auto* ParentTable = static_cast<const Internal::FEntryTable<FPropertyEntry>*>(lua_touserdata(L, -1));
-                    const FPropertyEntry* B = ParentTable->Entries();
-                    const FPropertyEntry* E = B + ParentTable->Count;
-                    for (const FPropertyEntry* It = B; It != E; ++It)
-                    {
-                        const bool bExists = eastl::any_of(MergedProps.begin(), MergedProps.end(), [&](const FPropertyEntry& Existing)
-                        {
-                            return Existing.Name == It->Name;
-                        });
-                        
-                        if (!bExists)
-                        {
-                            MergedProps.push_back(*It);
-                        }
-                    }
-                }
-                lua_pop(L, 1); // [MT, ParentMT]
-            }
-            lua_pop(L, 1); // [MT]
-        }
-
-        if (bHasTypeId)
-        {
-            // Synthetic __type_id reads from MT at access time; keeps the dispatcher upvalue free.
-            FPropertyEntry TypeIdProp;
-            TypeIdProp.Name   = FStringView("__type_id");
-            TypeIdProp.Hash   = Hash::FNV1a::GetHash32("__type_id");
-            TypeIdProp.Getter = +[](lua_State* State) -> int
-            {
-                if (!lua_getmetatable(State, 1))
-                {
-                    lua_pushnil(State); return 1;
-                }
-                
-                lua_rawgetfield(State, -1, "__type_id");
-                lua_remove(State, -2);
-                return 1;
-            };
-            MergedProps.erase(
-                eastl::remove_if(MergedProps.begin(), MergedProps.end(), [](const FPropertyEntry& E)
-                {
-                    return E.Name == FStringView("__type_id");
-                }), MergedProps.end());
-            
-            
-            MergedProps.push_back(TypeIdProp);
-        }
-
-        eastl::sort(MergedMethods.begin(), MergedMethods.end(), [](const FMethodEntry& A, const FMethodEntry& B)
-        {
-            return A.Atom < B.Atom;
-        });
-        
-        eastl::sort(MergedProps.begin(), MergedProps.end(), [](const FPropertyEntry& A, const FPropertyEntry& B)
-        {
-            return A.Hash < B.Hash;
-        });
-
-        if (!MergedMethods.empty())
-        {
-            auto* Stored = Internal::FEntryTable<FMethodEntry>::Allocate(L, static_cast<uint32>(MergedMethods.size()));
-            for (uint32 i = 0; i < MergedMethods.size(); ++i)
-            {
-                Stored->Entries()[i] = MergedMethods[i];
-            }
-
-            lua_pushvalue(L, -1); // [MT, MethodsUD, MethodsUD]
-            lua_rawsetfield(L, -3, "__lumina_methods"); // [MT, MethodsUD]
-
-            lua_pushcclosure(L, &Internal::GenericNamecall, "__namecall", 1); // [MT, NamecallClosure]
-            lua_rawsetfield(L, -2, "__namecall"); // [MT]
-        }
-
-        if (bHasTypeId || !MergedProps.empty())
-        {
-            auto* PropsUD = Internal::FEntryTable<FPropertyEntry>::Allocate(L, static_cast<uint32>(MergedProps.size())); // [MT, PropsUD]
-            for (uint32 i = 0; i < MergedProps.size(); ++i)
-            {
-                PropsUD->Entries()[i] = MergedProps[i];
-            }
-
-            lua_pushvalue(L, -1); // [MT, PropsUD, PropsUD]
-            lua_rawsetfield(L, -3, "__lumina_properties"); // [MT, PropsUD]
-
-            lua_pushvalue(L, -1); // [MT, PropsUD, PropsUD]
-            lua_pushcclosure(L, &Internal::GenericIndex, "__index", 1); // [MT, PropsUD, IndexClosure]
-            lua_rawsetfield(L, -3, "__index"); // [MT, PropsUD]
-
-            lua_pushcclosure(L, &Internal::GenericNewindex, "__newindex", 1); // [MT, NewindexClosure]
-            lua_rawsetfield(L, -2, "__newindex"); // [MT]
-        }
-
-        // Editor introspection table: name -> "method"|"property".
-        lua_newtable(L); // [MT, MembersTable]
-        for (const auto& M : MergedMethods)
-        {
-            lua_pushlstring(L, "method", 6);
-            lua_rawsetfield(L, -2, M.Name.data());
-        }
-        for (const auto& P : MergedProps)
-        {
-            lua_pushlstring(L, "property", 8);
-            lua_rawsetfield(L, -2, P.Name.data());
-        }
-        if (!ParentName.empty())
-        {
-            lua_pushlstring(L, ParentName.data(), ParentName.size());
-            lua_rawsetfield(L, -2, "__parentname");
-        }
-        lua_rawsetfield(L, -2, "__lumina_members"); // [MT]
-
-        if (bHasTypeId)
-        {
-            lua_pushunsigned(L, TypeIdHash);
-            lua_rawsetfield(L, -2, "__type_id"); // [MT]
-        }
-
-        InstallUserdataDestructor(UserdataTag);
-
-        lua_pushvalue(L, -1); // [MT, MTcopy]
-        lua_setuserdatametatable(L, UserdataTag); // [MT]
-
-        lua_newtable(L); // [MT, GlobalTable]
-        if (bHasTypeId)
-        {
-            lua_pushunsigned(L, TypeIdHash);
-            lua_rawsetfield(L, -2, "__type_id");
-        }
-        lua_pushstring(L, Name.data());
-        lua_rawsetfield(L, -2, "__typename");
-        lua_setglobal(L, Name.data()); // [MT]
-
-        lua_pop(L, 1); // []
-
-#if WITH_EDITOR
-        // Hand the auto-derived signatures to the editor type registry as this class's Luau type.
-        if (!TypeMembers.empty())
-        {
-            FScriptTypeRegistry::Get().RegisterClassType(Name, TypeMembers);
-        }
-#endif
-
-        return *this;
-    }
-
-    FClassBuilder& FClassBuilder::AddStaticFunction(FStringView FuncName, lua_CFunction Func)
-    {
-        lua_getglobal(L, Name.data());
-        lua_pushcfunction(L, Func, FuncName.data());
-        lua_rawsetfield(L, -2, FuncName.data());
-        lua_pop(L, 1);
-        return *this;
-    }
-
-    namespace
-    {
-        // Keyed by CClass*; lifetime is process-wide (CClass is leaked by design).
-        THashMap<const CClass*, FUserdataLayout>& GetCObjectLayoutRegistry()
-        {
-            static THashMap<const CClass*, FUserdataLayout> Registry;
-            return Registry;
-        }
-
-        // Reverse map: runtime userdata tag -> the CObject class registered for it. Lets us recognize a
-        // CObject userdata on the Lua stack when the concrete C++ type isn't known at compile time.
-        THashMap<uint16, const CClass*>& GetCObjectTagRegistry()
-        {
-            static THashMap<uint16, const CClass*> Registry;
-            return Registry;
-        }
-    }
-
-    void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout)
-    {
-        if (Class == nullptr)
-        {
-            return;
-        }
-        GetCObjectLayoutRegistry()[Class] = Layout;
-        GetCObjectTagRegistry()[Layout.Tag] = Class;
-    }
-
-    bool IsCObjectUserdata(lua_State* L, int Index)
-    {
-        if (!lua_isuserdata(L, Index))
-        {
-            return false;
-        }
-        const int Tag = lua_userdatatag(L, Index);
-        if (Tag < 0)
-        {
-            return false;
-        }
-        const auto& Registry = GetCObjectTagRegistry();
-        return Registry.find(static_cast<uint16>(Tag)) != Registry.end();
-    }
-
-    CObject* ToCObject(lua_State* L, int Index)
-    {
-        if (!IsCObjectUserdata(L, Index))
-        {
-            return nullptr;
-        }
-        // The block is an in-place TObjectPtr<ClassT> (pointer-sized, object pointer at offset 0).
-        void* Block = lua_touserdata(L, Index);
-        return Block != nullptr ? *static_cast<CObject* const*>(Block) : nullptr;
-    }
-
-    const FUserdataLayout* FindCObjectLayout(const CClass* Class)
-    {
-        if (Class == nullptr)
-        {
-            return nullptr;
-        }
-        const auto& Registry = GetCObjectLayoutRegistry();
-        const auto It = Registry.find(Class);
-        return It != Registry.end() ? &It->second : nullptr;
-    }
-
-    void PushCObjectAsActualType(lua_State* L, CObject* Object)
-    {
-        if (Object == nullptr)
-        {
-            lua_pushnil(L);
-            return;
-        }
-
-        // Walk up to nearest bound ancestor so unbound subclasses still get a metatable.
-        const FUserdataLayout* Layout = nullptr;
-        for (const CClass* Class = Object->GetClass(); Class != nullptr; Class = Class->GetSuperClass())
-        {
-            Layout = FindCObjectLayout(Class);
-            if (Layout != nullptr)
-            {
-                break;
-            }
-        }
-
-        if (Layout == nullptr)
-        {
-            lua_pushnil(L);
-            return;
-        }
-
-        void* Block = lua_newuserdatataggedwithmetatable(L, Layout->Size, Layout->Tag);
-        Layout->Initialize(Block);
-        // SetExternal constructs the userdata's owning TObjectPtr<ClassT> (takes a strong GC ref);
-        // the tag's destructor (TClass::Register) runs ~TObjectPtr to release it.
-        Layout->SetExternal(Block, Object);
-    }
+    //~ Lua VM callbacks: allocator, panic, atom interning, logging, require.
 
     static void* ScriptingMemoryReallocFn([[maybe_unused]] void* Caller, void* Memory, [[maybe_unused]] size_t OldSize, size_t NewSize)
     {
@@ -487,6 +143,8 @@ namespace Lumina::Lua
     }
     
 
+    //~ Global library registration: builds the Console/Time/Engine/Asset/Task/... global tables.
+
     static void RegisterConsoleLibrary(lua_State* L, FRef& GlobalsRef)
     {
         // `print` is also aliased to Console.Log globally (see Initialize). These are raw
@@ -511,16 +169,10 @@ namespace Lumina::Lua
     {
         FRef EngineTable = GlobalsRef.NewTable("Engine");
 
-        // Push the loaded object as its actual derived type (subclass methods visible); TStack would
-        // use the static type's metatable, so we do the polymorphic push by hand and return an FRef.
-        EngineTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
-        {
-            CObject* Object = StaticLoadObject(Path);
-            PushCObjectAsActualType(State, Object);
-            return FRef(State, -1);
-        }>("LoadObject");
+        // Asset loading from scripts goes through the Asset.* library (Asset.Hard/Soft/LoadAsync) -- it is
+        // the single, cook-aware path (FLuauAssetScan lifts those call sites as cook roots). Engine has no
+        // LoadObject; use Asset.Hard(path) for a blocking load.
 
-        
         EngineTable.SetFunction<[](lua_State* State) -> FRef
         {
             PushCObjectAsActualType(State, CPrimitiveManager::Get().CubeMesh.Get());
@@ -570,13 +222,164 @@ namespace Lumina::Lua
         }>("IsEditor");
     }
 
+    //~ Coroutine scheduling.
+    
+    static void SpawnCoroutineFromRef(const Lua::FRef& Fn, void* ThreadData)
+    {
+        lua_State* Main = Fn.GetState();
+        if (Main == nullptr || !Fn.IsInvokable())
+        {
+            return;
+        }
+
+        lua_State* Co = lua_newthread(Main);
+        const int CoRef = lua_ref(Main, -1);
+        lua_pop(Main, 1);
+
+        if (ThreadData != nullptr)
+        {
+            lua_setthreaddata(Co, ThreadData);
+        }
+
+        Fn.Push(Co);
+        const int Status = lua_resume(Co, nullptr, 0);
+        if (Status != LUA_OK && Status != LUA_YIELD && Status != LUA_BREAK)
+        {
+            const char* ErrMsg = lua_tostring(Co, -1);
+            LOG_ERROR("[Lua] - task coroutine failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+        }
+        lua_unref(Main, CoRef);
+    }
+
+    // Wait(seconds) / Task.Wait(seconds): yield the running coroutine for `seconds` via the world timer.
+    static int Lua_Wait(lua_State* L)
+    {
+        const float Seconds = static_cast<float>(luaL_optnumber(L, 1, 0.0));
+        const auto* ThreadData = static_cast<const Lua::FScriptThreadData*>(lua_getthreaddata(L));
+        FTimerManager* TimerManager = (ThreadData && ThreadData->World) ? &ThreadData->World->GetTimerManager() : nullptr;
+        return FTimerManager::WaitImpl(L, Seconds, TimerManager);
+    }
+
+    // Task.Spawn(fn, ...): start fn on a coroutine now, forwarding extra args; runs to first yield/return.
+    static int Lua_TaskSpawn(lua_State* L)
+    {
+        luaL_checktype(L, 1, LUA_TFUNCTION);
+        const int NumArgs = lua_gettop(L) - 1;
+
+        lua_State* Co = lua_newthread(L);
+        const int CoRef = lua_ref(L, -1);
+        lua_pop(L, 1);
+
+        // Inherit the spawning script's entity/world so the coroutine resolves self/World.
+        if (void* ThreadData = lua_getthreaddata(L))
+        {
+            lua_setthreaddata(Co, ThreadData);
+        }
+
+        // Move fn + args onto the coroutine (push copies, then xmove the block).
+        lua_pushvalue(L, 1);
+        for (int i = 0; i < NumArgs; ++i)
+        {
+            lua_pushvalue(L, 2 + i);
+        }
+        lua_xmove(L, Co, NumArgs + 1);
+
+        const int Status = lua_resume(Co, L, NumArgs);
+        if (Status != LUA_OK && Status != LUA_YIELD && Status != LUA_BREAK)
+        {
+            const char* ErrMsg = lua_tostring(Co, -1);
+            LOG_ERROR("[Lua] - Task.Spawn failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+        }
+        // Completed or yielded: drop our ref (a yielded coroutine is kept alive by the yielding API's pin).
+        lua_unref(L, CoRef);
+        return 0;
+    }
+
+
+    static int Lua_TaskDelayImpl(lua_State* L, float Seconds, int FnIndex)
+    {
+        luaL_checktype(L, FnIndex, LUA_TFUNCTION);
+
+        auto* ThreadData = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
+        if (ThreadData == nullptr || ThreadData->World == nullptr)
+        {
+            luaL_errorL(L, "Task.Delay/Defer: no world context for this script");
+        }
+
+        lua_pushvalue(L, FnIndex);
+        Lua::FRef Fn(L, -1);
+        lua_pop(L, 1);
+
+        void* TDPtr = ThreadData;
+        ThreadData->World->GetTimerManager().SetTimerForEntity(ThreadData->Entity, Seconds,
+            [Fn, TDPtr]() { SpawnCoroutineFromRef(Fn, TDPtr); }, /*bLoop=*/false, /*FirstDelay=*/-1.0f);
+        return 0;
+    }
+
+    static int Lua_TaskDelay(lua_State* L)
+    {
+        return Lua_TaskDelayImpl(L, static_cast<float>(luaL_optnumber(L, 1, 0.0)), /*FnIndex=*/2);
+    }
+
+    static int Lua_TaskDefer(lua_State* L)
+    {
+        return Lua_TaskDelayImpl(L, 0.0f, /*FnIndex=*/1);
+    }
+
+    // Asset.LoadAwait(path): yield, async-load, resume with the loaded object (or nil).
+    static int Lua_AssetLoadAwait(lua_State* L)
+    {
+        size_t Len = 0;
+        const char* PathStr = luaL_checklstring(L, 1, &Len);
+
+        TSharedPtr<Lua::FYieldToken> Token = Lua::BeginYield(L);
+        if (!Token)
+        {
+            luaL_errorL(L, "Asset.LoadAwait can only be called from a coroutine "
+                           "(use Task.Spawn, or call it from a script lifecycle/event hook).");
+        }
+
+        const auto* ThreadData = static_cast<const Lua::FScriptThreadData*>(lua_getthreaddata(L));
+        CWorld* World = ThreadData ? ThreadData->World : nullptr;
+        const entt::entity Owner = Token->Owner;
+
+        FSoftObjectPath Soft(FStringView(PathStr, Len));
+        Soft.LoadAsync([Token, World, Owner](CObject* Obj)
+        {
+            MainThread::Enqueue([Token, World, Owner, Obj]()
+            {
+                // Skip resume if the owning entity died mid-load: abandon the coroutine (token drops, pin frees).
+                if (World != nullptr && Owner != entt::null && !World->GetEntityRegistry().valid(Owner))
+                {
+                    return;
+                }
+                Lua::ResumeYield(Token, [Obj](lua_State* Co) -> int
+                {
+                    PushCObjectAsActualType(Co, Obj);
+                    return 1;
+                });
+            });
+        });
+
+        return lua_yield(L, 0);
+    }
+
+    static void RegisterTaskLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        GlobalsRef.SetRawFunction("Wait", &Lua_Wait);
+
+        FRef TaskTable = GlobalsRef.NewTable("Task");
+        TaskTable.SetRawFunction("Wait",  &Lua_Wait);
+        TaskTable.SetRawFunction("Spawn", &Lua_TaskSpawn);
+        TaskTable.SetRawFunction("Defer", &Lua_TaskDefer);
+        TaskTable.SetRawFunction("Delay", &Lua_TaskDelay);
+    }
+
     static void RegisterAssetLibrary(lua_State* L, FRef& GlobalsRef)
     {
-        // FLuauAssetScan literally scans for Asset.Hard/Soft/LoadAsync("...") and lifts the path arg
-        // as a cook root. Keep these names + leading-string-arg shape stable, or update it in lockstep.
+
         FRef AssetTable = GlobalsRef.NewTable("Asset");
 
-        // Asset.Hard(path), blocking load; pushed as actual derived type.
         AssetTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
         {
             CObject* Object = StaticLoadObject(Path);
@@ -589,14 +392,10 @@ namespace Lumina::Lua
         {
             return FSoftObjectPath(Path);
         }>("Soft");
-
-        // Asset.LoadAsync(path, callback), fire-and-forget; callback fires on the main thread when
-        // load completes (or immediately with nil if the path doesn't resolve).
+        
         AssetTable.SetFunction<[](lua_State* State, FStringView Path, FRef Callback)
         {
             FSoftObjectPath Soft(Path);
-            // Capture callback by ref so we can fire it on completion.
-            // The FRef holds an L registry slot; capture-by-value preserves it.
             Soft.LoadAsync([State, Callback](CObject* Obj) mutable
             {
                 MainThread::Enqueue([State, Callback = Move(Callback), Obj]() mutable
@@ -621,6 +420,10 @@ namespace Lumina::Lua
             PushCObjectAsActualType(State, Obj);
             return FRef(State, -1);
         }>("LoadPrimary");
+
+        // Asset.LoadAwait(path), yields the running coroutine and resumes with the loaded asset (or nil).
+        // The awaiting form of LoadAsync; must run on a coroutine (a lifecycle/event hook, or Task.spawn).
+        AssetTable.SetRawFunction("LoadAwait", &Lua_AssetLoadAwait);
     }
 
     static void RegisterFileSystemLibrary(lua_State* L, FRef& GlobalsRef)
@@ -656,15 +459,7 @@ namespace Lumina::Lua
         {
             return VFS::WriteFile(Path, Data);
         }>("WriteFileString");
-
-        FRef FileHelperTable = GlobalsRef.NewTable("FileHelper");
-        FileHelperTable.SetFunction<&FileHelper::CreateNewFile>("CreateNewFile");
-
-        FRef PathTable = GlobalsRef.NewTable("Paths");
-        PathTable.SetFunction<&Paths::Exists>("Exists");
-        PathTable.SetFunction<&Paths::GetEngineContentDirectory>("GetEngineContentDirectory");
-        PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
-        PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
+        
     }
 
     static void RegisterRenderLibrary(lua_State* L, FRef& GlobalsRef)
@@ -675,28 +470,6 @@ namespace Lumina::Lua
         RHITable.SetFunction<&IRenderContext::GetAvailableMemory>("GetAvailableMemory", GRenderContext);
         RHITable.SetFunction<&IRenderContext::SetVSyncEnabled>("SetVSyncEnabled");
         RHITable.SetFunction<&IRenderContext::IsVSyncEnabled>("IsVSyncEnabled");
-    }
-
-    static void RegisterECSLibrary(lua_State* L, FRef& GlobalsRef)
-    {
-        FRef ECSTable = GlobalsRef.NewTable("ECS");
-        ECSTable.SetFunction<&ECS::Utils::IsParent>("IsEntityParent");
-        
-        ECSTable.SetFunction<&ECS::Utils::IsEntityValid>("IsEntityValid");
-        
-        ECSTable.SetFunction<&ECS::Utils::DuplicateEntity>("DuplicateEntity");
-        ECSTable.SetFunction<&ECS::Utils::DestroyEntity>("DestroyEntity");
-        
-        ECSTable.SetFunction<&ECS::Utils::TranslateEntity>("TranslateEntity");
-        ECSTable.SetFunction<&ECS::Utils::GetDirectionVector>("GetDirectionVector");
-
-        ECSTable.SetFunction<&ECS::Utils::GetEntityLocation>("GetEntityLocation");
-        ECSTable.SetFunction<&ECS::Utils::GetEntityRotation>("GetEntityRotation");
-        ECSTable.SetFunction<&ECS::Utils::GetEntityScale>("GetEntityScale");
-
-        ECSTable.SetFunction<&ECS::Utils::SetEntityLocation>("SetEntityLocation");
-        ECSTable.SetFunction<&ECS::Utils::SetEntityRotation>("SetEntityRotation");
-        ECSTable.SetFunction<&ECS::Utils::SetEntityScale>("SetEntityScale");
     }
 
     static void RegisterMathLibrary(lua_State* L, FRef& GlobalsRef)
@@ -883,8 +656,14 @@ namespace Lumina::Lua
                 // in one game-preview window doesn't land on whichever window is focused.
                 FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
                 FInputViewport* V = Reg.FindViewportForWorld(Self.World);
-                if (V == nullptr) { V = Reg.GetActiveViewport(); }
-                if (V == nullptr) return uint64{0};
+                if (V == nullptr)
+                {
+                    V = Reg.GetActiveViewport();
+                }
+                if (V == nullptr)
+                {
+                    return uint64{0};
+                }
                 const uint64 Id = V->GetContext().RegisterActionCallback(
                     FName(FString(Name.data(), Name.size()).c_str()),
                     FInputContext::EActionTrigger::Pressed,
@@ -898,8 +677,14 @@ namespace Lumina::Lua
                 // in one game-preview window doesn't land on whichever window is focused.
                 FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
                 FInputViewport* V = Reg.FindViewportForWorld(Self.World);
-                if (V == nullptr) { V = Reg.GetActiveViewport(); }
-                if (V == nullptr) return uint64{0};
+                if (V == nullptr)
+                {
+                    V = Reg.GetActiveViewport();
+                }
+                if (V == nullptr)
+                {
+                    return uint64{0};
+                }
                 const uint64 Id = V->GetContext().RegisterActionCallback(
                     FName(FString(Name.data(), Name.size()).c_str()),
                     FInputContext::EActionTrigger::Released,
@@ -978,6 +763,8 @@ namespace Lumina::Lua
             .Register();
     }
 
+    //~ Context lifecycle: VM init/shutdown, stdlib, deferred actions.
+
     void FScriptingContext::Initialize()
     {
         L = lua_newstate(ScriptingMemoryReallocFn, this);
@@ -1009,9 +796,9 @@ namespace Lumina::Lua
         RegisterTimeLibrary(L, GlobalsRef);
         RegisterEngineLibrary(L, GlobalsRef);
         RegisterAssetLibrary(L, GlobalsRef);
+        RegisterTaskLibrary(L, GlobalsRef);
         RegisterFileSystemLibrary(L, GlobalsRef);
         RegisterRenderLibrary(L, GlobalsRef);
-        RegisterECSLibrary(L, GlobalsRef);
         RegisterMathLibrary(L, GlobalsRef);
         RegisterInputLibrary(L, GlobalsRef);
         RegisterAudioLibrary(L, GlobalsRef);
@@ -1032,11 +819,6 @@ namespace Lumina::Lua
         LoadStdlibFiles();
 
 #if WITH_EDITOR
-        // Editor type for the entity-script `self`. Hand-authored (it's a Lua base, not a C++ binding),
-        // but registered here next to the stdlib rather than hardcoded in the editor. `local Script:
-        // EntityScript = EntityScript.new()` types `self` in every method. A future non-entity script
-        // kind registers its own base type the same way. `[string]: any` keeps user-declared
-        // --@export properties (Script.<Name>) and other custom fields type-clean.
         FScriptTypeRegistry::Get().RegisterSnippet("EntityScript", R"DEF(
 export type EntityScript = {
     Entity: number,
@@ -1274,6 +1056,8 @@ declare EntityScript: { new: () -> EntityScript }
         }
     }
 
+    //~ Script loading & cache.
+
     TSharedPtr<FScript> FScriptingContext::LoadUniqueScriptPath(FStringView Path)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1406,8 +1190,14 @@ declare EntityScript: { new: () -> EntityScript }
                 FScriptExportSchema TempSchema;
                 TVector<FScriptPropertyEntry> TempDefaults;
                 BuildSchemaFromAnnotatedExports(Thread, -1, *Annotations, TempSchema, TempDefaults);
-                if (OutSchema)   *OutSchema   = TempSchema;
-                if (OutDefaults) *OutDefaults = eastl::move(TempDefaults);
+                if (OutSchema)
+                {
+                    *OutSchema   = TempSchema;
+                }
+                if (OutDefaults)
+                {
+                    *OutDefaults = eastl::move(TempDefaults);
+                }
             }
         }
 
@@ -1417,8 +1207,14 @@ declare EntityScript: { new: () -> EntityScript }
         NewScript->Reference        = FRef(Thread, -1);
         NewScript->MainFunction     = eastl::move(MainFunctionRef);
 
-        if (OutSchema)   NewScript->ExportsSchema  = *OutSchema;
-        if (OutDefaults) NewScript->ExportDefaults = *OutDefaults;
+        if (OutSchema)
+        {
+            NewScript->ExportsSchema  = *OutSchema;
+        }
+        if (OutDefaults)
+        {
+            NewScript->ExportDefaults = *OutDefaults;
+        }
 
         lua_pushvalue(Thread, LUA_GLOBALSINDEX);
         NewScript->Environment  = FRef(Thread, -1);
@@ -1452,6 +1248,8 @@ declare EntityScript: { new: () -> EntityScript }
         ScriptCache.erase(FName(Path));
     }
 
+    //~ Module resolution & require.
+
     bool FScriptingContext::ResolveModulePath(FStringView ModuleName, FString& OutPath) const
     {
         // Absolute VFS path: pass through, append `.luau` if the user omitted it.
@@ -1470,7 +1268,10 @@ declare EntityScript: { new: () -> EntityScript }
         FString Normalized(ModuleName.data(), ModuleName.length());
         for (char& C : Normalized)
         {
-            if (C == '.') C = '/';
+            if (C == '.')
+            {
+                C = '/';
+            }
         }
 
         // Search roots in order: Engine stdlib, then plugin /<Mount>/Scripts/, then /Game, so user
@@ -1740,6 +1541,8 @@ declare EntityScript: { new: () -> EntityScript }
         
         return ReturnValue;
     }
+
+    //~ GC & introspection.
 
     void FScriptingContext::RunGC()
     {
@@ -2119,6 +1922,14 @@ declare EntityScript: { new: () -> EntityScript }
             { "coroutine.running", "",                  "Returns the running coroutine plus a bool indicating whether it's the main thread." },
             { "coroutine.isyieldable","",               "Returns true if the running coroutine can yield (false in the main thread / C call boundary)." },
             { "coroutine.close",   "co",                "Closes coroutine co, releasing its resources. Returns (true) or (false, err)." },
+
+            // task scheduling (yielding requires a coroutine: a lifecycle/event hook, or Task.Spawn)
+            { "Wait",           "seconds",              "Yields the running coroutine for `seconds`, then resumes. Same as Task.Wait." },
+            { "Task.Wait",      "seconds",              "Yields the running coroutine for `seconds`, then resumes." },
+            { "Task.Spawn",     "fn|...",               "Runs fn on a new coroutine immediately (forwarding extra args), up to its first yield." },
+            { "Task.Defer",     "fn",                   "Runs fn on a coroutine next frame. Cancelled if the owning entity is destroyed first." },
+            { "Task.Delay",     "seconds|fn",           "Runs fn on a coroutine after `seconds`. Cancelled if the owning entity is destroyed first." },
+            { "Asset.LoadAwait","path",                 "Yields until the asset at `path` finishes loading, then resumes with it (or nil). Must run on a coroutine." },
 
             // bit32 library
             { "bit32.band",     "...",                  "Returns the bitwise AND of all arguments (32-bit unsigned)." },

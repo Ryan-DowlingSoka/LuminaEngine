@@ -237,12 +237,11 @@ namespace Lumina
 
     bool FMaterialEditorTool::DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture)
     {
-        const ImVec2 ViewportSize(eastl::max(ImGui::GetContentRegionAvail().x, 64.0f), eastl::max(ImGui::GetContentRegionAvail().y, 64.0f));
-        const ImVec2 WindowPosition = ImGui::GetWindowPos();
-        const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
-        float AspectRatio = (ViewportSize.x / ViewportSize.y);
+        const ImVec2 ContentRegion = ImGui::GetContentRegionAvail();
+        const ImVec2 ViewportSize(eastl::max(ContentRegion.x, 64.0f), eastl::max(ContentRegion.y, 64.0f));
+        const ImVec2 CursorScreenPos = ImGui::GetCursorScreenPos();
+        const ImVec2 WindowBottomRight = { CursorScreenPos.x + ViewportSize.x, CursorScreenPos.y + ViewportSize.y };
 
-        // Enforce per-frame: renderer can be recreated after SetupWorldForTool, resetting defaults.
         if (IRenderScene* Scene = World ? World->GetRenderer() : nullptr)
         {
             FSceneRenderSettings& Settings = Scene->GetSceneRenderSettings();
@@ -251,28 +250,17 @@ namespace Lumina
             bWorldGridEnabled        = false;
         }
 
-        SCameraComponent* CameraComponent =  World->GetActiveCamera();
-        CameraComponent->SetAspectRatio(AspectRatio);
-        CameraComponent->SetFOV(60.0f);
-        
-        /** Mostly for debug, so we can easily see if there's some transparency issue */
-        ImGui::GetWindowDrawList()->AddRectFilled(WindowPosition, WindowBottomRight, IM_COL32(0, 0, 0, 255));
-        
-        if (bViewportHovered)
+        if (SCameraComponent* CameraComponent = World->GetActiveCamera())
         {
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
-            {
-                ImGui::SetWindowFocus();
-                bViewportFocused = true;
-            }
+            CameraComponent->SetFOV(60.0f);
         }
 
-        ImVec2 CursorScreenPos = ImGui::GetCursorScreenPos();
-        
+        ImGui::GetWindowDrawList()->AddRectFilled(CursorScreenPos, WindowBottomRight, IM_COL32(0, 0, 0, 255));
+
         ImGui::GetWindowDrawList()->AddImage(
             ViewportTexture,
             CursorScreenPos,
-            ImVec2(CursorScreenPos.x + ViewportSize.x, CursorScreenPos.y + ViewportSize.y),
+            WindowBottomRight,
             ImVec2(0, 0), ImVec2(1, 1),
             IM_COL32_WHITE
         );

@@ -18,6 +18,7 @@
 #include "WorldTypes.h"
 #include "Core/Functional/FunctionRef.h"
 #include "Entity/Systems/EntitySystem.h"
+#include "Entity/Systems/LuaSystem.h"
 #include "Entity/Events/LuaEventBus.h"
 #include "Scripting/Lua/Reference.h"
 #include "World/Net/NetLuaInterface.h"
@@ -76,15 +77,26 @@ namespace Lumina
         
     public:
         
-        using FSystemVariant = TVariant<FEntitySystemWrapper, FEntityScriptSystem>;
-
-        // A system as scheduled in a stage: its variant, the priority for that stage, and its declared
-        // component/resource access (used to run non-conflicting systems concurrently in TickSystems).
-        struct FScheduledSystem
+        // A system as scheduled in one stage.
+        struct FStageSlot
         {
-            FSystemVariant Variant;
+            FSystemFn      Update = nullptr;
+            void*          Self = nullptr;
             FSystemAccess  Access;
             uint8          StagePriority = 255;
+        };
+
+        // A unique active system in this world. Owns the once-per-system Startup/Teardown lifecycle; the
+        // per-stage FStageSlots reference its Update. One entry per system regardless of how many stages
+        // it ticks in.
+        struct FActiveSystem
+        {
+            FName      Name;
+            uint64     Hash = 0;
+            FSystemFn  Startup = nullptr;
+            FSystemFn  Teardown = nullptr;
+            void*      Self = nullptr;
+            bool       bScript = false;
         };
 
         CWorld();
@@ -230,7 +242,7 @@ namespace Lumina
         // Per-world UI (Rml context + documents); created in InitializeWorld, freed in TeardownWorld.
         FWorldUIContext* GetUIContext() const { return UIContext.get(); }
 
-        const TVector<FScheduledSystem>& GetSystemsForUpdateStage(EUpdateStage Stage);
+        const TVector<FStageSlot>& GetSystemsForUpdateStage(EUpdateStage Stage);
 
         // One reflected engine system, as surfaced to the World Editor's Systems panel.
         struct FSystemInfo
@@ -250,8 +262,24 @@ namespace Lumina
 
         // Enable/disable a system for this world. Persists to SDefaultWorldSettings immediately and
         // defers the live system-list rebuild to the start of the next frame (ApplyPendingSystemChanges),
-        // so it is safe to call mid-frame.
+        // so it is safe to call mid-frame. Applies to native systems only.
         void SetSystemEnabled(FName System, bool bEnabled);
+
+        // One Lua-authored script system assigned to this world, as surfaced to the World Editor.
+        struct FScriptSystemInfo
+        {
+            FName                 Name;       // resolved system name (or file stem) once loaded
+            FString               Path;       // assigned .luau asset path (the stable identity)
+            TVector<EUpdateStage> Stages;     // stages it ticks in (empty until loaded)
+        };
+
+        // Enumerate the script systems assigned to this world (reflects the pending/intended set).
+        void GetScriptSystems(TVector<FScriptSystemInfo>& Out) const;
+
+        // Assign / unassign a Lua script system by asset path. Persists to SDefaultWorldSettings immediately
+        // and defers the live rebuild + Startup/Teardown to the next frame, so it is safe to call mid-frame.
+        void AddScriptSystem(FStringView Path);
+        void RemoveScriptSystem(FStringView Path);
 
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnTransformComponentConstruct(entt::registry& Registry, entt::entity Entity);
@@ -287,8 +315,7 @@ namespace Lumina
         /** Submit a solid translucent triangle batch (3 pre-colored verts per tri). Duration <= 0 draws one frame. */
         void DrawSolidTriangles(TVector<FSimpleElementVertex>&& Vertices, bool bDepthTest = true, float Duration = -1.0f);
 
-        /** Queue a line of screen-space debug text for this frame, stacked top-left on the world viewport
-         *  (like Unreal's AddOnScreenDebugMessage). Dev/Debug only -- a no-op in Shipping. */
+        /** Queue a line of screen-space debug text for this frame, stacked top-left on the world viewport */
         void DrawDebugText(const FString& Text, const FVector4& Color = FVector4(1.0f));
 
         /** Render scene drains the queued debug-text lines each frame (moves them out + clears). */
@@ -326,13 +353,20 @@ namespace Lumina
         void OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event);
 
         void InitializeScriptEntities();
-        bool RegisterSystem(const FSystemVariant& NewSystem);
         void TickSystems(FSystemContext& Context);
 
         // Applies a deferred enable/disable request (set via SetSystemEnabled): tears down newly-disabled
         // systems, rebuilds the stage lists honoring DisabledSystems, then starts up newly-enabled ones.
         // Called at the top of Update() so it never runs inside a system batch. No-op unless bSystemsDirty.
         void ApplyPendingSystemChanges();
+
+        // Drops script-system instances whose path is no longer assigned and loads instances for newly
+        // assigned paths. Called from RegisterSystems; does not run Startup/Teardown (lifecycle is driven
+        // by InitializeWorld/TeardownWorld and ApplyPendingSystemChanges).
+        void ReconcileScriptSystemInstances();
+
+        // Mirrors PendingScriptSystems into SDefaultWorldSettings so the assignment persists with the world.
+        void SyncScriptSystemSettings();
 
         // Whether a script's lifecycle runs in this world. Editor worlds run only scripts defining
         // OnEditorUpdate; every other world type runs all scripts.
@@ -351,7 +385,11 @@ namespace Lumina
         TUniquePtr<Physics::IPhysicsScene>                  PhysicsScene;
         TUniquePtr<FWorldUIContext>                         UIContext;
         
-        TVector<FScheduledSystem>                           SystemUpdateList[(int32)EUpdateStage::Max];
+        // Per-stage, priority-sorted update slots (direct-call fn-ptr + Self) consumed by TickSystems.
+        TVector<FStageSlot>                                SystemUpdateList[(int32)EUpdateStage::Max];
+
+        // Unique active systems in this world; owns Startup/Teardown lifecycle (one entry per system).
+        TVector<FActiveSystem>                             ActiveSystems;
 
         // Reflected systems disabled for this world, by name. DisabledSystems is the applied state used by
         // RegisterSystems; PendingDisabledSystems is the editor-requested next state. They diverge only
@@ -359,6 +397,15 @@ namespace Lumina
         THashSet<FName>                                     DisabledSystems;
         THashSet<FName>                                     PendingDisabledSystems;
         bool                                                bSystemsDirty = false;
+
+        // Lua script systems assigned to this world, by asset path. ScriptSystems is the applied state;
+        // PendingScriptSystems is the editor-requested next state (mirrors the Disabled pending/applied
+        // pattern). ScriptSystemInstances owns one live, pointer-stable instance per applied path; it is
+        // reconciled against ScriptSystems during RegisterSystems. ScriptSystemsToReload queues hot-reloads.
+        TVector<FString>                                    ScriptSystems;
+        TVector<FString>                                    PendingScriptSystems;
+        TVector<TUniquePtr<FScriptSystemInstance>>          ScriptSystemInstances;
+        TVector<FString>                                    ScriptSystemsToReload;
 
         // Subscription to FScriptingContext::OnScriptLoaded; re-binds matching SScriptComponents
         // on reload. Populated in InitializeWorld, removed in TeardownWorld.
@@ -409,19 +456,10 @@ namespace Lumina
     template <typename TFunc>
     void CWorld::ForEachUniqueSystem(TFunc&& Func)
     {
-        THashSet<uint64> UniqueSystems;
-        for (auto& i : SystemUpdateList)
+        // ActiveSystems already holds exactly one entry per system.
+        for (FActiveSystem& System : ActiveSystems)
         {
-            for (const FScheduledSystem& Scheduled : i)
-            {
-                const FSystemVariant& System = Scheduled.Variant;
-                uint64 Hash = eastl::visit([&](const auto& Sys) { return Sys.GetHash(); }, System);
-                if (UniqueSystems.count(Hash) == 0)
-                {
-                    Func(System);
-                    UniqueSystems.emplace(Hash);
-                }
-            }
+            Func(System);
         }
     }
 }

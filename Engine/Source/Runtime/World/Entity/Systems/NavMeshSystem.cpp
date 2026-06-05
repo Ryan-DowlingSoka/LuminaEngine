@@ -33,7 +33,7 @@ namespace Lumina
     static TConsoleVar<bool>  CVarNavDrawDebug      ("Nav.DrawDebug",          false, "Master toggle for navmesh debug visualization.");
 
     // Per-layer toggles. Defaults aim for a useful "first look" when the master is flipped on.
-    static TConsoleVar<bool>  CVarNavDebugSurface   ("Nav.Debug.Surface",      true,  "Translucent filled walkable surface (Unreal/Godot-style overlay).");
+    static TConsoleVar<bool>  CVarNavDebugSurface   ("Nav.Debug.Surface",      true,  "Translucent filled walkable surface.");
     static TConsoleVar<float> CVarNavDebugSurfAlpha ("Nav.Debug.SurfaceAlpha", 0.35f, "Opacity of the filled navmesh surface.");
     static TConsoleVar<bool>  CVarNavDebugEdges     ("Nav.Debug.Edges",        true,  "Draw poly boundary edges (thick).");
     static TConsoleVar<bool>  CVarNavDebugTriEdges  ("Nav.Debug.TriEdges",     false, "Draw interior detail-triangle edges (faint).");

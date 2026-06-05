@@ -44,6 +44,7 @@ namespace Lumina
         void DrawCategorySegmentBar(float Height);
         void DrawGPUCategoryTable();
         void DrawGPUHeaps();
+        void DrawUploadPath();
         void DrawResourceCounts();
 
         // CPU sub-panels.

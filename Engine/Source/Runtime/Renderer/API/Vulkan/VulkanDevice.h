@@ -38,6 +38,10 @@ namespace Lumina
 
         VmaAllocator GetVMA() const { return Allocator; }
 
+        // Upload-chunk fast path: the memory type VMA chose for the upload pool. UINT32_MAX if the
+        // pool failed to create (default-allocator fallback). DEVICE_LOCAL+HOST_VISIBLE == ReBAR path.
+        uint32 GetUploadMemoryTypeIndex() const { return UploadMemoryTypeIndex; }
+
         void DestroyBuffer(VkBuffer Buffer, VmaAllocation Allocation) const;
         void DestroyImage(VkImage Image, VmaAllocation Allocation) const;
 
@@ -50,8 +54,9 @@ namespace Lumina
         void InitUploadPool();
 
         VmaAllocator           Allocator       = nullptr;
-        VmaPool                UploadPool      = VK_NULL_HANDLE;
-        VkDeviceSize           UploadBlockSize = 0;
+        VmaPool                UploadPool             = VK_NULL_HANDLE;
+        VkDeviceSize           UploadBlockSize        = 0;
+        uint32                 UploadMemoryTypeIndex  = UINT32_MAX;
         FVulkanRenderContext*  RenderContext   = nullptr;
     };
     

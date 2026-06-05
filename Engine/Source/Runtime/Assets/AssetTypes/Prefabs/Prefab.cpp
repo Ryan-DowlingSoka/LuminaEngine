@@ -1,7 +1,9 @@
 #include "pch.h"
 #include "Prefab.h"
 #include "PrefabComponents.h"
+#include "PrefabOverride.h"
 
+#include "Core/Object/Class.h"
 #include "Core/Object/Package/Package.h"
 #include "GUID/GUID.h"
 #include "World/Entity/Components/DirtyComponent.h"
@@ -34,6 +36,9 @@ namespace Lumina
         bool IsRuntimeOnlyComponent(entt::id_type ID)
         {
             if (ID == entt::type_hash<SPrefabInstanceComponent>::value()) return true;
+            // The override ledger lives on the instance root and is absent from the prefab, so the prune
+            // pass would otherwise delete it; it must survive every refresh.
+            if (ID == entt::type_hash<SPrefabOverrideComponent>::value()) return true;
             if (ID == entt::type_hash<SRigidBodyComponent>::value())      return true;
             if (ID == entt::type_hash<FNeedsTransformUpdate>::value())    return true;
             if (ID == entt::type_hash<FNeedsPhysicsBodyUpdate>::value())  return true;
@@ -45,11 +50,36 @@ namespace Lumina
             return FName(FGuid::New().ToShortString());
         }
 
-        // CopyRegistry extra-skip when capturing from a live world: nested instance tracking must not
-        // leak into the new prefab (it gets fresh SPrefabComponent tags instead).
+        // CopyRegistry extra-skip when capturing from a live world: nested instance tracking and the
+        // override ledger must not leak into the new prefab (entities get fresh SPrefabComponent tags instead).
         bool ShouldSkipInstanceComponent(entt::id_type ID)
         {
-            return ID == entt::type_hash<SPrefabInstanceComponent>::value();
+            return ID == entt::type_hash<SPrefabInstanceComponent>::value()
+                || ID == entt::type_hash<SPrefabOverrideComponent>::value();
+        }
+
+        // Reflected component value pointer for (Entity, Struct), or null. Storage is keyed by the type's
+        // info hash (entt::type_hash<T>) -- NOT GetTypeID, which is hashed_string(name) and only resolves the
+        // meta_type. Mirrors NetReplication::FindComponentPtr / WorldLuaBindings.
+        void* FindReflectedComponentPtr(entt::registry& Registry, entt::entity Entity, CStruct* Struct)
+        {
+            if (Struct == nullptr || !Registry.valid(Entity))
+            {
+                return nullptr;
+            }
+            entt::meta_type Meta = entt::resolve(ECS::Utils::GetTypeID(Struct));
+            if (!Meta)
+            {
+                return nullptr;
+            }
+            if (auto* Storage = Registry.storage(Meta.info().hash()))
+            {
+                if (Storage->contains(Entity))
+                {
+                    return Storage->value(Entity);
+                }
+            }
+            return nullptr;
         }
 
         // Tag root + descendants so the transform system reconciles world matrices this frame,
@@ -324,6 +354,38 @@ namespace Lumina
                 ToDestroy.push_back(WorldE);
             }
         }
+        // Rescue surviving instance entities nested under a to-be-destroyed one: deleting a prefab entity
+        // whose children survive (reparented in the prefab) must not take those children down with it.
+        // Detach survivors to the root first; the hierarchy-mirror pass below re-nests them per the prefab.
+        THashSet<entt::entity> DeadSet;
+        DeadSet.reserve(ToDestroy.size());
+        for (entt::entity E : ToDestroy)
+        {
+            DeadSet.insert(E);
+        }
+        for (entt::entity Dead : ToDestroy)
+        {
+            if (!WorldRegistry.valid(Dead))
+            {
+                continue;
+            }
+            TVector<entt::entity> Survivors;
+            ECS::Utils::ForEachDescendant(WorldRegistry, Dead, [&](entt::entity Desc)
+            {
+                if (DeadSet.find(Desc) == DeadSet.end())
+                {
+                    Survivors.push_back(Desc);
+                }
+            });
+            for (entt::entity S : Survivors)
+            {
+                if (WorldRegistry.valid(S) && WorldRegistry.all_of<STransformComponent>(S))
+                {
+                    ECS::Utils::ReparentEntity(WorldRegistry, S, InstanceRoot);
+                }
+            }
+        }
+
         for (entt::entity E : ToDestroy)
         {
             const auto It = eastl::find_if(InstanceByStableID.begin(), InstanceByStableID.end(),
@@ -365,7 +427,32 @@ namespace Lumina
             }
         }
 
-        // Copy/replace components prefab -> instance, then prune ones the prefab dropped.
+        // Read the instance's override ledger (root-only). Absent => nothing overridden, every inherited
+        // component refreshes wholesale (legacy behavior, preserved for un-edited instances).
+        THashMap<FName, THashMap<FName, THashSet<FName>>> OverriddenLeaves; // node StableID -> comp name -> leaf paths
+        THashMap<FName, THashSet<FName>> AddedComponents;                   // node StableID -> comp names
+        THashMap<FName, THashSet<FName>> RemovedComponents;                 // node StableID -> comp names
+        if (const SPrefabOverrideComponent* Ledger = WorldRegistry.try_get<SPrefabOverrideComponent>(InstanceRoot))
+        {
+            for (const FPrefabPropertyOverride& O : Ledger->PropertyOverrides)
+            {
+                OverriddenLeaves[O.EntityStableID][O.ComponentType].insert(O.PropertyPath);
+            }
+            for (const FPrefabComponentRef& C : Ledger->AddedComponents)
+            {
+                AddedComponents[C.EntityStableID].insert(C.ComponentType);
+            }
+            for (const FPrefabComponentRef& C : Ledger->RemovedComponents)
+            {
+                RemovedComponents[C.EntityStableID].insert(C.ComponentType);
+            }
+        }
+
+        // Transform is always per-instance: never propagated from the prefab and never pruned, at any node.
+        // This subsumes the old root-only special case and keeps gizmo edits (which bypass the property hook).
+        const entt::id_type TransformID = entt::type_hash<STransformComponent>::value();
+
+        // Copy/replace components prefab -> instance honoring overrides, then prune ones the prefab dropped.
         Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
         {
             auto It = InstanceByStableID.find(PrefabComp.StableID);
@@ -374,8 +461,31 @@ namespace Lumina
                 return;
             }
 
-            entt::entity WorldE = It->second;
-            const bool bIsRoot = (WorldE == InstanceRoot);
+            const entt::entity WorldE = It->second;
+            if (!WorldRegistry.valid(WorldE))
+            {
+                return; // stale mapping (e.g. collaterally destroyed); skip this node.
+            }
+            const FName NodeID = PrefabComp.StableID;
+
+            const THashMap<FName, THashSet<FName>>* NodeOverrides = nullptr;
+            if (auto NIt = OverriddenLeaves.find(NodeID); NIt != OverriddenLeaves.end())
+            {
+                NodeOverrides = &NIt->second;
+            }
+            const THashSet<FName>* NodeRemoved = nullptr;
+            if (auto RIt = RemovedComponents.find(NodeID); RIt != RemovedComponents.end())
+            {
+                NodeRemoved = &RIt->second;
+            }
+            const THashSet<FName>* NodeAdded = nullptr;
+            if (auto AIt = AddedComponents.find(NodeID); AIt != AddedComponents.end())
+            {
+                NodeAdded = &AIt->second;
+            }
+            const bool bNodeHasLedger = (NodeOverrides != nullptr) || (NodeRemoved != nullptr);
+
+            bool bEntityHasOverrides = false;
 
             // Track the prefab's storages for this entity so we can drop ones the prefab no longer has.
             THashSet<entt::id_type> PrefabComponentIDs;
@@ -387,33 +497,110 @@ namespace Lumina
                 if (ID == entt::type_hash<SPrefabComponent>::value()) continue;
                 if (!PrefabStorage.contains(PrefabE)) continue;
 
-                PrefabComponentIDs.insert(ID);
-
-                // Preserve placed-root local transform; otherwise the stored prefab-root pose
-                // would teleport the instance back to authoring origin.
-                if (bIsRoot && ID == entt::type_hash<STransformComponent>::value())
-                {
-                    continue;
-                }
-
                 entt::meta_type MetaType = entt::resolve(PrefabStorage.info());
                 if (!MetaType) continue;
 
                 void* SrcCompPtr = PrefabStorage.value(PrefabE);
-                entt::meta_any SrcAny = MetaType.from_void(SrcCompPtr);
-                ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
-                    entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
+
+                // Transform is per-instance: seed it from the prefab only when the node has none yet (freshly
+                // spawned), never overwriting a placed/edited/gizmoed transform. A spawned entity left with no
+                // transform would crash the hierarchy-mirror reparent (ReparentEntity requires one).
+                if (ID == TransformID)
+                {
+                    auto* WorldXform = WorldRegistry.storage(ID);
+                    if (WorldXform == nullptr || !WorldXform->contains(WorldE))
+                    {
+                        entt::meta_any SrcAny = MetaType.from_void(SrcCompPtr);
+                        ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
+                            entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
+                    }
+                    continue;
+                }
+
+                // Fast path: a node with no override/removal ledger refreshes exactly as before.
+                if (!bNodeHasLedger)
+                {
+                    PrefabComponentIDs.insert(ID);
+                    entt::meta_any SrcAny = MetaType.from_void(SrcCompPtr);
+                    ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
+                        entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
+                    continue;
+                }
+
+                CStruct* CompStruct = nullptr;
+                if (entt::meta_any S = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs))
+                {
+                    CompStruct = S.cast<CStruct*>();
+                }
+                const FName CompName = CompStruct ? CompStruct->GetName() : FName();
+
+                // The instance deleted this inherited component: leave it absent (don't re-add).
+                if (NodeRemoved && !CompName.IsNone() && NodeRemoved->find(CompName) != NodeRemoved->end())
+                {
+                    continue;
+                }
+
+                PrefabComponentIDs.insert(ID);
+
+                const THashSet<FName>* CompOverrides = nullptr;
+                if (NodeOverrides && CompStruct)
+                {
+                    if (auto OIt = NodeOverrides->find(CompName); OIt != NodeOverrides->end() && !OIt->second.empty())
+                    {
+                        CompOverrides = &OIt->second;
+                    }
+                }
+
+                void* DstCompPtr = nullptr;
+                if (auto* WorldStorage = WorldRegistry.storage(ID))
+                {
+                    if (WorldStorage->contains(WorldE))
+                    {
+                        DstCompPtr = WorldStorage->value(WorldE);
+                    }
+                }
+
+                // Overridden component the instance already holds => merge per leaf, keeping overridden
+                // leaves. Otherwise replace wholesale (also adds a missing inherited component).
+                if (CompOverrides != nullptr && DstCompPtr != nullptr)
+                {
+                    PrefabOverride::ApplyInheritedLeaves(CompStruct, DstCompPtr, SrcCompPtr, *CompOverrides);
+                    bEntityHasOverrides = true;
+                }
+                else
+                {
+                    entt::meta_any SrcAny = MetaType.from_void(SrcCompPtr);
+                    ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
+                        entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
+                }
             }
 
-            // Remove components on the instance the prefab no longer ships (skip non-replicated/runtime-only).
+            // Remove components on the instance the prefab no longer ships (skip non-replicated/runtime-only,
+            // transform, and instance-added components).
             TVector<entt::id_type> ToRemoveStorages;
             for (auto&& [ID, WorldStorage] : WorldRegistry.storage())
             {
                 if (IsNonReplicatedStorage(ID))    continue;
                 if (IsRuntimeOnlyComponent(ID))    continue;
+                if (ID == TransformID)             continue;
                 if (PrefabComponentIDs.find(ID) != PrefabComponentIDs.end()) continue;
-                if (bIsRoot && ID == entt::type_hash<STransformComponent>::value()) continue;
                 if (!WorldStorage.contains(WorldE)) continue;
+
+                // Keep instance-added components the prefab never shipped.
+                if (NodeAdded != nullptr)
+                {
+                    if (entt::meta_type WorldMeta = entt::resolve(WorldStorage.info()))
+                    {
+                        if (entt::meta_any S = ECS::Utils::InvokeMetaFunc(WorldMeta, "static_struct"_hs))
+                        {
+                            if (CStruct* WS = S.cast<CStruct*>(); WS && NodeAdded->find(WS->GetName()) != NodeAdded->end())
+                            {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 ToRemoveStorages.push_back(ID);
             }
             for (entt::id_type ID : ToRemoveStorages)
@@ -424,14 +611,17 @@ namespace Lumina
                 }
             }
 
-            // Entity-handle fields just copied from the prefab still hold prefab ids; remap them
-            // onto the instance entities (ids with no matching instance are cleared).
-            ECS::Utils::RemapEntityReferences(WorldRegistry, WorldE, PrefabToInstance, /*bClearUnmapped*/ true);
+            // Entity-handle fields copied from the prefab hold prefab ids; remap them onto the instance.
+            // When the entity carries overrides, don't clear unmapped ids: an overridden handle may point at
+            // a world entity outside the prefab. Prefab-authored handles never escape the prefab (CaptureFromWorld
+            // clears escaping refs), so inherited handles still resolve through the map either way.
+            ECS::Utils::RemapEntityReferences(WorldRegistry, WorldE, PrefabToInstance, /*bClearUnmapped*/ !bEntityHasOverrides);
         });
 
         // Re-stamp instance tracking components and rebuild hierarchy.
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
+            if (!WorldRegistry.valid(WorldE)) continue;
             const bool bIsRoot = (WorldE == InstanceRoot);
             SPrefabInstanceComponent& Inst = WorldRegistry.emplace_or_replace<SPrefabInstanceComponent>(WorldE);
             Inst.SourcePrefab = this;
@@ -443,6 +633,7 @@ namespace Lumina
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
             if (WorldE == InstanceRoot) continue;
+            if (!WorldRegistry.valid(WorldE)) continue;
 
             const auto PrefabIt = PrefabByStableID.find(StableID);
             if (PrefabIt == PrefabByStableID.end()) continue;
@@ -465,7 +656,12 @@ namespace Lumina
 
             const FRelationshipComponent* CurrentRel = WorldRegistry.try_get<FRelationshipComponent>(WorldE);
             const entt::entity CurrentParent = CurrentRel ? CurrentRel->Parent : entt::null;
-            if (CurrentParent != DesiredWorldParent && WorldRegistry.valid(DesiredWorldParent))
+            // ReparentEntity requires a transform on both child and new parent; guard so a transform-less
+            // node (e.g. a prefab entity that never shipped one) can't crash the refresh.
+            if (CurrentParent != DesiredWorldParent
+                && WorldRegistry.valid(DesiredWorldParent)
+                && WorldRegistry.all_of<STransformComponent>(WorldE)
+                && WorldRegistry.all_of<STransformComponent>(DesiredWorldParent))
             {
                 ECS::Utils::ReparentEntity(WorldRegistry, WorldE, DesiredWorldParent);
             }
@@ -483,6 +679,10 @@ namespace Lumina
         }
 
         entt::registry& WorldRegistry = World->GetEntityRegistry();
+
+        // Belt-and-suspenders: also cull orphans here (InitializeWorld culls the pending set pre-swap, but
+        // other paths reach this without that step).
+        CullOrphanedInstances(WorldRegistry);
 
         TVector<entt::entity> Roots;
         Roots.reserve(32);
@@ -541,6 +741,68 @@ namespace Lumina
         }
     }
 
+    void CPrefab::CullOrphanedInstances(entt::registry& Registry)
+    {
+        // An instance whose source prefab was deleted resolves SourcePrefab to null on load (the asset can't
+        // be found or loaded), or to a marked-destroy zombie. Either way the entity is garbage.
+        TVector<entt::entity> Orphans;
+        Registry.view<SPrefabInstanceComponent>().each([&](entt::entity E, const SPrefabInstanceComponent& Inst)
+        {
+            CPrefab* Src = Inst.SourcePrefab.Get();
+            if (Src == nullptr || Src->HasAnyFlag(OF_MarkedDestroy))
+            {
+                Orphans.push_back(E);
+            }
+        });
+        for (entt::entity E : Orphans)
+        {
+            if (Registry.valid(E))
+            {
+                ECS::Utils::DestroyEntityHierarchy(Registry, E);
+            }
+        }
+    }
+
+    void CPrefab::DestroyAllInstancesInLoadedWorlds()
+    {
+        if (GWorldManager == nullptr)
+        {
+            return;
+        }
+
+        for (const TUniquePtr<FWorldContext>& Context : GWorldManager->GetContexts())
+        {
+            CWorld* World = Context ? Context->World.Get() : nullptr;
+            if (World == nullptr)
+            {
+                continue;
+            }
+
+            entt::registry& WorldRegistry = World->GetEntityRegistry();
+
+            // Every entity sourced from this prefab (roots + descendants). Detached subtrees have no
+            // SPrefabInstanceComponent, so they are not matched and survive.
+            TVector<entt::entity> Matching;
+            WorldRegistry.view<SPrefabInstanceComponent>().each([&](entt::entity E, const SPrefabInstanceComponent& Inst)
+            {
+                if (Inst.SourcePrefab.Get() == this)
+                {
+                    Matching.push_back(E);
+                }
+            });
+
+            // DestroyEntityHierarchy on a root also destroys its descendants; entries already destroyed by an
+            // earlier iteration are skipped via valid(). Clean parent unlink, so no dangling relationships.
+            for (entt::entity E : Matching)
+            {
+                if (WorldRegistry.valid(E))
+                {
+                    ECS::Utils::DestroyEntityHierarchy(WorldRegistry, E);
+                }
+            }
+        }
+    }
+
     bool CPrefab::DetachInstance(CWorld* World, entt::entity InstanceRoot)
     {
         if (World == nullptr)
@@ -577,6 +839,9 @@ namespace Lumina
         {
             WorldRegistry.remove<SPrefabInstanceComponent>(E);
         }
+
+        // The override ledger (root-only) is meaningless once detached.
+        WorldRegistry.remove<SPrefabOverrideComponent>(InstanceRoot);
         return true;
     }
 
@@ -632,6 +897,200 @@ namespace Lumina
         if (CPackage* Package = GetPackage())
         {
             Package->MarkDirty();
+        }
+    }
+
+    void* CPrefab::ResolvePrefabComponentPtr(const FName& StableID, CStruct* Struct)
+    {
+        if (Struct == nullptr || StableID.IsNone())
+        {
+            return nullptr;
+        }
+
+        entt::entity PrefabE = entt::null;
+        Registry.view<SPrefabComponent>().each([&](entt::entity E, const SPrefabComponent& Comp)
+        {
+            if (PrefabE == entt::null && Comp.StableID == StableID)
+            {
+                PrefabE = E;
+            }
+        });
+        if (PrefabE == entt::null)
+        {
+            return nullptr;
+        }
+
+        return FindReflectedComponentPtr(Registry, PrefabE, Struct);
+    }
+
+    entt::entity CPrefab::FindInstanceRoot(entt::registry& Registry, entt::entity Entity)
+    {
+        entt::entity Cur = Entity;
+        while (Registry.valid(Cur))
+        {
+            const SPrefabInstanceComponent* Inst = Registry.try_get<SPrefabInstanceComponent>(Cur);
+            if (Inst == nullptr)
+            {
+                return entt::null;
+            }
+            if (Inst->bIsRoot)
+            {
+                return Cur;
+            }
+            const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Cur);
+            Cur = Rel ? Rel->Parent : entt::null;
+        }
+        return entt::null;
+    }
+
+    void CPrefab::RecaptureComponentOverrides(entt::registry& Registry, entt::entity Entity, CStruct* ComponentType)
+    {
+        if (ComponentType == nullptr || !Registry.valid(Entity))
+        {
+            return;
+        }
+
+        const SPrefabInstanceComponent* Inst = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        if (Inst == nullptr || Inst->SourcePrefab == nullptr)
+        {
+            return;
+        }
+
+        const entt::entity Root = FindInstanceRoot(Registry, Entity);
+        if (Root == entt::null)
+        {
+            return;
+        }
+
+        const FName NodeID = Inst->StableID;
+        const FName CompName = ComponentType->GetName();
+
+        // Live instance component value.
+        void* InstPtr = FindReflectedComponentPtr(Registry, Entity, ComponentType);
+
+        // Prefab baseline value (null when the component is instance-added => no per-leaf tracking).
+        void* PrefPtr = Inst->SourcePrefab->ResolvePrefabComponentPtr(NodeID, ComponentType);
+
+        TVector<FName> NewPaths;
+        if (InstPtr != nullptr && PrefPtr != nullptr)
+        {
+            PrefabOverride::CollectOverriddenLeaves(ComponentType, InstPtr, PrefPtr, NewPaths);
+        }
+
+        SPrefabOverrideComponent& Ledger = Registry.get_or_emplace<SPrefabOverrideComponent>(Root);
+
+        // Replace this (node, component) pair's records with the freshly computed set.
+        auto& Recs = Ledger.PropertyOverrides;
+        Recs.erase(eastl::remove_if(Recs.begin(), Recs.end(), [&](const FPrefabPropertyOverride& O)
+        {
+            return O.EntityStableID == NodeID && O.ComponentType == CompName;
+        }), Recs.end());
+
+        for (const FName& Path : NewPaths)
+        {
+            FPrefabPropertyOverride Rec;
+            Rec.EntityStableID = NodeID;
+            Rec.ComponentType  = CompName;
+            Rec.PropertyPath   = Path;
+            Recs.push_back(Rec);
+        }
+    }
+
+    void CPrefab::NoteComponentAdded(entt::registry& Registry, entt::entity Entity, CStruct* ComponentType)
+    {
+        if (ComponentType == nullptr || !Registry.valid(Entity))
+        {
+            return;
+        }
+
+        const SPrefabInstanceComponent* Inst = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        if (Inst == nullptr)
+        {
+            return;
+        }
+        const entt::entity Root = FindInstanceRoot(Registry, Entity);
+        if (Root == entt::null)
+        {
+            return;
+        }
+
+        const FName NodeID = Inst->StableID;
+        const FName CompName = ComponentType->GetName();
+        const bool bPrefabHas = Inst->SourcePrefab != nullptr
+            && Inst->SourcePrefab->ResolvePrefabComponentPtr(NodeID, ComponentType) != nullptr;
+
+        SPrefabOverrideComponent& Ledger = Registry.get_or_emplace<SPrefabOverrideComponent>(Root);
+
+        auto MatchesPair = [&](const FPrefabComponentRef& C)
+        {
+            return C.EntityStableID == NodeID && C.ComponentType == CompName;
+        };
+
+        // Adding an inherited component back un-removes it (inherits again); a genuinely new component
+        // is recorded as instance-added so refresh never prunes it.
+        auto& Removed = Ledger.RemovedComponents;
+        Removed.erase(eastl::remove_if(Removed.begin(), Removed.end(), MatchesPair), Removed.end());
+
+        if (!bPrefabHas)
+        {
+            auto& Added = Ledger.AddedComponents;
+            if (eastl::find_if(Added.begin(), Added.end(), MatchesPair) == Added.end())
+            {
+                FPrefabComponentRef Rec;
+                Rec.EntityStableID = NodeID;
+                Rec.ComponentType  = CompName;
+                Added.push_back(Rec);
+            }
+        }
+    }
+
+    void CPrefab::NoteComponentRemoved(entt::registry& Registry, entt::entity Entity, CStruct* ComponentType)
+    {
+        if (ComponentType == nullptr || !Registry.valid(Entity))
+        {
+            return;
+        }
+
+        const SPrefabInstanceComponent* Inst = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        if (Inst == nullptr)
+        {
+            return;
+        }
+        const entt::entity Root = FindInstanceRoot(Registry, Entity);
+        if (Root == entt::null)
+        {
+            return;
+        }
+
+        const FName NodeID = Inst->StableID;
+        const FName CompName = ComponentType->GetName();
+        const bool bPrefabHas = Inst->SourcePrefab != nullptr
+            && Inst->SourcePrefab->ResolvePrefabComponentPtr(NodeID, ComponentType) != nullptr;
+
+        SPrefabOverrideComponent& Ledger = Registry.get_or_emplace<SPrefabOverrideComponent>(Root);
+
+        auto MatchesPair = [&](const auto& C)
+        {
+            return C.EntityStableID == NodeID && C.ComponentType == CompName;
+        };
+
+        // Any property overrides for the gone component are meaningless now.
+        auto& Props = Ledger.PropertyOverrides;
+        Props.erase(eastl::remove_if(Props.begin(), Props.end(), MatchesPair), Props.end());
+
+        auto& Added = Ledger.AddedComponents;
+        Added.erase(eastl::remove_if(Added.begin(), Added.end(), MatchesPair), Added.end());
+
+        auto& Removed = Ledger.RemovedComponents;
+        Removed.erase(eastl::remove_if(Removed.begin(), Removed.end(), MatchesPair), Removed.end());
+
+        // An inherited component the user deleted must be recorded so refresh won't re-add it.
+        if (bPrefabHas)
+        {
+            FPrefabComponentRef Rec;
+            Rec.EntityStableID = NodeID;
+            Rec.ComponentType  = CompName;
+            Removed.push_back(Rec);
         }
     }
 }

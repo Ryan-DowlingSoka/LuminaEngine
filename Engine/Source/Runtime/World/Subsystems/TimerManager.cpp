@@ -7,6 +7,7 @@
 #include "lualib.h"
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
+#include "Scripting/Lua/Async.h"
 #include "Scripting/Lua/Class.h"
 #include "Scripting/Lua/ScriptTypes.h"
 #include "Scripting/Lua/Stack.h"
@@ -300,6 +301,30 @@ namespace Lumina
         SetTimerPaused(FTimerHandle{ Handle }, bPause);
     }
 
+    int FTimerManager::WaitImpl(lua_State* L, float Seconds, FTimerManager* TimerManager)
+    {
+        if (TimerManager == nullptr)
+        {
+            luaL_errorL(L, "Wait: no timer manager for this script's world");
+        }
+
+        // Pins the coroutine and captures its owner; null if L isn't on a yieldable coroutine.
+        TSharedPtr<Lua::FYieldToken> Token = Lua::BeginYield(L);
+        if (!Token)
+        {
+            luaL_errorL(L, "Wait can only be called from a coroutine "
+                           "(use Task.Spawn, or call it from a script lifecycle/event hook).");
+        }
+
+        // Timer is tied to the owner entity, so ClearTimersForEntity cancels the wait on entity death:
+        // the timer (and its captured token) is dropped, releasing the pin without ever resuming.
+        TimerManager->CreateTimer(Seconds, /*bLoop=*/false, /*FirstDelay=*/-1.0f, Token->Owner,
+            [Token]() { Lua::ResumeYield(Token); },
+            Lua::FRef());
+
+        return lua_yield(L, 0);
+    }
+
     int FTimerManager::Wait_Lua(lua_State* L)
     {
         // __namecall stack: [self][seconds]
@@ -314,55 +339,6 @@ namespace Lumina
             luaL_typeerrorL(L, 2, "number");
         }
 
-        const float Seconds = static_cast<float>(lua_tonumber(L, 2));
-
-        if (!lua_isyieldable(L))
-        {
-            luaL_errorL(L, "TimerManager:Wait can only be called from a coroutine "
-                           "(spawn from a script lifecycle hook or coroutine.wrap).");
-        }
-
-        // Unref must happen on the main state, which is guaranteed to outlive the sub-thread.
-        lua_State* MainState = lua_mainthread(L);
-        lua_pushthread(L);
-        const int ThreadRef = lua_ref(L, -1);
-        lua_pop(L, 1);
-
-        // Tie timer to the entity so ClearTimersForEntity auto-cleans on entity death.
-        const auto* ThreadData = static_cast<const Lua::FScriptThreadData*>(lua_getthreaddata(L));
-        const entt::entity Owner = ThreadData ? ThreadData->Entity : entt::null;
-
-        // RAII: releases the registry pin whether the timer fires or is cleared early.
-        struct FWaitState
-        {
-            lua_State* MainState = nullptr;
-            int        ThreadRef = LUA_NOREF;
-
-            ~FWaitState()
-            {
-                if (MainState && ThreadRef != LUA_NOREF)
-                {
-                    lua_unref(MainState, ThreadRef);
-                }
-            }
-        };
-
-        auto State = MakeShared<FWaitState>();
-        State->MainState = MainState;
-        State->ThreadRef = ThreadRef;
-
-        Self->CreateTimer(Seconds, /*bLoop=*/false, /*FirstDelay=*/-1.0f, Owner,
-            [State, L]()
-            {
-                int Status = lua_resume(L, nullptr, 0);
-                if (Status != LUA_OK && Status != LUA_YIELD)
-                {
-                    const char* ErrMsg = lua_tostring(L, -1);
-                    LOG_ERROR("[Lua] - TimerManager:Wait resume failed: {}", ErrMsg ? ErrMsg : "<unknown>");
-                }
-            },
-            Lua::FRef());
-
-        return lua_yield(L, 0);
+        return WaitImpl(L, static_cast<float>(lua_tonumber(L, 2)), Self);
     }
 }

@@ -102,9 +102,7 @@ namespace Lumina
 
         /** Queues world travel; swap runs at next FrameStart. Prefers PIE Game world; preserves editor proxy on PIE exit. */
         RUNTIME_API void Travel(FStringView WorldPath);
-
-        //~ Connection / level-open API (Unreal-style). All deferred to the next FrameStart, like Travel.
-
+        
         /** The proper entry point: host a level (Map [+ bListen]), open standalone, or connect to URL.Host. */
         RUNTIME_API void OpenLevel(const FURL& URL);
 

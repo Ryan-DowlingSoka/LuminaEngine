@@ -194,13 +194,6 @@ namespace Lumina
 
         RUNTIME_API static bool DestroyPackage(CPackage* PackageToDestroy);
 
-        // Game-thread, render-idle window only. Runs the deferred half of
-        // DestroyPackage for anything queued since the last drain.
-        RUNTIME_API static void DrainPendingDestroys();
-
-        // Cheap test for the deferred-destroy queue; lets callers skip a Flush when empty.
-        RUNTIME_API static bool HasPendingDestroys();
-
         RUNTIME_API static CPackage* FindPackageByPath(FStringView Path);
 
         /** Atomic rename: in-memory + on-disk move. Crash-safe (write-then-remove). False on collision/IO error. */

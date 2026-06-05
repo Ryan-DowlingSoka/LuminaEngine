@@ -373,8 +373,6 @@ namespace Lumina
         FQuat DisplayValue{};
     };
 
-    // Input-key picker (SKey): a button that, when clicked, "listens" and binds the next keyboard key
-    // or mouse button pressed. Mirrors Unreal's FKey selector.
     class FKeyPropertyCustomization : public IPropertyTypeCustomization
     {
     public:

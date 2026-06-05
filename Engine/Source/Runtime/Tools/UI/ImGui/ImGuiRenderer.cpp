@@ -19,6 +19,8 @@
 #include "Config/Config.h"
 #include "Config/EngineSettings.h"
 #include "Core/Object/ObjectCore.h"
+#include "Core/Math/Hash/Hash.h"
+#include "Tools/UI/ImGui/EditorColors.h"
 #include "Core/Windows/Window.h"
 #include "Core/Windows/GLFWInclude.h"
 #include "Core/Application/Application.h"
@@ -174,6 +176,83 @@ namespace Lumina
                 ApplyUIScale();
             }
         }
+
+        uint64 GAppliedPaletteHash = 0;
+
+        // Maps the editor color palette (CEditorColorSettings) onto the ImGui style. Hover/active variants
+        // are derived so the whole theme follows from a handful of colors. Colors not in the palette
+        // (scrollbars, plots, docking, overlays) are left as set in Initialize.
+        void ApplyPaletteColors(ImGuiStyle& Style)
+        {
+            using namespace EditorColors;
+            const ImVec4 Acc   = Accent();
+            const ImVec4 Win   = WindowBg();
+            const ImVec4 Frame = FrameBg();
+            const ImVec4 Title = TitleBg();
+            const ImVec4 Btn   = Button();
+            const ImVec4 Hdr   = Header();
+            const ImVec4 Bord  = Border();
+
+            Style.Colors[ImGuiCol_Text]             = TextPrimary();
+            Style.Colors[ImGuiCol_TextDisabled]     = TextMuted();
+            Style.Colors[ImGuiCol_WindowBg]         = Win;
+            Style.Colors[ImGuiCol_ChildBg]          = Win;
+            Style.Colors[ImGuiCol_PopupBg]          = Win;
+            Style.Colors[ImGuiCol_Border]           = Bord;
+            Style.Colors[ImGuiCol_FrameBg]          = Frame;
+            Style.Colors[ImGuiCol_FrameBgHovered]   = Lighten(Frame, 0.08f);
+            Style.Colors[ImGuiCol_FrameBgActive]    = Lighten(Frame, 0.14f);
+            Style.Colors[ImGuiCol_TitleBg]          = Title;
+            Style.Colors[ImGuiCol_TitleBgActive]    = Title;
+            Style.Colors[ImGuiCol_TitleBgCollapsed] = WithAlpha(Title, 0.51f);
+            Style.Colors[ImGuiCol_MenuBarBg]        = Lighten(Title, 0.06f);
+            Style.Colors[ImGuiCol_CheckMark]        = Acc;
+            Style.Colors[ImGuiCol_SliderGrab]       = Acc;
+            Style.Colors[ImGuiCol_SliderGrabActive] = Lighten(Acc, 0.10f);
+            Style.Colors[ImGuiCol_Button]           = Btn;
+            Style.Colors[ImGuiCol_ButtonHovered]    = Lighten(Btn, 0.10f);
+            Style.Colors[ImGuiCol_ButtonActive]     = Lighten(Btn, 0.18f);
+            Style.Colors[ImGuiCol_Header]           = Hdr;
+            Style.Colors[ImGuiCol_HeaderHovered]    = Lighten(Hdr, 0.08f);
+            Style.Colors[ImGuiCol_HeaderActive]     = Lighten(Hdr, 0.14f);
+            Style.Colors[ImGuiCol_Separator]        = Bord;
+            Style.Colors[ImGuiCol_SeparatorHovered] = Lighten(Bord, 0.10f);
+            Style.Colors[ImGuiCol_SeparatorActive]  = Acc;
+            Style.Colors[ImGuiCol_ResizeGripHovered]= WithAlpha(Acc, 0.50f);
+            Style.Colors[ImGuiCol_ResizeGripActive] = Acc;
+            Style.Colors[ImGuiCol_Tab]              = Title;
+            Style.Colors[ImGuiCol_TabHovered]       = Lighten(Win, 0.10f);
+            Style.Colors[ImGuiCol_TabSelected]      = Lighten(Win, 0.06f);
+            Style.Colors[ImGuiCol_TextSelectedBg]   = WithAlpha(Acc, 0.35f);
+            Style.Colors[ImGuiCol_DragDropTarget]   = Acc;
+            Style.Colors[ImGuiCol_NavCursor]        = Acc;
+        }
+
+        uint64 HashPalette()
+        {
+            // The palette is a contiguous run of FVector4 members; hashing the block detects any edit.
+            const CEditorColorSettings& P = *GetDefault<CEditorColorSettings>();
+            const char* Begin = reinterpret_cast<const char*>(&P.Accent);
+            const char* End   = reinterpret_cast<const char*>(&P.RowBgActive) + sizeof(FVector4);
+            return Hash::GetHash64(Begin, static_cast<size_t>(End - Begin));
+        }
+
+        // Per-frame poll: re-derive the global style when the palette changes (e.g. the user edits a color
+        // in the Settings panel). Cheap -- one hash unless something changed.
+        void RefreshStyleIfPaletteChanged()
+        {
+            if (!GBaseStyleValid)
+            {
+                return;
+            }
+            const uint64 Hash = HashPalette();
+            if (Hash != GAppliedPaletteHash)
+            {
+                GAppliedPaletteHash = Hash;
+                ApplyPaletteColors(GBaseStyle);  // update the unscaled reference colors
+                ApplyUIScale();                  // re-derive the live (scaled) style, preserving the new colors
+            }
+        }
     }
 
     void IImGuiRenderer::Initialize()
@@ -280,57 +359,30 @@ namespace Lumina
 		}
     	
         Style.Alpha = 1.0f;
-        Style.Colors[ImGuiCol_Text] =                   ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-        Style.Colors[ImGuiCol_TextDisabled] =           ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-        Style.Colors[ImGuiCol_WindowBg] =               ImVec4(0.13f, 0.14f, 0.15f, 1.00f);
-        Style.Colors[ImGuiCol_ChildBg] =                ImVec4(0.13f, 0.14f, 0.15f, 1.00f);
-        Style.Colors[ImGuiCol_PopupBg] =                ImVec4(0.13f, 0.14f, 0.15f, 1.00f);
-        Style.Colors[ImGuiCol_Border] =                 ImVec4(0.43f, 0.43f, 0.50f, 0.50f);
+
+        // Structural colors not driven by the editor palette (scrollbars, plots, docking, dimmed tabs,
+        // resize-grip base, nav/modal overlays).
         Style.Colors[ImGuiCol_BorderShadow] =           ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-        Style.Colors[ImGuiCol_FrameBg] =                ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
-        Style.Colors[ImGuiCol_FrameBgHovered] =         ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
-        Style.Colors[ImGuiCol_FrameBgActive] =          ImVec4(0.37f, 0.37f, 0.37f, 0.39f);
-        Style.Colors[ImGuiCol_TitleBg] =                ImVec4(0.08f, 0.08f, 0.09f, 1.00f);
-        Style.Colors[ImGuiCol_TitleBgActive] =          ImVec4(0.08f, 0.08f, 0.09f, 1.00f);
-        Style.Colors[ImGuiCol_TitleBgCollapsed] =       ImVec4(0.00f, 0.00f, 0.00f, 0.51f);
-        Style.Colors[ImGuiCol_MenuBarBg] =              ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
         Style.Colors[ImGuiCol_ScrollbarBg] =            ImVec4(0.02f, 0.02f, 0.02f, 0.53f);
         Style.Colors[ImGuiCol_ScrollbarGrab] =          ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
         Style.Colors[ImGuiCol_ScrollbarGrabHovered] =   ImVec4(0.41f, 0.41f, 0.41f, 1.00f);
         Style.Colors[ImGuiCol_ScrollbarGrabActive] =    ImVec4(0.51f, 0.51f, 0.51f, 1.00f);
-        Style.Colors[ImGuiCol_CheckMark] =              ImVec4(0.11f, 0.64f, 0.92f, 1.00f);
-        Style.Colors[ImGuiCol_SliderGrab] =             ImVec4(0.11f, 0.64f, 0.92f, 1.00f);
-        Style.Colors[ImGuiCol_SliderGrabActive] =       ImVec4(0.08f, 0.50f, 0.72f, 1.00f);
-        Style.Colors[ImGuiCol_Button] =                 ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
-        Style.Colors[ImGuiCol_ButtonHovered] =          ImVec4(0.38f, 0.38f, 0.38f, 1.00f);
-        Style.Colors[ImGuiCol_ButtonActive] =           ImVec4(0.67f, 0.67f, 0.67f, 0.39f);
-        Style.Colors[ImGuiCol_Header] =                 ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
-        Style.Colors[ImGuiCol_HeaderHovered] =          ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
-        Style.Colors[ImGuiCol_HeaderActive] =           ImVec4(0.67f, 0.67f, 0.67f, 0.39f);
-        Style.Colors[ImGuiCol_Separator] =              Style.Colors[ImGuiCol_Border];
-        Style.Colors[ImGuiCol_SeparatorHovered] =       ImVec4(0.41f, 0.42f, 0.44f, 1.00f);
-        Style.Colors[ImGuiCol_SeparatorActive] =        ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
         Style.Colors[ImGuiCol_ResizeGrip] =             ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-        Style.Colors[ImGuiCol_ResizeGripHovered] =      ImVec4(0.29f, 0.30f, 0.31f, 0.67f);
-        Style.Colors[ImGuiCol_ResizeGripActive] =       ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
-        Style.Colors[ImGuiCol_Tab] =                    ImVec4(0.08f, 0.08f, 0.09f, 0.83f);
-        Style.Colors[ImGuiCol_TabHovered] =             ImVec4(0.33f, 0.34f, 0.36f, 0.83f);
-        Style.Colors[ImGuiCol_TabSelected] =            ImVec4(0.23f, 0.23f, 0.24f, 1.00f);
-        Style.Colors[ImGuiCol_TabDimmed] =				ImVec4(0.08f, 0.08f, 0.09f, 1.00f);
-        Style.Colors[ImGuiCol_TabDimmedSelected] =		ImVec4(0.13f, 0.14f, 0.15f, 1.00f);
+        Style.Colors[ImGuiCol_TabDimmed] =              ImVec4(0.08f, 0.08f, 0.09f, 1.00f);
+        Style.Colors[ImGuiCol_TabDimmedSelected] =      ImVec4(0.13f, 0.14f, 0.15f, 1.00f);
         Style.Colors[ImGuiCol_DockingPreview] =         ImVec4(0.26f, 0.49f, 0.28f, 0.70f);
         Style.Colors[ImGuiCol_DockingEmptyBg] =         ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
         Style.Colors[ImGuiCol_PlotLines] =              ImVec4(0.61f, 0.61f, 0.61f, 1.00f);
         Style.Colors[ImGuiCol_PlotLinesHovered] =       ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
         Style.Colors[ImGuiCol_PlotHistogram] =          ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
         Style.Colors[ImGuiCol_PlotHistogramHovered] =   ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
-        Style.Colors[ImGuiCol_TextSelectedBg] =         ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
-        Style.Colors[ImGuiCol_DragDropTarget] =         ImVec4(0.11f, 0.64f, 0.92f, 1.00f);
-        Style.Colors[ImGuiCol_NavCursor] =				ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
         Style.Colors[ImGuiCol_NavWindowingHighlight] =  ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
         Style.Colors[ImGuiCol_NavWindowingDimBg] =      ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
         Style.Colors[ImGuiCol_ModalWindowDimBg] =       ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
-    	Style.Colors[ImGuiCol_CheckMark] =				ImVec4(0.25f, 1.0f, 0.25f, 1.0f);
+
+        // Everything else (text, surfaces, accents, buttons, headers, tabs, selection) is themed from the
+        // editor color palette, and re-derived live when those settings change (RefreshStyleIfPaletteChanged).
+        ApplyPaletteColors(Style);
 
     	
     	Style.FramePadding			= ImVec2(6, 4);
@@ -355,6 +407,7 @@ namespace Lumina
     	// Snapshot the fully-configured (unscaled) style, then apply DPI/UI scale.
     	GBaseStyle = Style;
     	GBaseStyleValid = true;
+    	GAppliedPaletteHash = HashPalette();
     	ApplyUIScale();
     }
 
@@ -367,6 +420,7 @@ namespace Lumina
     void IImGuiRenderer::StartFrame(const FUpdateContext& UpdateContext)
     {
     	RefreshUIScaleIfNeeded();
+    	RefreshStyleIfPaletteChanged();
     	OnStartFrame(UpdateContext);
     }
 

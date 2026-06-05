@@ -5,8 +5,7 @@
 #include "Containers/Array.h"
 #include "Containers/String.h"
 
-// Editor-only: the type-definition metadata (auto-derived signatures, doc comments) is built for the
-// script editor's analyzer and compiled out of shipping/game runtime entirely.
+
 #if WITH_EDITOR
 #include "LuaTypeName.h"
 #include "ScriptTypeRegistry.h"

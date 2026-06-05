@@ -481,7 +481,7 @@ namespace Lumina
         ImGui::Dummy(ImVec2(0, 0));
     }
 
-    bool FEditorTool::DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture)
+    void FEditorTool::UpdateViewportInput(const FUpdateContext& UpdateContext)
     {
         if ((bViewportFocused || bViewportHovered) && ImGui::IsKeyPressed(ImGuiKey_F11, false))
         {
@@ -490,23 +490,19 @@ namespace Lumina
 
         const ImVec2 ContentRegion = ImGui::GetContentRegionAvail();
         const ImVec2 ViewportSize(eastl::max(ContentRegion.x, 64.0f), eastl::max(ContentRegion.y, 64.0f));
-        const ImVec2 WindowPosition = ImGui::GetCursorScreenPos();
-        const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
-        float AspectRatio = (ViewportSize.x / ViewportSize.y);
+        const ImVec2 CursorScreenPos = ImGui::GetCursorScreenPos();
+
+        const float AspectRatio = (ViewportSize.x / ViewportSize.y);
         float t = (ViewportSize.x - 500) / (1200 - 500);
         t = Math::Clamp(t, 0.0f, 1.0f);
-        float NewFOV = Math::Mix(120.0f, 50.0f, t);
+        const float NewFOV = Math::Mix(120.0f, 50.0f, t);
 
-        if (SCameraComponent* CameraComponent =  World->GetActiveCamera())
+        if (SCameraComponent* CameraComponent = World->GetActiveCamera())
         {
             CameraComponent->SetAspectRatio(AspectRatio);
             CameraComponent->SetFOV(NewFOV);
         }
-        
-        /** Mostly for debug, so we can easily see if there's some transparency issue */
-        ImGui::GetWindowDrawList()->AddRectFilled(WindowPosition, WindowBottomRight, IM_COL32(255, 0, 0, 255));
-        
-        
+
         if (bViewportHovered)
         {
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
@@ -516,85 +512,91 @@ namespace Lumina
             }
         }
 
-        ImVec2 CursorScreenPos = ImGui::GetCursorScreenPos();
-        
+        if (InputViewport == nullptr)
+        {
+            return;
+        }
+
+        ImGuiViewport* HostViewport = ImGui::GetWindowViewport();
+        const ImVec2 WindowOrigin = HostViewport->Pos;
+        InputViewport->SetNativeWindowHandle(HostViewport->PlatformHandle);
+
+        const ImVec2 PanelMin(CursorScreenPos.x - WindowOrigin.x, CursorScreenPos.y - WindowOrigin.y);
+        const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
+        InputViewport->SetWindowRect(int(PanelMin.x), int(PanelMin.y), int(PanelMax.x), int(PanelMax.y));
+
+        uint32 RTW = uint32(eastl::max(ViewportSize.x, 1.0f));
+        uint32 RTH = uint32(eastl::max(ViewportSize.y, 1.0f));
+        if (World != nullptr)
+        {
+            if (IRenderScene* Scene = World->GetRenderer())
+            {
+                if (FRHIImage* RT = Scene->GetRenderTarget())
+                {
+                    RTW = RT->GetSizeX();
+                    RTH = RT->GetSizeY();
+                }
+            }
+        }
+        InputViewport->SetRenderTargetSize(RTW, RTH);
+
+        if (World != nullptr)
+        {
+            RmlUi::SetWorldDisplaySize(World, FUIntVector2(uint32(eastl::max(ViewportSize.x, 1.0f)), uint32(eastl::max(ViewportSize.y, 1.0f))));
+        }
+
+        InputViewport->SetHovered(bViewportHovered);
+        InputViewport->SetFocused(bViewportFocused);
+
+        FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
+
+        if (bViewportHovered)
+        {
+            Reg.SetHoveredViewport(InputViewport.get());
+        }
+        else if (Reg.GetHoveredViewport() == InputViewport.get())
+        {
+            Reg.SetHoveredViewport(nullptr);
+        }
+
+        if (Reg.IsGameInputFocused())
+        {
+            void* const ThisWindow = InputViewport->GetNativeWindowHandle();
+            if (Windowing::IsNativeWindowFocused(ThisWindow))
+            {
+                FInputViewport* Active = Reg.GetActiveViewport();
+                const bool bActiveWindowFocused = Active != nullptr
+                    && Windowing::IsNativeWindowFocused(Active->GetNativeWindowHandle());
+                if (!bActiveWindowFocused)
+                {
+                    Reg.SetActiveViewport(InputViewport.get());
+                    Reg.SetFocusedViewport(InputViewport.get());
+                }
+            }
+        }
+        else if (bViewportFocused)
+        {
+            Reg.SetFocusedViewport(InputViewport.get());
+            Reg.SetActiveViewport(InputViewport.get());
+        }
+    }
+
+    bool FEditorTool::DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture)
+    {
+        const ImVec2 ContentRegion = ImGui::GetContentRegionAvail();
+        const ImVec2 ViewportSize(eastl::max(ContentRegion.x, 64.0f), eastl::max(ContentRegion.y, 64.0f));
+        const ImVec2 WindowPosition = ImGui::GetCursorScreenPos();
+        const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
+
+        ImGui::GetWindowDrawList()->AddRectFilled(WindowPosition, WindowBottomRight, IM_COL32(255, 0, 0, 255));
+
         ImGui::GetWindowDrawList()->AddImage(
             ViewportTexture,
-            CursorScreenPos,
-            ImVec2(CursorScreenPos.x + ViewportSize.x, CursorScreenPos.y + ViewportSize.y),
+            WindowPosition,
+            WindowBottomRight,
             ImVec2(0, 0), ImVec2(1, 1),
             IM_COL32_WHITE
         );
-
-        if (InputViewport)
-        {
-            // ImGui screen coords are global; GLFW events are window-relative. Subtract the host platform
-            // window's origin so they match. Use the window THIS panel lives in (not always the primary),
-            // so a preview in a separate OS window hit-tests against its own window.
-            ImGuiViewport* HostViewport = ImGui::GetWindowViewport();
-            const ImVec2 WindowOrigin = HostViewport->Pos;
-            InputViewport->SetNativeWindowHandle(HostViewport->PlatformHandle);
-
-            const ImVec2 PanelMin(CursorScreenPos.x - WindowOrigin.x, CursorScreenPos.y - WindowOrigin.y);
-            const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
-            InputViewport->SetWindowRect(int(PanelMin.x), int(PanelMin.y), int(PanelMax.x), int(PanelMax.y));
-
-            uint32 RTW = uint32(eastl::max(ViewportSize.x, 1.0f));
-            uint32 RTH = uint32(eastl::max(ViewportSize.y, 1.0f));
-            if (World != nullptr)
-            {
-                if (IRenderScene* Scene = World->GetRenderer())
-                {
-                    if (FRHIImage* RT = Scene->GetRenderTarget())
-                    {
-                        RTW = RT->GetSizeX();
-                        RTH = RT->GetSizeY();
-                    }
-                }
-            }
-            InputViewport->SetRenderTargetSize(RTW, RTH);
-
-            // Lay UI out at the panel's size so the per-axis stretch from RT -> panel
-            // leaves it at correct proportions on screen instead of squishing it.
-            if (World != nullptr)
-            {
-                RmlUi::SetWorldDisplaySize(World, FUIntVector2(uint32(eastl::max(ViewportSize.x, 1.0f)), uint32(eastl::max(ViewportSize.y, 1.0f))));
-            }
-
-            InputViewport->SetHovered(bViewportHovered);
-            InputViewport->SetFocused(bViewportFocused);
-
-            if (bViewportHovered)
-            {
-                FInputViewportRegistry::Get().SetHoveredViewport(InputViewport.get());
-            }
-            else if (FInputViewportRegistry::Get().GetHoveredViewport() == InputViewport.get())
-            {
-                FInputViewportRegistry::Get().SetHoveredViewport(nullptr);
-            }
-
-            FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
-            if (Reg.IsGameInputFocused())
-            {
-                void* const ThisWindow = InputViewport->GetNativeWindowHandle();
-                if (Windowing::IsNativeWindowFocused(ThisWindow))
-                {
-                    FInputViewport* Active = Reg.GetActiveViewport();
-                    const bool bActiveWindowFocused = Active != nullptr
-                        && Windowing::IsNativeWindowFocused(Active->GetNativeWindowHandle());
-                    if (!bActiveWindowFocused)
-                    {
-                        Reg.SetActiveViewport(InputViewport.get());
-                        Reg.SetFocusedViewport(InputViewport.get());
-                    }
-                }
-            }
-            else if (bViewportFocused)
-            {
-                Reg.SetFocusedViewport(InputViewport.get());
-                Reg.SetActiveViewport(InputViewport.get());
-            }
-        }
 
         const ImGuiStyle& ImStyle = ImGui::GetStyle();
 
@@ -613,10 +615,7 @@ namespace Lumina
         ImGui::Dummy(ImStyle.ItemSpacing);
         ImGui::SetCursorPos(Origin + ImStyle.ItemSpacing);
         DrawViewportToolbar(UpdateContext);
-
-        // Click-to-refocus (Unreal-style PIE): while playing in editor focus, a left-click back into the game
-        // viewport hands input to the game again. Drawn after the toolbar so IsAnyItemHovered() is true when the
-        // click landed on an overlay widget (the Stop button, gizmo controls) -- those must NOT refocus.
+        
         if (World != nullptr && World->IsGameWorld() && bViewportHovered
             && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
             && !ImGui::IsAnyItemHovered())
@@ -847,17 +846,36 @@ namespace Lumina
             return;
         }
 
-        FInputProcessor& Input = FInputProcessor::Get();
-        const bool bWantLook = bViewportFocused && Input.IsMouseButtonDown(EMouseKey::ButtonRight);
-        const bool bWantPan  = bViewportFocused
-                            && CameraState.Mode == EEditorCameraMode::Orbit
-                            && Input.IsMouseButtonDown(EMouseKey::ButtonMiddle);
-        const bool bWantsCaptured = bWantLook || bWantPan;
-        
-        if (CameraState.bWasLooking && !bWantsCaptured)
+        if (InputViewport == nullptr)
         {
-            Input.SetMouseMode(EMouseMode::Normal);
+            return;
         }
+
+        const ImGuiIO& IO = ImGui::GetIO();
+        const bool bAllowInput = bViewportFocused && !IO.WantTextInput;
+        
+        const FInputContext& Raw = FInputViewportRegistry::Get().GetRawInput();
+
+        const bool bWantLook = bAllowInput && Raw.IsMouseButtonDown(EMouseKey::ButtonRight);
+        const bool bWantPan  = bAllowInput
+                            && CameraState.Mode == EEditorCameraMode::Orbit
+                            && Raw.IsMouseButtonDown(EMouseKey::ButtonMiddle);
+        const bool bWantsCaptured = bWantLook || bWantPan;
+
+        if (bWantsCaptured)
+        {
+            FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
+        }
+
+        if (bWantsCaptured && !CameraState.bWasLooking)
+        {
+            BeginEditorLookCapture();
+        }
+        else if (!bWantsCaptured && CameraState.bWasLooking)
+        {
+            EndEditorLookCapture();
+        }
+        
         CameraState.bWasLooking = bWantsCaptured;
 
         STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
@@ -866,16 +884,16 @@ namespace Lumina
         // from the focused viewport cancels the lerp so the user can take over mid-flight.
         if (CameraState.bFocusInterp)
         {
-            const bool bWheel = bViewportFocused && Input.GetMouseZ() != 0.0;
+            const bool bWheel = bAllowInput && Raw.GetMouseZ() != 0.0;
             bool bMoveInput = false;
-            if (bViewportFocused)
+            if (bAllowInput)
             {
                 if (CameraState.Mode == EEditorCameraMode::Free)
                 {
                     bMoveInput = bWantLook
-                        || Input.IsKeyDown(EKey::W) || Input.IsKeyDown(EKey::A)
-                        || Input.IsKeyDown(EKey::S) || Input.IsKeyDown(EKey::D)
-                        || Input.IsKeyDown(EKey::E) || Input.IsKeyDown(EKey::Q);
+                        || ImGui::IsKeyDown(ImGuiKey_W) || ImGui::IsKeyDown(ImGuiKey_A)
+                        || ImGui::IsKeyDown(ImGuiKey_S) || ImGui::IsKeyDown(ImGuiKey_D)
+                        || ImGui::IsKeyDown(ImGuiKey_E) || ImGui::IsKeyDown(ImGuiKey_Q);
                 }
                 else
                 {
@@ -921,8 +939,7 @@ namespace Lumina
 
         if (CameraState.Mode == EEditorCameraMode::Free)
         {
-            // Skip input during focus lerp so the camera doesn't fight it.
-            if (!bViewportFocused || CameraState.bFocusInterp)
+            if (!bAllowInput || CameraState.bFocusInterp)
             {
                 return;
             }
@@ -932,18 +949,18 @@ namespace Lumina
             const FVector3 Up      = Transform.GetUp();
 
             float Speed = CameraState.Speed;
-            if (Input.IsKeyDown(EKey::LeftShift))
+            if (ImGui::IsKeyDown(ImGuiKey_LeftShift))
             {
                 Speed *= 10.0f;
             }
 
             FVector3 Acceleration(0.0f);
-            if (Input.IsKeyDown(EKey::W)) Acceleration += Forward;
-            if (Input.IsKeyDown(EKey::S)) Acceleration -= Forward;
-            if (Input.IsKeyDown(EKey::D)) Acceleration += Right;
-            if (Input.IsKeyDown(EKey::A)) Acceleration -= Right;
-            if (Input.IsKeyDown(EKey::E)) Acceleration += Up;
-            if (Input.IsKeyDown(EKey::Q)) Acceleration -= Up;
+            if (ImGui::IsKeyDown(ImGuiKey_W)) Acceleration += Forward;
+            if (ImGui::IsKeyDown(ImGuiKey_S)) Acceleration -= Forward;
+            if (ImGui::IsKeyDown(ImGuiKey_D)) Acceleration += Right;
+            if (ImGui::IsKeyDown(ImGuiKey_A)) Acceleration -= Right;
+            if (ImGui::IsKeyDown(ImGuiKey_E)) Acceleration += Up;
+            if (ImGui::IsKeyDown(ImGuiKey_Q)) Acceleration -= Up;
 
             if (Math::Length(Acceleration) > 0.0f)
             {
@@ -959,49 +976,43 @@ namespace Lumina
 
             if (bWantLook)
             {
-                Input.SetMouseMode(EMouseMode::Captured);
-
-                Transform.AddYaw(static_cast<float>(Input.GetMouseDeltaX() * 0.1));
+                Transform.AddYaw(static_cast<float>(Raw.GetMouseDeltaX() * 0.1));
 
                 // Clamp accumulated pitch, not the per-frame delta: derive current elevation
                 // from forward and limit the delta so the camera can't flip past vertical.
                 const FVector3 Forward2 = Transform.GetForward();
                 const float Elevation   = Math::Degrees(Math::Asin(Math::Clamp(Forward2.y, -1.0f, 1.0f)));
                 constexpr float PitchLimit = 89.0f;
-                float PitchDelta = static_cast<float>(Input.GetMouseDeltaY() * 0.1);
+                float PitchDelta = static_cast<float>(Raw.GetMouseDeltaY() * 0.1);
                 PitchDelta = Math::Clamp(PitchDelta, Elevation - PitchLimit, Elevation + PitchLimit);
                 Transform.AddPitch(PitchDelta);
 
-                const double WheelZ = Input.GetMouseZ();
+                const double WheelZ = Raw.GetMouseZ();
                 CameraState.SpeedScale += Math::Pow(1.05f, CameraState.SpeedScale) * static_cast<float>(WheelZ);
                 CameraState.SpeedScale = Math::Clamp(CameraState.SpeedScale, 0.2f, 100.0f);
             }
         }
         else // Orbit
         {
-            // Transform application is unconditional: orbit is purely derived from CameraState,
-            // so it must be written back even without focus to avoid rendering at the default origin.
-            if (bViewportFocused)
+            if (bAllowInput)
             {
                 if (bWantLook)
                 {
-                    Input.SetMouseMode(EMouseMode::Captured);
-                    CameraState.OrbitYaw   -= static_cast<float>(Input.GetMouseDeltaX() * 0.4);
-                    CameraState.OrbitPitch += static_cast<float>(Input.GetMouseDeltaY() * 0.4);
+                    CameraState.OrbitYaw   -= static_cast<float>(Raw.GetMouseDeltaX() * 0.4);
+                    CameraState.OrbitPitch += static_cast<float>(Raw.GetMouseDeltaY() * 0.4);
                     CameraState.OrbitPitch = Math::Clamp(CameraState.OrbitPitch, -89.0f, 89.0f);
                 }
 
-                if (Input.IsMouseButtonDown(EMouseKey::ButtonMiddle))
+                if (Raw.IsMouseButtonDown(EMouseKey::ButtonMiddle))
                 {
-                    Input.SetMouseMode(EMouseMode::Captured);
                     const float PanScale = CameraState.OrbitDistance * 0.002f;
                     const FVector3 Right = Transform.GetRight();
                     const FVector3 Up    = Transform.GetUp();
-                    CameraState.OrbitTarget -= Right * static_cast<float>(Input.GetMouseDeltaX()) * PanScale;
-                    CameraState.OrbitTarget += Up    * static_cast<float>(Input.GetMouseDeltaY()) * PanScale;
+                    CameraState.OrbitTarget -= Right * static_cast<float>(Raw.GetMouseDeltaX()) * PanScale;
+                    CameraState.OrbitTarget += Up    * static_cast<float>(Raw.GetMouseDeltaY()) * PanScale;
                 }
 
-                const double WheelZ = Input.GetMouseZ();
+                const double WheelZ = Raw.GetMouseZ();
                 if (WheelZ != 0.0)
                 {
                     const float Zoom = 0.1f * CameraState.OrbitDistance;
@@ -1012,6 +1023,28 @@ namespace Lumina
 
             ApplyOrbitTransform();
         }
+    }
+
+    void FEditorTool::BeginEditorLookCapture()
+    {
+        if (InputViewport == nullptr)
+        {
+            return;
+        }
+        InputViewport->GetContext().SetMouseMode(EMouseMode::Captured);
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+        FInputViewportRegistry::Get().ReapplyActiveCursorMode();
+    }
+
+    void FEditorTool::EndEditorLookCapture()
+    {
+        if (InputViewport == nullptr)
+        {
+            return;
+        }
+        InputViewport->GetContext().SetMouseMode(EMouseMode::Normal);
+        ImGui::GetIO().ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange);
+        FInputViewportRegistry::Get().ReapplyActiveCursorMode();
     }
 
     void FEditorTool::DrawWorldGrid(int Scale, int Spacing)

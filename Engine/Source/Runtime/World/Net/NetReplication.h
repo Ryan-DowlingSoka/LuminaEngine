@@ -78,7 +78,7 @@ namespace Lumina
         TVector<FComponentRepOut> CollectComponentFields(entt::registry& Registry, entt::entity Entity,
             FNetWorldState& State, bool bBaseline, FComponentRepState* DiffState);
 
-        // True if a field with this condition is sent to the recipient described by Ctx (Unreal COND_* analog).
+        // True if a field with this condition is sent to the recipient described by Ctx.
         inline bool RepFieldPasses(EScriptRepCondition Cond, const FNetRepContext& Ctx)
         {
             switch (Cond)

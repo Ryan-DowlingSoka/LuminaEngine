@@ -118,7 +118,8 @@ namespace Lumina
             Script->PublishThreadContext();
             for (const SInputEvent& Event : Events)
             {
-                ScriptComponent.InputFunc.Call(Script->Reference, Event);
+                // Coroutine so OnInput can yield (wait/await) and resume later.
+                Script->InvokeAsCoroutine(ScriptComponent.InputFunc, Script->Reference, Event);
             }
         });
     }

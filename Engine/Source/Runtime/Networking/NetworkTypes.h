@@ -32,7 +32,6 @@ namespace Lumina
         UnreliableSequenced, // No guarantee, but late packets are dropped (sequenced).
     };
 
-    // Unreal-style RPC routing direction (who runs a remotely-invoked function).
     enum class ERpcMode : uint8
     {
         Server,     // client -> server (authority)
@@ -40,8 +39,7 @@ namespace Lumina
         Multicast,  // server -> all peers
     };
 
-    // Replication condition for a script-replicated field (Unreal COND_* analog). Evaluated per recipient
-    // connection when the server serializes a replicated property. Server -> client only.
+    // Replication condition for a script-replicated field.
     enum class EScriptRepCondition : uint8
     {
         Always,      // sent to every client

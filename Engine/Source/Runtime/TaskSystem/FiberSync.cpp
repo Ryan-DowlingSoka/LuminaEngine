@@ -138,7 +138,14 @@ namespace Lumina
                 P->Node->Fiber    = Handle;
                 P->Node->bIsFiber = true;
                 P->Node->Next     = nullptr;
-                if (M->Tail) M->Tail->Next = P->Node; else M->Head = P->Node;
+                if (M->Tail)
+                {
+                    M->Tail->Next = P->Node;
+                }
+                else
+                {
+                    M->Head = P->Node;
+                }
                 M->Tail = P->Node;
                 SpinUnlock(M->Spin);
                 return true;

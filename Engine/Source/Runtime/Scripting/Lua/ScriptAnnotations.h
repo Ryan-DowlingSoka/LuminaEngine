@@ -36,7 +36,7 @@ namespace Lumina::Lua
         // PROPERTY-consistent metadata for --@export (ClampMin/ClampMax/Delta/Units/Category/Tooltip/...).
         TVector<FScriptAnnotationArg> ExportMeta;
 
-        // Unreal-style --@rpc specifiers as bare flags: server|client|multicast, reliable|unreliable.
+        // --@rpc specifiers as bare flags: server|client|multicast, reliable|unreliable.
         TVector<FScriptAnnotationArg> RpcArgs;
 
         // --@replicated net-condition specifier as a bare flag: ownerOnly|skipOwner|initialOnly (default Always).

@@ -369,7 +369,8 @@ namespace Lumina::Physics
             const SCollisionEvent Event = BuildCollisionEvent(Self, Other, SelfBody, OtherBody, Record, bFlipNormal);
 
             // Pass `self` first so scripts use `function MyScript:OnContactBegin(Event)`; event is tagged userdata.
-            Func.Call(Comp->Script->Reference, Event);
+            // Coroutine so contact hooks can yield (wait/await); also sets this entity's thread data correctly.
+            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Event);
         };
 
         for (const FContactRecord& Record : Drain)

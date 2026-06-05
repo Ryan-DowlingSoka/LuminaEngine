@@ -1225,8 +1225,6 @@ namespace Lumina
                 const FVector3  CamRight    = FVector3(SceneGlobalData.CameraData.Right);
                 const FVector3  CamUp       = FVector3(SceneGlobalData.CameraData.Up);
 
-                TVector<FShapedGlyph> Shaped;
-
                 TextView.each([&](entt::entity Entity, STextComponent& TextComponent)
                 {
                     if (TextComponent.Text.empty())
@@ -1260,25 +1258,59 @@ namespace Lumina
                     const float VAlign = (TextComponent.VerticalAlign == ETextVerticalAlign::Top)        ? 1.0f
                                        : (TextComponent.VerticalAlign == ETextVerticalAlign::Middle)     ? 0.5f : 0.0f;
 
-                    if (!Font->ShapeText(TextComponent.Text, HAlign, VAlign, TextComponent.LineSpacing, Shaped) || Shaped.empty())
+                    // Reshape only when an input that affects layout changed (text/font/align/spacing). Color,
+                    // size, billboard and transform are applied per-frame below and never invalidate the cache.
+                    FTextRenderCache& Cache = TextComponent.RenderCache;
+                    const uint64      TextHash = Hash::GetHash64(TextComponent.Text);
+
+                    const bool bCacheValid =
+                           Cache.bValid
+                        && Cache.Font        == Font
+                        && Cache.FontVersion == Font->GetShapeVersion()
+                        && Cache.TextHash    == TextHash
+                        && Cache.TextLength  == (uint32)TextComponent.Text.size()
+                        && Cache.HAlign      == TextComponent.HorizontalAlign
+                        && Cache.VAlign      == TextComponent.VerticalAlign
+                        && Cache.LineSpacing == TextComponent.LineSpacing;
+
+                    if (!bCacheValid)
+                    {
+                        if (!Font->ShapeText(TextComponent.Text, HAlign, VAlign, TextComponent.LineSpacing, Cache.Glyphs))
+                        {
+                            return;
+                        }
+
+                        // Cache the bounding extent (em units) for the cull sphere alongside the glyphs, so the
+                        // per-frame path skips this scan too.
+                        float EmExtent = 0.0f;
+                        for (const FShapedGlyph& S : Cache.Glyphs)
+                        {
+                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.x), Math::Abs(S.Max.x)));
+                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.y), Math::Abs(S.Max.y)));
+                        }
+
+                        Cache.EmExtent    = EmExtent;
+                        Cache.TextHash    = TextHash;
+                        Cache.TextLength  = (uint32)TextComponent.Text.size();
+                        Cache.Font        = Font;
+                        Cache.FontVersion = Font->GetShapeVersion();
+                        Cache.HAlign      = TextComponent.HorizontalAlign;
+                        Cache.VAlign      = TextComponent.VerticalAlign;
+                        Cache.LineSpacing = TextComponent.LineSpacing;
+                        Cache.bValid      = true;
+                    }
+
+                    const TVector<FShapedGlyph>& Shaped = Cache.Glyphs;
+                    if (Shaped.empty())
                     {
                         return;
                     }
 
                     // Frustum cull on a bounding sphere sized from the SHAPED extent (em units * WorldSize),
                     // so long / multi-line text isn't culled by a fixed radius that ignores its real width.
-                    if (bCullText)
+                    if (bCullText && !TextFrustum.IntersectsSphere(Origin, Cache.EmExtent * TextComponent.WorldSize * 1.5f))
                     {
-                        float EmExtent = 0.0f;
-                        for (const FShapedGlyph& S : Shaped)
-                        {
-                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.x), Math::Abs(S.Max.x)));
-                            EmExtent = Math::Max(EmExtent, Math::Max(Math::Abs(S.Min.y), Math::Abs(S.Max.y)));
-                        }
-                        if (!TextFrustum.IntersectsSphere(Origin, EmExtent * TextComponent.WorldSize * 1.5f))
-                        {
-                            return;
-                        }
+                        return;
                     }
 
                     // World axes for the text plane. Oriented text uses the entity's X/Y (Y is up, matching
@@ -3000,10 +3032,10 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
-        FFrameData& Frame = *ExtractFrame;
-        auto& LightData         = Frame.Lighting.LightData;
-        auto& ShadowRequests    = Frame.Lighting.ShadowRequests;
-        auto& ShadowRequestMutex= Frame.Lighting.ShadowRequestMutex;
+        FFrameData& Frame                       = *ExtractFrame;
+        FSceneLightData& LightData              = Frame.Lighting.LightData;
+        TVector<FShadowRequest>& ShadowRequests = Frame.Lighting.ShadowRequests;
+        FMutex& ShadowRequestMutex              = Frame.Lighting.ShadowRequestMutex;
 
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
         if (Lights >= MAX_LIGHTS)
@@ -3127,7 +3159,9 @@ namespace Lumina
         auto& PackedShadows   = Frame.Lighting.PackedShadows;
 
         if (ShadowRequests.empty())
+        {
             return;
+        }
 
         // Drop farthest shadow views first to fit GMaxCullViews
         // (camera + cascades + 6/point + 1/spot). Overflow crashes the GPU.

@@ -66,6 +66,9 @@ namespace Lumina
         uint32 GetAtlasWidth()  const { return AtlasWidth; }
         uint32 GetAtlasHeight() const { return AtlasHeight; }
         float  GetDistanceRange() const { return DistanceRange; }
+
+        // Bumped whenever the glyph table is (re)built, so cached text layouts re-shape after a re-bake.
+        uint32 GetShapeVersion() const { return ShapeVersion; }
         float  GetLineHeight()  const { return LineHeight; }
         float  GetAscender()    const { return Ascender; }
         float  GetDescender()   const { return Descender; }
@@ -115,5 +118,8 @@ namespace Lumina
 
         THashMap<uint32, int32> GlyphLookup;
         FRHIImageRef            AtlasImage;
+
+        // Monotonic; incremented by BuildGlyphLookup. Consumers compare it to detect a re-baked glyph table.
+        uint32                  ShapeVersion = 0;
     };
 }

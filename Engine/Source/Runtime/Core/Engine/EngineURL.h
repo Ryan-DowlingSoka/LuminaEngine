@@ -5,9 +5,7 @@
 
 namespace Lumina
 {
-    // A connection / level-open target, à la Unreal's FURL. Either opens a local level (Map [+ ?listen]) or
-    // connects to a remote host (Host[:Port]); on a pure client Map is empty and the server supplies it via
-    // the Welcome handshake. Drive it through FEngine::OpenLevel / HostLevel / ConnectToServer.
+    // A connection / level-open target.
     struct FURL
     {
         FString Map;            // world asset path, e.g. "/Game/Maps/NewWorld"

@@ -6,8 +6,7 @@
 
 namespace Lumina
 {
-    // Per-peer authority role for a networked entity, derived by SNetworkSystem from net mode + ownership
-    // (never serialized). Mirrors Unreal's ENetRole.
+    // Per-peer authority role for a networked entity.
     REFLECT()
     enum class ENetRole : uint8
     {

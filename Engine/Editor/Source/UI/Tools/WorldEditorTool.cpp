@@ -10,6 +10,7 @@
 #include "Config/Config.h"
 #include "Core/Object/ObjectCore.h"
 #include "Settings/EditorSettings.h"
+#include "Tools/UI/ImGui/EditorColors.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Delegates/CoreDelegates.h"
@@ -1192,6 +1193,11 @@ namespace Lumina
     void FWorldEditorTool::OnEntityCreated(entt::registry& Registry, entt::entity Entity)
     {
         // @TODO MarkTreeDirty here is too expensive; outliner is updated incrementally.
+    }
+
+    void FWorldEditorTool::OnEntityScriptChanged(entt::registry& Registry, entt::entity Entity)
+    {
+        OutlinerListView.MarkTreeDirty();
     }
 
     const char* FWorldEditorTool::GetTitlebarIcon() const
@@ -2625,22 +2631,22 @@ namespace Lumina
     {
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
-        // Both options only make sense before a script is present; once one is attached the
-        // details panel owns swapping it.
-        if (!Registry.valid(Entity) || Registry.all_of<SScriptComponent>(Entity))
+        if (!Registry.valid(Entity))
         {
             return;
         }
 
-        // "Attach Script": inline searchable dropdown of every script across all mounts
-        // (project, plugins, engine), see Lua::GatherScriptPaths.
+        const bool bHasScript = Registry.all_of<SScriptComponent>(Entity);
+
+        // Inline searchable dropdown of every script across all mounts (project, plugins, engine). Always
+        // offered -- it assigns a script, or swaps the one already on the entity for a quick change.
         const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
 
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(LE_ICON_LANGUAGE_LUA " Attach Script");
+        ImGui::TextUnformatted(bHasScript ? LE_ICON_LANGUAGE_LUA " Change Script" : LE_ICON_LANGUAGE_LUA " Attach Script");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(260.0f);
-        const int32 Picked = ImGuiX::SearchableCombo("##AttachScript", "Select a script...",
+        const int32 Picked = ImGuiX::SearchableCombo("##AssignScript", bHasScript ? "Swap to..." : "Select a script...",
             (int32)ScriptPaths.size(), INDEX_NONE,
             [&ScriptPaths](int32 Index) { return ScriptPaths[Index]; }, LE_ICON_LANGUAGE_LUA);
 
@@ -2650,37 +2656,70 @@ namespace Lumina
             ImGui::CloseCurrentPopup();
         }
 
-        if (ImGui::MenuItem(LE_ICON_FILE_PLUS " Attach New Script..."))
+        if (bHasScript)
         {
-            PushAttachNewScriptModal(Entity);
-            ImGui::CloseCurrentPopup();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+            if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Remove Script"))
+            {
+                RemoveScriptFromEntity(Entity);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor();
+            ImGuiX::TextTooltip("{}", "Remove the Script component from this entity.");
         }
-        ImGuiX::TextTooltip("{}", "Create a new script file from the template and attach it to this entity.");
+        else
+        {
+            if (ImGui::MenuItem(LE_ICON_FILE_PLUS " Attach New Script..."))
+            {
+                PushAttachNewScriptModal(Entity);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGuiX::TextTooltip("{}", "Create a new script file from the template and attach it to this entity.");
+        }
     }
 
     void FWorldEditorTool::AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath)
     {
         FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity) || Registry.all_of<SScriptComponent>(Entity) || VirtualPath.empty())
+        if (!Registry.valid(Entity) || VirtualPath.empty())
         {
             return;
         }
 
+        const bool bHad = Registry.all_of<SScriptComponent>(Entity);
+
         BeginTransaction();
-        // emplace fires on_construct with an empty path (a no-op); we then set the path and run
-        // the real load through OnScriptComponentCreated, mirroring ScriptComponentCustomization.
-        SScriptComponent& ScriptComponent = Registry.emplace<SScriptComponent>(Entity);
-        ScriptComponent.ScriptPath.SetPath(VirtualPath);
-        World->OnScriptComponentCreated(Entity, ScriptComponent, true);
-        EndTransaction("Attach Script");
+        // SetEntityScript get_or_emplaces the component, sets the path, and cleanly (re)attaches -- so this
+        // both attaches a first script and swaps an existing one (detaching the prior script).
+        World->SetEntityScript(Entity, FStringView(VirtualPath.c_str()));
+        EndTransaction(bHad ? "Change Script" : "Attach Script");
 
         if (World->GetPackage() != nullptr)
         {
             World->GetPackage()->MarkDirty();
         }
         bDetailsDirty = true;
-        // Rebuild the row so its new script toggle icon appears immediately.
+        // on_construct<SScriptComponent> refreshes the outliner on a first attach; harmless to mark again.
         OutlinerListView.MarkTreeDirty();
+    }
+
+    void FWorldEditorTool::RemoveScriptFromEntity(entt::entity Entity)
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Entity) || !Registry.all_of<SScriptComponent>(Entity))
+        {
+            return;
+        }
+
+        BeginTransaction();
+        Registry.remove<SScriptComponent>(Entity); // on_destroy runs the clean detach + refreshes the outliner
+        EndTransaction("Remove Script");
+
+        if (World->GetPackage() != nullptr)
+        {
+            World->GetPackage()->MarkDirty();
+        }
+        bDetailsDirty = true;
     }
 
     void FWorldEditorTool::PushAttachNewScriptModal(entt::entity Entity)
@@ -3541,6 +3580,8 @@ namespace Lumina
         ObservedRegistry->on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
         ObservedRegistry->on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
         ObservedRegistry->on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
+        ObservedRegistry->on_construct<SScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        ObservedRegistry->on_destroy<SScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
         ObservedRegistry = nullptr;
     }
 
@@ -3558,6 +3599,9 @@ namespace Lumina
         // Hook on SNameComponent (not entt::entity) so we don't add an outliner row before the entity has a name.
         Registry.on_construct<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
         Registry.on_destroy<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
+        // Add/remove of a Script component changes the row's script toggle; rebuild the outliner.
+        Registry.on_construct<SScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        Registry.on_destroy<SScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
         ObservedRegistry = &Registry;
     }
 
@@ -4119,6 +4163,115 @@ namespace Lumina
         WorldSettingsPropertyTable->DrawTree();
     }
 
+    // Stages a system ticks in, compacted: lists up to three, else a count.
+    static FString SystemStageSummary(const TVector<EUpdateStage>& Stages)
+    {
+        if (Stages.empty())
+        {
+            return FString();
+        }
+        if (Stages.size() > 3)
+        {
+            return FString(eastl::to_string(Stages.size()).c_str()) + " stages";
+        }
+        FString Out;
+        for (size_t i = 0; i < Stages.size(); ++i)
+        {
+            if (i > 0)
+            {
+                Out += "  ";
+            }
+            Out += GUpdateStageNames[(uint8)Stages[i]];
+        }
+        return Out;
+    }
+
+    // One polished system row: rounded background, a colored left accent bar, an icon, the name, a
+    // right-aligned muted stage summary, and (for script systems) a trailing trash button. Returns true
+    // when the row body is clicked; sets *OutTrash when the trash button is clicked.
+    static bool DrawSystemRow(const char* Icon, const ImVec4& Accent, const char* Name, const FString& Stages,
+                              bool bDimmed, bool bShowTrash, const char* Tooltip, bool* OutTrash)
+    {
+        const ImVec4 RowBg       = EditorColors::RowBg();
+        const ImVec4 RowBgHover  = EditorColors::RowBgHovered();
+        const ImVec4 RowBgActive = EditorColors::RowBgActive();
+        const ImVec4 TextPrimary = EditorColors::TextPrimary();
+        const ImVec4 TextDim     = EditorColors::TextDim();
+        const ImVec4 TextMuted   = EditorColors::TextMuted();
+        const ImVec4 Danger      = EditorColors::Danger();
+
+        const float  Scale  = ImGuiX::GetUIScale();
+        const float  Avail  = ImGui::GetContentRegionAvail().x;
+        const float  Height = 30.0f * Scale;
+        const float  TrashW = bShowTrash ? 30.0f * Scale : 0.0f;
+        const float  Round  = 4.0f * Scale;
+        const ImVec2 P0     = ImGui::GetCursorScreenPos();
+        const ImVec2 P1     = ImVec2(P0.x + Avail, P0.y + Height);
+
+        ImGui::SetCursorScreenPos(P0);
+        const bool bClicked = ImGui::InvisibleButton("##row", ImVec2(Avail - TrashW, Height));
+        const bool bHovered = ImGui::IsItemHovered();
+        const bool bActive  = ImGui::IsItemActive();
+        if (bHovered)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (Tooltip != nullptr)
+            {
+                ImGui::SetTooltip("%s", Tooltip);
+            }
+        }
+
+        ImDrawList* DL = ImGui::GetWindowDrawList();
+        DL->AddRectFilled(P0, P1, ImGui::ColorConvertFloat4ToU32(bActive ? RowBgActive : bHovered ? RowBgHover : RowBg), Round);
+        DL->AddRectFilled(P0, ImVec2(P0.x + 3.0f * Scale, P1.y), ImGui::ColorConvertFloat4ToU32(Accent), Round);
+
+        const float TextY = P0.y + (Height - ImGui::GetFontSize()) * 0.5f;
+
+        ImGui::SetCursorScreenPos(ImVec2(P0.x + 13.0f * Scale, TextY));
+        ImGui::PushStyleColor(ImGuiCol_Text, Accent);
+        ImGui::TextUnformatted(Icon);
+        ImGui::PopStyleColor();
+
+        ImGui::SetCursorScreenPos(ImVec2(P0.x + 38.0f * Scale, TextY));
+        ImGui::PushStyleColor(ImGuiCol_Text, bDimmed ? TextMuted : TextPrimary);
+        ImGui::TextUnformatted(Name);
+        ImGui::PopStyleColor();
+
+        if (!Stages.empty())
+        {
+            const float StagesW = ImGui::CalcTextSize(Stages.c_str()).x;
+            ImGui::SetCursorScreenPos(ImVec2(P1.x - TrashW - 12.0f * Scale - StagesW, TextY));
+            ImGui::PushStyleColor(ImGuiCol_Text, TextDim);
+            ImGui::TextUnformatted(Stages.c_str());
+            ImGui::PopStyleColor();
+        }
+
+        if (bShowTrash)
+        {
+            const ImVec2 T0 = ImVec2(P1.x - TrashW, P0.y);
+            ImGui::SetCursorScreenPos(T0);
+            const bool bTrash      = ImGui::InvisibleButton("##trash", ImVec2(TrashW, Height));
+            const bool bTrashHover = ImGui::IsItemHovered();
+            if (bTrashHover)
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                DL->AddRectFilled(T0, P1, ImGui::ColorConvertFloat4ToU32(ImVec4(Danger.x, Danger.y, Danger.z, 0.16f)), Round);
+            }
+            const float IconW = ImGui::CalcTextSize(LE_ICON_TRASH_CAN).x;
+            ImGui::SetCursorScreenPos(ImVec2(T0.x + (TrashW - IconW) * 0.5f, TextY));
+            ImGui::PushStyleColor(ImGuiCol_Text, bTrashHover ? Danger : TextDim);
+            ImGui::TextUnformatted(LE_ICON_TRASH_CAN);
+            ImGui::PopStyleColor();
+            if (OutTrash != nullptr && bTrash)
+            {
+                *OutTrash = true;
+            }
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 3.0f * Scale));
+        return bClicked;
+    }
+
     void FWorldEditorTool::DrawSystemsPanel(bool bFocused)
     {
         if (World == nullptr)
@@ -4126,9 +4279,15 @@ namespace Lumina
             return;
         }
 
+        const ImVec4 TextDim   = EditorColors::TextDim();
+        const ImVec4 TextMuted = EditorColors::TextMuted();
+        const ImVec4 Section   = EditorColors::SectionHeader();
+        const ImVec4 AccentOn  = EditorColors::Success();    // enabled native system
+        const ImVec4 AccentOff = EditorColors::TextMuted();  // disabled native system
+        const ImVec4 AccentLua = EditorColors::Accent();     // script system
+
         TVector<CWorld::FSystemInfo> Systems;
         World->GetAllSystems(Systems);
-
         eastl::sort(Systems.begin(), Systems.end(), [](const CWorld::FSystemInfo& A, const CWorld::FSystemInfo& B)
         {
             return strcmp(A.Name.c_str(), B.Name.c_str()) < 0;
@@ -4140,52 +4299,119 @@ namespace Lumina
             EnabledCount += Info.bEnabled ? 1 : 0;
         }
 
-        ImGui::TextUnformatted("World Systems");
-        ImGui::SameLine();
-        ImGuiX::HelpMarker("Engine systems registered for this world. Disabling one stops it ticking in this world "
-                           "(write your own to replace it). Changes apply at the start of the next frame and are saved with the world.");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%d / %d enabled)", EnabledCount, (int32)Systems.size());
+        TVector<CWorld::FScriptSystemInfo> ScriptSystems;
+        World->GetScriptSystems(ScriptSystems);
 
-        SystemsFilter.Draw("##SystemSearch", -1.0f);
-        ImGui::Separator();
+        // Pinned search field with a leading magnifier.
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, TextDim);
+        ImGui::TextUnformatted(LE_ICON_MAGNIFY);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        SystemsFilter.Draw("##SystemSearch", ImGui::GetContentRegionAvail().x);
+        ImGui::Spacing();
+
+        auto SectionHeader = [&](const char* Icon, const char* Label, const FString& Suffix, const char* Help)
+        {
+            ImGui::Spacing();
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, Section);
+            ImGui::Text("%s  %s", Icon, Label);
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+            if (!Suffix.empty())
+            {
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, TextMuted);
+                ImGui::TextUnformatted(Suffix.c_str());
+                ImGui::PopStyleColor();
+            }
+            if (Help != nullptr)
+            {
+                ImGui::SameLine();
+                ImGuiX::HelpMarker(Help);
+            }
+            ImGui::Spacing();
+        };
+
+        auto EmptyState = [&](const char* Text)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, TextMuted);
+            ImGui::Indent(13.0f);
+            ImGui::TextUnformatted(Text);
+            ImGui::Unindent(13.0f);
+            ImGui::PopStyleColor();
+        };
 
         if (ImGui::BeginChild("##SystemsList", ImVec2(0, 0), false))
         {
+            //~ Native systems ---------------------------------------------------------------------------
+            SectionHeader(LE_ICON_CHIP, "NATIVE",
+                FString(eastl::to_string(EnabledCount).c_str()) + " / " + eastl::to_string(Systems.size()).c_str() + " enabled",
+                "Engine C++ systems for this world. Click a row to enable/disable it (a disabled system stops ticking "
+                "here -- write your own to replace it). Changes apply next frame and save with the world.");
+
+            bool bAnyNative = false;
             for (const CWorld::FSystemInfo& Info : Systems)
             {
-                const char* NameStr = Info.Name.c_str();
-                if (!SystemsFilter.PassFilter(NameStr))
+                if (!SystemsFilter.PassFilter(Info.Name.c_str()))
                 {
                     continue;
                 }
+                bAnyNative = true;
 
-                ImGui::PushID(NameStr);
-
-                bool bEnabled = Info.bEnabled;
-                if (ImGui::Checkbox(NameStr, &bEnabled))
+                ImGui::PushID(Info.Name.c_str());
+                const bool bClicked = DrawSystemRow(LE_ICON_CHIP, Info.bEnabled ? AccentOn : AccentOff, Info.Name.c_str(),
+                    SystemStageSummary(Info.Stages), !Info.bEnabled, false,
+                    Info.bEnabled ? "Enabled -- click to disable" : "Disabled -- click to enable", nullptr);
+                if (bClicked)
                 {
-                    World->SetSystemEnabled(Info.Name, bEnabled);
+                    World->SetSystemEnabled(Info.Name, !Info.bEnabled);
                     MarkSceneDirty();
                 }
+                ImGui::PopID();
+            }
+            if (!bAnyNative)
+            {
+                EmptyState("No systems match the filter.");
+            }
 
-                // Stages this system ticks in, as muted secondary text.
-                if (!Info.Stages.empty())
+            //~ Script systems ---------------------------------------------------------------------------
+            ImGui::Spacing();
+            SectionHeader(LE_ICON_LANGUAGE_LUA, "SCRIPT",
+                ScriptSystems.empty() ? FString() : FString(eastl::to_string(ScriptSystems.size()).c_str()) + " assigned",
+                "Lua-authored ECS systems assigned to this world. They tick in the same pipeline as native systems and "
+                "save with the world. Add one below; edits hot-reload live.");
+
+            const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
+            ImGui::SetNextItemWidth(-1.0f);
+            const int32 Picked = ImGuiX::SearchableCombo("##AddScriptSystem", LE_ICON_PLUS " Add script system...",
+                (int32)ScriptPaths.size(), INDEX_NONE,
+                [&ScriptPaths](int32 Index) { return ScriptPaths[Index]; }, LE_ICON_LANGUAGE_LUA);
+            if (Picked != INDEX_NONE)
+            {
+                World->AddScriptSystem(FStringView(ScriptPaths[Picked].c_str()));
+                MarkSceneDirty();
+            }
+            ImGui::Spacing();
+
+            if (ScriptSystems.empty())
+            {
+                EmptyState("None assigned yet -- add one above.");
+            }
+
+            for (const CWorld::FScriptSystemInfo& Info : ScriptSystems)
+            {
+                ImGui::PushID(Info.Path.c_str());
+                const char* Name = !Info.Name.IsNone() ? Info.Name.c_str() : Info.Path.c_str();
+                bool bTrash = false;
+                DrawSystemRow(LE_ICON_LANGUAGE_LUA, AccentLua, Name, SystemStageSummary(Info.Stages),
+                    false, true, Info.Path.c_str(), &bTrash);
+                if (bTrash)
                 {
-                    FString StageText;
-                    for (size_t i = 0; i < Info.Stages.size(); ++i)
-                    {
-                        if (i > 0)
-                        {
-                            StageText += ", ";
-                        }
-                        StageText += GUpdateStageNames[(uint8)Info.Stages[i]];
-                    }
-
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%s)", StageText.c_str());
+                    World->RemoveScriptSystem(FStringView(Info.Path.c_str()));
+                    MarkSceneDirty();
                 }
-
                 ImGui::PopID();
             }
         }

@@ -1048,7 +1048,13 @@ namespace Lumina::Jobs
         ASSERT(TLS.bIsWorker && TLS.CurrentFiber != nullptr);
 
 #if USING(WITH_EDITOR)
-        { FJobProfiler& Prof = FJobProfiler::Get(); if (Prof.IsEnabled()) Prof.NotePark(); }
+        { 
+            FJobProfiler& Prof = FJobProfiler::Get(); 
+            if (Prof.IsEnabled())
+            {
+                Prof.NotePark();
+            }
+        }
 #endif
         TLS.Pending         = FPendingSwitch{};
         TLS.Pending.Action  = EPending::ParkFn;

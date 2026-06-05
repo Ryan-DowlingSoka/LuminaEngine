@@ -17,10 +17,7 @@ namespace Lumina
         Mouse,
     };
 
-    // A single bindable input "key" -- a keyboard key or a mouse button -- mirroring Unreal's FKey.
-    // Stored on settings / data assets and edited in the inspector via the SKey property customization
-    // (a button you click to capture the next key press). One SKey holds exactly one binding; modifier
-    // combos are modeled separately, not inside the key.
+    // A single bindable input "key".
     REFLECT()
     struct RUNTIME_API SKey
     {

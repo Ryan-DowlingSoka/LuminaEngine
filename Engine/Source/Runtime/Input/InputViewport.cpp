@@ -268,6 +268,11 @@ namespace Lumina
         return false;
     }
 
+    FInputViewportRegistry::FInputViewportRegistry()
+        : RawInput(MakeUnique<FInputContext>())
+    {
+    }
+
     FInputViewportRegistry& FInputViewportRegistry::Get()
     {
         static FInputViewportRegistry Instance;
@@ -373,6 +378,8 @@ namespace Lumina
             V->GetContext().UpdateActionEdgeState();
             V->GetContext().EndFrame(DeltaSeconds);
         }
+
+        RawInput->EndFrame(DeltaSeconds);
     }
 
     void FInputViewportRegistry::DispatchActions()
@@ -389,6 +396,8 @@ namespace Lumina
         {
             V->GetContext().ResetState();
         }
+
+        RawInput->ResetState();
     }
 
     bool FInputViewportRegistry::OnEvent(FEvent& Event)
@@ -408,6 +417,8 @@ namespace Lumina
         {
             return false;
         }
+
+        RawInput->OnEvent(Event);
 
         // Captured cursor owns input, ImGui hover/focus flags lie under
         // GLFW_CURSOR_DISABLED, so don't trust them for routing.
@@ -454,7 +465,7 @@ namespace Lumina
         for (FInputViewport* V : Viewports)
         {
             void* const Window = V->GetNativeWindowHandle();
-            if (Window == ActiveWindow)
+            if (Window == nullptr || Window == ActiveWindow)
             {
                 continue;
             }

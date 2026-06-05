@@ -44,6 +44,8 @@ namespace Lumina
     {
         uint32 HeapIndex       = 0;
         bool   bDeviceLocal    = false;
+        bool   bHostVisible    = false;   // OR of all memory types pointing at this heap.
+        bool   bReBAR          = false;   // CPU-writable VRAM (DeviceLocal+HostVisible) larger than the legacy 256MB BAR window.
         uint64 BudgetBytes     = 0;
         uint64 UsageBytes      = 0;
         uint64 AllocatedBytes  = 0;
@@ -61,6 +63,15 @@ namespace Lumina
         uint32 TotalAllocations = 0;
         uint32 TotalBlocks      = 0;
         TFixedVector<FGPUMemoryHeapStats, 16> Heaps;   // VK_MAX_MEMORY_HEAPS == 16.
+
+        // Upload pool (FUploadManager) fast-path diagnostics. The fast path is writing CPU data
+        // straight into VRAM — true only when the chosen memory type is DeviceLocal AND HostVisible.
+        bool   bUploadPoolValid    = false;  // false => pool create failed, chunks use default allocator.
+        uint32 UploadMemoryType    = 0;
+        uint32 UploadHeapIndex     = 0;
+        bool   bUploadDeviceLocal  = false;
+        bool   bUploadHostVisible  = false;
+        bool   bUploadHostCoherent = false;
     };
 
     class IRenderContext

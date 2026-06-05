@@ -14,6 +14,7 @@
 #include "World/Scene/RenderScene/TerrainRenderTypes.h"
 #include "World/Scene/RenderScene/TexturePaintTypes.h"
 #include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
+#include "TaskSystem/FiberSync.h"
 #include "World/Entity/Components/PostProcessSettings.h"
 #include "World/Subsystems/WorldSettings.h"
 

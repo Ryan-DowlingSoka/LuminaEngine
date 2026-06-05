@@ -37,5 +37,6 @@ namespace Lumina
 
         CClass* SelectedClass = nullptr;
         THashMap<CClass*, TUniquePtr<FPropertyTable>> Tables;
+        ImGuiTextFilter SettingsFilter;
     };
 }

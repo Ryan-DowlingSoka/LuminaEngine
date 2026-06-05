@@ -64,8 +64,6 @@ namespace Lumina
         SampleInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo SampleAlloc = {};
-        // PREFER_DEVICE: pick a DEVICE_LOCAL|HOST_VISIBLE (ReBAR) memory type when present so chunk
-        // uploads are VRAM-resident for GPU reads; falls back to host-visible system RAM otherwise.
         SampleAlloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         SampleAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
@@ -95,7 +93,10 @@ namespace Lumina
                 (int)PoolResult, MemoryTypeIndex, UploadBlockSize / (1024 * 1024));
             UploadPool = VK_NULL_HANDLE;
             UploadBlockSize = 0;
+            return;
         }
+
+        UploadMemoryTypeIndex = MemoryTypeIndex;
     }
 
     void FVulkanMemoryAllocator::Shutdown()
