@@ -61,7 +61,30 @@ namespace Lumina
     {
         return World->PhysicsScene ? World->PhysicsScene->GetEntityBodyID(Entity) : ~0u;
     }
-    
+
+    FVector3 FSystemContext::GetBodyPosition(entt::entity Entity) const
+    {
+        return World->PhysicsScene ? World->PhysicsScene->GetBodyPosition(Entity) : FVector3(0.0f);
+    }
+
+    FQuat FSystemContext::GetBodyRotation(entt::entity Entity) const
+    {
+        return World->PhysicsScene ? World->PhysicsScene->GetBodyRotation(Entity) : FQuat();
+    }
+
+    FVector3 FSystemContext::GetVelocityAtPoint(entt::entity Entity, const FVector3& Point) const
+    {
+        return World->PhysicsScene ? World->PhysicsScene->GetVelocityAtPoint(Entity, Point) : FVector3(0.0f);
+    }
+
+    void FSystemContext::AddForceAtPosition(entt::entity Entity, const FVector3& Force, const FVector3& Position) const
+    {
+        if (World->PhysicsScene)
+        {
+            World->PhysicsScene->AddForceAtPosition(Entity, Force, Position);
+        }
+    }
+
 
     TVector<SRayResult> FSystemContext::CastSphere(const SSphereCastSettings& Settings) const
     {

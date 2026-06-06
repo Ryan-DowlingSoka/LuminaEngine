@@ -62,7 +62,7 @@ namespace Lumina
         void ClearImageUInt(FRHIImage* Image, FTextureSubresourceSet Subresource, uint32 Color) override;
 
         void WriteBuffer(FRHIBuffer* Buffer, const void* Data, size_t Size, size_t Offset = 0) override;
-        void FillBuffer(FRHIBuffer* Buffer, uint32 Value) override;
+        void FillBuffer(FRHIBuffer* Buffer, uint32 Value, uint32 Size, uint32 Offset) override;
         void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) override;
 
         FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) override;

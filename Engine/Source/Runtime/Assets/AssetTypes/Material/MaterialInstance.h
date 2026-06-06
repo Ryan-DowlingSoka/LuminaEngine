@@ -52,6 +52,7 @@ namespace Lumina
         bool SetTextureValue(const FName& Name, CTexture* TextureValue);
         bool GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param) override;
         FMaterialUniforms* GetMaterialUniforms() override { return &MaterialUniforms; }
+        const TVector<FMaterialParameter>& GetMaterialParams() const { return Parameters; }
 
         FRHIVertexShader* GetVertexShader() const override;
         FRHIPixelShader* GetPixelShader() const override;
@@ -68,6 +69,7 @@ namespace Lumina
         EBlendMode GetBlendMode() override;
         EMaterialShadingModel GetShadingModel() override;
         float GetOpacityMaskClipValue() override;
+        
 
         void PostLoad() override;
         void OnDestroy() override;
@@ -83,7 +85,13 @@ namespace Lumina
 
         PROPERTY()
         TVector<FMaterialParameterOverride>     Overrides;
-
+        
+    protected:
+        
+        void UpdateMaterialUniforms() override;
+        
+    private:
+        
         TVector<FMaterialParameter>             Parameters;
         FMaterialUniforms                       MaterialUniforms;
     };

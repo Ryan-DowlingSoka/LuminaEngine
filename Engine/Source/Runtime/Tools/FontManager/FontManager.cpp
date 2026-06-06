@@ -21,7 +21,7 @@ namespace Lumina
         CPackage* TransientPackage = CPackage::GetTransientPackage();
 
         DefaultFont = NewObject<CFont>(TransientPackage, "EngineDefaultFont", FGuid::NewDeterministic("Engine.Font.Default"));
-
+        
         const FString Path = Paths::GetEngineFontDirectory() + "/Lexend/Lexend-Regular.ttf";
 
         TVector<uint8> Bytes;
@@ -50,6 +50,7 @@ namespace Lumina
         {
             FontManagerSingleton = NewObject<CFontManager>();
             FontManagerSingleton->Initialize();
+            FontManagerSingleton->AddToRoot();
         });
 
         return *FontManagerSingleton;

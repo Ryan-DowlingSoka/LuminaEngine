@@ -647,69 +647,6 @@ namespace Lumina::Lua
             return FString(InputModeToString(FInputProcessor::Get().GetInputMode()));
         }>("GetMode");
 
-        // SInputComponent FRef-taking methods. BindAction lives here (reflected FUNCTION params don't
-        // marshal FRef); callback ID is pushed onto the component so destruction frees it if not Unbound.
-        GlobalsRef.NewClass<SInputComponent>("SInputComponent")
-            .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
-            {
-                // Route to THIS component's own world viewport (not the global active one) so a binding made
-                // in one game-preview window doesn't land on whichever window is focused.
-                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
-                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
-                if (V == nullptr)
-                {
-                    V = Reg.GetActiveViewport();
-                }
-                if (V == nullptr)
-                {
-                    return uint64{0};
-                }
-                const uint64 Id = V->GetContext().RegisterActionCallback(
-                    FName(FString(Name.data(), Name.size()).c_str()),
-                    FInputContext::EActionTrigger::Pressed,
-                    std::move(Callback));
-                Self.ActionCallbackIds.push_back(Id);
-                return Id;
-            }>("BindAction")
-            .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
-            {
-                // Route to THIS component's own world viewport (not the global active one) so a binding made
-                // in one game-preview window doesn't land on whichever window is focused.
-                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
-                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
-                if (V == nullptr)
-                {
-                    V = Reg.GetActiveViewport();
-                }
-                if (V == nullptr)
-                {
-                    return uint64{0};
-                }
-                const uint64 Id = V->GetContext().RegisterActionCallback(
-                    FName(FString(Name.data(), Name.size()).c_str()),
-                    FInputContext::EActionTrigger::Released,
-                    std::move(Callback));
-                Self.ActionCallbackIds.push_back(Id);
-                return Id;
-            }>("BindActionReleased")
-            .AddFunction<[](SInputComponent& Self, uint64 Id)
-            {
-                // Route to THIS component's own world viewport (not the global active one) so a binding made
-                // in one game-preview window doesn't land on whichever window is focused.
-                FInputViewportRegistry& Reg = FInputViewportRegistry::Get();
-                FInputViewport* V = Reg.FindViewportForWorld(Self.World);
-                if (V == nullptr) { V = Reg.GetActiveViewport(); }
-                if (V != nullptr)
-                {
-                    V->GetContext().UnregisterActionCallback(Id);
-                }
-                for (auto It = Self.ActionCallbackIds.begin(); It != Self.ActionCallbackIds.end(); ++It)
-                {
-                    if (*It == Id) { Self.ActionCallbackIds.erase(It); break; }
-                }
-            }>("UnbindAction")
-            .Register();
-
         // The event passed to a script's OnInput(event). Field-style access; Type/Key are strings to
         // match the rest of the input API ("KeyDown", "Space", "Left", ...).
         GlobalsRef.NewClass<SInputEvent>("SInputEvent")

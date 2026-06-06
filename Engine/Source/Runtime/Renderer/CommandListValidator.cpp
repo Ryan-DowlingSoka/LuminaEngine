@@ -115,10 +115,10 @@ namespace Lumina
         Inner->WriteBuffer(Buffer, Data, Size, Offset);
     }
 
-    void FCommandListValidator::FillBuffer(FRHIBuffer* Buffer, uint32 Value)
+    void FCommandListValidator::FillBuffer(FRHIBuffer* Buffer, uint32 Value, uint32 Size, uint32 Offset)
     {
         ASSERT(Buffer != nullptr);
-        Inner->FillBuffer(Buffer, Value);
+        Inner->FillBuffer(Buffer, Value, Size, Offset);
     }
 
     FTransientAlloc FCommandListValidator::AllocateTransient(uint64 Size, uint32 Alignment)

@@ -327,11 +327,12 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
             return 1.0;
         }
 
-        // Pick current cascade based on view-space Z against the split table.
+        // Pick current cascade based on view-space Z against the split table (loaded once into registers).
+        float4 CascadeSplits = uLightData[0].CascadeSplits;
         int CascadeIndex = 0;
         for (int i = 0; i < NUM_CASCADES; ++i)
         {
-            if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+            if (ViewPosition.z > CascadeSplits[i])
                 CascadeIndex = i + 1;
         }
         if (CascadeIndex >= NUM_CASCADES)
@@ -344,10 +345,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Normal, LightDirToFrag, Bias, ScreenPos, InsideA);
 
         // Blend into the next cascade near the split boundary so the transition is smooth, not a seam.
-        float CascadeNear = (CascadeIndex == 0)
-            ? 0.0
-            : uLightData[0].CascadeSplits[CascadeIndex - 1];
-        float CascadeFar  = uLightData[0].CascadeSplits[CascadeIndex];
+        float CascadeNear = (CascadeIndex == 0) ? 0.0 : CascadeSplits[CascadeIndex - 1];
+        float CascadeFar  = CascadeSplits[CascadeIndex];
         float CascadeLen  = max(CascadeFar - CascadeNear, 1e-4);
         float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
 
@@ -804,35 +803,40 @@ PSOutput FragmentMain(PSInput Input)
     // Hard upper bound mirrors LightCull's write cap; protects against any path
     // (e.g. uninitialised cluster memory) that leaves Count outside [0, LIGHTS_PER_CLUSTER].
     uint SafeLightCount = min(LightCount, (uint)LIGHTS_PER_CLUSTER);
+    uint NumLights      = GetNumLights();   // loop-invariant; hoisted out of the per-light test
     for (uint i = 0; i < SafeLightCount; ++i)
     {
-        uint   LightIndex = uClusters[TileIndex].LightIndices[i];
+        uint LightIndex = uClusters[TileIndex].LightIndices[i];
         // Cluster contents can be stale after a scene switch; an index past the live count reads
         // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
-        if (LightIndex >= GetNumLights())
+        if (LightIndex >= NumLights)
         {
             continue;
         }
-        FLight Light      = GetLightAt(LightIndex);
 
-        // Distance cull first on squared distance (cheap), so out-of-range lights skip the sqrt/normalize.
-        float3 LightToFrag = Light.Position - WorldPosition;
+        // Cheap culls read only Position/Radius; the full 64B light is fetched only for survivors, so every
+        // distance- or back-face-culled light skips ~48B of global load and never becomes live here.
+        float3 LightPos = uLightData[0].Lights[LightIndex].Position;
+        float  Radius   = uLightData[0].Lights[LightIndex].Radius;
+
+        float3 LightToFrag = LightPos - WorldPosition;
         float  DistSq      = dot(LightToFrag, LightToFrag);
-        if (DistSq >= Light.Radius * Light.Radius)
+        if (DistSq >= Radius * Radius)
         {
             continue;
         }
 
-        float  InvDist     = rsqrt(max(DistSq, 1e-8));
-        float3 L           = LightToFrag * InvDist;
+        float  InvDist = rsqrt(max(DistSq, 1e-8));
+        float3 L       = LightToFrag * InvDist;
 
         // Cluster membership is conservative: a listed light may light only this pixel's back face,
-        // which contributes zero, so skip the shadow + BRDF work for it.
+        // which contributes zero, so skip the shadow + BRDF work (and the full light fetch) for it.
         if (dot(N, L) <= 0.0)
         {
             continue;
         }
 
+        FLight Light       = GetLightAt(LightIndex);
         float  DistToLight = DistSq * InvDist;
 
         float Shadow = 1.0;
@@ -864,7 +868,8 @@ PSOutput FragmentMain(PSInput Input)
                 Color = MeshletDebugColor(Input.MeshletIndex);
                 break;
             case DEBUG_MODE_WORLD_NORMAL:
-                Color = WorldNormal * 0.5 + 0.5;
+                // Recompute from the interpolant so WorldNormal isn't held live across the lit/PCSS region.
+                Color = normalize(Input.NormalWS.xyz) * 0.5 + 0.5;
                 break;
             case DEBUG_MODE_SHADING_NORMAL:
             {
@@ -892,7 +897,7 @@ PSOutput FragmentMain(PSInput Input)
                 Color = Material.Emissive;
                 break;
             case DEBUG_MODE_UV:
-                Color = float3(frac(UV0), 0.0);
+                Color = float3(frac(Input.UV), 0.0);
                 break;
             case DEBUG_MODE_LIGHT_COMPLEXITY:
             {

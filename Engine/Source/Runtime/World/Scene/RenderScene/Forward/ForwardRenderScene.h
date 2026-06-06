@@ -288,7 +288,6 @@ namespace Lumina
             FSceneGlobalData                 SceneGlobalData = {};
             SDefaultWorldSettings            CachedWorldSettings = {};
             float                            CachedWorldDeltaTime = 0.0f;
-            // False = shader compiler still warming up; RenderView no-ops.
             bool                             bExtractedThisFrame = false;
             FSceneRenderStats                FrameStats = {};
 
@@ -296,7 +295,6 @@ namespace Lumina
             {
                 TVector<FGPUInstance>            Instances;
                 TVector<FBoneTransform>          BonesData;   // 48B/bone (last row dropped)
-                // One descriptor per skinned entity; drives the skinning compute dispatch.
                 TVector<FSkinDescriptor>         SkinDescriptors;
                 uint32                           TotalPreSkinnedVertices = 0;
                 TVector<FMeshDrawCommand>        DrawCommands;
@@ -329,7 +327,6 @@ namespace Lumina
                 TAtomic<uint32>                  ShadowDataCount = 0;
                 TVector<FShadowRequest>          ShadowRequests;
                 FMutex                           ShadowRequestMutex;
-                // Per-slot copy of FShadowAtlas::Tiles -- render passes index this.
                 TVector<FShadowTile>             AtlasTiles;
             } Lighting;
 
@@ -346,10 +343,8 @@ namespace Lumina
                 TVector<FRHIImageRef>            PinnedWidgetRTs;
                 TVector<FGPUGlyph>               GlyphInstances;
                 TVector<FTextBatch>              TextBatches;
-                // Atlas images kept alive for this frame's GPU work (the text pass samples them bindlessly).
                 TVector<FRHIImageRef>            PinnedFontAtlases;
 
-                // Screen-space DrawDebugText overlay (PlaneMin/Max in pixels); single default-font batch.
                 TVector<FGPUGlyph>               DebugTextGlyphs;
                 FTextBatch                       DebugTextBatch;
             } Primitives;
@@ -358,14 +353,12 @@ namespace Lumina
             {
                 FEnvironmentParams               EnvironmentParams = {};
                 FRHIImage*                       EnvironmentMapImage = nullptr;
-                // Exponential height fog (analytic composite + volumetric coupling).
                 FExponentialHeightFogParams      FogParams           = {};
                 bool                             bHasFog             = false;
                 bool                             bVolumetricFog      = false;
                 uint32                           VolumetricStepCount = 16;
                 bool                             bIBLDirty            = false;
                 bool                             bIBLConvolutionDirty = false;
-                // Resolved from SEnvironmentComponent::IBLQuality; render thread rebuilds the IBL cubes on change.
                 FIBLBakeResolution               IBLResolution        = {};
             } Volumetrics;
 
@@ -387,17 +380,18 @@ namespace Lumina
             struct FExtracts
             {
                 TVector<FTerrainExtract>         TerrainExtracts;
-                // Every entity with STerrainComponent this frame, including disabled ones (excluded from
-                // TerrainExtracts). Render thread prunes TerrainGPUStates absent here, preserving disabled terrains.
                 TVector<entt::entity>            LiveTerrainEntities;
                 TVector<FParticleExtract>        ParticleExtracts;
-                // Every entity with SParticleSystemComponent this frame, including disabled ones (excluded from
-                // ParticleExtracts). Render thread prunes ParticleGPUStates absent here, preserving disabled emitters.
                 TVector<entt::entity>            LiveParticleEntities;
-                // Render-target paint/clear ops drained from the world this frame; replayed as
-                // compute dispatches by TexturePaintPass before the geometry passes sample them.
                 TVector<FTexturePaintOp>         PaintOps;
             } Extracts;
+
+            struct FWater
+            {
+                TVector<FGPUWater>               Surfaces;
+                bool                             bUnderwaterActive = false;
+                FWaterUnderwaterParams           Underwater = {};
+            } Water;
         };
 
         enum class ENamedImage : uint8
@@ -417,6 +411,11 @@ namespace Lumina
             Picker,
             Accum,
             Revealage,
+
+            // Full-res RGBA16F copy of the lit HDR scene, blitted before the water + underwater passes so they
+            // can sample the scene behind the surface (refraction / SSR / distortion) without reading back the
+            // HDR target they also write.
+            WaterRefraction,
 
             // DBuffer decal targets (RGBA8). A = transmittance (cleared to 1). A: BaseColor, B: WorldNormal
             // (OctEncode01 in rg), C: Roughness/Metallic/AO. Sampled+composited by the base pass before lighting.
@@ -657,6 +656,11 @@ namespace Lumina
         void FroxelInjectPass(ICommandList& CmdList);
         void FroxelIntegratePass(ICommandList& CmdList);
         void FroxelApplyPass(ICommandList& CmdList);
+        // Draws each water body's procedural grid into HDR (Gerstner waves + refraction + SSR/sky reflection
+        // + depth tint + foam). Runs after the opaque scene so it can sample HDR for refraction/SSR.
+        void WaterPass(ICommandList& CmdList);
+        // Fullscreen underwater absorption/distortion when the camera is submerged (Frame.Water.bUnderwaterActive).
+        void UnderwaterPass(ICommandList& CmdList);
         void EnvironmentPass(ICommandList& CmdList);
         void SkyCubeCapturePass(ICommandList& CmdList);
         void IrradianceConvolutionPass(ICommandList& CmdList);

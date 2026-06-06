@@ -15,21 +15,14 @@ namespace Lumina
 
 namespace Lumina
 {
-
     enum class ECommandQueue : uint8;
 
     struct RUNTIME_API FCommandListInfo
     {
-        // The persistent frame command list funnels all per-frame transient allocations (ImGui/RmlUi
-        // vertex+index buffers, world debug geometry, per-pass constant uploads) through one upload
-        // pool. Chunks only recycle once their GPU submission completes, so with several frames in
-        // flight a too-small chunk forces a fresh vkCreateBuffer every frame at each chunk boundary.
-        // 2 MB holds a typical frame's demand in one/two chunks that then pool + recycle.
         size_t UploadChunkSize = 2 * 1024 * 1024;
         size_t ScratchChunkSize = 64 * 1024;
         size_t ScratchMaxMemory = 1024 * 1024 * 1024;
         ECommandQueue CommandQueue = ECommandQueue::Graphics;
-
 
         static FCommandListInfo As(ECommandQueue Queue)
         {
@@ -82,8 +75,8 @@ namespace Lumina
     struct FTransientAlloc
     {
         void*       Cpu     = nullptr;
-        uint64      Gpu     = 0;        // device address; already includes Offset
-        FRHIBuffer* Buffer  = nullptr;  // ring chunk this allocation lives in
+        uint64      Gpu     = 0;        // Device address; already includes Offset
+        FRHIBuffer* Buffer  = nullptr;
         uint64      Offset  = 0;
         uint64      Size    = 0;
 
@@ -127,21 +120,19 @@ namespace Lumina
         virtual void ClearImageUInt(FRHIImage* Image, FTextureSubresourceSet Subresource, uint32 Color) = 0;
 
         virtual void WriteBuffer(FRHIBuffer* Buffer, const void* Data, size_t Size, size_t Offset = 0) = 0;
-        virtual void FillBuffer(FRHIBuffer* Buffer, uint32 Value) = 0;
+        virtual void FillBuffer(FRHIBuffer* Buffer, uint32 Value, uint32 Size, uint32 Offset) = 0;
         virtual void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) = 0;
 
         // Suballocate Size bytes from the per-frame ring; returns a CPU write pointer + GPU device address.
         // Alive for this submission only -- never persist Cpu/Gpu beyond the command-list scope.
         virtual FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) = 0;
 
-        // Typed handle over a transient allocation: write fields straight into Data (mapped host
-        // memory, valid for this submission only), then push Gpu (the BDA) to the shader. This is the
-        // one transient-upload primitive -- AllocTransient reserves, CopyTransient* reserve + copy.
+        // Typed handle over a transient allocation.
         template<typename T>
         struct TTransientPtr
         {
-            T*          Data   = nullptr;   // mapped CPU pointer -- write here
-            uint64      Gpu    = 0;         // device address (BDA) for the shader
+            T*          Data   = nullptr;
+            uint64      Gpu    = 0;
             FRHIBuffer* Buffer = nullptr;
             uint64      Offset = 0;
             uint64      Count  = 0;
@@ -153,9 +144,7 @@ namespace Lumina
             T& operator[](uint64 i) const { return Data[i]; }
         };
 
-        // Reserve Count contiguous T's in the ring; write into the returned Data pointer directly.
-        // Default alignment 16 is safe for BDA structs with float4 members. THE primary path -- prefer
-        // building data straight into the ring over building a temp and copying.
+        // Reserve Count contiguous T's in the ring.
         template<typename T>
         TTransientPtr<T> AllocTransient(uint64 Count = 1, uint32 Alignment = 16)
         {
@@ -169,8 +158,7 @@ namespace Lumina
             return Result;
         }
 
-        // Reserve + copy a value already built elsewhere (e.g. game-thread FFrameData). Use AllocTransient
-        // instead when you can produce the data in place.
+        // Reserve + copy a value already built elsewhere.
         template<typename T>
         TTransientPtr<T> CopyTransient(const T& Data, uint32 Alignment = 16)
         {

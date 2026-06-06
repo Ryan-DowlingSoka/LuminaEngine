@@ -96,36 +96,60 @@ namespace Lumina
         FUNCTION(Script)
         bool IsActionDown(const FName& Name) const
         {
-            if (!bEnabled) return false;
+            if (!bEnabled)
+            {
+                return false;
+            }
             const FInputViewport* V = FInputViewportRegistry::Get().FindViewportForWorld(World);
-            if (V == nullptr) return false;
+            if (V == nullptr)
+            {
+                return false;
+            }
             return FInputActionMap::Get().IsActionDown(Name, V->GetContext());
         }
 
         FUNCTION(Script)
         bool IsActionPressed(const FName& Name) const
         {
-            if (!bEnabled) return false;
+            if (!bEnabled)
+            {
+                return false;
+            }
             const FInputViewport* V = FInputViewportRegistry::Get().FindViewportForWorld(World);
-            if (V == nullptr) return false;
+            if (V == nullptr)
+            {
+                return false;
+            }
             return FInputActionMap::Get().IsActionPressed(Name, V->GetContext());
         }
 
         FUNCTION(Script)
         bool IsActionReleased(const FName& Name) const
         {
-            if (!bEnabled) return false;
+            if (!bEnabled)
+            {
+                return false;
+            }
             const FInputViewport* V = FInputViewportRegistry::Get().FindViewportForWorld(World);
-            if (V == nullptr) return false;
+            if (V == nullptr)
+            {
+                return false;
+            }
             return FInputActionMap::Get().IsActionReleased(Name, V->GetContext());
         }
 
         FUNCTION(Script)
         float GetActionAxis(const FName& Name) const
         {
-            if (!bEnabled) return 0.0f;
+            if (!bEnabled)
+            {
+                return 0.0f;
+            }
             const FInputViewport* V = FInputViewportRegistry::Get().FindViewportForWorld(World);
-            if (V == nullptr) return 0.0f;
+            if (V == nullptr)
+            {
+                return 0.0f;
+            }
             return FInputActionMap::Get().GetActionAxis(Name, V->GetContext());
         }
 
@@ -141,7 +165,10 @@ namespace Lumina
         FUNCTION(Script)
         bool IsKeyDown(const FName& KeyName) const
         {
-            if (!bEnabled) { return false; }
+            if (!bEnabled)
+            {
+                return false;
+            }
             EKey Key;
             if (!KeyNameToEKey(KeyName, Key)) { return false; }
             const Input::EKeyState S = KeyStates[(uint32)Key];
@@ -151,7 +178,10 @@ namespace Lumina
         FUNCTION(Script)
         bool IsKeyPressed(const FName& KeyName) const
         {
-            if (!bEnabled) { return false; }
+            if (!bEnabled)
+            {
+                return false;
+            }
             EKey Key;
             return KeyNameToEKey(KeyName, Key) && KeyStates[(uint32)Key] == Input::EKeyState::Pressed;
         }
@@ -159,7 +189,10 @@ namespace Lumina
         FUNCTION(Script)
         bool IsKeyReleased(const FName& KeyName) const
         {
-            if (!bEnabled) { return false; }
+            if (!bEnabled)
+            {
+                return false;
+            }
             EKey Key;
             return KeyNameToEKey(KeyName, Key) && KeyStates[(uint32)Key] == Input::EKeyState::Released;
         }

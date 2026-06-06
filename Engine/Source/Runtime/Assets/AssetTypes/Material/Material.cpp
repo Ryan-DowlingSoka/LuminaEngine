@@ -84,10 +84,15 @@ namespace Lumina
             }
 
             Instance->RebuildUniformsFromOverrides();
-            if (Instance->GetMaterialIndex() != -1)
-            {
-                GRenderManager->GetMaterialManager().UpdateMaterialUniforms(Instance);
-            }
+            UpdateMaterialUniforms();
+        }
+    }
+
+    void CMaterial::UpdateMaterialUniforms()
+    {
+        if (MaterialIndex != -1)
+        {
+            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(&MaterialUniforms, (uint32)MaterialIndex);
         }
     }
 
@@ -158,15 +163,13 @@ namespace Lumina
                     break;
                 }
             }
-
-            uint32 Index = 0;
-            for (CTexture* Binding : Textures)
+            
+            const uint32 NumTextures = (uint32)Math::Min<size_t>(Textures.size(), MAX_TEXTURES);
+            for (uint32 i = 0; i < NumTextures; ++i)
             {
-                if (Binding != nullptr)
-                {
-                    MaterialUniforms.Textures[Index] = Binding->GetRHIRef()->GetResourceID();
-                    Index++;
-                }
+                FRHIImage* Image = Textures[i] ? Textures[i]->GetRHIRef() : nullptr;
+                const int32 ResourceID = Image ? Image->GetResourceID() : -1;
+                MaterialUniforms.Textures[i] = (ResourceID >= 0) ? (uint32)ResourceID : 0u;
             }
             
             EMaterialGPUFlags GPUFlags = EMaterialGPUFlags::None;
@@ -197,7 +200,7 @@ namespace Lumina
             }
             else
             {
-                GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
+                UpdateMaterialUniforms();
             }
 
             SetReadyForRender(true);

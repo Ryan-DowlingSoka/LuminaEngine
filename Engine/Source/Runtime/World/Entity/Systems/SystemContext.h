@@ -144,7 +144,15 @@ namespace Lumina
 
         /** Physics body id for an entity, or ~0u when it has no body / no physics scene. */
         RUNTIME_API uint32 GetEntityBodyID(entt::entity Entity) const;
-        
+
+        /** Live physics-body pose (NOT the lagged STransformComponent) and velocity, for physics-stage systems. */
+        RUNTIME_API FVector3 GetBodyPosition(entt::entity Entity) const;
+        RUNTIME_API FQuat    GetBodyRotation(entt::entity Entity) const;
+        RUNTIME_API FVector3 GetVelocityAtPoint(entt::entity Entity, const FVector3& Point) const;
+
+        /** Apply a world-space force at a world-space point (adds torque too). Safe from PrePhysics. */
+        RUNTIME_API void AddForceAtPosition(entt::entity Entity, const FVector3& Force, const FVector3& Position) const;
+
         RUNTIME_API TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
 
         RUNTIME_API STransformComponent& GetEntityTransform(entt::entity Entity) const;

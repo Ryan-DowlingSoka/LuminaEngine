@@ -837,7 +837,7 @@ namespace Lumina
         return Result;
     }
 
-    void FVulkanCommandList::FillBuffer(FRHIBuffer* Buffer, uint32 Value)
+    void FVulkanCommandList::FillBuffer(FRHIBuffer* Buffer, uint32 Value, uint32 Size, uint32 Offset)
     {
         FVulkanBuffer* VulkanBuffer = static_cast<FVulkanBuffer*>(Buffer);
         EndRenderPass();
@@ -849,7 +849,7 @@ namespace Lumina
         CommitBarriers();
 
         
-        vkCmdFillBuffer(CurrentCommandBuffer->CommandBuffer, VulkanBuffer->Buffer, 0, VulkanBuffer->GetDescription().Size, Value);
+        vkCmdFillBuffer(CurrentCommandBuffer->CommandBuffer, VulkanBuffer->Buffer, Offset, Size, Value);
         CurrentCommandBuffer->AddReferencedResource(Buffer);
     }
 

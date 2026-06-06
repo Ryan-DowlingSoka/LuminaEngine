@@ -293,7 +293,6 @@ namespace Lumina
         static uint32       Ctx_Destroy(FLuaSystemContext& Ctx, entt::entity Entity)  { return Ctx.GetRegistry().destroy(Entity); }
         static entt::runtime_view Ctx_View(FLuaSystemContext& Ctx, Lua::FVariadicArgs Args) { return RuntimeView_Lua(Ctx.GetRegistry(), Args); }
 
-        // ctx:Each({CompA, CompB}, function(entity) ... end) -- iterate entities owning all listed components.
         static void Ctx_Each(FLuaSystemContext& Ctx, Lua::FRef Comps, Lua::FRef Func)
         {
             LUMINA_PROFILE_SCOPE();
@@ -305,6 +304,39 @@ namespace Lumina
                 entt::id_type Type = ECS::Utils::GetTypeID(Value);
                 entt::meta_type Meta = entt::resolve(Type);
                 if (Meta)
+                {
+                    if (entt::basic_sparse_set<>* Storage = Registry.storage(Meta.info().hash()))
+                    {
+                        View.iterate(*Storage);
+                    }
+                }
+                else if (entt::basic_sparse_set<>* Storage = Registry.storage(Type))
+                {
+                    View.iterate(*Storage);
+                }
+            }
+
+            View.each([&](entt::entity Entity)
+            {
+                Func(Entity);
+            });
+        }
+        
+        static void World_Each(CWorld* World, Lua::FRef Comps, Lua::FRef Func)
+        {
+            LUMINA_PROFILE_SCOPE();
+
+            if (World == nullptr)
+            {
+                return;
+            }
+            
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            entt::runtime_view View;
+            for (auto&& [Key, Value] : Comps)
+            {
+                entt::id_type Type = ECS::Utils::GetTypeID(Value);
+                if (entt::meta_type Meta = entt::resolve(Type))
                 {
                     if (entt::basic_sparse_set<>* Storage = Registry.storage(Meta.info().hash()))
                     {
@@ -485,16 +517,18 @@ namespace Lumina
         {
             return World ? World->SpawnPrefabAt(Path, FTransform(Loc)) : entt::null;
         }
-
-        // Lifecycle/transform on an ARBITRARY entity id; mirror the ECS.* utilities without the
-        // registry arg, so scripts touching spawned ids (not `self`) skip self._Registry. WORLD-space.
+        
         static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)
         {
-            return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null;
+            entt::entity Duplicate = entt::null;
+            if (World)
+            {
+                World->DuplicateEntity(Duplicate, Entity, nullptr);
+            }
+            
+            return Duplicate;
         }
-
-        // Bulk-spawn helper: wrap a spawn loop in Begin/EndPhysicsBatch so the N bodies enter the
-        // broadphase in one batched pass. Balance on the game thread; BodyIDs valid only after End.
+        
         static void World_BeginPhysicsBatch(CWorld* World) 
         {
             if (World && World->GetPhysicsScene())
@@ -567,10 +601,6 @@ namespace Lumina
             World->SetEntityScript(Entity, Path);
         }
         
-        // World.<Subsystem> dispatch. The key is resolved against FWorldLuaSubsystemRegistry and the
-        // accessor is called with the script's active world, so the single shared World table stays
-        // correct across every world. Subsystems (Physics, Net, game-defined) register their accessor
-        // rather than being hardcoded here -- see RegisterLuaModule.
         static int World_SubsystemIndex(lua_State* L)
         {
             const char* Key = lua_tostring(L, 2);
@@ -615,8 +645,27 @@ namespace Lumina
             ECS::Utils::SetEntityWorldTransform(Registry, Entity, WorldTransform);
         }
 
-        static void World_SetRotation(CWorld* World, entt::entity Entity, FQuat Rotation)   { if (World) ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, Rotation); }
-        static void World_SetScale(CWorld* World, entt::entity Entity, FVector3 Scale)      { if (World) ECS::Utils::SetEntityScale(World->GetEntityRegistry(), Entity, Scale); }
+        static void World_SetRotationFromEuler(CWorld* World, entt::entity Entity, FVector3 Rotation)   
+        { 
+            if (World)
+            {
+                ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, FQuat(Math::Radians(Rotation)));
+            }
+        }
+        static void World_SetRotation(CWorld* World, entt::entity Entity, FQuat Rotation)   
+        { 
+            if (World)
+            {
+                ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, Rotation);
+            }
+        }
+        static void World_SetScale(CWorld* World, entt::entity Entity, FVector3 Scale)
+        {
+            if (World)
+            {
+                ECS::Utils::SetEntityScale(World->GetEntityRegistry(), Entity, Scale);
+            }
+        }
 
         // Batched homing toward Target by Step (clamped): crosses the Lua boundary and takes the transform
         // mutex ONCE for the whole list. Roots skip chain resolve (world == local), the 10k-loop hot path.
@@ -685,12 +734,12 @@ namespace Lumina
                 lua_pushnil(Ref.GetState());
                 return Lua::FRef(Ref.GetState(), -1);
             }
-            return GetComponent_Lua(World->GetEntityRegistry(), Entity, Ref);
+            return GetComponent_Lua(World->GetEntityRegistry(), Entity, std::move(Ref));
         }
 
         static bool World_HasComponent(CWorld* World, entt::entity Entity, Lua::FRef Ref)
         {
-            return World != nullptr && HasComponent_Lua(World->GetEntityRegistry(), Entity, Ref);
+            return World != nullptr && HasComponent_Lua(World->GetEntityRegistry(), Entity, std::move(Ref));
         }
 
         static Lua::FRef World_GetScript(CWorld* World, entt::entity Entity)
@@ -843,12 +892,6 @@ namespace Lumina
             .AddFunction<&LuaBinds::RuntimeViewGetEntities_Lua>("GetEntities")
             .Register();
 
-        // Render-target handle type, so Asset.Hard("/Game/MyRT") returns a usable value.
-        GlobalRef.NewClass<CTextureRenderTarget>("RenderTargetTexture")
-            .AddFunction<&CTextureRenderTarget::GetWidth>("GetWidth")
-            .AddFunction<&CTextureRenderTarget::GetHeight>("GetHeight")
-            .Register();
-
         // Camera.* / World.* / RenderTarget.* bind via FRef::SetFunction; the leading CWorld* is
         // injected from thread data and trailing optional args may be omitted -- no lua_State plumbing.
         Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
@@ -870,6 +913,7 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_FindByName>("FindByName");
         WorldTable.SetFunction<&LuaBinds::World_FindByTag>("FindByTag");
         WorldTable.SetFunction<&LuaBinds::World_GetNumEntities>("GetNumEntities");
+        WorldTable.SetFunction<&LuaBinds::World_Each>("Each");
         WorldTable.SetFunction<&LuaBinds::World_GetDeltaTime>("GetDeltaTime");
         WorldTable.SetFunction<&LuaBinds::World_GetTimeSinceCreation>("GetTimeSinceCreation");
         WorldTable.SetFunction<&LuaBinds::World_SpawnPrefab>("SpawnPrefab");        // SpawnPrefab(path) -> entity
@@ -891,6 +935,7 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");            // Translate(entity, delta) -> vector
         WorldTable.SetFunction<&LuaBinds::World_MoveToward>("MoveToward");          // MoveToward(entities, target, step) -- batched, one boundary crossing
         WorldTable.SetFunction<&LuaBinds::World_GetRotation>("GetRotation");        // GetRotation(entity) -> quat
+        WorldTable.SetFunction<&LuaBinds::World_SetRotationFromEuler>("SetRotationFromEuler");        // GetRotation(entity) -> quat
         WorldTable.SetFunction<&LuaBinds::World_SetRotation>("SetRotation");        // SetRotation(entity, quat)
         WorldTable.SetFunction<&LuaBinds::World_GetScale>("GetScale");              // GetScale(entity) -> vector
         WorldTable.SetFunction<&LuaBinds::World_SetScale>("SetScale");              // SetScale(entity, vector)

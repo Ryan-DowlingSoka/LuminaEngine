@@ -228,7 +228,7 @@ namespace Lumina
     {
         EnterSlot(Slot, Type == StructuredArchive::EElementType::AttributedValue);
 
-        int32 NewSlotDepth = Slot.Depth + 1;
+        int32 NewSlotDepth = Slot.Depth;
 
         if (NewSlotDepth < (int32)CurrentScope.size() &&
             CurrentScope[NewSlotDepth].Type == StructuredArchive::EElementType::AttributedValue)

@@ -1994,16 +1994,12 @@ namespace Lumina::Physics
 
         Out.Settings.mNumPositionStepsOverride  = RigidBodyComponent->NumPositionStepsOverride;
         Out.Settings.mNumVelocityStepsOverride  = RigidBodyComponent->NumVelocityStepsOverride;
-        // Either the rigid body's own bIsSensor or the collider's bIsTrigger turns this body
-        // into a query-only sensor. The collider flag is the friendlier "trigger box" path.
         Out.Settings.mIsSensor                  = RigidBodyComponent->bIsSensor || bColliderIsTrigger;
         Out.Settings.mUseManifoldReduction      = RigidBodyComponent->bUseManifoldReduction;
         Out.Settings.mApplyGyroscopicForce      = RigidBodyComponent->bApplyGyroscopicForce;
         Out.Settings.mMotionQuality             = RigidBodyComponent->MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;
         Out.Settings.mMaxLinearVelocity         = RigidBodyComponent->MaxLinearVelocity;
         Out.Settings.mMaxAngularVelocity        = RigidBodyComponent->MaxAngularVelocity;
-        // PhysicsMaterial on the collider, when present, supersedes the rigid body's *Override fields.
-        // The Override fields stay as the fallback for un-materialed bodies so existing scenes don't shift.
         if (ResolvedMaterial != nullptr)
         {
             Out.Settings.mFriction              = ResolvedMaterial->Friction;
@@ -2108,6 +2104,7 @@ namespace Lumina::Physics
         RigidBodyComponent.BodyID               = Body->GetID().GetIndexAndSequenceNumber();
         RigidBodyComponent.LastBodyPosition     = BuildResult.LastBodyPosition;
         RigidBodyComponent.LastBodyRotation     = BuildResult.LastBodyRotation;
+        RigidBodyComponent.Mass                 = BuildResult.Settings.GetMassProperties().mMass;
 
         StoreBodyMaterial(Body->GetID(), BuildResult);
 

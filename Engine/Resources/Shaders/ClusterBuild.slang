@@ -1,19 +1,16 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-struct FPushConstants
+// Grid params are read from the per-frame scene snapshot (uSceneData), NOT live render-thread
+// state. LightCull (which fills these clusters) and the base pass (which looks up the tiles) both
+// index off the same snapshot frustum/screen size; sourcing the AABBs from live projection/screen
+// size instead would bin lights into a different frustum than the lookup -> whole tiles light with
+// the wrong lights whenever live and snapshot diverge (camera motion between extract and render).
+float3 ScreenToView(float2 ScreenCoord)
 {
-    float4x4 InverseProjection;
-    float2   ZNearFar;
-    uint2    ScreenSize;
-    uint4    GridSize;
-};
-
-float3 ScreenToView(float2 ScreenCoord, FPushConstants PC)
-{
-    float2 UV       = ScreenCoord / float2(PC.ScreenSize);
+    float2 UV       = ScreenCoord / float2(uSceneData.ScreenSize.xy);
     float4 NDC      = float4(UV * 2.0 - 1.0, 1.0, 1.0);
-    float4 ViewCoord = mul(PC.InverseProjection, NDC);
+    float4 ViewCoord = mul(GetInverseCameraProjection(), NDC);
     ViewCoord       /= ViewCoord.w;
     return ViewCoord.xyz;
 }
@@ -26,36 +23,37 @@ float3 LineIntersectionWithZPlane(float3 StartPoint, float3 EndPoint, float ZDis
     return StartPoint + T * Direction;
 }
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
-
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
+    uint3 GridSize   = uSceneData.GridSize.xyz;
+    uint2 ScreenSize = uSceneData.ScreenSize.xy;
+
     uint TileIndex  = DispatchID.x;
-    uint TotalTiles = PC.GridSize.x * PC.GridSize.y * PC.GridSize.z;
+    uint TotalTiles = GridSize.x * GridSize.y * GridSize.z;
     if (TileIndex >= TotalTiles)
         return;
 
-    uint SliceSize = PC.GridSize.x * PC.GridSize.y;
+    uint SliceSize = GridSize.x * GridSize.y;
     uint3 Tile;
     Tile.z = TileIndex / SliceSize;
     uint SliceRem = TileIndex - Tile.z * SliceSize;
-    Tile.y = SliceRem / PC.GridSize.x;
-    Tile.x = SliceRem - Tile.y * PC.GridSize.x;
+    Tile.y = SliceRem / GridSize.x;
+    Tile.x = SliceRem - Tile.y * GridSize.x;
 
-    float ZNear = PC.ZNearFar.x;
-    float ZFar  = PC.ZNearFar.y;
+    float ZNear = GetNearPlane();
+    float ZFar  = GetFarPlane();
 
-    float2 TileSize   = float2(PC.ScreenSize) / float2(PC.GridSize.xy);
+    float2 TileSize   = float2(ScreenSize) / float2(GridSize.xy);
     float2 MinTileSS  = float2(Tile.xy) * TileSize;
     float2 MaxTileSS  = float2(Tile.xy + 1) * TileSize;
 
-    float3 MinTile = ScreenToView(MinTileSS, PC);
-    float3 MaxTile = ScreenToView(MaxTileSS, PC);
+    float3 MinTile = ScreenToView(MinTileSS);
+    float3 MaxTile = ScreenToView(MaxTileSS);
 
-    float PlaneNear = -ZNear * pow(ZFar / ZNear,  float(Tile.z)      / float(PC.GridSize.z));
-    float PlaneFar  = -ZNear * pow(ZFar / ZNear,  float(Tile.z + 1)  / float(PC.GridSize.z));
+    float PlaneNear = -ZNear * pow(ZFar / ZNear,  float(Tile.z)      / float(GridSize.z));
+    float PlaneFar  = -ZNear * pow(ZFar / ZNear,  float(Tile.z + 1)  / float(GridSize.z));
 
     float3 MinPointNear = LineIntersectionWithZPlane(float3(0.0), MinTile, PlaneNear);
     float3 MinPointFar  = LineIntersectionWithZPlane(float3(0.0), MinTile, PlaneFar);

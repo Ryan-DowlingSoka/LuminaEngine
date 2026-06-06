@@ -79,6 +79,8 @@ namespace Lumina
         bool IsReadyForRender() const { return bReadyForRender.load(std::memory_order_acquire); }
 
     protected:
+        
+        virtual void UpdateMaterialUniforms() { }
 
         std::atomic_bool        bReadyForRender;
 

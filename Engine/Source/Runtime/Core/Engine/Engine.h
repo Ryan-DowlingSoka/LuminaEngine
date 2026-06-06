@@ -168,7 +168,7 @@ namespace Lumina
         FFixedString                ProjectPath;
         TSharedPtr<Lua::FScript>    ProjectScript;
         Lua::FRef                   ModuleUpdateFunc;
-        CGameInstance*              GameInstance = nullptr;
+        TObjectPtr<CGameInstance>   GameInstance;
 
 
         FProjectLoadedDelegate  OnProjectLoaded;

@@ -24,4 +24,4 @@ InType& StaticValue = *reinterpret_cast<InType*>(&StaticRawValue);            \
 if (!StaticRawValue)
 
 // Invalid Index
-constexpr int64 INDEX_NONE = -1;
+constexpr auto INDEX_NONE = -1;

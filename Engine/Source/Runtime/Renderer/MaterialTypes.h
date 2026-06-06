@@ -24,7 +24,7 @@ namespace Lumina
 
     struct FMaterialUniforms
     {
-        FVector4   Vectors[MAX_VECTORS];
+        FVector4    Vectors[MAX_VECTORS];
         float       Scalars[MAX_SCALARS];
         uint32      Textures[MAX_TEXTURES];
         uint32      Flags;

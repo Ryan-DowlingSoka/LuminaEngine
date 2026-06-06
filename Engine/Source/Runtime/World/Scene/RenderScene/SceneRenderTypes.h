@@ -427,7 +427,7 @@ namespace Lumina
     
     struct alignas(16) FBillboardInstance
     {
-        FVector3       Position;
+        FVector3        Position;
         float           Size;
 
         uint32          ColorPack;
@@ -483,6 +483,41 @@ namespace Lumina
 
     static_assert(sizeof(FGPUDecal) == 144, "FGPUDecal layout must match DecalCommon.slang");
     VERIFY_SSBO_ALIGNMENT(FGPUDecal)
+
+    // One water body. The water pass draws a procedural grid in [-0.5,0.5] (XZ) transformed by WaterToWorld
+    struct alignas(16) FGPUWater
+    {
+        FMatrix4 WaterToWorld;      // local plane -> world (Extent baked into XZ scale)
+        FMatrix4 WorldToWater;      // inverse
+        FVector4 ShallowColor;      // rgb shallow tint
+        FVector4 DeepColor;         // rgb deep tint
+        FVector4 FoamColor;         // rgb foam tint
+        FVector4 WindAndWave;       // xy = wind dir, z = wind speed, w = wave amplitude
+        FVector4 WaveParams;        // x = choppiness, y = wave scale, z = wave count, w = detail strength
+        FVector4 RefractReflect;    // x = refraction, y = reflection, z = roughness, w = fresnel power
+        FVector4 FoamAbsorb;        // x = shoreline foam width, y = crest foam amount, z = depth fade, w = absorption
+        FVector4 SSRSpecOpacity;    // x = ssr max dist, y = ssr step count, z = specular intensity, w = opacity
+        FVector4 DetailParams;      // x = detail tiling, y = detail scroll speed, z = foam tiling, w = unused
+        uint32   DetailNormalIndex; // bindless 2D SRV, ~0u if none
+        uint32   FoamTextureIndex;  // bindless 2D SRV, ~0u if none
+        uint32   GridResolution;    // verts per side of the procedural grid
+        uint32   Flags;             // reserved
+    };
+
+    static_assert(sizeof(FGPUWater) == 288, "FGPUWater layout must match Includes/Water.slang");
+    VERIFY_SSBO_ALIGNMENT(FGPUWater)
+
+    // The single active water body the camera is submerged in / near, consumed by the underwater
+    // post-process pass. Must match FWaterUnderwaterParams in WaterUnderwater.slang.
+    struct alignas(16) FWaterUnderwaterParams
+    {
+        FVector4 PlaneNormalAndHeight;  // xyz = surface up-normal, w = surface world Y under the camera
+        FVector4 FogColorDensity;       // rgb = fog color, w = density (per meter)
+        FVector4 TintDistortion;        // rgb = view tint, w = screen distortion amount
+        FVector4 DeepColor;             // rgb = deep/absorption color
+    };
+
+    static_assert(sizeof(FWaterUnderwaterParams) == 64, "FWaterUnderwaterParams layout must match Includes/Water.slang");
 
     struct alignas(16) FCluster
     {

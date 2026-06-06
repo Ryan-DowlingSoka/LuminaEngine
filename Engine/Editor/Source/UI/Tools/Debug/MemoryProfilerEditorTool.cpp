@@ -170,7 +170,7 @@ namespace Lumina
 
     void FMemoryProfilerEditorTool::DrawWindow(bool bIsFocused)
     {
-        RefreshTimer += GEngine->GetDeltaTime();
+        RefreshTimer += (float)GEngine->GetDeltaTime();
         if (RefreshTimer >= kRefreshSeconds || HistVRAM.empty())
         {
             RefreshTimer = 0.0f;
@@ -270,11 +270,11 @@ namespace Lumina
                 ? (float)((double)GPUStats.TotalUsage / (double)GPUStats.TotalBudget) : 0.0f;
 
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
-            ImGui::TextUnformatted(ImGuiX::FormatSize((size_t)GPUStats.TotalUsage).c_str());
+            ImGui::TextUnformatted(ImGuiX::FormatSize(GPUStats.TotalUsage).c_str());
             ImGuiX::Font::PopFont();
             ImGui::SameLine();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("/ %s  (%.0f%%)", ImGuiX::FormatSize((size_t)GPUStats.TotalBudget).c_str(), Frac * 100.0f);
+            ImGui::TextDisabled("/ %s  (%.0f%%)", ImGuiX::FormatSize(GPUStats.TotalBudget).c_str(), Frac * 100.0f);
 
             ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram, UsageColor(Frac));

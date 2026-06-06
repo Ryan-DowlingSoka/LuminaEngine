@@ -1,8 +1,11 @@
 #include "pch.h"
 #include "TextureManager.h"
 #include "RenderContext.h"
+#include "RenderTypes.h"
 #include "RHIGlobals.h"
 #include "Core/Assertions/Assert.h"
+#include "Paths/Paths.h"
+#include "Tools/Import/ImportHelpers.h"
 
 
 namespace Lumina::RHI
@@ -37,9 +40,57 @@ namespace Lumina::RHI
         Desc.SetVisibility(ERHIShaderType::Compute);
         Layout = GRenderContext->CreateBindlessLayout(Desc);
 
-        DescriptorTableManager = FDescriptorTableManager(GRenderContext, Layout);
+        DescriptorTableManager = FDescriptorTableManager(Layout);
 
         RegisterStockSamplers();
+        CreateDefaultImage();
+    }
+
+    void FTextureManager::CreateDefaultImage()
+    {
+        //FRHIImageDesc Desc;
+        //Desc.Format            = EFormat::RGBA8_UNORM;
+        //Desc.Extent            = FUIntVector2(1, 1);
+        //Desc.NumMips           = 1;
+        //Desc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource);
+        //Desc.InitialState      = EResourceStates::ShaderResource;
+        //Desc.bKeepInitialState = true;
+        //Desc.DebugName         = "BindlessPlaceholder";
+
+        //DefaultImage = GRenderContext->CreateImage(Desc);
+        
+        
+        //const uint8 BlackPixel[4] = { 0, 0, 0, 255 };
+        //FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
+        //CommandList->Open();
+        //CommandList->WriteImage(DefaultImage, 0, 0, BlackPixel, sizeof(BlackPixel), 1);
+        //CommandList->Close();
+        //GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
+
+        // Give it a permanent slot of its own; the constructor's AddTexture guard makes the
+        // FVulkanImage ctor's auto-registration (if any) a no-op.
+        
+        const FString Dir = Paths::GetEngineResourceDirectory();
+        DefaultImage = Import::Textures::CreateTextureFromImport(Dir + "/Textures/ErrorTexture.png", true, {32, 32});
+        AddTexture(DefaultImage);
+    }
+
+    void FTextureManager::WriteSlotToPlaceholder(int32 Slot)
+    {
+        if (DefaultImage == nullptr || Slot < 0)
+        {
+            return;
+        }
+
+        FBindingSetItem Item = FBindingSetItem::TextureSRV(ImageBinding, DefaultImage);
+        Item.Slot = static_cast<uint32>(Slot);
+        GRenderContext->WriteDescriptorTable(DescriptorTableManager.GetDescriptorTable(), Item);
+    }
+
+    void FTextureManager::Tick()
+    {
+        FWriteScopeLock Lock(Mutex);
+        DescriptorTableManager.TickDeferredReleases(FRAMES_IN_FLIGHT);
     }
 
     void FTextureManager::RegisterStockSamplers()
@@ -67,26 +118,21 @@ namespace Lumina::RHI
 
     void FTextureManager::AddTexture(FRHIImage* InTexture)
     {
+        FWriteScopeLock Lock(Mutex);
+        
         if (InTexture == nullptr || InTexture->GetResourceID() != -1)
         {
             return;
         }
-
-        FWriteScopeLock Lock(Mutex);
-
+        
         // All-mips SRV; per-mip UAVs use distinct array indices and don't clobber this slot.
         FBindingSetItem SRVItem = FBindingSetItem::TextureSRV(ImageBinding, InTexture);
         const int64 Index = DescriptorTableManager.CreateDescriptor(SRVItem);
         InTexture->SetResourceID(static_cast<int32>(Index));
-
-        // Per-mip storage views so SPD-style passes write each mip via the bindless RW table.
-        // Single-mip storage images get a mip-0 UAV too (GetMipUAVIndex(0) = the paint shader's RWTexture2D slot).
+        
         const FRHIImageDesc& Desc = InTexture->GetDescription();
         if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage))
         {
-            // Cube/cube-array images can't have a cube-typed storage view (illegal in Vulkan), so their
-            // UAVs are 2D-array views (matches uBindlessRWTex2DArray on the shader side). Everything else
-            // takes its natural dimension (Unknown -> the image's own).
             const bool bCube = Desc.Dimension == EImageDimension::TextureCube
                             || Desc.Dimension == EImageDimension::TextureCubeArray;
             const EImageDimension UAVDimension = bCube ? EImageDimension::Texture2DArray : EImageDimension::Unknown;
@@ -105,12 +151,12 @@ namespace Lumina::RHI
 
     int32 FTextureManager::RegisterSubresourceSRV(FRHIImage* InTexture, const FTextureSubresourceSet& Subresources)
     {
+        FWriteScopeLock Lock(Mutex);
+        
         if (InTexture == nullptr)
         {
             return -1;
         }
-
-        FWriteScopeLock Lock(Mutex);
 
         FBindingSetItem Item = FBindingSetItem::TextureSRV(
             ImageBinding, InTexture, nullptr, InTexture->GetDescription().Format, Subresources);
@@ -119,29 +165,38 @@ namespace Lumina::RHI
 
     void FTextureManager::ReleaseSubresourceSRV(int32 Index)
     {
+        FWriteScopeLock Lock(Mutex);
         if (Index < 0)
         {
             return;
         }
 
-        FWriteScopeLock Lock(Mutex);
+        WriteSlotToPlaceholder(Index);
         DescriptorTableManager.ReleaseDescriptor(Index);
     }
 
     void FTextureManager::RemoveTexture(FRHIImage* InTexture)
     {
+        FWriteScopeLock Lock(Mutex);
+
         if (InTexture == nullptr)
         {
             return;
         }
 
-        FWriteScopeLock Lock(Mutex);
+        // The placeholder must outlive every other texture; never release its own slot (this
+        // path also runs when the manager is torn down and DefaultImage is destroyed).
+        if (DefaultImage != nullptr && InTexture == DefaultImage.GetReference())
+        {
+            return;
+        }
 
         TVector<int32>& MipIndices = InTexture->GetMipUAVIndices();
         for (int32 MipIndex : MipIndices)
         {
             if (MipIndex >= 0)
             {
+                WriteSlotToPlaceholder(MipIndex);
                 DescriptorTableManager.ReleaseDescriptor(MipIndex);
             }
         }
@@ -153,6 +208,7 @@ namespace Lumina::RHI
             return;
         }
 
+        WriteSlotToPlaceholder(Index);
         DescriptorTableManager.ReleaseDescriptor(Index);
         InTexture->SetResourceID(-1);
     }

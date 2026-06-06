@@ -114,10 +114,8 @@ namespace Lumina
 
         FindOrAddOverride(Overrides, Name, EMaterialParameterType::Scalar).Scalar = Value;
 
-        if (GetMaterialIndex() != -1)
-        {
-            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
-        }
+        UpdateMaterialUniforms();
+        
         return true;
     }
 
@@ -142,10 +140,8 @@ namespace Lumina
 
         FindOrAddOverride(Overrides, Name, EMaterialParameterType::Vector).Vector = Value;
 
-        if (GetMaterialIndex() != -1)
-        {
-            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
-        }
+        UpdateMaterialUniforms();
+
         return true;
     }
 
@@ -177,11 +173,7 @@ namespace Lumina
         }
 
         FindOrAddOverride(Overrides, Name, EMaterialParameterType::Texture).Texture = TextureValue;
-
-        if (GetMaterialIndex() != -1)
-        {
-            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
-        }
+        
         return true;
     }
 
@@ -223,9 +215,14 @@ namespace Lumina
 
         RebuildUniformsFromOverrides();
 
-        if (GetMaterialIndex() != -1)
+        UpdateMaterialUniforms();
+    }
+
+    void CMaterialInstance::UpdateMaterialUniforms()
+    {
+        if (MaterialIndex != -1)
         {
-            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
+            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(&MaterialUniforms, (uint32)MaterialIndex);
         }
     }
 
@@ -324,7 +321,7 @@ namespace Lumina
         }
         else
         {
-            GRenderManager->GetMaterialManager().UpdateMaterialUniforms(this);
+            UpdateMaterialUniforms();
         }
 
         SetReadyForRender(true);

@@ -225,5 +225,11 @@
         "GizmoSnapScale": 0.10000000149011612,
         "GizmoSnapTranslate": 0.10000000149011612,
         "bGizmoSnapEnabled": false
+    },
+    "WorldEditorSettings": {
+        "GizmoSnapRotate": 90.0,
+        "GizmoSnapScale": 0.10000000149011612,
+        "GizmoSnapTranslate": 0.10000000149011612,
+        "bGizmoSnapEnabled": true
     }
 }

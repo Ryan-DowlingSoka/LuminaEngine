@@ -24,6 +24,12 @@ struct FDBufferPushConstants
 void ApplyDBuffer(inout float3 Albedo, inout float3 WorldNormal, inout float Roughness,
                   inout float Metallic, inout float AO, float2 ScreenUV)
 {
+    // Sentinel index (no decals this frame) -> skip the three DBuffer samples; the composite is a no-op.
+    if (gDBufferPC.DBufferAIndex == 0xFFFFFFFFu)
+    {
+        return;
+    }
+
     SamplerState Smp = uBindlessSamplers[SAMPLER_POINT_CLAMP];
     float4 A = uBindlessTex2D[gDBufferPC.DBufferAIndex].SampleLevel(Smp, ScreenUV, 0.0);
     float4 B = uBindlessTex2D[gDBufferPC.DBufferBIndex].SampleLevel(Smp, ScreenUV, 0.0);

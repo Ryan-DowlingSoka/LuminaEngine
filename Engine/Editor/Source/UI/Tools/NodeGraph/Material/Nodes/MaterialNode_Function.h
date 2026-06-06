@@ -24,7 +24,7 @@ namespace Lumina
 
     // Declares one input of the owning material function (function graph only). Its output feeds the body;
     // on inline the call node binds it to the caller's argument, so GenerateDefinition only runs in validation.
-    REFLECT()
+    REFLECT(NoLua)
     class CMaterialExpression_FunctionInput : public CMaterialExpression
     {
         GENERATED_BODY()
@@ -62,7 +62,7 @@ namespace Lumina
 
     // Declares one output of the owning material function (one node per output). Its input is what the body
     // drives; the call node reads the resolved value on inline, so GenerateDefinition only validates the type.
-    REFLECT()
+    REFLECT(NoLua)
     class CMaterialFunctionOutput : public CMaterialGraphNode
     {
         GENERATED_BODY()
@@ -96,7 +96,7 @@ namespace Lumina
 
     // Calls a material function: at compile time inlines the referenced function's body, binding this node's
     // argument pins to the function inputs and exposing the function outputs as this node's output pins.
-    REFLECT()
+    REFLECT(NoLua)
     class CMaterialExpression_MaterialFunctionCall : public CMaterialGraphNode
     {
         GENERATED_BODY()

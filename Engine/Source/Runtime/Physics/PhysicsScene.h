@@ -56,12 +56,7 @@ namespace Lumina::Physics
         // Game-thread only, must be balanced; BodyIDs are valid after EndBodyBatch.
         virtual void BeginBodyBatch() = 0;
         virtual void EndBodyBatch() = 0;
-
-        // ---- Entity-based facet API (script-facing) -------------------------------------------
-        // Non-virtual conveniences over the body-id interface above: resolve the entity's body,
-        // then apply or read. Commands fill a parameter POD and call the handler directly (safe --
-        // scripts never overlap the step). Reads return the latched snapshot. No-op if the entity
-        // has no body. This is the single method set behind self.Physics and World.Physics.
+        
         void AddForce(entt::entity E, const FVector3& Force)                   { SForceEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Force = Force; OnForceEvent(Ev); }
         void AddImpulse(entt::entity E, const FVector3& Impulse)               { SImpulseEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Impulse = Impulse; OnImpulseEvent(Ev); }
         void AddTorque(entt::entity E, const FVector3& Torque)                 { STorqueEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Torque = Torque; OnTorqueEvent(Ev); }

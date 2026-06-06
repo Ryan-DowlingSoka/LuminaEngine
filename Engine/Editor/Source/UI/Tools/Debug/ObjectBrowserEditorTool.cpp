@@ -241,7 +241,7 @@ namespace Lumina
                     {
                         TVector<CObject*>& Objects = PackageToObjects[SelectedPackage];
 
-                        if (ImGui::BeginTable("##ObjectTable", 4,
+                        if (ImGui::BeginTable("##ObjectTable", 5,
                             ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_Borders |
                             ImGuiTableFlags_Resizable |
@@ -252,6 +252,7 @@ namespace Lumina
                             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthStretch, 0.20f);
                             ImGui::TableSetupColumn("Class", ImGuiTableColumnFlags_WidthStretch, 0.20f);
                             ImGui::TableSetupColumn("Flags", ImGuiTableColumnFlags_WidthStretch, 0.20f);
+                            ImGui::TableSetupColumn("Refs", ImGuiTableColumnFlags_WidthStretch, 0.20f);
                             ImGui::TableSetupColumn("GUID", ImGuiTableColumnFlags_WidthStretch, 0.25f);
                             ImGui::TableSetupScrollFreeze(0, 1);
                             ImGui::TableHeadersRow();
@@ -313,8 +314,14 @@ namespace Lumina
                                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.7f, 0.4f, 1.0f));
                                     ImGui::TextUnformatted(FlagsStr.c_str());
                                     ImGui::PopStyleColor();
-
+                                    
                                     ImGui::TableSetColumnIndex(3);
+                                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                                    ImGui::Text("Strong: %i", Object->GetStrongRefCount());
+                                    ImGui::Text("Weak: %i", Object->GetWeakRefCount());
+                                    ImGui::PopStyleColor();
+
+                                    ImGui::TableSetColumnIndex(4);
                                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
                                     ImGui::TextUnformatted(Object->GetGUID().ToString().c_str());
                                     ImGui::PopStyleColor();

@@ -388,6 +388,12 @@ namespace Lumina
         return Item ? Item->GetStrongRefCount() : 0;
     }
 
+    int32 FCObjectArray::GetWeakRefCountByIndex(uint32 Index) const
+    {
+        const FCObjectEntry* Item = ChunkedArray.GetItem(Index);
+        return Item ? Item->GetWeakRefCount() : 0;
+    }
+
     int32 FCObjectArray::GetNumAliveObjects() const
     {
         return ChunkedArray.GetNumElements() - (int32)FreeIndices.size();

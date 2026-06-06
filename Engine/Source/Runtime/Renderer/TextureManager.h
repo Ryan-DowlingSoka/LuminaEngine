@@ -39,9 +39,14 @@ namespace Lumina::RHI
         NODISCARD int32 RegisterSubresourceSRV(FRHIImage* InTexture, const FTextureSubresourceSet& Subresources);
         void ReleaseSubresourceSRV(int32 Index);
 
+        // Retire bindless slots whose deferral window has elapsed. Call once per rendered frame
+        // from a GPU-safe point (after the frame fence). Reclaimed slots become reusable.
+        void Tick();
+
 
         NODISCARD FRHIBindingLayout* GetLayout() const { return Layout; }
         NODISCARD FRHIDescriptorTable* GetDescriptorTable() const { return DescriptorTableManager.GetDescriptorTable(); }
+        NODISCARD const FDescriptorTableManager& GetDescriptorManager() const { return DescriptorTableManager; }
 
         // Diagnostics: live bindless textures vs current table capacity.
         NODISCARD uint32 GetLiveDescriptorCount() const { return DescriptorTableManager.GetLiveDescriptorCount(); }
@@ -50,10 +55,16 @@ namespace Lumina::RHI
     private:
 
         void RegisterStockSamplers();
+        void CreateDefaultImage();
+
+        // Repoint a bindless slot at the always-live 1x1 placeholder. Done before releasing a
+        // texture's slot so the slot never references the texture's about-to-be-destroyed view.
+        void WriteSlotToPlaceholder(int32 Slot);
 
         FSharedMutex                              Mutex;
         FDescriptorTableManager                   DescriptorTableManager;
         FRHIBindingLayoutRef                      Layout;
+        FRHIImageRef                              DefaultImage;
         TFixedVector<FRHISamplerRef, (size_t)EBindlessSampler::Count> StockSamplers;
     };
 }

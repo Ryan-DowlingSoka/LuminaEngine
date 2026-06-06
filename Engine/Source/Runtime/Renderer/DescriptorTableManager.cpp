@@ -2,6 +2,7 @@
 #include "DescriptorTableManager.h"
 
 #include "RenderContext.h"
+#include "RHIGlobals.h"
 
 namespace Lumina
 {
@@ -31,24 +32,13 @@ namespace Lumina
         return -1;
     }
 
-    FDescriptorTableManager::FDescriptorTableManager(IRenderContext* InContext, FRHIBindingLayout* BindingLayout)
-        : Context(InContext)
+    FDescriptorTableManager::FDescriptorTableManager(FRHIBindingLayout* BindingLayout)
     {
-        DescriptorTable = InContext->CreateDescriptorTable(BindingLayout);
+        DescriptorTable = GRenderContext->CreateDescriptorTable(BindingLayout);
         size_t Capacity = DescriptorTable->GetCapacity();
         AllocatedDescriptors.resize(Capacity);
         Descriptors.resize(Capacity);
         Memory::Memzero(Descriptors.data(), sizeof(FBindingSetItem) * Capacity);
-    }
-    
-    FDescriptorTableManager::~FDescriptorTableManager()
-    {
-        // Descriptors do not own a ref on their resources; resources unregister
-        // themselves on destruction via FTextureManager::RemoveTexture.
-        for (auto& Descriptor : Descriptors)
-        {
-            Descriptor.ResourceHandle = nullptr;
-        }
     }
 
     int64 FDescriptorTableManager::CreateDescriptor(FBindingSetItem Item)
@@ -74,7 +64,7 @@ namespace Lumina
         if (!bFoundFreeSlot)
         {
             uint32 NewCapacity = Math::Max<uint32>(64u, Capacity * 2);
-            Context->ResizeDescriptorTable(DescriptorTable, NewCapacity, true);
+            GRenderContext->ResizeDescriptorTable(DescriptorTable, NewCapacity, true);
             AllocatedDescriptors.resize(NewCapacity);
             Descriptors.resize(NewCapacity);
 
@@ -89,7 +79,7 @@ namespace Lumina
         AllocatedDescriptors[Index] = true;
         Descriptors[Index] = Item;
         DescriptorIndexMap[Item] = Index;
-        Context->WriteDescriptorTable(DescriptorTable, Item);
+        GRenderContext->WriteDescriptorTable(DescriptorTable, Item);
 
         return Index;
     }
@@ -100,13 +90,9 @@ namespace Lumina
         return FDescriptorHandle(shared_from_this(), Index);
     }
 
-    FBindingSetItem FDescriptorTableManager::GetDescriptor(int64 Index)
+    const FBindingSetItem& FDescriptorTableManager::GetDescriptor(int64 Index) const
     {
-        if ((size_t)Index >= Descriptors.size())
-        {
-            return FBindingSetItem();
-        }
-
+        ASSERT((size_t)Index <= Descriptors.size());
         return Descriptors[Index];
     }
 
@@ -117,7 +103,11 @@ namespace Lumina
             return;
         }
 
-        FBindingSetItem& Descriptor = Descriptors[DescriptorIndex];
+        // Already released (and still parked); don't double-enqueue.
+        if (!AllocatedDescriptors[DescriptorIndex])
+        {
+            return;
+        }
 
         const auto IndexMapEntry = DescriptorIndexMap.find(Descriptors[DescriptorIndex]);
         if (IndexMapEntry != DescriptorIndexMap.end())
@@ -125,9 +115,33 @@ namespace Lumina
             DescriptorIndexMap.erase(IndexMapEntry);
         }
 
-        Descriptor = FBindingSetItem();
-        Context->WriteDescriptorTable(DescriptorTable, Descriptor);
-        AllocatedDescriptors[DescriptorIndex] = false;
-        SearchStart = Math::Min<int64>(SearchStart, DescriptorIndex);
+        // Drop the CPU record but keep the slot marked allocated so CreateDescriptor won't hand
+        // it out. The GPU descriptor is intentionally left untouched here -- the caller has
+        // repointed it at a live placeholder, so it stays valid while parked. The slot returns
+        // to the free pool only once in-flight frames can no longer reference it.
+        Descriptors[DescriptorIndex] = FBindingSetItem();
+        PendingFrees.push_back({ DescriptorIndex, FrameCounter });
+    }
+
+    void FDescriptorTableManager::TickDeferredReleases(uint32 FramesToDefer)
+    {
+        ++FrameCounter;
+
+        for (size_t i = 0; i < PendingFrees.size(); )
+        {
+            if (FrameCounter - PendingFrees[i].FrameReleased >= FramesToDefer)
+            {
+                const int64 Index = PendingFrees[i].Index;
+                AllocatedDescriptors[Index] = false;
+                SearchStart = Math::Min<int64>(SearchStart, Index);
+
+                PendingFrees[i] = PendingFrees.back();
+                PendingFrees.pop_back();
+            }
+            else
+            {
+                ++i;
+            }
+        }
     }
 }

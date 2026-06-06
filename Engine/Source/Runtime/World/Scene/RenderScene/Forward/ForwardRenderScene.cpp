@@ -35,6 +35,7 @@
 #include "World/Entity/Components/TriangleBatcherComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/DecalComponent.h"
+#include "World/Entity/Components/WaterComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/SkyLightComponent.h"
@@ -488,18 +489,13 @@ namespace Lumina
         }
 
         CurrentFrameSlot        = Slot;
-
-        // Recreate the IBL cubes if the active environment's quality tier changed (rare, WaitIdle-guarded)
-        // before any pass reads them this frame. The matching bIBLDirty was set on the same change.
+        
         SyncIBLResolution(Frame.Volumetrics.IBLResolution);
 
-        // Shared passes (cull/skinning/shadows/sky) run once with CurrentView = primary; the
-        // primary's full two-pass sequence then runs below, and capture views are shaded after.
         PointAtView(SceneViews[0]);
-        CurrentCameraEarlyView = 0u;                          // primary's early/frustum cull view
+        CurrentCameraEarlyView = 0u;                                // primary's early/frustum cull view
         CurrentCameraLateView  = Frame.Views.CameraLateViewIndex;   // primary's late/occlusion cull view
 
-        // DepthPyramid only changes on swapchain resize -- render-thread read is race-safe.
         Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
         Frame.SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
         Frame.SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
@@ -653,6 +649,12 @@ namespace Lumina
                 DepthPyramidPass(CmdList);
             }
             
+            // After the opaque scene (so HDR holds the lit scene to refract/SSR), before translucency.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Water", FColor(0.20f, 0.70f, 0.90f));
+                WaterPass(CmdList);
+            }
+
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f));
                 TransparentPass(CmdList);
@@ -723,6 +725,13 @@ namespace Lumina
             }
             #endif
         
+            // Underwater absorption/distortion over the fully-composited HDR (per-ray path length, so the
+            // half-submerged waterline falls out and above-water pixels are untouched). Before bloom/exposure.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Underwater", FColor(0.15f, 0.45f, 0.70f));
+                UnderwaterPass(CmdList);
+            }
+
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Bloom", FColor(0.95f, 0.75f, 0.30f));
                 BloomPass(CmdList);
@@ -761,24 +770,19 @@ namespace Lumina
                     SMAANeighborhoodBlendPass(CmdList);
                 }
             }
-
-            // World-space UI quads, drawn last onto the final display-referred target so their
-            // colors match the screen-space UI (not tone-mapped). Composited before RenderWorldUI.
+            
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widgets", FColor(0.80f, 0.20f, 0.95f));
                 WidgetPass(CmdList);
             }
 
-#if !defined(LE_SHIPPING)
-            // Screen-space debug text overlay (World::DrawDebugText), top-left. Last, on top of everything.
+            #if !defined(LE_SHIPPING)
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Debug Text", FColor(0.95f, 0.85f, 0.20f));
                 DebugTextPass(CmdList);
             }
-#endif
-
-            // Shade each enabled capture camera into its own RT, reusing the shared geometry/shadows/sky.
-            // Reduced single-pass sequence -- no two-pass occlusion, no editor/debug overlays.
+            #endif
+            
             for (const FFrameData::FCaptureViewData& Capture : Frame.Views.CaptureViews)
             {
                 if (Capture.SceneViewIndex <= 0 || Capture.SceneViewIndex >= (int32)SceneViews.size())
@@ -790,60 +794,42 @@ namespace Lumina
 
                 FSceneView& View = SceneViews[Capture.SceneViewIndex];
                 PointAtView(View);
-                // Render-thread-only mutation (game thread only touches the primary viewport),
-                // so cluster build / light cull read this capture's projection via SceneViewport.
+
                 View.Viewport->SetViewVolume(Capture.ViewVolume);
                 CurrentCameraEarlyView = Capture.CameraViewIndex;
-                CurrentCameraLateView  = ~0u;   // frustum-only: no late occlusion pass
-
-                // This capture's scene root: shared per-frame addresses + this view's camera (transient)
-                // and clusters/IBL. Passes in RenderCaptureView push CurrentSceneRootAddr.
+                CurrentCameraLateView  = ~0u;
+                
                 CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, View, CmdList.CopyTransient(Capture.SceneGlobalData).Gpu);
 
                 RenderCaptureView(CmdList);
             }
         }
-
-        // ImGui composite + present still read FrameRing[Slot] later in the
-        // render lambda; SignalFrameConsumed fires the per-slot signal there.
+        
         RenderFrame = nullptr;
     }
 
     void FForwardRenderScene::RenderCaptureView(ICommandList& CmdList)
     {
-        // Reduced forward sequence into the capture's own image chain (geometry/shadows/sky shared).
-        // No HZB/late occlusion, no editor/debug overlays, no SMAA/post-process materials.
-
-        // Occluder depth (clears this view's depth); base pass fills the rest via GreaterOrEqual. With no
-        // occluders the prepass is skipped, so clear explicitly (the primary's ResetPass clears the primary).
         if (RenderFrame->Geometry.OpaqueOccluderDrawList.empty())
         {
             CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
         }
+        
         DepthPrePassEarly(CmdList);
-
-        // Clustered lighting for this camera, then forward shading.
         ClusterBuildPass(CmdList);
         LightCullPass(CmdList);
         EnvironmentPass(CmdList);
-        // Projects decals into this capture's DBuffer (also clears it, so the base-pass sample is valid).
         DecalPass(CmdList);
         BasePass(CmdList);
-        // Terrain cull is frustum-only (no HZB) and writes per-terrain buffers; running after the
-        // primary, barriers order the WAR.
         TerrainCullPass(CmdList);
         TerrainDepthPrePass(CmdList);
         TerrainRenderPass(CmdList);
+        WaterPass(CmdList);
         TransparentPass(CmdList);
         OITResolvePass(CmdList);
-
-        // Volumetric fog (froxel grid is per-view, camera-frustum aligned).
         FroxelInjectPass(CmdList);
         FroxelIntegratePass(CmdList);
         FroxelApplyPass(CmdList);
-
-        // Tone-map chain into the capture RT. ToneMapping routes to the LDR intermediate when SMAA/post
-        // materials are active, expecting a later pass to write the final RT -- so the capture runs that tail too.
         BloomPass(CmdList);
         AutoExposurePass(CmdList);
         ToneMappingPass(CmdList);
@@ -959,6 +945,7 @@ namespace Lumina
             auto ParticleAllView    = Registry.view<SParticleSystemComponent>();
             auto ParticleView       = Registry.view<SParticleSystemComponent>(entt::exclude<SDisabledTag>);
             auto DecalView          = Registry.view<SDecalComponent>(entt::exclude<SDisabledTag>);
+            auto WaterView          = Registry.view<SWaterComponent>(entt::exclude<SDisabledTag>);
             auto& TransformStorage  = Registry.storage<STransformComponent>();
             
             ECS::Utils::ResolveAllDirtyTransforms(Registry);
@@ -1647,6 +1634,92 @@ namespace Lumina
                         PrevOwner                  = Owner;
                     }
                 }
+            }, ETaskPriority::High);
+
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Extract Water");
+
+                Frame.Water.Surfaces.clear();
+                Frame.Water.bUnderwaterActive = false;
+
+                const FVector4& CamLoc = Frame.SceneGlobalData.CameraData.Location;
+                const FVector3  CameraPos = FVector3(CamLoc.x, CamLoc.y, CamLoc.z);
+
+                // Track the nearest water surface above the camera (largest local.y still below the plane).
+                float BestUnderwaterLocalY = -1.0e30f;
+
+                auto ResolveTexture = [](const TObjectPtr<CTexture>& Tex) -> uint32
+                {
+                    CTexture*  T     = Tex.Get();
+                    FRHIImage* Image = T ? T->GetRHIRef() : nullptr;
+                    return (Image && Image->GetResourceID() >= 0) ? (uint32)Image->GetResourceID() : ~0u;
+                };
+
+                WaterView.each([&](entt::entity Entity, const SWaterComponent& Water)
+                {
+                    const FMatrix4 WorldMatrix = TransformStorage.get(Entity).GetWorldMatrix();
+                    const float ExtentX = Math::Max(Water.Extent.x, 0.01f);
+                    const float ExtentZ = Math::Max(Water.Extent.y, 0.01f);
+
+                    FGPUWater Item    = {};
+                    Item.WaterToWorld = Math::Scale(WorldMatrix, FVector3(ExtentX, 1.0f, ExtentZ));
+                    Item.WorldToWater = Math::Inverse(Item.WaterToWorld);
+
+                    Item.ShallowColor = FVector4(Water.ShallowColor, 1.0f);
+                    Item.DeepColor    = FVector4(Water.DeepColor, 1.0f);
+                    Item.FoamColor    = FVector4(Water.FoamColor, 1.0f);
+
+                    FVector2    Wind    = Water.WindDirection;
+                    const float WindLen = Math::Sqrt(Wind.x * Wind.x + Wind.y * Wind.y);
+                    Wind = (WindLen > 1e-4f) ? FVector2(Wind.x / WindLen, Wind.y / WindLen) : FVector2(1.0f, 0.0f);
+
+                    Item.WindAndWave    = FVector4(Wind.x, Wind.y, Water.WindSpeed, Water.WaveAmplitude);
+                    Item.WaveParams     = FVector4(Math::Clamp(Water.Choppiness, 0.0f, 1.0f),
+                                                   Math::Max(Water.WaveScale, 0.05f),
+                                                   (float)Math::Clamp(Water.WaveCount, 1, 8),
+                                                   Math::Clamp(Water.DetailStrength, 0.0f, 1.0f));
+                    Item.RefractReflect = FVector4(Math::Max(Water.RefractionStrength, 0.0f),
+                                                   Math::Clamp(Water.ReflectionStrength, 0.0f, 1.0f),
+                                                   Math::Clamp(Water.Roughness, 0.0f, 1.0f),
+                                                   Math::Max(Water.FresnelPower, 1.0f));
+                    Item.FoamAbsorb     = FVector4(Math::Max(Water.ShorelineFoamWidth, 0.0f),
+                                                   Math::Clamp(Water.CrestFoamAmount, 0.0f, 1.0f),
+                                                   Math::Max(Water.DepthFadeDistance, 0.01f),
+                                                   Math::Max(Water.AbsorptionScale, 0.0f));
+                    Item.SSRSpecOpacity = FVector4(Math::Max(Water.SSRMaxDistance, 1.0f),
+                                                   (float)Math::Clamp(Water.SSRStepCount, 8, 128),
+                                                   Math::Max(Water.SpecularIntensity, 0.0f),
+                                                   Math::Clamp(Water.Opacity, 0.0f, 1.0f));
+                    Item.DetailParams   = FVector4(Math::Max(Water.DetailTiling, 0.01f),
+                                                   Math::Max(Water.DetailScrollSpeed, 0.0f),
+                                                   Math::Max(Water.FoamTiling, 0.01f),
+                                                   Math::Max(Water.FoamIntensity, 0.0f));
+
+                    Item.DetailNormalIndex = ResolveTexture(Water.DetailNormalMap);
+                    Item.FoamTextureIndex  = ResolveTexture(Water.FoamTexture);
+                    Item.GridResolution    = (uint32)Math::Clamp(Water.GridResolution, 2, 512);
+                    Item.Flags             = 0;
+
+                    Frame.Water.Surfaces.push_back(Item);
+
+                    // Underwater test: transform the camera into water-local space. Inside the XZ extent and
+                    // below the surface (local.y < 0) means the camera is submerged in this body; keep the
+                    // nearest surface overhead so the right body drives the underwater post-process.
+                    const FVector4 LocalCam = Item.WorldToWater * FVector4(CameraPos, 1.0f);
+                    if (Math::Abs(LocalCam.x) <= 0.5f && Math::Abs(LocalCam.z) <= 0.5f &&
+                        LocalCam.y < 0.0f && LocalCam.y > BestUnderwaterLocalY)
+                    {
+                        BestUnderwaterLocalY = LocalCam.y;
+
+                        const FVector3 SurfaceCenter = TransformStorage.get(Entity).GetWorldLocation();
+                        Frame.Water.bUnderwaterActive = true;
+                        Frame.Water.Underwater.PlaneNormalAndHeight = FVector4(0.0f, 1.0f, 0.0f, SurfaceCenter.y);
+                        Frame.Water.Underwater.FogColorDensity      = FVector4(Water.UnderwaterFogColor, Math::Max(Water.UnderwaterFogDensity, 0.0f));
+                        Frame.Water.Underwater.TintDistortion       = FVector4(Water.UnderwaterTint, Math::Max(Water.UnderwaterDistortion, 0.0f));
+                        Frame.Water.Underwater.DeepColor            = FVector4(Water.DeepColor, 0.0f);
+                    }
+                });
             }, ETaskPriority::High);
 
             Graph.Add([&]
@@ -4196,8 +4269,6 @@ namespace Lumina
         Frame.Geometry.TotalPreSkinnedVertices = 0;
         Frame.Primitives.BillboardInstances.clear();
         Frame.Primitives.WidgetInstances.clear();
-        // Previous frame's pin refs were already handed to the render
-        // thread's command buffer; clearing here just drops our copy.
         Frame.Geometry.PinnedMeshBuffersThisFrame.clear();
         Frame.Primitives.PinnedWidgetRTs.clear();
         Frame.Primitives.GlyphInstances.clear();
@@ -4255,7 +4326,8 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Early)", tracy::Color::Pink2);
 
-        CmdList.FillBuffer(GetDeferCount(), 0u);
+        FRHIBuffer* DifferCount = GetDeferCount();
+        CmdList.FillBuffer(DifferCount, 0u, DifferCount->GetSize(), 0);
 
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
@@ -4673,7 +4745,7 @@ namespace Lumina
         constexpr uint32 SpdMaxMips = 12;
         const uint32 NumMips = std::min(MipCount, SpdMaxMips);
 
-        CmdList.FillBuffer(SpdCounter, 0u);
+        CmdList.FillBuffer(SpdCounter, 0u, SpdCounter->GetSize(), 0);
 
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
         FComputePipelineDesc PipelineDesc;
@@ -4738,30 +4810,11 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cluster Build Pass", tracy::Color::Pink2);
 
-        FLightClusterPC ClusterPC;
-        ClusterPC.InverseProjection = SceneViewport->GetViewVolume().GetInverseProjectionMatrix();
-        ClusterPC.zNearFar = FVector2(SceneViewport->GetViewVolume().GetNear(), SceneViewport->GetViewVolume().GetFar());
-        ClusterPC.GridSize = FVector4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
-        ClusterPC.ScreenSize = FUIntVector2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
-
-        // Cluster AABBs are view-space, depending only on projection + RT size; skip the
-        // dispatch while unchanged since the Cluster buffer is persistent.
-        const bool bNeedsRebuild =
-            CurrentView->bClusterGridDirty
-            || ClusterPC.InverseProjection != CurrentView->LastClusterInvProjection
-            || ClusterPC.zNearFar          != CurrentView->LastClusterNearFar
-            || ClusterPC.ScreenSize        != CurrentView->LastClusterScreenSize;
-
-        if (!bNeedsRebuild)
-        {
-            return;
-        }
-
-        CurrentView->LastClusterInvProjection = ClusterPC.InverseProjection;
-        CurrentView->LastClusterNearFar       = ClusterPC.zNearFar;
-        CurrentView->LastClusterScreenSize    = ClusterPC.ScreenSize;
-        CurrentView->bClusterGridDirty        = false;
-
+        // Grid params live in the per-view scene snapshot (uSceneData) the shader reads via gPC.Root,
+        // matching LightCull and the base pass. AABBs are rebuilt every frame so they always track the
+        // snapshot frustum -- sourcing them from live render-thread projection/RT size (which lead the
+        // snapshot by the extract->render latency) bins lights into a frustum the base pass never looks
+        // up, lighting whole tiles with the wrong lights.
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("ClusterBuild.slang");
 
         FComputePipelineDesc PipelineDesc;
@@ -4776,8 +4829,8 @@ namespace Lumina
         State.Writes(CurrentView->ClusterBuffer);
         CmdList.SetComputeState(State);
 
-        PushRootConstants(CmdList, ClusterPC);
-            
+        PushRootConstants(CmdList);
+
         constexpr uint32 ClusterBuildGroupSize = 64;
         constexpr uint32 ClusterDispatchGroups = (NumClusters + ClusterBuildGroupSize - 1) / ClusterBuildGroupSize;
         CmdList.Dispatch(ClusterDispatchGroups, 1, 1);
@@ -5363,10 +5416,21 @@ namespace Lumina
         };
         static_assert(sizeof(FDBufferPushConstants) == 16, "FDBufferPushConstants must match the slang push block.");
 
+        // No decals this frame -> sentinel index so the base pass PS skips the three DBuffer samples
+        // (they would composite a guaranteed no-op), removing 3 tex loads from every opaque pixel.
         FDBufferPushConstants DBufferPC = {};
-        DBufferPC.DBufferAIndex = (uint32)DBufferA->GetResourceID();
-        DBufferPC.DBufferBIndex = (uint32)DBufferB->GetResourceID();
-        DBufferPC.DBufferCIndex = (uint32)DBufferC->GetResourceID();
+        if (Frame.Primitives.DecalExtracts.empty())
+        {
+            DBufferPC.DBufferAIndex = 0xFFFFFFFFu;
+            DBufferPC.DBufferBIndex = 0xFFFFFFFFu;
+            DBufferPC.DBufferCIndex = 0xFFFFFFFFu;
+        }
+        else
+        {
+            DBufferPC.DBufferAIndex = (uint32)DBufferA->GetResourceID();
+            DBufferPC.DBufferBIndex = (uint32)DBufferB->GetResourceID();
+            DBufferPC.DBufferCIndex = (uint32)DBufferC->GetResourceID();
+        }
 
         for (uint32 Idx : OpaqueDrawList)
         {
@@ -5515,7 +5579,7 @@ namespace Lumina
                 State.SpawnCounterBuffer = GRenderContext->CreateBuffer(SpawnCounterDesc);
 
                 // Zero-fill the particle buffer so all entries start dead.
-                CmdList.FillBuffer(State.ParticleBuffer, 0u);
+                CmdList.FillBuffer(State.ParticleBuffer, 0u, State.ParticleBuffer->GetSize(), 0);
 
                 State.AllocatedMax      = MaxParticles;
                 State.SpawnAccumulator  = 0.0f;
@@ -5526,7 +5590,7 @@ namespace Lumina
             // Apply the game-thread Activate()/Deactivate() intents to the render-owned sim state.
             if (Item.bForceReset)
             {
-                CmdList.FillBuffer(State.ParticleBuffer, 0u);
+                CmdList.FillBuffer(State.ParticleBuffer, 0u, State.ParticleBuffer->GetSize(), 0);
                 State.AliveTimeRemaining = 0.0f;
                 State.SpawnAccumulator   = 0.0f;
                 State.SystemAge          = 0.0f;
@@ -5593,7 +5657,7 @@ namespace Lumina
 
             // Zero the spawn counter only when we are actually going to
             // dispatch. Idle systems no longer pay for it.
-            CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
+            CmdList.FillBuffer(State.SpawnCounterBuffer, 0u, State.SpawnCounterBuffer->GetSize(), 0);
 
             const FMatrix4 WorldMat = Item.WorldMatrix;
             const FVector3 EmitterWorld = FVector3(WorldMat * FVector4(Item.EmitterOffset, 1.0f));
@@ -7658,12 +7722,210 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
-    // Prefilter mip count is per-tier (FIBLBakeResolution::Mips); the pass reads it from the cube.
-    // GGX samples per prefilter texel. 256 is the readable/cost compromise vs Karis 1024.
+    void FForwardRenderScene::WaterPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const TVector<FGPUWater>& Waters = Frame.Water.Surfaces;
+        if (Waters.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Water Pass", tracy::Color::CadetBlue);
+
+        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("WaterVert.slang");
+        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("WaterPixel.slang");
+        if (!VS || !PS)
+        {
+            return;
+        }
+
+        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
+        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
+        FRHIImage* Prefilter  = GetNamedImage(ENamedImage::SkyPrefilter);
+
+        // Copy the lit opaque scene so the shader can sample "behind the water" (refraction + SSR) without
+        // reading the HDR target it also writes.
+        CmdList.CopyImage(HDR, FTextureSlice(), SceneColor, FTextureSlice());
+
+        // No depth attachment: the PS rejects fragments behind the opaque scene by sampling SceneDepth, so we
+        // can read depth freely with no sample-while-bound hazard (one transparent layer -> early-Z unneeded).
+        FRenderPassDesc::FAttachment ColorAttachment;
+        ColorAttachment.SetImage(HDR).SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass;
+        RenderPass.AddColorAttachment(ColorAttachment)
+                  .SetRenderArea(HDR->GetExtent());
+
+        // Double-sided so the surface is visible from below (camera submerged) too.
+        FRasterState RasterState;
+        RasterState.SetCullNone().EnableDepthClip();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        // Standard alpha "over": the PS composites scene+water; alpha softens the shoreline edge.
+        FBlendState::RenderTarget WaterBlend;
+        WaterBlend.SetBlendEnable(true)
+                  .SetSrcBlend(EBlendFactor::SrcAlpha)
+                  .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                  .SetBlendOp(EBlendOp::Add)
+                  .SetSrcBlendAlpha(EBlendFactor::One)
+                  .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                  .SetBlendOpAlpha(EBlendOp::Add);
+
+        FBlendState BlendState;
+        BlendState.SetRenderTarget(0, WaterBlend);
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState)
+                   .SetDepthStencilState(DepthState)
+                   .SetBlendState(BlendState);
+
+        auto WaterAlloc = CmdList.CopyTransientArray(Waters.data(), Waters.size());
+
+        struct FWaterPushConstants
+        {
+            uint64 WatersAddr;
+            uint32 SceneColorIndex;
+            uint32 SceneDepthIndex;
+        };
+        static_assert(sizeof(FWaterPushConstants) == 16, "FWaterPushConstants must match Includes/Water.slang.");
+
+        FWaterPushConstants PC = {};
+        PC.WatersAddr      = WaterAlloc.Gpu;
+        PC.SceneColorIndex = (uint32)SceneColor->GetResourceID();
+        PC.SceneDepthIndex = (uint32)SceneDepth->GetResourceID();
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("Water Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.SetVertexShader(VS);
+        Desc.SetPixelShader(PS);
+        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        // One draw per water body; the body index arrives via SV_VulkanInstanceID (FirstInstance). Grid is
+        // (Res-1)^2 cells, 6 verts each, generated procedurally from SV_VertexID in the VS.
+        for (uint32 i = 0; i < (uint32)Waters.size(); ++i)
+        {
+            const uint32 Res = Waters[i].GridResolution;
+            const uint32 VertexCount = (Res > 1u) ? (Res - 1u) * (Res - 1u) * 6u : 0u;
+            if (VertexCount == 0u)
+            {
+                continue;
+            }
+
+            FGraphicsState GraphicsState;
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // Scene color/depth and the sky prefilter cube are read by bindless index; declare them so the
+            // tracker inserts the shader-read transitions.
+            GraphicsState.Reads(SceneColor);
+            GraphicsState.Reads(SceneDepth);
+            GraphicsState.Reads(Prefilter);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(SceneViewportState);
+
+            CmdList.SetGraphicsState(GraphicsState);
+            PushRootConstants(CmdList, PC);
+
+            CmdList.Draw(VertexCount, 1, 0, i);
+        }
+    }
+
+    void FForwardRenderScene::UnderwaterPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        if (!Frame.Water.bUnderwaterActive)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Underwater Pass", tracy::Color::SteelBlue);
+
+        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("WaterUnderwater.slang");
+        if (!VS || !PS)
+        {
+            return;
+        }
+
+        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
+        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
+
+        // Sample the fully-composited scene from a copy; the PS recomputes every pixel (above-water pixels
+        // pass through unchanged), so the half-submerged screen split falls out of the per-ray path length.
+        CmdList.CopyImage(HDR, FTextureSlice(), SceneColor, FTextureSlice());
+
+        FRenderPassDesc::FAttachment ColorAttachment;
+        ColorAttachment.SetImage(HDR).SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass;
+        RenderPass.AddColorAttachment(ColorAttachment)
+                  .SetRenderArea(HDR->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        auto ParamsAlloc = CmdList.CopyTransient(Frame.Water.Underwater);
+
+        struct FUnderwaterPushConstants
+        {
+            uint64 ParamsAddr;
+            uint32 SceneColorIndex;
+            uint32 SceneDepthIndex;
+        };
+        static_assert(sizeof(FUnderwaterPushConstants) == 16, "FUnderwaterPushConstants must match WaterUnderwater.slang.");
+
+        FUnderwaterPushConstants PC = {};
+        PC.ParamsAddr      = ParamsAlloc.Gpu;
+        PC.SceneColorIndex = (uint32)SceneColor->GetResourceID();
+        PC.SceneDepthIndex = (uint32)SceneDepth->GetResourceID();
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("Underwater Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.SetVertexShader(VS);
+        Desc.SetPixelShader(PS);
+        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.Reads(SceneColor);
+        GraphicsState.Reads(SceneDepth);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(SceneViewportState);
+
+        CmdList.SetGraphicsState(GraphicsState);
+        PushRootConstants(CmdList, PC);
+
+        CmdList.Draw(3, 1, 0, 0);
+    }
+    
     static constexpr uint32 GPrefilterSampleCount = 256;
 
     void FForwardRenderScene::SkyCubeCapturePass(ICommandList& CmdList)
     {
+        LUMINA_PROFILE_SECTION_COLORED("Sky Cube Capture", tracy::Color::SkyBlue);
+        
         const FFrameData& Frame = *RenderFrame;
         const auto& LightData         = Frame.Lighting.LightData;
         const auto& SceneGlobalData   = Frame.SceneGlobalData;
@@ -7672,6 +7934,18 @@ namespace Lumina
 
         if (!RenderSettings.bHasEnvironment)
         {
+            if (FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube))
+            {
+                CmdList.ClearImageFloat(SkyCube, AllSubresources, FColor::Black);
+            }
+            if (FRHIImage* Irradiance = GetNamedImage(ENamedImage::SkyIrradiance))
+            {
+                CmdList.ClearImageFloat(Irradiance, AllSubresources, FColor::Black);
+            }
+            if (FRHIImage* Prefilter = GetNamedImage(ENamedImage::SkyPrefilter))
+            {
+                CmdList.ClearImageFloat(Prefilter, AllSubresources, FColor::Black);
+            }
             return;
         }
 
@@ -7680,7 +7954,6 @@ namespace Lumina
             return;
         }
 
-        LUMINA_PROFILE_SECTION_COLORED("Sky Cube Capture", tracy::Color::SkyBlue);
 
         FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
         if (!SkyCube)
@@ -7780,6 +8053,8 @@ namespace Lumina
 
     void FForwardRenderScene::IrradianceConvolutionPass(ICommandList& CmdList)
     {
+        LUMINA_PROFILE_SECTION_COLORED("Sky Irradiance Convolution", tracy::Color::SkyBlue1);
+
         const FFrameData& Frame = *RenderFrame;
         const bool bIBLConvolutionDirty = Frame.Volumetrics.bIBLConvolutionDirty;
 
@@ -7794,9 +8069,7 @@ namespace Lumina
         {
             return;
         }
-
-        LUMINA_PROFILE_SECTION_COLORED("Sky Irradiance Convolution", tracy::Color::SkyBlue1);
-
+        
         FRHIImage* SkyCube      = GetNamedImage(ENamedImage::SkyCube);
         FRHIImage* IrradianceCube = GetNamedImage(ENamedImage::SkyIrradiance);
         if (!SkyCube || !IrradianceCube)
@@ -7946,8 +8219,6 @@ namespace Lumina
         RenderState.SetRasterState(RasterState);
 
         FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
-        // HDRI background samples the source equirect directly (SkyCube stays the IBL source). The BRDF LUT
-        // is a harmless placeholder in non-HDRI modes, where the shader never reads the equirect.
         FRHIImage* Equirect = RenderFrame->Volumetrics.EnvironmentMapImage
             ? RenderFrame->Volumetrics.EnvironmentMapImage
             : GetNamedImage(ENamedImage::BRDFLut);
@@ -9276,6 +9547,21 @@ namespace Lumina
             View.Images[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
         }
 
+        // Scene-color copy for the water + underwater passes (HDR is blitted here, then sampled for
+        // refraction / SSR / distortion so those passes never read the HDR target they also write).
+        {
+            FRHIImageDesc ImageDesc = {};
+            ImageDesc.Extent = Extent;
+            ImageDesc.Format = EFormat::RGBA16_FLOAT;
+            ImageDesc.Dimension = EImageDimension::Texture2D;
+            ImageDesc.InitialState = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName = "Water Refraction";
+
+            View.Images[(int)ENamedImage::WaterRefraction] = GRenderContext->CreateImage(ImageDesc);
+        }
+
         // DBuffer decal targets: BaseColor / WorldNormal / Roughness-Metallic-AO, each with transmittance
         // in alpha. RGBA8_UNORM; written by DecalPass, sampled by the base pass.
         {
@@ -9517,16 +9803,12 @@ namespace Lumina
 
     uint64 FForwardRenderScene::BuildViewSceneRoot(ICommandList& CmdList, FSceneView& View, uint64 SceneDataAddr)
     {
-        // Build the per-view root straight into the ring: copy the shared base in, then patch the
-        // per-view fields in place -- no intermediate FSceneRoot temp.
         auto Root = CmdList.AllocTransient<FSceneRoot>();
         *Root = SceneRootShared;
         Root->SceneData          = SceneDataAddr;
         Root->Clusters           = View.ClusterBuffer->GetAddress();
         Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut]->GetResourceID();
         Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance]->GetResourceID();
-        // Pack the prefilter cube's mip count into the top byte; the shader reads it instead of a per-pixel
-        // GetDimensions. Low 24 bits hold the bindless index (far more headroom than any bindless table size).
         {
             FRHIImage* Prefilter = View.Images[(int)ENamedImage::SkyPrefilter];
             uint32 PrefilterID   = (uint32)Prefilter->GetResourceID();

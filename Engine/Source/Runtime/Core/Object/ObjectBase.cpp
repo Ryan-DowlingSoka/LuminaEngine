@@ -149,6 +149,11 @@ namespace Lumina
         return GObjectArray.GetStrongRefCountByIndex(InternalIndex);
     }
 
+    int32 CObjectBase::GetWeakRefCount() const
+    {
+        return GObjectArray.GetWeakRefCountByIndex(InternalIndex);
+    }
+
     void CObjectBase::HandleNameChange(const FName& NewName, CPackage* NewPackage) noexcept
     {
         FObjectHashTables::Get().RemoveObject(this);

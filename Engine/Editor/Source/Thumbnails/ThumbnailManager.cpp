@@ -196,6 +196,7 @@ namespace Lumina
         {
             ThumbnailManagerSingleton = NewObject<CThumbnailManager>();
             ThumbnailManagerSingleton->Initialize();
+            ThumbnailManagerSingleton->AddToRoot();
         });
 
         return *ThumbnailManagerSingleton;

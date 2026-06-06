@@ -123,6 +123,10 @@ namespace Lumina
         FRHIPixelShaderRef                      PixelShader;
         FRHIVertexShaderRef                     DepthPrepassVertexShader;
         FRHIVertexShaderRef                     ShadowVertexShader;
+        
+    protected:
+        
+        void UpdateMaterialUniforms() override;
 
     private:
 

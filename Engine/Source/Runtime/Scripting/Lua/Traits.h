@@ -48,6 +48,7 @@ namespace Lumina::Lua
         // Resolves a stable type key to a process-global tag.
         RUNTIME_API static uint16 GetOrCreate(uint64 TypeKey);
     };
+    
 
     template<typename T>
     struct TClassTraits
@@ -59,7 +60,7 @@ namespace Lumina::Lua
         }
 
     private:
-        static uint64 StableTypeKey()
+        static uint16 StableTypeKey()
         {
             #if defined(_MSC_VER)
             return Hash::FNV1a::GetHash64(__FUNCSIG__);

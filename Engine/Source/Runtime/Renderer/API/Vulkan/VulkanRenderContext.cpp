@@ -874,9 +874,7 @@ namespace Lumina
             FGPUMemoryHeapStats Heap;
             Heap.HeapIndex       = i;
             Heap.bDeviceLocal    = (MemProps->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
-
-            // ReBAR isn't a heap flag; it surfaces as a memory *type* that is both DeviceLocal and
-            // HostVisible. Fold every type pointing at this heap to find CPU-writable VRAM.
+            
             for (uint32 t = 0; t < MemProps->memoryTypeCount; ++t)
             {
                 if (MemProps->memoryTypes[t].heapIndex != i)
@@ -890,7 +888,6 @@ namespace Lumina
                 }
             }
 
-            // Legacy (non-resizable) BAR exposes a small ~256MB DeviceLocal+HostVisible window.
             constexpr uint64 LegacyBARWindow = 256ull * 1024 * 1024;
             Heap.bReBAR          = Heap.bDeviceLocal && Heap.bHostVisible
                                 && MemProps->memoryHeaps[i].size > LegacyBARWindow;

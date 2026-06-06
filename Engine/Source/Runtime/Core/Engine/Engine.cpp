@@ -937,9 +937,7 @@ namespace Lumina
         const bool                      bPIE           = OldContext->bPIE;
         const FString                   OldNetHost     = OldContext->NetHost;
         uint16                          NetPort        = OldContext->NetPort;
-        CGameInstance* const            SavedInstance  = OldContext->GameInstance != nullptr
-                                                            ? OldContext->GameInstance
-                                                            : GameInstance;
+        CGameInstance* const            SavedInstance  = OldContext->GameInstance != nullptr ? OldContext->GameInstance : GameInstance.Get();
         CWorld* const                   OldWorld       = OldContext->World.Get();
 
         // A host-level OpenLevel overrides the role/port on the world it travels to.

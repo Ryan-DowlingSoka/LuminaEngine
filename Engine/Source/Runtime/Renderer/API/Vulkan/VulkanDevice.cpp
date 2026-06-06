@@ -15,9 +15,7 @@
 namespace Lumina
 {
     constexpr uint64 DEDICATED_MEMORY_THRESHOLD = 2048llu * 2048;
-
-    // 32 MiB block: 128 MiB OOMed on the 256 MiB BAR heap (no Resizable BAR).
-    constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 32llu * 1024 * 1024;
+    constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 128llu * 1024 * 1024;
 
     FVulkanMemoryAllocator::FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device)
         : RenderContext(InCxt)
@@ -78,10 +76,8 @@ namespace Lumina
 
         VmaPoolCreateInfo PoolInfo = {};
         PoolInfo.memoryTypeIndex = MemoryTypeIndex;
-        // TLSF (flags=0), NOT linear: deferred/out-of-order chunk frees stall the linear ring front → unbounded block growth.
         PoolInfo.flags          = 0;
         PoolInfo.blockSize      = UploadBlockSize;
-        // Lazy: first upload triggers first block. Pre-warming OOMed startup on small BAR heaps.
         PoolInfo.minBlockCount  = 0;
         PoolInfo.maxBlockCount  = 0;
 
@@ -118,13 +114,8 @@ namespace Lumina
 
         VmaAllocationCreateInfo Info = {};
         Info.usage = VMA_MEMORY_USAGE_AUTO;
-        Info.flags = Flags | VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
-
-        if (Flags & VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
-        {
-            Info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        }
-
+        Info.flags = Flags | VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
+        
         VmaAllocation Allocation = nullptr;
         VmaAllocationInfo AllocationInfo;
 
@@ -163,34 +154,16 @@ namespace Lumina
         if (Result != VK_SUCCESS)
         {
             VmaAllocationCreateInfo Info = {};
-            // PREFER_DEVICE so the GPU reads from VRAM (the DEVICE_LOCAL|HOST_VISIBLE / ReBAR heap) when
-            // available; HOST_ACCESS keeps it mappable, VMA falls back to system-RAM host-visible if no
-            // such heap exists. Upload data is GPU-read directly via BDA, so VRAM-resident matters.
             Info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             Info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                        | VMA_ALLOCATION_CREATE_MAPPED_BIT
                        | VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
                        | VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
             VK_CHECK(vmaCreateBuffer(Allocator, CreateInfo, &Info, vkBuffer, &Allocation, &AllocInfo));
+            LOG_WARN("[VMA] - Failed to fit into linear pool, falling back to slower path");
         }
 
         DEBUG_ASSERT(Allocation, "Vulkan failed to allocate upload buffer memory!");
-
-        // TEMP: confirm upload memory is VRAM-resident (DEVICE_LOCAL), not system RAM over PCIe.
-        {
-            static bool sLogged = false;
-            if (!sLogged)
-            {
-                sLogged = true;
-                VkMemoryPropertyFlags MemFlags = 0;
-                vmaGetAllocationMemoryProperties(Allocator, Allocation, &MemFlags);
-                LOG_WARN("[UploadMem] DEVICE_LOCAL={} HOST_VISIBLE={} HOST_COHERENT={} HOST_CACHED={}",
-                    (MemFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0,
-                    (MemFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
-                    (MemFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0,
-                    (MemFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0);
-            }
-        }
 
     #if LE_DEBUG
         if (AllocationName)

@@ -530,10 +530,7 @@ namespace Lumina::ECS::Utils
         {
             return;
         }
-
-        // Preserve-world: recompute the local transform so the child keeps its world pose. Skipped on a
-        // network client, where the local transform is authoritative (replicated) -- we only relink and let
-        // ResolveAllDirtyTransforms recompose world = parent_world * (replicated) local.
+        
         FTransform NewLocalTransform;
         if (bPreserveWorld)
         {
@@ -580,9 +577,7 @@ namespace Lumina::ECS::Utils
             Registry.emplace_or_replace<FNeedsTransformUpdate>(Child);
         }
 
-        // Server: a networked entity's attachment change must reach clients. Flag it dirty so the next tick's
-        // PropertyUpdate carries the new parent NetGUID. The is-server gate keeps a client's own replicated
-        // reparent (bPreserveWorld == false) from re-marking dirty.
+        // A networked entity's attachment change must reach clients.
         if (CWorld** WorldPtr = Registry.ctx().find<CWorld*>())
         {
             if (CWorld* World = *WorldPtr)
@@ -1475,8 +1470,6 @@ namespace Lumina::ECS::Utils
 
     entt::id_type GetTypeID(const Lua::FRef& Obj)
     {
-        // Component handles are tables carrying __type_id. Guard a nil/non-table ref -- indexing nil would
-        // raise a Lua error and longjmp through the C++ binding frame (the luaL_tolstring crash).
         if (!Obj.IsTable())
         {
             return entt::id_type{};

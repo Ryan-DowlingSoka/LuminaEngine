@@ -2,23 +2,30 @@
 #include "MaterialManager.h"
 #include "MaterialTypes.h"
 #include "RenderContext.h"
+#include "RenderThread.h"
 #include "RHIGlobals.h"
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
-#include "Memory/Memcpy.h"
 
 namespace Lumina::RHI
 {
     FMaterialManager::FMaterialManager()
     {
+        constexpr auto MaxMaterialUniforms = 1024;
+        
         FRHIBufferDesc Desc;
-        Desc.Size   = sizeof(FMaterialUniforms) * 2000;
+        Desc.Size   = sizeof(FMaterialUniforms) * MaxMaterialUniforms;
         Desc.Stride = sizeof(FMaterialUniforms);
         Desc.Usage.SetFlag(EBufferUsageFlags::StorageBuffer);
         Desc.DebugName = "Material Uniforms";
-        Desc.InitialState = EResourceStates::UnorderedAccess;
+        Desc.InitialState = EResourceStates::ShaderResource;
         Desc.bKeepInitialState = true;
         
         MaterialBuffer = GRenderContext->CreateBuffer(Desc);
+
+        for (int i = 0; i < MaxMaterialUniforms; ++i)
+        {
+            FreeList.push(i);
+        }
     }
 
     void FMaterialManager::AddMaterial(CMaterialInterface* Material)
@@ -27,11 +34,13 @@ namespace Lumina::RHI
 
         DEBUG_ASSERT(Material != nullptr);
         DEBUG_ASSERT(Material->GetMaterialIndex() == -1);
+        DEBUG_ASSERT(!FreeList.empty());
         
-        Material->SetMaterialIndex(MaterialUniforms.size());
-        MaterialMap.emplace(Material->GetMaterialIndex(), Material);
-        MaterialUniforms.emplace_back(*Material->GetMaterialUniforms());
-        UpdateMaterialUniforms(Material);
+        uint32 FreeIndex = FreeList.top();
+        FreeList.pop();
+        
+        Material->SetMaterialIndex((int32)FreeIndex);
+        UpdateMaterialUniforms(Material->GetMaterialUniforms(), FreeIndex);
     }
 
     void FMaterialManager::RemoveMaterial(CMaterialInterface* Material)
@@ -42,42 +51,39 @@ namespace Lumina::RHI
         DEBUG_ASSERT(Material->GetMaterialIndex() != -1);
 
         int32 MaterialIndex = Material->GetMaterialIndex();
-        int32 LastMaterialIndex = MaterialUniforms.size() - 1;
-
-        MaterialMap.erase(MaterialIndex);
-
-        if (MaterialIndex != LastMaterialIndex)
-        {
-            CMaterialInterface* MovedMaterial = MaterialMap[LastMaterialIndex];
-
-            MaterialUniforms.erase_unsorted(MaterialUniforms.begin() + MaterialIndex);
-
-            MaterialMap.erase(LastMaterialIndex);
-            MaterialMap.insert_or_assign(MaterialIndex, MovedMaterial);
-
-            MovedMaterial->SetMaterialIndex(MaterialIndex);
-
-            UpdateMaterialUniforms(MovedMaterial);
-        }
-        else
-        {
-            MaterialUniforms.pop_back();
-        }
+        
+        UpdateMaterialUniforms(nullptr, MaterialIndex);
 
         Material->SetMaterialIndex(-1);
+        
+        FreeList.push(MaterialIndex);
     }
 
-    void FMaterialManager::UpdateMaterialUniforms(CMaterialInterface* Material)
+    void FMaterialManager::UpdateMaterialUniforms(const FMaterialUniforms* InUniforms, uint32 Index)
     {
-        const int32 Index = Material->GetMaterialIndex();
-        FMaterialUniforms& Uniforms = MaterialUniforms[Index];
-        Memory::Memcpy(&Uniforms, Material->GetMaterialUniforms(), sizeof(FMaterialUniforms));
-
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CommandList->Open();
-        CommandList->WriteBuffer(MaterialBuffer, &Uniforms, sizeof(FMaterialUniforms), Index * sizeof(FMaterialUniforms));
-        CommandList->Close();
-
-        GRenderContext->ExecuteCommandList(CommandList);
+        TOptional<FMaterialUniforms> MaybeCopy;
+        
+        if (InUniforms)
+        {
+            MaybeCopy = *InUniforms;
+        }
+        
+        ENQUEUE_RENDER_COMMAND(UpdateMaterialUniforms)([this, Index, MaybeCopy]
+        {
+            FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            CommandList->Open();
+            
+            if (!MaybeCopy.has_value())
+            {
+                CommandList->FillBuffer(MaterialBuffer, 0u, sizeof(FMaterialUniforms), Index * sizeof(FMaterialUniforms));
+            }
+            else
+            {
+                CommandList->WriteBuffer(MaterialBuffer, &*MaybeCopy, sizeof(FMaterialUniforms), Index * sizeof(FMaterialUniforms));
+            }
+            CommandList->Close();
+            
+            GRenderContext->ExecuteCommandList(CommandList); 
+        });
     }
 }

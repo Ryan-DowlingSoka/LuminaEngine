@@ -10,10 +10,10 @@ namespace Lumina
         friend class FDescriptorTableManager;
     public:
 
-        FDescriptorHandle(const FDescriptorHandle&) = delete;
-        FDescriptorHandle(FDescriptorHandle&&) = default;
-        FDescriptorHandle& operator=(const FDescriptorHandle&) = delete;
-        FDescriptorHandle& operator=(FDescriptorHandle&&) = default;
+        FDescriptorHandle(const FDescriptorHandle&)             = delete;
+        FDescriptorHandle(FDescriptorHandle&&)                  = default;
+        FDescriptorHandle& operator=(const FDescriptorHandle&)  = delete;
+        FDescriptorHandle& operator=(FDescriptorHandle&&)       = default;
 
         FDescriptorHandle() = default;
         FDescriptorHandle(const TSharedPtr<FDescriptorTableManager>& InManager, int64 InIndex)
@@ -44,9 +44,9 @@ namespace Lumina
     {
     public:
         
-        FDescriptorTableManager(IRenderContext* InContext, FRHIBindingLayout* BindingLayout);
+        FDescriptorTableManager(FRHIBindingLayout* BindingLayout);
         FDescriptorTableManager() = default;
-        ~FDescriptorTableManager();
+        ~FDescriptorTableManager() = default;
         
         // Custom hasher that doesn't look at the binding slot
         struct FBindingSetItemHasher
@@ -86,22 +86,38 @@ namespace Lumina
 
         // Diagnostics: live = currently-allocated descriptors (the index map holds exactly
         // those), capacity = the table's current slot count (grows but never shrinks).
-        uint32 GetLiveDescriptorCount() const { return (uint32)DescriptorIndexMap.size(); }
-        uint32 GetDescriptorCapacity()  const { return (uint32)AllocatedDescriptors.size(); }
+        NODISCARD uint32 GetLiveDescriptorCount() const { return (uint32)DescriptorIndexMap.size(); }
+        NODISCARD uint32 GetDescriptorCapacity()  const { return (uint32)AllocatedDescriptors.size(); }
 
-        int64 CreateDescriptor(FBindingSetItem Item);
-        FDescriptorHandle CreateDescriptorHandle(const FBindingSetItem& Item);
-        FBindingSetItem GetDescriptor(int64 Index);
+        NODISCARD int64 CreateDescriptor(FBindingSetItem Item);
+        NODISCARD FDescriptorHandle CreateDescriptorHandle(const FBindingSetItem& Item);
+        NODISCARD const FBindingSetItem& GetDescriptor(int64 Index) const;
+        NODISCARD const TVector<FBindingSetItem>& GetDescriptors() const { return Descriptors; }
+
+        // A released slot is NOT returned to the free pool immediately: the GPU may still be
+        // sampling it from an in-flight frame (bindless slots are indexed by integer, so the
+        // command buffer holds no ref to the texture). The slot is parked until FramesToDefer
+        // ticks have passed, then reclaimed. The caller is responsible for repointing the GPU
+        // slot at a live placeholder before releasing, so the parked slot never dangles.
         void ReleaseDescriptor(int64 DescriptorIndex);
+        void TickDeferredReleases(uint32 FramesToDefer);
 
 
     private:
-        IRenderContext* Context = nullptr;
+
+        struct FPendingFree
+        {
+            int64  Index;
+            uint64 FrameReleased;
+        };
+
         FRHIDescriptorTableRef DescriptorTable;
         TVector<FBindingSetItem> Descriptors;
         THashMap<FBindingSetItem, int64, FBindingSetItemHasher, FBindingSetItemsEqual> DescriptorIndexMap;
         TVector<bool> AllocatedDescriptors;
+        TVector<FPendingFree> PendingFrees;
+        uint64 FrameCounter = 0;
         int64 SearchStart = 0;
-    
+
     };
 }

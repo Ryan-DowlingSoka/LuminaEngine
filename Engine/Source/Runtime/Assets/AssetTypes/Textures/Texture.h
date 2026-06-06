@@ -58,7 +58,5 @@ namespace Lumina
         FString SourcePath;
 
         TUniquePtr<FTextureResource> TextureResource;
-
-        int64 GlobalTextureIndex;
     };
 }

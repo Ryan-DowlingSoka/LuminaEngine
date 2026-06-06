@@ -1229,9 +1229,12 @@ namespace Lumina
 
             for (auto&& [ID, Storage] : EntityRegistry.storage())
             {
-                if (!Callback(Storage.info()))
+                if (Callback)
                 {
-                    continue;
+                    if (!Callback(Storage.info()))
+                    {
+                        continue;
+                    }
                 }
 
                 // Scripts/rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
@@ -1278,13 +1281,13 @@ namespace Lumina
 
             if (NewParent != entt::null)
             {
-                ECS::Utils::ReparentEntity(EntityRegistry, NewEntity, NewParent);
+                ECS::Utils::ReparentEntity(EntityRegistry, NewEntity, NewParent, false);
             }
             else if (FRelationshipComponent* Rel = EntityRegistry.try_get<FRelationshipComponent>(Source))
             {
                 if (Rel->Parent != entt::null)
                 {
-                    ECS::Utils::ReparentEntity(EntityRegistry, NewEntity, Rel->Parent);
+                    ECS::Utils::ReparentEntity(EntityRegistry, NewEntity, Rel->Parent, false);
                 }
             }
 
@@ -1297,9 +1300,7 @@ namespace Lumina
         };
 
         To = DuplicateRecursive(DuplicateRecursive, From, entt::null);
-
-        // Fix up entity-handle properties so references between duplicated entities point at the
-        // new copies; references to entities outside the duplicated set are left untouched.
+        
         for (auto& [Source, Dup] : SourceToDuplicate)
         {
             ECS::Utils::RemapEntityReferences(EntityRegistry, Dup, SourceToDuplicate, /*bClearUnmapped*/ false);

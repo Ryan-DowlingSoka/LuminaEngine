@@ -180,7 +180,7 @@ namespace Lumina
             return;
         }
 
-        if (Instance->Parameters.empty())
+        if (Instance->GetMaterialParams().empty())
         {
             ImGui::TextUnformatted("Parent material exposes no parameters.");
             return;
@@ -206,7 +206,7 @@ namespace Lumina
                 ImGui::TableSetupColumn("##Name", ImGuiTableColumnFlags_WidthFixed, 175);
                 ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch);
 
-                for (FMaterialParameter& Param : Instance->Parameters)
+                for (const FMaterialParameter& Param : Instance->GetMaterialParams())
                 {
                     ImGui::PushID(&Param);
                     ImGui::TableNextRow();
@@ -228,13 +228,13 @@ namespace Lumina
                             case EMaterialParameterType::Scalar:
                                 if (Param.Index < MAX_SCALARS)
                                 {
-                                    Instance->SetScalarValue(Param.ParameterName, Instance->MaterialUniforms.Scalars[Param.Index]);
+                                    Instance->SetScalarValue(Param.ParameterName, Instance->GetMaterialUniforms()->Scalars[Param.Index]);
                                 }
                                 break;
                             case EMaterialParameterType::Vector:
                                 if (Param.Index < MAX_VECTORS)
                                 {
-                                    Instance->SetVectorValue(Param.ParameterName, Instance->MaterialUniforms.Vectors[Param.Index]);
+                                    Instance->SetVectorValue(Param.ParameterName, Instance->GetMaterialUniforms()->Vectors[Param.Index]);
                                 }
                                 break;
                             case EMaterialParameterType::Texture:
@@ -275,7 +275,7 @@ namespace Lumina
                             ImGui::TextDisabled("Invalid index");
                             break;
                         }
-                        float Value = Instance->MaterialUniforms.Scalars[Param.Index];
+                        float Value = Instance->GetMaterialUniforms()->Scalars[Param.Index];
                         if (ImGui::DragFloat("##Scalar", &Value, 0.01f))
                         {
                             Instance->SetScalarValue(Param.ParameterName, Value);
@@ -291,7 +291,7 @@ namespace Lumina
                             ImGui::TextDisabled("Invalid index");
                             break;
                         }
-                        FVector4 Value = Instance->MaterialUniforms.Vectors[Param.Index];
+                        FVector4 Value = Instance->GetMaterialUniforms()->Vectors[Param.Index];
                         if (ImGui::ColorEdit4("##Vector", Math::ValuePtr(Value), ImGuiColorEditFlags_Float))
                         {
                             Instance->SetVectorValue(Param.ParameterName, Value);

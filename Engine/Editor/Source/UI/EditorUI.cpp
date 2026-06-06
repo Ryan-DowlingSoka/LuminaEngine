@@ -108,6 +108,7 @@
 #include "Tools/Debug/SettingsEditorTool.h"
 #include "Settings/EditorSettings.h"
 #include "Config/EngineSettings.h"
+#include "Tools/TextureBrowserEditorTool.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
@@ -2202,7 +2203,8 @@ namespace Lumina
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         DrawToolMenuItem<FPluginBrowserEditorTool>(LE_ICON_PUZZLE " Plugin Browser", this);
-        
+        DrawToolMenuItem<FTextureBrowserEditorTool>(LE_ICON_TEXTURE " Texture Browser", this);
+
         ImGui::Spacing();
         
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "ImGui Tools");

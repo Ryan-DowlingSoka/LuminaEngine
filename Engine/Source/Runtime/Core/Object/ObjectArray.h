@@ -215,6 +215,8 @@ namespace Lumina
         RUNTIME_API bool IsReferencedByIndex(int32 Index) const;
 
         RUNTIME_API int32 GetStrongRefCountByIndex(int32 Index) const;
+        
+        RUNTIME_API int32 GetWeakRefCountByIndex(uint32 Index) const;
     
         RUNTIME_API int32 GetNumAliveObjects() const;
 

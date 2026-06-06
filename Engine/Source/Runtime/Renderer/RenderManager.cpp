@@ -71,8 +71,6 @@ namespace Lumina
 
     void FRenderManager::Initialize()
     {
-        GRenderContext = Memory::New<FVulkanRenderContext>();
-
         #if defined(LUMINA_WITH_VALIDATION)
         constexpr bool bValidation = true;
         #else
@@ -85,6 +83,7 @@ namespace Lumina
         constexpr bool bDebugUtils = true;
         #endif
 
+        GRenderContext = Memory::New<FVulkanRenderContext>();
         GRenderContext->Initialize(FRenderContextDesc{ bValidation, bDebugUtils });
 
         GRenderThread = Memory::New<FRenderThread>();
@@ -124,6 +123,12 @@ namespace Lumina
         {
             GRenderContext->WaitForGPU();
             GRenderContext->FlushPendingDeletes();
+
+            // GPU is idle here: safe to retire bindless slots whose parked-frame window elapsed.
+            if (TextureManager)
+            {
+                TextureManager->Tick();
+            }
 
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
