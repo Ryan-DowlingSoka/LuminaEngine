@@ -33,6 +33,7 @@
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/World.h"
+#include "World/Entity/Components/LightComponent.h"
 
 namespace Lumina
 {
@@ -1527,7 +1528,10 @@ namespace Lumina
             DrawViewportOptions(ButtonSize);
 
             // Trailing editor-mode selector + active-mode toolbar (world only).
-            DrawViewportToolbarModeSelector(ButtonSize);
+            if (!IsViewportPlaying())
+            {
+                DrawViewportToolbarModeSelector(ButtonSize);
+            }
 
             ImGui::EndGroup();
         }
@@ -1557,7 +1561,34 @@ namespace Lumina
 
             ImGui::SeparatorText(LE_ICON_VIDEO " Camera Settings");
 
-            ImGui::Text("Movement Speed");
+            bool bHasCameraLight = World->GetEntityRegistry().all_of<SPointLightComponent>(EditorEntity);
+            ImGui::TextUnformatted("Camera Light");
+            if (ImGuiX::IconButton(LE_ICON_LIGHTBULB, "Light"))
+            {
+                if (bHasCameraLight)
+                {
+                    World->GetEntityRegistry().remove<SPointLightComponent>(EditorEntity);
+                    bHasCameraLight = false;
+                }
+                else
+                {
+                    auto&& PL = World->GetEntityRegistry().emplace<SPointLightComponent>(EditorEntity);
+                    PL.Intensity = 50.0f;
+                    PL.Attenuation = 50.0f;
+                }
+            }
+            
+            if (bHasCameraLight)
+            {
+                auto&& PL = World->GetEntityRegistry().get<SPointLightComponent>(EditorEntity);
+                ImGuiX::SliderFloat("Intensity", &PL.Intensity, 0.0f, 300.0f);
+                ImGuiX::SliderFloat("Attenuation", &PL.Attenuation, 0.0f, 200.0f);
+                ImGui::ColorEdit3("Color", &PL.LightColor.x, ImGuiColorEditFlags_Float);
+            }
+            
+            ImGui::Separator();
+            
+            ImGui::TextUnformatted("Movement Speed");
             if (ImGui::SliderFloat("##Speed", &Speed, 0.1f, 100.0f, "%.1fx"))
             {
                 CameraState.Speed = Speed;

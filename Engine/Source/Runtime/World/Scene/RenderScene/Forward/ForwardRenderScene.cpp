@@ -925,27 +925,27 @@ namespace Lumina
             FEntityRegistry& Registry = World->GetEntityRegistry();
             TAtomic<uint32> LightCount{0};
             
-            auto DirectionalView    = Registry.view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
-            auto SpotLightView      = Registry.view<SSpotLightComponent>(entt::exclude<SDisabledTag>);
-            auto PointLightView     = Registry.view<SPointLightComponent>(entt::exclude<SDisabledTag>);
-            auto CharacterView      = Registry.view<SCharacterControllerComponent>(entt::exclude<SDisabledTag>);
-            auto CameraView         = Registry.view<SCameraComponent>(entt::exclude<SDisabledTag>);
-            auto BillboardView      = Registry.view<SBillboardComponent>(entt::exclude<SDisabledTag>);
-            auto WidgetView         = Registry.view<SWidgetComponent>(entt::exclude<SDisabledTag>);
-            auto TextView           = Registry.view<STextComponent>(entt::exclude<SDisabledTag>);
-            auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
+            auto DirectionalView     = Registry.view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
+            auto SpotLightView       = Registry.view<SSpotLightComponent>(entt::exclude<SDisabledTag>);
+            auto PointLightView      = Registry.view<SPointLightComponent>(entt::exclude<SDisabledTag>);
+            auto CharacterView       = Registry.view<SCharacterControllerComponent>(entt::exclude<SDisabledTag>);
+            auto CameraView          = Registry.view<SCameraComponent>(entt::exclude<SDisabledTag>);
+            auto BillboardView       = Registry.view<SBillboardComponent>(entt::exclude<SDisabledTag>);
+            auto WidgetView          = Registry.view<SWidgetComponent>(entt::exclude<SDisabledTag>);
+            auto TextView            = Registry.view<STextComponent>(entt::exclude<SDisabledTag>);
+            auto LineBatcherView     = Registry.view<FLineBatcherComponent>();
             auto TriangleBatcherView = Registry.view<FTriangleBatcherComponent>();
-            auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
-            auto SkyLightView       = Registry.view<SSkyLightComponent>(entt::exclude<SDisabledTag>);
-            auto FogView            = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
-            auto StaticView         = Registry.view<SStaticMeshComponent>(entt::exclude<SDisabledTag>);
-            auto SkeletalView       = Registry.view<SSkeletalMeshComponent>(entt::exclude<SDisabledTag>);
-            auto TerrainAllView     = Registry.view<STerrainComponent>();
-            auto TerrainView        = Registry.view<STerrainComponent>(entt::exclude<SDisabledTag>);
-            auto ParticleAllView    = Registry.view<SParticleSystemComponent>();
-            auto ParticleView       = Registry.view<SParticleSystemComponent>(entt::exclude<SDisabledTag>);
-            auto DecalView          = Registry.view<SDecalComponent>(entt::exclude<SDisabledTag>);
-            auto WaterView          = Registry.view<SWaterComponent>(entt::exclude<SDisabledTag>);
+            auto EnvironmentView     = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
+            auto SkyLightView        = Registry.view<SSkyLightComponent>(entt::exclude<SDisabledTag>);
+            auto FogView             = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
+            auto StaticView          = Registry.view<SStaticMeshComponent>(entt::exclude<SDisabledTag>);
+            auto SkeletalView        = Registry.view<SSkeletalMeshComponent>(entt::exclude<SDisabledTag>);
+            auto TerrainAllView      = Registry.view<STerrainComponent>();
+            auto TerrainView         = Registry.view<STerrainComponent>(entt::exclude<SDisabledTag>);
+            auto ParticleAllView     = Registry.view<SParticleSystemComponent>();
+            auto ParticleView        = Registry.view<SParticleSystemComponent>(entt::exclude<SDisabledTag>);
+            auto DecalView           = Registry.view<SDecalComponent>(entt::exclude<SDisabledTag>);
+            auto WaterView           = Registry.view<SWaterComponent>(entt::exclude<SDisabledTag>);
             auto& TransformStorage  = Registry.storage<STransformComponent>();
             
             ECS::Utils::ResolveAllDirtyTransforms(Registry);
@@ -3573,8 +3573,14 @@ namespace Lumina
         {
             const FMatrix4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             uint32 CameraFlags = ECullViewFlags::Cone;
-            if (RenderSettings.bFrustumCull)   CameraFlags |= ECullViewFlags::Frustum;
-            if (RenderSettings.bOcclusionCull) CameraFlags |= ECullViewFlags::Occlusion;
+            if (RenderSettings.bFrustumCull)
+            {
+                CameraFlags |= ECullViewFlags::Frustum;
+            }
+            if (RenderSettings.bOcclusionCull)
+            {
+                CameraFlags |= ECullViewFlags::Occlusion;
+            }
             PushView(CameraVP, ViewVolume.GetViewPosition(), CameraFlags);
         }
 
@@ -6792,9 +6798,12 @@ namespace Lumina
             CmdList.DrawIndirect(1u, 0u);
         }
     }
-
+    
     void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
     {
+        //@TODO BROKEN, GPU CRASH ACCESSING TEXTURE
+        return;
+        
         const FFrameData& Frame = *RenderFrame;
         const auto& BillboardInstances = Frame.Primitives.BillboardInstances;
         const auto& DrawCommands       = Frame.Geometry.DrawCommands;
@@ -6865,7 +6874,7 @@ namespace Lumina
         PushRootConstants(CmdList);
         CmdList.Draw(6, BillboardInstances.size(), 0, 0);   
     }
-
+    
     void FForwardRenderScene::WidgetPickerPass(ICommandList& CmdList)
     {
         const FFrameData& Frame = *RenderFrame;
@@ -8358,7 +8367,10 @@ namespace Lumina
         FGraphicsState XRayState        = BuildLineState(BuildLinePipeline(false));
 
         // Vertices live in the transient ring for this submission; the VS reads them by device address.
-        const FSimpleElementPassData VertsPass{ CmdList.CopyTransientArray(SimpleVertices.data(), SimpleVertices.size()).Gpu };
+        const FSimpleElementPassData VertsPass
+        { 
+            CmdList.CopyTransientArray(SimpleVertices.data(), SimpleVertices.size()).Gpu 
+        };
 
         // Re-bind only when the depth mode changes between consecutive batches.
         int CurrentDepthMode = -1;

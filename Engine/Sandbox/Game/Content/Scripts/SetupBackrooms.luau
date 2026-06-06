@@ -10,7 +10,7 @@ function Script:OnReady()
 
     for x = -100, 100, 10 do
         for z = -100, 100, 10 do
-        	if math.random() < 0.6 then
+        	if math.random() < 0.3 then
             	local l = World.Duplicate(LightEntity)
             	World.SetLocation(l, Vec3(x, 11, z))
             end

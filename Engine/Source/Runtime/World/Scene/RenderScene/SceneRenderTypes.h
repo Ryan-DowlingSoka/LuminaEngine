@@ -328,20 +328,19 @@ namespace Lumina
     // Hot per-light data. Keeping it at 64 bytes cuts the L2 footprint of the inner loop ~10x.
     struct FLight
     {
-        FVector3       Position;
+        FVector3        Position;
         uint32          Color;
 
-        FVector3       Direction;
+        FVector3        Direction;
         float           Radius;
 
         float           Intensity;
         float           Falloff;
-        FVector2       Angles;
+        FVector2        Angles;
 
         ELightFlags     Flags;
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
 
-        // Ignored unless Flags has ELightFlags::Volumetric.
         float           VolumetricIntensity;
         uint32          Padding0;
     };
@@ -354,7 +353,7 @@ namespace Lumina
     // Cold shadow-caster data; hot lighting loop never touches it.
     struct FLightShadowData
     {
-        FMatrix4       ViewProjection[6];  // 384 B
+        FMatrix4        ViewProjection[6];  // 384 B
         FLightShadow    Shadow[6];          // 192 B
     };
 
@@ -438,8 +437,8 @@ namespace Lumina
     // World-space UI widget quad. Matches FWidgetInstance in Common.slang (96B, dense).
     struct alignas(16) FWidgetInstance
     {
-        FMatrix4       Transform;      // entity world matrix
-        FVector2       WorldSize;      // quad size in world units
+        FMatrix4        Transform;      // entity world matrix
+        FVector2        WorldSize;      // quad size in world units
         uint32          TextureIndex;   // bindless ResourceID of the widget RT
         uint32          Flags;          // bit0 = billboard (face camera)
         uint32          ColorPack;      // tint, PackColor()
@@ -749,6 +748,7 @@ namespace Lumina
         uint64 PreSkinnedVertices    = 0;  // GPU-written
         uint64 SkinDescriptors       = 0;
         uint64 Widgets               = 0;
+        
         uint32 BRDFLutIndex          = 0;
         uint32 SkyIrradianceIndex    = 0;
         uint32 SkyPrefilterIndex     = 0;
@@ -768,7 +768,7 @@ namespace Lumina
 
     struct FSceneGlobalData
     {
-        FCameraData     CameraData;
+        FCameraData       CameraData;
         FUIntVector4      ScreenSize;
         FUIntVector4      GridSize;
 

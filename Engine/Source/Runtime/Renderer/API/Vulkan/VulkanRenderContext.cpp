@@ -610,6 +610,7 @@ namespace Lumina
             Builder.add_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
             Builder.add_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT);
             Builder.add_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT);
+            Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT);
             Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
             Builder.request_validation_layers();
             Builder.use_default_debug_messenger();
@@ -1089,7 +1090,7 @@ namespace Lumina
             DeviceFaultFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
             DeviceFaultFeatures.deviceFault = VK_TRUE;
         }
-
+        
         if (PhysicalDevice.enable_extension_if_present(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME))
         {
             EnabledExtensions.SetFlag(EVulkanExtensions::PushDescriptors);

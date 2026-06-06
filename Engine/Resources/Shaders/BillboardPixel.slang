@@ -15,12 +15,11 @@ struct FragmentOutput
     uint   Picker : SV_Target1;
 };
 
-
 [shader("fragment")]
 FragmentOutput FragmentMain(FragmentInput Input)
 {
     float4 Texture = SampleBindless2D(Input.TextureIndex, SAMPLER_LINEAR_WRAP, Input.UV);
-
+    
     if (Texture.a < 0.01)
     {
         discard;

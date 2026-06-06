@@ -2201,8 +2201,7 @@ namespace Lumina
     void FWorldEditorTool::DrawViewportToolbarPlayControls(float ButtonSize)
     {
         DrawSimulationControls(ButtonSize);
-        // Always trail a separator -- the rest of the toolbar now follows even during play (when editor-focused),
-        // so the controls must stay on the same row as the Stop button.
+
         ImGui::SameLine();
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
         ImGui::SameLine();
@@ -3393,7 +3392,6 @@ namespace Lumina
 
                 ImGui::EndDisabled();
 
-                // Play-settings dropdown (player count + net mode). Enabled even when Play is disabled.
                 ImGui::SameLine(0.0f, 8.0f);
                 if (ImGui::ArrowButton("##PlaySettings", ImGuiDir_Down))
                 {
@@ -3437,8 +3435,7 @@ namespace Lumina
         {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 0.5f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 0.75f));
-            // shouldCenterContents=true: center the icon glyph in the square (otherwise
-            // it's left-aligned at FramePadding and looks off in the small button).
+            
             if (ImGuiX::IconButton(LE_ICON_STOP, "##StopBtn", 0xFFFFFFFF, BtnSize, true))
             {
                 SetWorldPlayInEditor(false);

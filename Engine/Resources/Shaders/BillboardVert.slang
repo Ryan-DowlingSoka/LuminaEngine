@@ -29,7 +29,7 @@ struct VertexOutput
     nointerpolation float3 ColorTint             : COLORTINT;
     nointerpolation uint TextureIndex            : TEXTURE_INDEX;
     nointerpolation uint EntityID                : ENTITY_ID;
-    float4 Position                   : SV_Position;
+    float4 Position                              : SV_Position;
 };
 
 [shader("vertex")]

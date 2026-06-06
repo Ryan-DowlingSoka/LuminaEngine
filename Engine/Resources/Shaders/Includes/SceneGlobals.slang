@@ -78,7 +78,7 @@ struct FRootConstants
 [[vk::binding(1, 0)]] SamplerState                              uBindlessSamplers[];
 // Comparison-sampler alias of the same sampler table (VkSampler carries compareEnable; only
 // uBindlessCmpSamplers[SAMPLER_SHADOW] is a comparison sampler, used for shadow SampleCmp).
-[[vk::binding(1, 0)]] SamplerComparisonState                   uBindlessCmpSamplers[];
+[[vk::binding(1, 0)]] SamplerComparisonState                    uBindlessCmpSamplers[];
 
 // Stock sampler indices. Keep in lockstep with EBindlessSampler in
 // Engine/Source/Runtime/Renderer/TextureManager.h.
