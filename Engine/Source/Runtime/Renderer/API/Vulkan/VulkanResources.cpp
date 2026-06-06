@@ -1884,23 +1884,52 @@ namespace Lumina
 
     VkPipeline CreateGraphicsVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc, VkPipelineLayout Layout, const FDynamicPipelineStates& Dyn)
     {
+        auto* VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
+
         // Scissor/viewport/line-width always dynamic; remaining states depend on device EDS support.
         TFixedVector<VkDynamicState, 16> DynamicStates;
         DynamicStates.push_back(VK_DYNAMIC_STATE_SCISSOR);
         DynamicStates.push_back(VK_DYNAMIC_STATE_VIEWPORT);
         DynamicStates.push_back(VK_DYNAMIC_STATE_LINE_WIDTH);
-        if (Dyn.bCullMode)           DynamicStates.push_back(VK_DYNAMIC_STATE_CULL_MODE);
-        if (Dyn.bFrontFace)          DynamicStates.push_back(VK_DYNAMIC_STATE_FRONT_FACE);
-        if (Dyn.bDepthTestEnable)    DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
-        if (Dyn.bDepthWriteEnable)   DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
-        if (Dyn.bDepthCompareOp)     DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
-        if (Dyn.bPolygonMode)        DynamicStates.push_back(VK_DYNAMIC_STATE_POLYGON_MODE_EXT);
+        if (Dyn.bCullMode)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_CULL_MODE);
+        }
+        if (Dyn.bFrontFace)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_FRONT_FACE);
+        }
+        if (Dyn.bDepthTestEnable)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
+        }
+        if (Dyn.bDepthWriteEnable)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
+        }
+        if (Dyn.bDepthCompareOp)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
+        }
+        if (Dyn.bPolygonMode)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_POLYGON_MODE_EXT);
+        }
 
         // Depth-only pipelines (shadows) must NOT declare blend dynamic, vkCmdSetColorBlend* with no attachments is invalid.
         const bool bHasColorAttachments = !RenderPassDesc.ColorAttachments.empty();
-        if (Dyn.bColorBlendEnable   && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
-        if (Dyn.bColorBlendEquation && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
-        if (Dyn.bColorWriteMask     && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
+        if (Dyn.bColorBlendEnable   && bHasColorAttachments)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
+        }
+        if (Dyn.bColorBlendEquation && bHasColorAttachments)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
+        }
+        if (Dyn.bColorWriteMask     && bHasColorAttachments)
+        {
+            DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
+        }
 
         TFixedVector<VkPipelineShaderStageCreateInfo, 2> ShaderStages;
         if (Desc.VS)
@@ -1955,9 +1984,11 @@ namespace Lumina
         ViewportState.sType                 = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
         ViewportState.viewportCount         = 1;
         ViewportState.scissorCount          = 1;
+        
 
         const FRasterState& RasterState = Desc.RenderState.RasterState;
-
+        
+        
         VkPipelineRasterizationStateCreateInfo RasterizationState = {};
         RasterizationState.sType                        = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         RasterizationState.polygonMode                  = ToVkPolygonMode(RasterState.FillMode);
@@ -1968,6 +1999,18 @@ namespace Lumina
         RasterizationState.depthBiasConstantFactor      = (float)RasterState.DepthBias;
         RasterizationState.depthBiasClamp               = RasterState.DepthBiasClamp;
         RasterizationState.depthBiasSlopeFactor         = RasterState.SlopeScaledDepthBias;
+        
+        VkPipelineRasterizationLineStateCreateInfo LineState{};
+        LineState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO;
+        LineState.lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH; 
+        
+        if (VulkanContext->SupportsSmoothLines() 
+            && Desc.PrimType == EPrimitiveType::LineList 
+            || Desc.PrimType == EPrimitiveType::LineStrip)
+        {
+            // Tried it, it's insanely expensive.
+            //RasterizationState.pNext = &LineState;
+        }
 
         const FDepthStencilState& DepthState = Desc.RenderState.DepthStencilState;
 

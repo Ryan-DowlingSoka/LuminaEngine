@@ -48,6 +48,7 @@ namespace Lumina
         PageableDeviceLocalMemory,
         FragmentShadingRate,
         HostImageCopy,
+        SmoothLines,
     };
 
     // Dynamic states so descs differing only here don't mint a separate PSO. Cull/front-face/depth
@@ -273,6 +274,8 @@ namespace Lumina
         // Max fragment shading rate the device supports (maxFragmentSize); {1,1} if FSR is off.
         // Pipeline creation clamps requested rates to this so an unsupported pick can't fault.
         FORCEINLINE VkExtent2D GetMaxShadingRate() const { return ShadingRateMax; }
+        
+        FORCEINLINE bool SupportsSmoothLines() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::SmoothLines); }
 
         // Collapses any optimal layout to GENERAL when unified layouts are active.
         // PRESENT_SRC (the one real transition) and UNDEFINED (initial discard) pass through.

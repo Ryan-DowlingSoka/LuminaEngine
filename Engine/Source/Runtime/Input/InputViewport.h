@@ -68,16 +68,11 @@ namespace Lumina
         RUNTIME_API FInputViewport* GetFocusedViewport() const { return FocusedViewport; }
 
         RUNTIME_API const FInputContext& GetRawInput() const { return *RawInput; }
-
-        // Whether the game (the active viewport's world) currently owns input. Defaults true so a packaged
-        // build just works; the editor flips it (Shift+F1 / Play / Stop). The gate is global, not per-tool,
-        // so it survives a single global active viewport across multiple PIE preview windows. Releasing it
-        // hands the cursor back across every viewport.
+        
         RUNTIME_API bool IsGameInputFocused() const { return bGameInputFocused; }
         RUNTIME_API void SetGameInputFocused(bool bFocused);
 
-        // The registered viewport bound to a given world, or null. Lets per-world input components
-        // read their own world's context instead of the single global active viewport.
+
         RUNTIME_API FInputViewport* FindViewportForWorld(const CWorld* World) const;
 
         RUNTIME_API void SetActiveViewport(FInputViewport* Viewport);

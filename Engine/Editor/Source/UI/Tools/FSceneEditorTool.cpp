@@ -1481,10 +1481,6 @@ namespace Lumina
 
     void FSceneEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
     {
-        // While the game viewport has input focus (an immersive PIE session), hide the whole toolbar so it
-        // doesn't block the view. Whenever the editor is focused -- including during play, once you release the
-        // game's mouse capture -- show the FULL toolbar so every control (view modes, debug toggles, etc.) stays
-        // reachable instead of collapsing to just the Stop button.
         if (FInputViewportRegistry::Get().IsGameInputFocused())
         {
             return;
@@ -1493,12 +1489,12 @@ namespace Lumina
         const float Scale = ImGuiX::GetUIScale();
         const float Padding = 8.0f * Scale;
         const float ItemSpacing = 6.0f * Scale;
-        const float ButtonSize = (IsViewportPlaying() ? 24.0f : 32.0f) * Scale;
+        const float ButtonSize = 24.0f * Scale;
         constexpr float CornerRounding = 8.0f;
 
         ImVec2 Pos = ImGui::GetWindowPos();
         ImGui::SetNextWindowPos(Pos + ImVec2(Padding, Padding));
-        ImGui::SetNextWindowBgAlpha(IsViewportPlaying() ? 1.0f : 0.85f);
+        ImGui::SetNextWindowBgAlpha(0.85f);
 
         ImGuiWindowFlags WindowFlags =
             ImGuiWindowFlags_NoDecoration |

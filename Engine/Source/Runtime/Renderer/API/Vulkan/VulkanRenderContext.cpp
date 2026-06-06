@@ -995,8 +995,6 @@ namespace Lumina
         DeviceFeatures.drawIndirectFirstInstance            = VK_TRUE;
         DeviceFeatures.vertexPipelineStoresAndAtomics       = VK_TRUE; // @TODO See if we need this.
         DeviceFeatures.shaderInt16                          = VK_TRUE;
-        // shaderInt64: lets shaders hold raw 64-bit device addresses (BDA scene-root + per-pass payload
-        // pointers reconstructed in-shader). Standard on desktop GPUs.
         DeviceFeatures.shaderInt64                          = VK_TRUE;
         DeviceFeatures.independentBlend                     = VK_TRUE;
         DeviceFeatures.pipelineStatisticsQuery              = VK_TRUE;
@@ -1017,16 +1015,12 @@ namespace Lumina
         Features12.descriptorBindingUniformBufferUpdateAfterBind      = VK_TRUE;
         Features12.descriptorBindingStorageBufferUpdateAfterBind      = VK_TRUE;
         Features12.descriptorBindingUpdateUnusedWhilePending          = VK_TRUE;
-        Features12.shaderOutputViewportIndex        = VK_TRUE; // Should not stay.
-        Features12.shaderOutputLayer                = VK_TRUE; // Should not stay.
         Features12.samplerFilterMinmax              = VK_TRUE;
         Features12.bufferDeviceAddress              = VK_TRUE;
         Features12.runtimeDescriptorArray           = VK_TRUE;
         Features12.shaderInt8                       = VK_TRUE;
         Features12.shaderFloat16                    = VK_TRUE;
 
-        // VK_EXT_mutable_descriptor_type lets the bindless table host both sampled
-        // and storage images at one slot; the per-write descriptorType picks the interpretation.
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT MutableDescriptorFeature{};
         MutableDescriptorFeature.sType                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
         MutableDescriptorFeature.mutableDescriptorType  = VK_TRUE;
@@ -1035,6 +1029,8 @@ namespace Lumina
         Features13.sType                            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         Features13.dynamicRendering                 = VK_TRUE;
         Features13.synchronization2                 = VK_TRUE;
+        
+        
         
         vkb::PhysicalDeviceSelector selector(Instance);
         auto PhysicalDeviceResult = selector
@@ -1045,8 +1041,6 @@ namespace Lumina
             .set_required_features_13(Features13)
             .add_required_extension_features(MutableDescriptorFeature)
             .add_required_extension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)
-            // Dedicated compute/transfer queues are a preference, not a requirement (single-queue iGPUs).
-            // Absent ones alias onto the graphics queue at queue-setup time (see CreateDevice queue block).
             .defer_surface_initialization()
             .select();
 
@@ -1074,6 +1068,8 @@ namespace Lumina
         }
 
         vkb::PhysicalDevice PhysicalDevice = PhysicalDeviceResult.value();
+        
+        
 
         PhysicalDevice.enable_extension_if_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
@@ -1241,8 +1237,31 @@ namespace Lumina
             OptionalFeatures.wideLines = VK_TRUE;
             PhysicalDevice.enable_features_if_present(OptionalFeatures);
         }
+        
+        VkPhysicalDeviceVulkan14Features Enabled14{};
+        Enabled14.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+
+        {
+            VkPhysicalDeviceVulkan14Features Supported14{};
+            Supported14.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+
+            VkPhysicalDeviceFeatures2 Features2{};
+            Features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            Features2.pNext = &Supported14;
+
+            vkGetPhysicalDeviceFeatures2(PhysicalDevice.physical_device, &Features2);
+
+            Enabled14.smoothLines = Supported14.smoothLines;
+            if (Enabled14.smoothLines)
+            {
+                EnabledExtensions.SetFlag(EVulkanExtensions::SmoothLines);
+            }
+        }
 
         vkb::DeviceBuilder DeviceBuilder(PhysicalDevice);
+
+        DeviceBuilder.add_pNext(&Enabled14);
+
         if (bNvDiagnostics)
         {
             CrashTracker->EnableDeviceFeatures(DeviceBuilder);

@@ -256,10 +256,7 @@ namespace Lumina
         // Hook: persist the current gizmo snap members to the tool's settings object. Default no-op;
         // World/Prefab editors override to write their CDeveloperSettings + save.
         virtual void PersistGizmoSettings() {}
-
-        // --- Viewport overlay toolbar (shared) -----------------------------------------
-        // The floating in-viewport toolbar is identical across tools. The play controls + editor-mode
-        // selector + a couple of view-mode items are tool-specific and supplied by the hooks below.
+        
         void DrawViewportToolbar(const FUpdateContext& UpdateContext) override;
         void DrawCameraControls(float ButtonSize);
         void DrawViewportOptions(float ButtonSize);
@@ -276,10 +273,7 @@ namespace Lumina
 
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE      GuizmoMode = ImGuizmo::WORLD;
-
-        // --- Details panel (shared) ----------------------------------------------------
-        // The whole details/properties window is identical across tools. Tool-specific bits are
-        // isolated behind the hooks below (tags are world-only; the prefab guards root deletion).
+        
 
         // Tool-window body: resolves the last-selected entity, rebuilds tables, draws the panel.
         void DrawDetailsPanel(bool bFocused);

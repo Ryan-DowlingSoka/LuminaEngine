@@ -2233,7 +2233,10 @@ namespace Lumina
                 for (int32 Idx = 0; Idx < (int32)EditorModes.size(); ++Idx)
                 {
                     IWorldEditorMode* Mode = EditorModes[Idx].get();
-                    if (!Mode) continue;
+                    if (!Mode)
+                    {
+                        continue;
+                    }
                     const bool bSelected = (Idx == ActiveModeIndex);
 
                     char Label[64];
@@ -3391,7 +3394,7 @@ namespace Lumina
                 ImGui::EndDisabled();
 
                 // Play-settings dropdown (player count + net mode). Enabled even when Play is disabled.
-                ImGui::SameLine(0.0f, 2.0f);
+                ImGui::SameLine(0.0f, 8.0f);
                 if (ImGui::ArrowButton("##PlaySettings", ImGuiDir_Down))
                 {
                     ImGui::OpenPopup("PlaySettingsPopup");

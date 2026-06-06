@@ -95,20 +95,18 @@ namespace Lumina
 
         static bool HasComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
-            LUMINA_PROFILE_SECTION("Has Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
-            if (entt::resolve(Type))
+            if (auto&& Storage = Registry.storage(entt::resolve(Type).info().hash()))
             {
-                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "has"_hs, entt::forward_as_meta(Registry), Entity);
-                return Meta.cast<bool>();
+                return Storage->contains(Entity);
             }
+            
             FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(Registry, Type);
             return Storage != nullptr && Storage->contains(Entity);
         }
 
         static Lua::FRef GetComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
-            LUMINA_PROFILE_SECTION("Get Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
             if (entt::resolve(Type))
             {
@@ -133,17 +131,19 @@ namespace Lumina
 
         static size_t RemoveComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
-            LUMINA_PROFILE_SECTION("Remove Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
-            if (entt::resolve(Type))
+            if (auto&& Storage = Registry.storage(entt::resolve(Type).info().hash()))
             {
-                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "remove"_hs, entt::forward_as_meta(Registry), Entity);
-                return Meta.cast<size_t>();
+                if (Storage->contains(Entity))
+                {
+                    return Storage->remove(Entity);
+                }
             }
             if (CEntityComponentType* RuntimeType = ResolveRuntimeComponentType(Type))
             {
                 return ECS::Utils::RemoveRuntimeComponent(Registry, Entity, RuntimeType) ? 1u : 0u;
             }
+            
             return 0;
         }
 
@@ -234,14 +234,12 @@ namespace Lumina
         
         static void DispatchEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
         {
-            LUMINA_PROFILE_SECTION("Dispatch Event [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
             auto Meta = ECS::Utils::InvokeMetaFunc(Type, "dispatch_lua"_hs, entt::forward_as_meta(Registry), entt::forward_as_meta(Ref));
         }
         
         static void EnqueueEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
         {
-            LUMINA_PROFILE_SECTION("Enqueue Event [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
             auto Meta = ECS::Utils::InvokeMetaFunc(Type, "enqueue_lua"_hs, entt::forward_as_meta(Registry), entt::forward_as_meta(Ref));
         }
@@ -249,8 +247,6 @@ namespace Lumina
         
         static void ForEachInRuntimeView_Lua(entt::runtime_view& View, Lua::FRef Func)
         {
-            LUMINA_PROFILE_SCOPE();
-
             View.each([&](entt::entity Entity)
             {
                 Func(Entity);
@@ -259,8 +255,6 @@ namespace Lumina
         
         static TVector<entt::entity> RuntimeViewGetEntities_Lua(entt::runtime_view& View)
         {
-            LUMINA_PROFILE_SCOPE();
-            
             TVector<entt::entity> Entities;
             Entities.reserve(View.size_hint());
             View.each([&](entt::entity Entity)
@@ -273,25 +267,57 @@ namespace Lumina
         
         static size_t RuntimeViewSizeHint_Lua(entt::runtime_view& View)
         {
-            LUMINA_PROFILE_SCOPE();
-
             return View.size_hint();
         }
+        
+        static double Ctx_DeltaTime(FLuaSystemContext& Ctx)
+        {
+            return Ctx.DeltaTime();
+        }
+        static double Ctx_Time(FLuaSystemContext& Ctx)
+        {
+            return Ctx.Time();
+        }
+        
+        static FEntityRegistry* Ctx_Registry(FLuaSystemContext& Ctx)
+        {
+            return &Ctx.GetRegistry();
+        }
 
-        //~ Lua system context (ctx) -- handed to script systems; mirrors the C++ FSystemContext over the live
-        //  registry. Component/query helpers delegate to the shared bindings above.
-
-        static double Ctx_DeltaTime(FLuaSystemContext& Ctx) { return Ctx.DeltaTime(); }
-        static double Ctx_Time(FLuaSystemContext& Ctx)      { return Ctx.Time(); }
-        static FEntityRegistry* Ctx_Registry(FLuaSystemContext& Ctx) { return &Ctx.GetRegistry(); }
-
-        static Lua::FRef Ctx_Get(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)     { return GetComponent_Lua(Ctx.GetRegistry(), Entity, Comp); }
-        static bool      Ctx_Has(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)     { return HasComponent_Lua(Ctx.GetRegistry(), Entity, Comp); }
-        static Lua::FRef Ctx_Emplace(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp) { return EmplaceComponent_Lua(Ctx.GetRegistry(), Entity, Comp); }
-        static size_t    Ctx_Remove(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)  { return RemoveComponent_Lua(Ctx.GetRegistry(), Entity, Comp); }
-        static entt::entity Ctx_Create(FLuaSystemContext& Ctx)                        { return Ctx.GetRegistry().create(); }
-        static uint32       Ctx_Destroy(FLuaSystemContext& Ctx, entt::entity Entity)  { return Ctx.GetRegistry().destroy(Entity); }
-        static entt::runtime_view Ctx_View(FLuaSystemContext& Ctx, Lua::FVariadicArgs Args) { return RuntimeView_Lua(Ctx.GetRegistry(), Args); }
+        static Lua::FRef Ctx_Get(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)
+        {
+            return GetComponent_Lua(Ctx.GetRegistry(), Entity, Comp);
+        }
+        
+        static bool Ctx_Has(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)
+        {
+            return HasComponent_Lua(Ctx.GetRegistry(), Entity, Comp);
+        }
+        
+        static Lua::FRef Ctx_Emplace(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)
+        {
+            return EmplaceComponent_Lua(Ctx.GetRegistry(), Entity, Comp);
+        }
+        
+        static size_t Ctx_Remove(FLuaSystemContext& Ctx, entt::entity Entity, Lua::FRef Comp)
+        {
+            return RemoveComponent_Lua(Ctx.GetRegistry(), Entity, Comp);
+        }
+        
+        static entt::entity Ctx_Create(FLuaSystemContext& Ctx)
+        {
+            return Ctx.GetRegistry().create();
+        }
+        
+        static uint32 Ctx_Destroy(FLuaSystemContext& Ctx, entt::entity Entity)
+        {
+            return Ctx.GetRegistry().destroy(Entity);
+        }
+        
+        static entt::runtime_view Ctx_View(FLuaSystemContext& Ctx, Lua::FVariadicArgs Args)
+        {
+            return RuntimeView_Lua(Ctx.GetRegistry(), Args);
+        }
 
         static void Ctx_Each(FLuaSystemContext& Ctx, Lua::FRef Comps, Lua::FRef Func)
         {
@@ -333,6 +359,7 @@ namespace Lumina
             
             FEntityRegistry& Registry = World->GetEntityRegistry();
             entt::runtime_view View;
+            
             for (auto&& [Key, Value] : Comps)
             {
                 entt::id_type Type = ECS::Utils::GetTypeID(Value);
@@ -450,12 +477,6 @@ namespace Lumina
 
         static Lua::FRef GetScriptTable_Lua(FEntityRegistry& Registry, entt::entity Entity)
         {
-            LUMINA_PROFILE_SECTION("Get Script Table [Lua]");
-            if (!Registry.valid(Entity))
-            {
-                return {};
-            }
-
             SScriptComponent* ScriptComp = Registry.try_get<SScriptComponent>(Entity);
             if (ScriptComp == nullptr || ScriptComp->Script == nullptr)
             {
@@ -464,10 +485,7 @@ namespace Lumina
 
             return ScriptComp->Script->Reference;
         }
-
-        // Bindings below take a leading CWorld* (injected from thread data) and trailing optional args;
-        // they bind via FRef::SetFunction
-
+        
         static void Camera_SetActive(CWorld* World, entt::entity Entity, TOptional<float> Blend, TOptional<int> Ease)
         {
             if (World == nullptr)
@@ -490,7 +508,7 @@ namespace Lumina
         
         static entt::entity World_FindByTag (CWorld* World, FName Tag)
         {
-            return World ? World->GetEntityByTag(Tag)   : entt::null;
+            return World ? World->GetEntityByTag(Tag) : entt::null;
         }
         
         static int64 World_GetNumEntities(CWorld* World)
@@ -552,10 +570,7 @@ namespace Lumina
                 ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity);
             }
         }
-
-        // Entity authoring through World.* (mutate ANY entity id; self:* stays for this-entity). Components
-        // added here replicate automatically if the entity has a Network component (the net layer observes the ECS).
-        // Routes through ConstructEntity so every entity gets the required Name + Transform (like the editor).
+        
         static entt::entity World_CreateEntity(CWorld* World, TOptional<FName> Name)
         {
             return World ? World->ConstructEntity(Name.value_or(NAME_None)) : entt::null;
@@ -568,7 +583,7 @@ namespace Lumina
         {
             if (World)
             {
-                RemoveComponent_Lua(World->GetEntityRegistry(), Entity, Type);
+                RemoveComponent_Lua(World->GetEntityRegistry(), Entity, std::move(Type));
             }
         }
 
@@ -590,8 +605,7 @@ namespace Lumina
                 ECS::Utils::SetEntityLocation(World->GetEntityRegistry(), Entity, Location);
             }
         }
-
-
+        
         static void World_AddScript(CWorld* World, entt::entity Entity, FStringView Path)
         {
             if (World == nullptr)
@@ -617,17 +631,37 @@ namespace Lumina
             lua_pushnil(L);
             return 1;
         }
-        static bool         World_IsValid(CWorld* World, entt::entity Entity)             { return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity); }
+        
+        static bool World_IsValid(CWorld* World, entt::entity Entity)
+        {
+            return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity);
+        }
+        
+        static void World_Compact(CWorld* World)                                 
+        { 
+            if (World)
+            {
+                World->GetEntityRegistry().compact();
+            }
+        }
 
-        // Removes tombstone holes left in component pools. Reorders elements, invalidating cached
-        // component pointers -- call only at a quiet point (after a batch of Destroys), never mid-iteration.
-        static void         World_Compact(CWorld* World)                                 { if (World) World->GetEntityRegistry().compact(); }
+        static FVector3 World_GetLocation(CWorld* World, entt::entity Entity)
+        {
+            return World ? ECS::Utils::GetEntityLocation(World->GetEntityRegistry(), Entity) : FVector3{};
+        }
+        static FQuat World_GetRotation(CWorld* World, entt::entity Entity)
+        {
+            return World ? ECS::Utils::GetEntityRotation(World->GetEntityRegistry(), Entity) : FQuat{};
+        }
+        static FVector3 World_GetScale(CWorld* World, entt::entity Entity)
+        {
+            return World ? ECS::Utils::GetEntityScale(World->GetEntityRegistry(), Entity) : FVector3{1.0f};
+        }
 
-        static FVector3     World_GetLocation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityLocation(World->GetEntityRegistry(), Entity) : FVector3{}; }
-        static FQuat        World_GetRotation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityRotation(World->GetEntityRegistry(), Entity) : FQuat{}; }
-        static FVector3     World_GetScale(CWorld* World, entt::entity Entity)            { return World ? ECS::Utils::GetEntityScale(World->GetEntityRegistry(), Entity)    : FVector3{1.0f}; }
-
-        static FVector3     World_Translate(CWorld* World, entt::entity Entity, FVector3 Delta) { return World ? ECS::Utils::TranslateEntity(World->GetEntityRegistry(), Entity, Delta) : FVector3{}; }
+        static FVector3 World_Translate(CWorld* World, entt::entity Entity, FVector3 Delta)
+        {
+            return World ? ECS::Utils::TranslateEntity(World->GetEntityRegistry(), Entity, Delta) : FVector3{};
+        }
 
         // World-space setter: rebuilds local from the parent chain so it stays correct under
         // reparenting (unlike ECS.SetEntityLocation, which writes local space directly).
@@ -724,9 +758,7 @@ namespace Lumina
                 }
             }
         }
-
-        // Cross-entity component access: reads components off ANY entity id (not just `self`).
-        // Same get/has semantics as self:GetComponent.
+        
         static Lua::FRef World_GetComponent(CWorld* World, entt::entity Entity, Lua::FRef Ref)
         {
             if (World == nullptr)
@@ -744,7 +776,10 @@ namespace Lumina
 
         static Lua::FRef World_GetScript(CWorld* World, entt::entity Entity)
         {
-            if (World == nullptr) return {};
+            if (World == nullptr)
+            {
+                return {};
+            }
             return GetScriptTable_Lua(World->GetEntityRegistry(), Entity);
         }
 
@@ -916,37 +951,36 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_Each>("Each");
         WorldTable.SetFunction<&LuaBinds::World_GetDeltaTime>("GetDeltaTime");
         WorldTable.SetFunction<&LuaBinds::World_GetTimeSinceCreation>("GetTimeSinceCreation");
-        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefab>("SpawnPrefab");        // SpawnPrefab(path) -> entity
-        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefabAt>("SpawnPrefabAt");    // SpawnPrefabAt(path, location) -> entity
-        WorldTable.SetFunction<&LuaBinds::World_Duplicate>("Duplicate");            // Duplicate(entity) -> entity
-        WorldTable.SetFunction<&LuaBinds::World_BeginPhysicsBatch>("BeginPhysicsBatch"); // wrap a bulk spawn loop; batches body creation
-        WorldTable.SetFunction<&LuaBinds::World_EndPhysicsBatch>("EndPhysicsBatch");      // must be paired with BeginPhysicsBatch
-        WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");                // Destroy(entity)
-        WorldTable.SetFunction<&LuaBinds::World_CreateEntity>("CreateEntity");      // CreateEntity() -> entity
-        WorldTable.SetFunction<&LuaBinds::World_AddComponent>("AddComponent");      // AddComponent(entity, Type)
-        WorldTable.SetFunction<&LuaBinds::World_AddScript>("AddScript");            // AddScript(entity, "/path") -- replicated
-        WorldTable.SetFunction<&LuaBinds::World_RemoveComponent>("RemoveComponent"); // RemoveComponent(entity, Type)
-        WorldTable.SetFunction<&LuaBinds::World_AttachEntity>("AttachEntity");      // AttachEntity(child, parent) -- scene-graph parent
-        WorldTable.SetFunction<&LuaBinds::World_SetLocalLocation>("SetLocalLocation"); // SetLocalLocation(entity, vector) (parent-relative)
-        WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");                // IsValid(entity) -> bool
-        WorldTable.SetFunction<&LuaBinds::World_Compact>("Compact");                // Compact() -- reclaim tombstones; invalidates cached component ptrs
-        WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
-        WorldTable.SetFunction<&LuaBinds::World_SetLocation>("SetLocation");        // SetLocation(entity, vector) (world)
-        WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");            // Translate(entity, delta) -> vector
-        WorldTable.SetFunction<&LuaBinds::World_MoveToward>("MoveToward");          // MoveToward(entities, target, step) -- batched, one boundary crossing
-        WorldTable.SetFunction<&LuaBinds::World_GetRotation>("GetRotation");        // GetRotation(entity) -> quat
-        WorldTable.SetFunction<&LuaBinds::World_SetRotationFromEuler>("SetRotationFromEuler");        // GetRotation(entity) -> quat
-        WorldTable.SetFunction<&LuaBinds::World_SetRotation>("SetRotation");        // SetRotation(entity, quat)
-        WorldTable.SetFunction<&LuaBinds::World_GetScale>("GetScale");              // GetScale(entity) -> vector
-        WorldTable.SetFunction<&LuaBinds::World_SetScale>("SetScale");              // SetScale(entity, vector)
-        WorldTable.SetFunction<&LuaBinds::World_GetComponent>("GetComponent");      // GetComponent(entity, Type)
-        WorldTable.SetFunction<&LuaBinds::World_HasComponent>("HasComponent");      // HasComponent(entity, Type)
-        WorldTable.SetFunction<&LuaBinds::World_GetScript>("GetScript");            // GetScript(entity) -> script table or nil
-        WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
-        WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
+        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefab>("SpawnPrefab");
+        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefabAt>("SpawnPrefabAt");
+        WorldTable.SetFunction<&LuaBinds::World_Duplicate>("Duplicate");
+        WorldTable.SetFunction<&LuaBinds::World_BeginPhysicsBatch>("BeginPhysicsBatch");
+        WorldTable.SetFunction<&LuaBinds::World_EndPhysicsBatch>("EndPhysicsBatch");
+        WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");
+        WorldTable.SetFunction<&LuaBinds::World_CreateEntity>("CreateEntity");
+        WorldTable.SetFunction<&LuaBinds::World_AddComponent>("AddComponent");
+        WorldTable.SetFunction<&LuaBinds::World_AddScript>("AddScript");
+        WorldTable.SetFunction<&LuaBinds::World_RemoveComponent>("RemoveComponent");
+        WorldTable.SetFunction<&LuaBinds::World_AttachEntity>("AttachEntity");
+        WorldTable.SetFunction<&LuaBinds::World_SetLocalLocation>("SetLocalLocation");
+        WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");
+        WorldTable.SetFunction<&LuaBinds::World_Compact>("Compact");
+        WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");
+        WorldTable.SetFunction<&LuaBinds::World_SetLocation>("SetLocation");
+        WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");
+        WorldTable.SetFunction<&LuaBinds::World_MoveToward>("MoveToward");
+        WorldTable.SetFunction<&LuaBinds::World_GetRotation>("GetRotation");
+        WorldTable.SetFunction<&LuaBinds::World_SetRotationFromEuler>("SetRotationFromEuler");
+        WorldTable.SetFunction<&LuaBinds::World_SetRotation>("SetRotation");
+        WorldTable.SetFunction<&LuaBinds::World_GetScale>("GetScale");
+        WorldTable.SetFunction<&LuaBinds::World_SetScale>("SetScale");
+        WorldTable.SetFunction<&LuaBinds::World_GetComponent>("GetComponent");
+        WorldTable.SetFunction<&LuaBinds::World_HasComponent>("HasComponent");
+        WorldTable.SetFunction<&LuaBinds::World_GetScript>("GetScript");
+        WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");
+        WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");
 
-        // World.Debug namespace. Reached as World.Debug:DrawLine(...) (colon -- it's a userdata facade,
-        // like World.Net). Trailing args (thickness, depth-test, duration) are optional; Dev/Debug only.
+
         GlobalRef.NewClass<FWorldDebugInterface>("WorldDebug")
             .AddFunction<&FWorldDebugInterface::DrawText>("DrawText")
                 .AddComment("Screen-space debug text for this frame: DrawText(text [, color]).")
@@ -963,16 +997,21 @@ namespace Lumina
             .AddFunction<&FWorldDebugInterface::DrawArrow>("DrawArrow")
                 .AddComment("DrawArrow(start, direction, length, color [, thickness, depthTest, duration]).")
             .Register();
-
-        // Engine-provided World.<Subsystem> namespaces. Each is a per-world C++ facade reached through the
-        // shared World table's metatable (see World_SubsystemIndex); the LuauType feeds the editor snippet
-        // below. Game modules can add their own with RegisterWorldLuaSubsystem during their Lua bootstrap.
-        RegisterWorldLuaSubsystem("Physics", "PhysicsScene",
-            [](lua_State* L, CWorld* World) { Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene()); });
-        RegisterWorldLuaSubsystem("Net", "NetInterface",
-            [](lua_State* L, CWorld* World) { Lua::TStack<FNetLuaInterface*>::Push(L, World->GetNetInterface()); });
-        RegisterWorldLuaSubsystem("Debug", "WorldDebug",
-            [](lua_State* L, CWorld* World) { Lua::TStack<FWorldDebugInterface*>::Push(L, World->GetDebugInterface()); });
+        
+        RegisterWorldLuaSubsystem("Physics", "PhysicsScene", [](lua_State* L, CWorld* World)
+        {
+            Lua::TStack<Physics::IPhysicsScene*>::Push(L, World->GetPhysicsScene());
+        });
+        
+        RegisterWorldLuaSubsystem("Net", "NetInterface", [](lua_State* L, CWorld* World)
+        {
+            Lua::TStack<FNetLuaInterface*>::Push(L, World->GetNetInterface());
+        });
+        
+        RegisterWorldLuaSubsystem("Debug", "WorldDebug", [](lua_State* L, CWorld* World)
+        {
+            Lua::TStack<FWorldDebugInterface*>::Push(L, World->GetDebugInterface());
+        });
 
         // World.<Subsystem> namespaces resolve per script through this metatable so the single shared
         // World table is correct across every world. See World_SubsystemIndex.
@@ -1049,9 +1088,7 @@ namespace Lumina
             .AddFunction<&LuaBinds::DispatchEvent_Lua>("DispatchEvent")
             .AddFunction<&LuaBinds::EnqueueEvent_Lua>("EnqueueEvent")
             .Register();
-
-        // The `ctx` handed to Lua script systems. Mirrors the C++ FSystemContext: time, entity iteration and
-        // component access over the live registry. World.<Subsystem> (Physics/Net/Debug) resolve globally.
+        
         GlobalRef.NewClass<FLuaSystemContext>("SystemContext")
             .AddFunction<&LuaBinds::Ctx_DeltaTime>("DeltaTime")
             .AddFunction<&LuaBinds::Ctx_Time>("Time")
