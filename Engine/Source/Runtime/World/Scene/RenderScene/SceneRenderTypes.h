@@ -80,7 +80,8 @@ namespace Lumina
         ClusterGrid         = 12,
         ShadowCascades      = 13,
         ShadowPenumbra      = 14,
-        Num                 = 15,
+        SSAO                = 15,
+        Num                 = 16,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
@@ -102,6 +103,7 @@ namespace Lumina
             case ERenderSceneDebugFlags::ClusterGrid:       return "Light Clusters";
             case ERenderSceneDebugFlags::ShadowCascades:    return "Shadow Cascades";
             case ERenderSceneDebugFlags::ShadowPenumbra:    return "Shadow Penumbra";
+            case ERenderSceneDebugFlags::SSAO:              return "SSAO";
             default:                                        return "Lit";
         }
     }
@@ -368,7 +370,9 @@ namespace Lumina
     struct FSceneLightData
     {
         uint32              NumLights{};
-        uint32              Padding0[3];
+        // 1 when the environment IBL cubes are valid; 0 means skylight-only -> shader adds a flat ambient.
+        uint32              bHasIBL{};
+        uint32              Padding0[2];
 
         FVector3           SunDirection{};
         uint32              bHasSun{};
@@ -408,12 +412,19 @@ namespace Lumina
 
     struct FSSAOSettings
     {
-        float Radius = 1.0f;
-        float Intensity = 2.0f;
-        float Power = 1.5f;
+        float  Radius    = 0.5f;
+        float  Intensity = 1.0f;
+        float  Power     = 2.0f;
+        float  Bias      = 0.025f;
 
-        uint32 Padding;
+        // Bindless SRV index of the per-view AO output the base pass samples. ~0u = no SSAO this
+        // view (e.g. capture views, which never run the SSAO pass) -> base pass treats AO as 1.
+        uint32 AOTextureIndex = ~0u;
+        uint32 _Pad0 = 0;
+        uint32 _Pad1 = 0;
+        uint32 _Pad2 = 0;
 
+        // Hemisphere kernel (view/tangent-space directions, w unused). Generated once on the CPU.
         FVector4 Samples[SSAO_KERNEL_SIZE];
     };
 

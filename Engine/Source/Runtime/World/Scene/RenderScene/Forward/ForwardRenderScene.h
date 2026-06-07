@@ -405,6 +405,11 @@ namespace Lumina
             SMAABlend,
             SMAAArea,
             SMAASearch,
+
+            // Screen-space ambient occlusion factor (R8). SSAOPass writes it from reconstructed
+            // depth+normals; SSAOBlurPass box-blurs it into SSAOBlur, which the base pass samples.
+            SSAO,
+            SSAOBlur,
             Cascade,
             DepthAttachment,
             DepthPyramid,
@@ -631,8 +636,6 @@ namespace Lumina
         void PointShadowPass(ICommandList& CmdList);
         void SpotShadowPass(ICommandList& CmdList);
         void CascadedShowPass(ICommandList& CmdList);
-        // Projects DBuffer decals onto opaque depth between the depth prepass and the base pass.
-        // Always clears the DBuffer (so the base pass reads a no-op when no decals are present).
         void DecalPass(ICommandList& CmdList);
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
@@ -640,26 +643,20 @@ namespace Lumina
         void TextPass(ICommandList& CmdList);
         void DebugTextPass(ICommandList& CmdList);
         void WidgetPickerPass(ICommandList& CmdList);
-
-        uint32 ParticleSimulatePass(ICommandList& CmdList);
-        
+        void ParticleSimulatePass(ICommandList& CmdList);
         void ParticleRenderPass(ICommandList& CmdList);
         void TerrainUpdatePass(ICommandList& CmdList);
-
         void TerrainCullPass(ICommandList& CmdList);
         void TerrainDepthPrePass(ICommandList& CmdList);
         void TerrainRenderPass(ICommandList& CmdList);
+        void SSAOPass(ICommandList& CmdList);
+        void SSAOBlurPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
-        // Froxel volumetric fog: inject per-froxel scattering/extinction, integrate front-to-back,
-        // composite into HDR. Replaces the old analytic height-fog + half-res ray-march passes.
         void FroxelInjectPass(ICommandList& CmdList);
         void FroxelIntegratePass(ICommandList& CmdList);
         void FroxelApplyPass(ICommandList& CmdList);
-        // Draws each water body's procedural grid into HDR (Gerstner waves + refraction + SSR/sky reflection
-        // + depth tint + foam). Runs after the opaque scene so it can sample HDR for refraction/SSR.
         void WaterPass(ICommandList& CmdList);
-        // Fullscreen underwater absorption/distortion when the camera is submerged (Frame.Water.bUnderwaterActive).
         void UnderwaterPass(ICommandList& CmdList);
         void EnvironmentPass(ICommandList& CmdList);
         void SkyCubeCapturePass(ICommandList& CmdList);
@@ -799,6 +796,11 @@ namespace Lumina
         bool                                    bEnvironmentParamsUploaded    = false;
 
         FBindingCache                           BindingCache;
+
+        // SSAO setup, built once in Init(): the 4x4 tangent-rotation noise texture (sampled tiled with
+        // a wrap point sampler) and the cached hemisphere kernel copied into each frame's SceneGlobalData.
+        FRHIImageRef                            SSAONoiseTexture;
+        FSSAOSettings                           CachedSSAOSettings = {};
 
         // Latest post-process material list from the world; captured into
         // FFrameData::ActivePostProcessMaterials at the start of Extract.

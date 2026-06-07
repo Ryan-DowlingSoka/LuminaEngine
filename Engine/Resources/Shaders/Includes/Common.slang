@@ -180,8 +180,11 @@ struct FSSAOSettings
     float  Radius;
     float  Intensity;
     float  Power;
-    uint   _Padding;   // keep Samples 16-aligned (matches C++ FSSAOSettings::Padding); BDA scalar
-                       // layout has no implicit std140 pad, so the float4 array must be padded here.
+    float  Bias;
+    uint   AOTextureIndex;   // bindless SRV the base pass samples; ~0u = no SSAO for this view
+    uint   _Pad0;
+    uint   _Pad1;
+    uint   _Pad2;            // pad header to 32 B so Samples stays 16-aligned (matches C++ FSSAOSettings)
     float4 Samples[SSAO_KERNEL_SIZE];
 };
 
@@ -440,7 +443,8 @@ struct FLightShadowData
 struct FLightData
 {
     uint   NumLights;
-    uint   Padding[3];
+    uint   bHasIBL;       // 1 = environment IBL cubes valid; 0 = skylight-only flat ambient fallback
+    uint   Padding[2];
     float3 SunDirection;
     uint   bHasSun;
     float4 CascadeSplits;
@@ -523,6 +527,7 @@ struct FCullData
 #define DEBUG_MODE_CLUSTER_GRID         12u
 #define DEBUG_MODE_SHADOW_CASCADES      13u
 #define DEBUG_MODE_SHADOW_PENUMBRA      14u
+#define DEBUG_MODE_SSAO                 15u
 
 struct FSceneGlobalData
 {

@@ -619,9 +619,19 @@ PSOutput FragmentMain(PSInput Input)
     }
 
     // IBL ambient (see BasePixelPass); mirrored so terrain reflects the same sky cube as meshes.
-    float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
-    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
-    float3 Color      = Ambient + Lo + Material.Emissive;
+    // Skylight-only (no environment) falls back to a flat diffuse ambient fill so terrain isn't black.
+    float3 Ambient;
+    if (HasIBL())
+    {
+        float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
+        Ambient = IBLAmbient * GetAmbientLightIntensity();
+    }
+    else
+    {
+        float3 DiffuseColor = Albedo * (1.0 - Metallic);
+        Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * DiffuseColor * AO;
+    }
+    float3 Color = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
 

@@ -2,6 +2,7 @@
 #include "ForwardRenderScene.h"
 #include <algorithm>
 #include <execution>
+#include <random>
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
@@ -102,8 +103,53 @@ namespace Lumina
 
         return Image;
     }
-    
-    
+
+    // Hemisphere SSAO kernel: SSAO_KERNEL_SIZE directions in the +Z (tangent-space) hemisphere, scaled so
+    // samples bunch near the origin (more local detail) via an accelerating lerp. Deterministic seed so the
+    // pattern is stable frame-to-frame (no shimmer). The shader rotates this per-pixel by the noise texture.
+    static void GenerateSSAOKernel(FSSAOSettings& Settings)
+    {
+        std::mt19937 Rng(1337u);
+        std::uniform_real_distribution<float> Rand01(0.0f, 1.0f);
+        std::uniform_real_distribution<float> RandM11(-1.0f, 1.0f);
+
+        for (uint32 i = 0; i < SSAO_KERNEL_SIZE; ++i)
+        {
+            FVector3 Sample(RandM11(Rng), RandM11(Rng), Rand01(Rng));
+            float Len = Math::Sqrt(Sample.x * Sample.x + Sample.y * Sample.y + Sample.z * Sample.z);
+            if (Len > 1e-6f)
+            {
+                Sample /= Len;
+            }
+            Sample *= Rand01(Rng);
+
+            // Accelerating distribution: push samples toward the surface for tighter contact AO.
+            float T     = (float)i / (float)SSAO_KERNEL_SIZE;
+            float Scale = 0.1f + 0.9f * T * T;
+            Sample *= Scale;
+
+            Settings.Samples[i] = FVector4(Sample.x, Sample.y, Sample.z, 0.0f);
+        }
+    }
+
+    // 4x4 RGBA32F rotation noise: random vectors in the XY tangent plane (z=0) used to rotate the kernel
+    // per-pixel, trading banding for high-frequency noise the (here absent) blur would normally smooth out.
+    static FRHIImageRef CreateSSAONoiseTexture()
+    {
+        std::mt19937 Rng(7331u);
+        std::uniform_real_distribution<float> RandM11(-1.0f, 1.0f);
+
+        FVector4 Noise[16];
+        for (int i = 0; i < 16; ++i)
+        {
+            Noise[i] = FVector4(RandM11(Rng), RandM11(Rng), 0.0f, 0.0f);
+        }
+
+        return CreateSMAALUTImage(reinterpret_cast<const uint8*>(Noise), 4, 4,
+                                  EFormat::RGBA32_FLOAT, 4 * sizeof(FVector4), "SSAO Noise");
+    }
+
+
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , ShadowAtlas(FShadowAtlasConfig())
@@ -127,10 +173,10 @@ namespace Lumina
 
         // Must precede the per-view binding sets so the BRDF + SMAA sets see valid images.
         InitSharedResources();
+        
+        GenerateSSAOKernel(CachedSSAOSettings);
+        SSAONoiseTexture = CreateSSAONoiseTexture();
 
-        // Sky cube allocated before any binding set; contents filled per-frame by SkyCubeCapturePass().
-        // Allocated at the cheap baseline; SyncIBLResolution rebuilds to the active environment's tier
-        // (e.g. High) on the first rendered frame, so env-less scenes never pay for big cubes.
         AppliedIBLResolution = FIBLBakeResolution{};
         InitSkyCube(AppliedIBLResolution.SkyCube);
         InitIBLConvolutionTargets(AppliedIBLResolution);
@@ -398,6 +444,12 @@ namespace Lumina
         SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
         SceneGlobalData.FarPlane                        = PrimaryViewport->GetViewVolume().GetFar();
         SceneGlobalData.NearPlane                       = PrimaryViewport->GetViewVolume().GetNear();
+        // SSAO: static kernel + per-world tuning. AOTextureIndex stays the ~0u sentinel here; the render
+        // thread patches it (or leaves the sentinel when SSAO is off) before upload. Capture views keep it.
+        SceneGlobalData.SSAOSettings                    = CachedSSAOSettings;
+        SceneGlobalData.SSAOSettings.Radius             = Frame.CachedWorldSettings.SSAORadius;
+        SceneGlobalData.SSAOSettings.Intensity          = Frame.CachedWorldSettings.SSAOIntensity;
+        SceneGlobalData.SSAOSettings.Power              = Frame.CachedWorldSettings.SSAOPower;
         SceneGlobalData.CullData.Frustum                = PrimaryViewport->GetViewVolume().GetFrustum();
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
@@ -620,6 +672,13 @@ namespace Lumina
                 // DBuffer decals: project onto opaque depth before the base pass composites them.
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Decals", FColor(0.90f, 0.55f, 0.20f));
                 DecalPass(CmdList);
+            }
+
+            // After the depth prepass (full opaque depth available), before the base pass that samples it.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "SSAO", FColor(0.10f, 0.70f, 0.25f));
+                SSAOPass(CmdList);
+                SSAOBlurPass(CmdList);
             }
 
             {
@@ -1855,6 +1914,10 @@ namespace Lumina
                     }
                     LightData.AmbientLight = FVector4(AmbientRGB, Sky.Intensity);
                 });
+
+                // IBL cubes are only baked when an environment is present (otherwise cleared to black). Tell
+                // the shader so a skylight-only scene falls back to a flat ambient instead of black.
+                LightData.bHasIBL = RenderSettings.bHasEnvironment ? 1u : 0u;
             }
 
             // Exponential height fog. Last enabled component with density > 0 wins.
@@ -2080,7 +2143,10 @@ namespace Lumina
             SceneRootShared.Materials          = GRenderManager->GetMaterialManager().GetMaterialBuffer()->GetAddress();
             SceneRootShared.MeshletDrawList    = GetMeshletDrawList()->GetAddress();
             SceneRootShared.PreSkinnedVertices = GetPreSkinnedVerticesBuffer()->GetAddress();
-            // Primary view's root (CurrentView): its camera UBO + per-view clusters/IBL.
+            if (Frame.CachedWorldSettings.bEnableSSAO)
+            {
+                SceneGlobalData.SSAOSettings.AOTextureIndex = (uint32)CurrentView->Images[(int)ENamedImage::SSAOBlur]->GetResourceID();
+            }
             CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, *CurrentView, CmdList.CopyTransient(SceneGlobalData).Gpu);
 
             CmdList.EnableAutomaticBarriers();
@@ -5456,8 +5522,7 @@ namespace Lumina
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                 .SetIndirectParams(GetIndirectArgs())
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // DBuffer targets, cull/skinning outputs and shadow atlases are read by index; declare
-            // them so the tracker inserts the RT/UAV/depth -> shader-read barriers.
+            
             GraphicsState.Reads(DBufferA);
             GraphicsState.Reads(DBufferB);
             GraphicsState.Reads(DBufferC);
@@ -5466,6 +5531,7 @@ namespace Lumina
             GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
             GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
             GraphicsState.Reads(ShadowAtlas.GetImage());
+            GraphicsState.Reads(GetNamedImage(ENamedImage::SSAOBlur));
 
             CmdList.SetGraphicsState(GraphicsState);
             PushRootConstants(CmdList, DBufferPC);
@@ -5482,15 +5548,13 @@ namespace Lumina
     }
     
 
-    uint32 FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
+    void FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Simulate", tracy::Color::Orange);
 
         const FFrameData& Frame = *RenderFrame;
         const float DeltaTime   = Frame.CachedWorldDeltaTime;
-
-        uint32 DispatchCount = 0;
-
+        
         // Reclaim GPU/sim state for destroyed emitters (disabled ones stay in LiveParticleEntities).
         // KeepAlive each resource on this frame's cmd list before dropping the ref so in-flight work finishes.
         if (!ParticleGPUStates.empty())
@@ -5506,7 +5570,11 @@ namespace Lumina
                 if (!IsLive(It->first))
                 {
                     FParticleGPUState& Dead = It->second;
-                    auto Keep = [&](const auto& Ref) { if (Ref) CmdList.KeepAlive(Ref.GetReference()); };
+                    auto Keep = [&](const auto& Ref) { if (Ref)
+                        {
+                            CmdList.KeepAlive(Ref.GetReference());
+                        }
+                    };
                     Keep(Dead.ParticleBuffer);
                     Keep(Dead.SimParamsBuffer);
                     Keep(Dead.RenderParamsBuffer);
@@ -5757,10 +5825,7 @@ namespace Lumina
 
             CmdList.SetComputeState(ComputeState);
             CmdList.Dispatch((MaxParticles + 63u) / 64u, 1, 1);
-            ++DispatchCount;
         }
-
-        return DispatchCount;
     }
 
     static FBlendState::RenderTarget MakeParticleBlendTarget(EParticleBlendMode Mode)
@@ -6799,6 +6864,145 @@ namespace Lumina
         }
     }
     
+    void FForwardRenderScene::SSAOPass(ICommandList& CmdList)
+    {
+        FFrameData& Frame = *RenderFrame;
+        if (Frame.Geometry.DrawCommands.empty() || !Frame.CachedWorldSettings.bEnableSSAO)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("SSAO Pass", tracy::Color::Red);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("SSAOPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage     = GetNamedImage(ENamedImage::SSAO);
+        FRHIImage* DepthAttachment = GetNamedImage(ENamedImage::DepthAttachment);
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(OutputImage);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("SSAO Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.Reads(DepthAttachment);
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        struct FData
+        {
+            uint32 DepthIndex;
+            uint32 NoiseIndex;
+        } PC;
+
+        PC.DepthIndex = (uint32)DepthAttachment->GetResourceID();
+        PC.NoiseIndex = (uint32)SSAONoiseTexture->GetResourceID();
+
+        PushRootConstants(CmdList, PC);
+
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
+    void FForwardRenderScene::SSAOBlurPass(ICommandList& CmdList)
+    {
+        FFrameData& Frame = *RenderFrame;
+        if (Frame.Geometry.DrawCommands.empty() || !Frame.CachedWorldSettings.bEnableSSAO)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("SSAO Blur", tracy::Color::Red);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("SSAOBlurPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SSAOBlur);
+        FRHIImage* InputImage  = GetNamedImage(ENamedImage::SSAO);
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(OutputImage);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("SSAO Blur Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        // Raw AO read bindlessly; declare it so the tracker inserts the RT -> shader-read barrier.
+        GraphicsState.Reads(InputImage);
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        struct FData
+        {
+            uint32 AOIndex;
+        } PC;
+
+        PC.AOIndex = (uint32)InputImage->GetResourceID();
+
+        PushRootConstants(CmdList, PC);
+
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
     void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
     {
         //@TODO BROKEN, GPU CRASH ACCESSING TEXTURE
@@ -9484,6 +9688,23 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName         = "SMAA Blend";
             View.Images[(int)ENamedImage::SMAABlend] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            // Single-channel AO factor; SSAOPass renders into it, the base pass samples it.
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent / 2;
+            ImageDesc.Format            = EFormat::R8_UNORM;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.InitialState      = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName         = "SSAO";
+            View.Images[(int)ENamedImage::SSAO] = GRenderContext->CreateImage(ImageDesc);
+
+            // Blurred AO (box blur of SSAO over the noise tile); this is what the base pass samples.
+            ImageDesc.DebugName         = "SSAO Blur";
+            View.Images[(int)ENamedImage::SSAOBlur] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {

@@ -37,7 +37,7 @@ struct FSceneRoot
 
 struct FRootConstants
 {
-    ConstBufferPointer<FSceneRoot> Root;   // per-frame scene root (transient)
+    ConstBufferPointer<FSceneRoot> Root;     // per-frame scene root (transient)
     uint64_t                       PassAddr; // per-pass constants block (transient), 0 if none
 };
 [[vk::push_constant]] FRootConstants gPC;
@@ -92,6 +92,12 @@ static const uint SAMPLER_ANISO_CLAMP        = 6;
 static const uint SAMPLER_SHADOW             = 7;
 static const uint SAMPLER_MIN_REDUCTION      = 8;
 static const uint SAMPLER_MAX_REDUCTION      = 9;
+
+
+T GetPassData<T>()
+{
+    return *(T*)gPC.PassAddr;
+}
 
 // Convenience wrappers around the bindless table. ResourceID matches
 // FRHIImage::GetResourceID() on the C++ side.
@@ -245,6 +251,7 @@ uint   GetNumLights()               { return uLightData[0].NumLights;     }
 float3 GetSunDirection()            { return uLightData[0].SunDirection;  }
 float3 GetAmbientLightColor()       { return uLightData[0].AmbientLight.xyz; }
 float  GetAmbientLightIntensity()   { return uLightData[0].AmbientLight.w;   }
+bool   HasIBL()                     { return uLightData[0].bHasIBL != 0u;     }
 
 // Callers must check Light.ShadowDataIndex != INDEX_NONE first.
 float4x4 GetShadowViewProjection(int ShadowDataIndex, uint ViewIndex)

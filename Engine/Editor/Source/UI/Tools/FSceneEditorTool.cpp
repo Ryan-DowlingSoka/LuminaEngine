@@ -1899,6 +1899,7 @@ namespace Lumina
                         { ERenderSceneDebugFlags::ClusterGrid,     "Light Clusters"   },
                         { ERenderSceneDebugFlags::ShadowCascades,  "Shadow Cascades"  },
                         { ERenderSceneDebugFlags::ShadowPenumbra,  "Shadow Penumbra"  },
+                        { ERenderSceneDebugFlags::SSAO,            "SSAO"             },
                     };
 
                     auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)

@@ -89,6 +89,23 @@ namespace Lumina
         PROPERTY(Editable, Category = "Rendering")
         EVariableRateShading VariableRateShading = EVariableRateShading::Off;
 
+        /** Screen-space ambient occlusion. Reconstructs occlusion from depth and darkens the ambient/IBL
+            term -- only visible where there is some skylight/environment ambient. */
+        PROPERTY(Editable, Category = "Rendering")
+        bool bEnableSSAO = true;
+
+        /** SSAO sample radius in world units. Larger = wider, softer occlusion. */
+        PROPERTY(Editable, ClampMin = 0.01f, Category = "Rendering")
+        float SSAORadius = 0.5f;
+
+        /** SSAO strength multiplier. 0 = none. */
+        PROPERTY(Editable, ClampMin = 0.0f, Category = "Rendering")
+        float SSAOIntensity = 1.0f;
+
+        /** SSAO contrast exponent applied to the AO factor. Higher = darker, tighter contact shadows. */
+        PROPERTY(Editable, ClampMin = 0.1f, Category = "Rendering")
+        float SSAOPower = 2.0f;
+
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")
         FVector3 GravityDirection = FVector3(0.0f, -1.0f, 0.0f);

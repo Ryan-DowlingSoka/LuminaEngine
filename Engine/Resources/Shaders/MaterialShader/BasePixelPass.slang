@@ -848,11 +848,31 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, Ctx, L, DistToLight) * Shadow;
     }
 
-    // IBL ambient: split-sum convolutions of the sky cube (irradiance by N, GGX-prefiltered specular
-    // by R + BRDF LUT). GetAmbientLightIntensity() scales it so the SkyLight Intensity slider applies.
-    float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
-    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
-    float3 Color      = Ambient + Lo + Material.Emissive;
+    // Screen-space AO attenuates the ambient/IBL term only (direct light already has its own occlusion).
+    // AOTextureIndex is ~0u for views that didn't run the SSAO pass (e.g. captures) -> treat as unoccluded.
+    float SSAO = 1.0;
+    if (uSceneData.SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
+    {
+        float2 ScreenUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
+        SSAO = SampleBindless2D(uSceneData.SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, ScreenUV).r;
+    }
+
+    float3 Ambient;
+    if (HasIBL())
+    {
+        // IBL ambient: split-sum convolutions of the sky cube (irradiance by N, GGX-prefiltered specular
+        // by R + BRDF LUT). GetAmbientLightIntensity() scales it so the SkyLight Intensity slider applies.
+        float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
+        Ambient = IBLAmbient * GetAmbientLightIntensity() * SSAO;
+    }
+    else
+    {
+        // No environment: a SkyLight alone still lights the scene via a flat diffuse ambient fill
+        // (color * intensity from the SkyLight), occluded by material AO and SSAO. Metals carry no diffuse.
+        float3 DiffuseColor = Albedo * (1.0 - Metallic);
+        Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * DiffuseColor * AO * SSAO;
+    }
+    float3 Color = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
 
@@ -917,6 +937,18 @@ PSOutput FragmentMain(PSInput Input)
             case DEBUG_MODE_SHADOW_PENUMBRA:
                 Color = ShadowPenumbraDebug(WorldPosition, ViewPosition, Input.Position.xy);
                 break;
+            case DEBUG_MODE_SSAO:
+            {
+                // Show the (blurred) screen-space AO factor. White where SSAO is off for this view.
+                float DbgAO = 1.0;
+                if (uSceneData.SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
+                {
+                    float2 DbgUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
+                    DbgAO = SampleBindless2D(uSceneData.SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, DbgUV).r;
+                }
+                Color = float3(DbgAO, DbgAO, DbgAO);
+                break;
+            }
         }
     }
 
