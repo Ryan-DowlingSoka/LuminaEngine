@@ -62,7 +62,7 @@ namespace Lumina
     template <size_t N>
     using TBitSet = eastl::bitset<N>;
     
-    using TBitVector = eastl::bitvector<>;
+    using FBitVector = eastl::bitvector<>;
 
     template<typename ... Ts>
     using TTupleVector = eastl::tuple_vector<Ts...>;

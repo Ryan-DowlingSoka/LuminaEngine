@@ -47,6 +47,48 @@ namespace Lumina::RHI
         GPUPtr          Device;
     };
     
+    struct FTexture
+    {
+        VkImage Image;
+        VkImageView DefaultImageView = VK_NULL_HANDLE;
+        VmaAllocation Allocation;
+        VkImageViewType Type = VK_IMAGE_VIEW_TYPE_2D;
+        EFormat Format;
+        bool bSwapchainImage = false;
+    };
+    
+    struct FTextureHeap
+    {
+        VkDescriptorSet DescriptorSet;
+        FBitVector      SamplersBitset;
+        FBitVector      SampledImagesBitset;
+        FBitVector      RWImagesBitset;
+        
+        TVector<VkSampler>   Samplers;
+        TVector<VkImageView> ImageViews;
+        TVector<VkImageView> RWImageViews;
+    };
+    
+    struct FSemaphore
+    {
+        VkSemaphore Semaphore;
+        
+        operator VkSemaphore() const { return Semaphore; }
+    };
+    
+    struct FPipeline
+    {
+        VkPipeline Pipeline;
+        
+        operator VkPipeline() const { return Pipeline; }
+    };
+    
+    struct FCommandList
+    {
+        VkCommandBuffer CommandBuffer;
+        VkCommandPool   Pool;
+    };
+    
     struct FDeviceImpl
     {
         VkDevice                Device;
@@ -55,18 +97,15 @@ namespace Lumina::RHI
         
         TVector<FBuffer>        Buffers;
         
-        
-        TGenerationMap<VkSemaphore> Semaphores;
+        TSegmentMap<FSemaphore>     Semaphores;
+        TSegmentMap<FPipeline>      Pipelines;
+        TSegmentMap<FTexture>       Textures;
+        TSegmentMap<FCommandList>   CommandLists;
         
         VkMemoryRequirements    MemoryRequirements;
         
         operator VkDevice() const           { return Device; }
         operator VkPhysicalDevice() const   { return PhysicsDevice; }
-    };
-    
-    struct FCommandListImpl
-    {
-        VkCommandBuffer CommandBuffer;
     };
     
     static FDeviceImpl* GDevice;
@@ -84,11 +123,22 @@ namespace Lumina::RHI
         GDevice->PhysicsDevice = VkCtx->GetDevice()->GetPhysicalDevice();
         GDevice->Allocator = VkCtx->GetDevice()->GetAllocator().GetVMA();
         
+        GDevice->Semaphores.SetDtor([](FSemaphore* Semaphore)
+        {
+            vkDestroySemaphore(*GDevice, *Semaphore, nullptr);
+        });
+        
+        GDevice->Pipelines.SetDtor([](FPipeline* Pipeline)
+        {
+           vkDestroyPipeline(*GDevice, *Pipeline, nullptr); 
+        });
     }
     
     void FreeDevice()
     {
         //@TODO Actual cleanup.
+        GDevice->Semaphores.Clear();
+        GDevice->Pipelines.Clear();
         delete GDevice;
     }
 
@@ -99,7 +149,7 @@ namespace Lumina::RHI
 
     void WaitSemaphore(FSemaphoreH Semaphore, uint64 Value)
     {
-        VkSemaphore VulkanSemaphore = nullptr;//@TODO Handle map for semaphores.
+        VkSemaphore VulkanSemaphore = GDevice->Semaphores[Semaphore].Semaphore;
         
         VkSemaphoreWaitInfo WaitInfo
         {
@@ -161,11 +211,11 @@ namespace Lumina::RHI
             .buffer = VulkanBuffer,
         };
 
-        GPUPtr DeviceAddress = vkGetBufferDeviceAddress(*GDevice, &AddressInfo);
+        GPUPtr Gpu = vkGetBufferDeviceAddress(*GDevice, &AddressInfo);
         
-        auto It = eastl::lower_bound(GDevice->Buffers.begin(), GDevice->Buffers.end(), DeviceAddress, [](const FBuffer& b, GPUPtr value)
+        auto It = eastl::lower_bound(GDevice->Buffers.begin(), GDevice->Buffers.end(), Gpu, [](const FBuffer& LHS, GPUPtr Value)
         {
-            return b.Device < value;
+            return LHS.Device < Value;
         });
         
         FBuffer Buffer
@@ -173,7 +223,7 @@ namespace Lumina::RHI
             .Buffer     = VulkanBuffer,
             .Allocation = Allocation,
             .Host       = AllocationInfo.pMappedData,
-            .Device     = DeviceAddress
+            .Device     = Gpu
         };
         
         GDevice->Buffers.insert(It, Buffer);
@@ -214,7 +264,12 @@ namespace Lumina::RHI
             GDevice->Buffers.erase(It);
         }
     }
-    
+
+    void Free(FSemaphoreH Handle)
+    {
+        GDevice->Semaphores.Erase(Handle);
+    }
+
     FPipelineH CreateGraphicsPipeline(const FShaderSource& Vertex, const FShaderSource& Fragment, const FRasterDesc& Desc)
     {
         constexpr VkDynamicState DynamicStates[] = 
@@ -247,6 +302,29 @@ namespace Lumina::RHI
 
     FSemaphoreH CreateSemaphore(uint64 Value)
     {
+        VkSemaphoreTypeCreateInfo TypeInfo
+        {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+            .pNext = nullptr,
+            .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+            .initialValue = Value
+        };
+        
+        VkSemaphoreCreateInfo Info
+        {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = &TypeInfo,
+            .flags = 0
+        };
+        
+        VkSemaphore Semaphore;
+        vkCreateSemaphore(*GDevice, &Info, nullptr, &Semaphore);
+        
+        return GDevice->Semaphores.Emplace(Semaphore);
+    }
+
+    FTextureH CreateTexture(const FTextureDesc& Desc, GPUPtr Location)
+    {
         return {};
     }
 
@@ -255,24 +333,50 @@ namespace Lumina::RHI
         return {};
     }
 
-    FCmdList OpenCommandList(EQueueType Type)
-    {
-        return nullptr;
+    FCmdListH OpenCommandList(EQueueType Type)
+    { 
+        VkCommandPoolCreateInfo Info
+        {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = 0
+        };
+        
+        VkCommandPool Pool = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateCommandPool(*GDevice, &Info, nullptr, &Pool));
+        
+        VkCommandBufferAllocateInfo BufferInfo = {};
+        BufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        BufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        BufferInfo.commandBufferCount = 1;
+        BufferInfo.commandPool = Pool;
+        
+        VkCommandBuffer Buffer = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateCommandBuffers(*GDevice, &BufferInfo, &Buffer));
+        
+        FCommandList CmdList
+        {
+            .CommandBuffer = Buffer,
+            .Pool = Pool
+        };
+        
+        return GDevice->CommandLists.Emplace(CmdList);
     }
 
-    void CloseCommandList(FCmdList CL)
+    void CloseCommandList(FCmdListH CL)
     {
     }
 
-    void Submit(TSpan<FCmdList> CommandLists)
+    void Submit(TSpan<FCmdListH> CommandLists)
     {
     }
 
-    void CmdMemcpy(FCmdList CL, GPUPtr Dest, GPUPtr Source)
+    void CmdMemcpy(FCmdListH CL, GPUPtr Dest, GPUPtr Source)
     {
     }
 
-    void CmdBarrier(FCmdList CL, EStageFlags Before, EStageFlags After)
+    void CmdBarrier(FCmdListH CL, EStageFlags Before, EStageFlags After)
     {
         const VkPipelineStageFlags2 SrcStage = ToVkPipelineState(Before);
         const VkPipelineStageFlags2 DstStage = ToVkPipelineState(After);
@@ -305,51 +409,51 @@ namespace Lumina::RHI
         vkCmdPipelineBarrier2(CL->CommandBuffer, &DepInfo);
     }
 
-    void CmdBeginRenderPass(FCmdList CL, const FRenderPassDesc& Desc)
+    void CmdBeginRenderPass(FCmdListH CL, const FRenderPassDesc& Desc)
     {
     }
 
-    void CmdEndRenderPass(FCmdList CL)
+    void CmdEndRenderPass(FCmdListH CL)
     {
     }
 
-    void CmdSetFrontFace(FCmdList CL, EFrontFace Front)
+    void CmdSetFrontFace(FCmdListH CL, EFrontFace Front)
     {
     }
 
-    void CmdSetCullMode(FCmdList CL, ECullMode Mode)
+    void CmdSetCullMode(FCmdListH CL, ECullMode Mode)
     {
     }
 
-    void CmdSetPipeline(FCmdList CL, FPipelineH Pipeline)
+    void CmdSetPipeline(FCmdListH CL, FPipelineH Pipeline)
     {
     }
 
-    void CmdSetScissor(FCmdList CL, const FRect& Rect)
+    void CmdSetScissor(FCmdListH CL, const FRect& Rect)
     {
     }
 
-    void CmdSetViewport(FCmdList CL, const FRect& Rect)
+    void CmdSetViewport(FCmdListH CL, const FRect& Rect)
     {
     }
 
-    void CmdDispatch(FCmdList CL, GPUPtr DrawArgs, uint32 GroupX, uint32 GroupY, uint32 GroupZ)
+    void CmdDispatch(FCmdListH CL, GPUPtr DrawArgs, uint32 GroupX, uint32 GroupY, uint32 GroupZ)
     {
     }
 
-    void CmdDraw(FCmdList CL, GPUPtr DrawArgs, uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance)
+    void CmdDraw(FCmdListH CL, GPUPtr DrawArgs, uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance)
     {
     }
 
-    void CmdDrawIndexed(FCmdList CL, GPUPtr DrawArgs, uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, uint32 VertexOffset, uint32 FirstInstance)
+    void CmdDrawIndexed(FCmdListH CL, GPUPtr DrawArgs, uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, uint32 VertexOffset, uint32 FirstInstance)
     {
     }
 
-    void CmdDrawIndirect(FCmdList CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride)
+    void CmdDrawIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride)
     {
     }
 
-    void CmdDrawIndexedIndirect(FCmdList CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride)
+    void CmdDrawIndexedIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride)
     {
     }
 }

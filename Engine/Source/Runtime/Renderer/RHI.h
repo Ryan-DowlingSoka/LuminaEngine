@@ -2,6 +2,7 @@
 
 #include "Format.h"
 #include "Containers/Array.h"
+#include "Containers/SegmentArray.h"
 #include "Containers/Tuple.h"
 #include "Platform/GenericPlatform.h"
 
@@ -9,178 +10,24 @@ namespace Lumina::RHI
 {
     constexpr auto kDefaultAlign = 16;
     
-    template<typename T>
-    struct THandle
-    {
-        uint64 Handle;
-    };
-    
     struct FTexture;
+    struct FTextureHeap;
     struct FPipeline;
     struct FSemaphore;
-    struct FTextureHeap;
+    struct FCommandList;
     
     using GPUPtr        = uint64;
     using FPipelineH    = THandle<FPipeline>;
     using FTextureH     = THandle<FTexture>;
-    using FSemaphoreH   = THandle<FSemaphore>;
     using FTextureHeapH = THandle<FTextureHeap>;
+    using FSemaphoreH   = THandle<FSemaphore>;
+    using FCmdListH     = THandle<FCommandList>;
     using FDevice       = struct FDeviceImpl*;
-    using FCmdList      = struct FCommandListImpl*;
     using FQueue        = struct FQueueImpl*;
     
-    
-    template<typename T>
-    class TGenerationMap
+    struct FDispatchTable
     {
-        using HandleT       = THandle<T>;
-        using FDtorFn       = void(*)(T*);
-    
-    public:
         
-        TGenerationMap() = default;
-        TGenerationMap(FDtorFn Fn): DtorFn(Fn) {}
-    
-        template<typename... TArgs>
-        HandleT Emplace(TArgs&&... Value)
-        {
-            if (Head == kEndOfList)
-            {
-                AddSegment();
-            }
-            
-            uint32 Index = Head;
-            
-            FEntry* Entry = Get(Index);
-            Head = Entry->Next;
-            Entry->Next = kNotInFreeList;
-            
-            ::new(&Entry->Data) T(eastl::forward<TArgs>(Value)...);
-            
-            return ToHandle(Index, ++Entry->Gen);
-        }
-        
-        void Erase(HandleT Handle)
-        {
-            auto&& [I, G] = FromHandle(Handle);
-            FEntry* Entry = Get(I);
-            DtorFn(&Entry->Data);
-            
-            Entry->Next = Head;
-            Head = I;
-        }
-        
-        void Clear()
-        {
-            for (uint32 SegmentIndex = 0; SegmentIndex < UsedSegments; ++SegmentIndex)
-            {
-                uint32 SegmentSize = SlotsInSegments(SegmentIndex);
-                FEntry* Segment = Segments[SegmentIndex];
-                
-                for (uint32 Index = 0; Index < SegmentSize; ++Index)
-                {
-                    if (Segment[Index].Next == kNotInFreeList)
-                    {
-                        DtorFn(&Segment[Index].Data);
-                    }
-                }
-                
-                Memory::Free(Segment);
-                Segments[SegmentIndex] = nullptr;
-            }
-            
-            UsedSegments = 0;
-        }
-        
-        T& operator[](HandleT Handle)
-        {
-            auto&& [I, G] = FromHandle(Handle);
-            FEntry* Entry = Get(I);
-            return Entry->Data;
-        }
-        
-        const T& operator[](HandleT Handle) const
-        {
-            auto&& [I, G] = FromHandle(Handle);
-            FEntry* Entry = Get(I);
-            return Entry->Data;
-        }
-        
-        
-    private:
-        
-        static constexpr auto kSmallSegmentsToSkip = 6;
-        static constexpr auto kNotInFreeList = UINT32_MAX;
-        static constexpr auto kEndOfList = kNotInFreeList - 1;
-        
-        struct FEntry
-        {
-            T Data;
-            uint32 Next;
-            uint32 Gen;
-        };
-        
-        struct FDecomposedHandle
-        {
-            uint32 Index;
-            uint32 Gen;
-        };
-        
-        static constexpr uint32 SlotsInSegments(uint32 SegmentIndex)
-        {
-            return (1 << kSmallSegmentsToSkip) << SegmentIndex;
-        }
-        
-        static constexpr uint32 CapacityForSegmentCount(uint32 SegmentCount)
-        {
-            return ((1 < kSmallSegmentsToSkip) << SegmentCount) - (1 << kSmallSegmentsToSkip);
-        }
-        
-        void AddSegment()
-        {
-            uint64 SegmentSize = SlotsInSegments(UsedSegments);
-            auto Entry = Memory::Malloc(sizeof(FEntry) * SegmentSize);
-            auto Segment = static_cast<FEntry*>(Entry);
-            
-            Segment[UsedSegments++] = Segment;
-            
-            uint32 SegmentOffset = CapacityForSegmentCount(UsedSegments - 1);
-            for (uint64 i = SegmentSize; i > 0; --i)
-            {
-                Segment[i - 1].Gen = 0;
-                Segment[i - 1].Next = Head;
-                Head = i + SegmentOffset;
-            }
-        }
-        
-        FEntry* Get(uint32 Index)
-        {
-            uint64 Segment = 63 - std::countl_zero(Index);
-            uint32 Slot = Index - CapacityForSegmentCount(Segment);
-            
-            return &Segments[Segment][Slot];
-        }
-        
-        static constexpr HandleT ToHandle(uint32 Index, uint32 Generation)
-        {
-            return {.Handle = (0x8000'0000'0000'0000 | (uint64)Generation) << 32ull | Index};
-        }
-        
-        static constexpr FDecomposedHandle FromHandle(HandleT Handle)
-        {
-            return 
-            {
-                .Index  = static_cast<uint32>(Handle.Handle & 0xFFFF'FFFFull),
-                .Gen    = static_cast<uint32>((Handle.Handle >> 32) & 0x7FFF'FFFFull)
-            };
-        }
-        
-    private:
-        
-        FDtorFn     DtorFn;
-        uint32      UsedSegments = 0;
-        uint32      Head = kEndOfList;
-        FEntry*     Segments[26]{};
     };
     
     
@@ -272,6 +119,29 @@ namespace Lumina::RHI
         OneMinusSrcAlpha,
     };
     
+    enum class ETextureType : uint8
+    {
+        Tex1D,
+        Tex2D,
+        Tex3D,
+        TexCube,
+        Tex2DArray,
+        TexCubeArray,
+    };
+    
+    enum class EImageUsageFlags : uint16
+    {
+        None                = 0,
+        Sampled             = BIT(1),
+        Storage             = BIT(2),
+        ColorAttachment     = BIT(3),
+        DepthAttachment     = BIT(4),
+        TransferSrc         = BIT(5),
+        TransferDst         = BIT(6),
+    };
+    
+    ENUM_CLASS_FLAGS(EImageUsageFlags);
+    
     struct FShaderSource
     {
         TSpan<std::byte>    Source;
@@ -292,6 +162,17 @@ namespace Lumina::RHI
     struct FDrawIndexedIndirectArguments
     {
         
+    };
+    
+    struct FTextureDesc
+    {
+        ETextureType Type = ETextureType::Tex2D;
+        FUIntVector3 Dimension;
+        uint32 MipCount = 1;
+        uint32 LayerCount = 1;
+        uint32 SampleCount = 1;
+        EFormat Format;
+        EImageUsageFlags Usage = EImageUsageFlags::None;
     };
     
     struct FBlendDesc
@@ -347,37 +228,40 @@ namespace Lumina::RHI
     GPUPtr      Malloc(uint64 Size, EMemoryType Type);
     void*       ToHost(GPUPtr GPU);
     void        Free(GPUPtr GPU);
+    void        Free(FSemaphoreH Handle);
     
     FPipelineH  CreateGraphicsPipeline(const FShaderSource& Vertex, const FShaderSource& Fragment, const FRasterDesc& Desc);
     FPipelineH  CreateComputePipeline(const FShaderSource& Compute);
     FSemaphoreH CreateSemaphore(uint64 Value);
-    FTextureHeapH CreateTextureHeap(uint32 TextureCount, uint32 RWTextureCount, uint32 SamplerCount);
     
-    FCmdList    OpenCommandList(EQueueType Type);
-    void        CloseCommandList(FCmdList CL);
-    void        Submit(TSpan<FCmdList> CommandLists);
+    FTextureH       CreateTexture(const FTextureDesc& Desc, GPUPtr Location = 0);
+    FTextureHeapH   CreateTextureHeap(uint32 TextureCount, uint32 RWTextureCount, uint32 SamplerCount);
+    
+    FCmdListH   OpenCommandList(EQueueType Type);
+    void        CloseCommandList(FCmdListH CL);
+    void        Submit(TSpan<FCmdListH> CommandLists);
                 
-    void        CmdMemcpy(FCmdList CL, GPUPtr Dest, GPUPtr Source);
+    void        CmdMemcpy(FCmdListH CL, GPUPtr Dest, GPUPtr Source);
     
-    void        CmdBarrier(FCmdList CL, EStageFlags Before, EStageFlags After);
+    void        CmdBarrier(FCmdListH CL, EStageFlags Before, EStageFlags After);
     
-    void        CmdBeginRenderPass(FCmdList CL, const FRenderPassDesc& Desc);
-    void        CmdEndRenderPass(FCmdList CL);
+    void        CmdBeginRenderPass(FCmdListH CL, const FRenderPassDesc& Desc);
+    void        CmdEndRenderPass(FCmdListH CL);
     
-    void        CmdSetFrontFace(FCmdList CL, EFrontFace Front);
-    void        CmdSetCullMode(FCmdList CL, ECullMode Mode);
+    void        CmdSetFrontFace(FCmdListH CL, EFrontFace Front);
+    void        CmdSetCullMode(FCmdListH CL, ECullMode Mode);
     
-    void        CmdSetPipeline(FCmdList CL, FPipelineH Pipeline);
+    void        CmdSetPipeline(FCmdListH CL, FPipelineH Pipeline);
     
-    void        CmdSetScissor(FCmdList CL, const FRect& Rect);
-    void        CmdSetViewport(FCmdList CL, const FRect& Rect);
+    void        CmdSetScissor(FCmdListH CL, const FRect& Rect);
+    void        CmdSetViewport(FCmdListH CL, const FRect& Rect);
                 
-    void        CmdDispatch(FCmdList CL, GPUPtr DrawArgs, uint32 GroupX, uint32 GroupY, uint32 GroupZ);
+    void        CmdDispatch(FCmdListH CL, GPUPtr DrawArgs, uint32 GroupX, uint32 GroupY, uint32 GroupZ);
                 
-    void        CmdDraw(FCmdList CL, GPUPtr DrawArgs, uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance);
-    void        CmdDrawIndexed(FCmdList CL, GPUPtr DrawArgs, uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, uint32 VertexOffset, uint32 FirstInstance);
-    void        CmdDrawIndirect(FCmdList CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
-    void        CmdDrawIndexedIndirect(FCmdList CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
+    void        CmdDraw(FCmdListH CL, GPUPtr DrawArgs, uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance);
+    void        CmdDrawIndexed(FCmdListH CL, GPUPtr DrawArgs, uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, uint32 VertexOffset, uint32 FirstInstance);
+    void        CmdDrawIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
+    void        CmdDrawIndexedIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
     
     
     template<typename T>
