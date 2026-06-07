@@ -51,8 +51,10 @@ namespace Lumina
                     }
                 }
             }
-            for (Index idx : other.FreeList) {
-                if (idx < Data.size() && !Occupied[idx]) {
+            for (Index idx : other.FreeList) 
+            {
+                if (idx < Data.size() && !Occupied[idx]) 
+                {
                     FreeList.push_back(idx);
                 }
             }

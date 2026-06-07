@@ -7,6 +7,7 @@
 #include "RHIGlobals.h"
 #include "CommandList.h"
 #include "RenderThread.h"
+#include "RHI.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Engine/Engine.h"
@@ -64,6 +65,7 @@ namespace Lumina
 
         FGPUProfiler::Get().Shutdown();
 
+        RHI::FreeDevice();
         GRenderContext->Deinitialize();
         Memory::Delete(GRenderContext);
         GRenderContext = nullptr;
@@ -96,8 +98,11 @@ namespace Lumina
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();
         ImGuiRenderer->Initialize();
         #endif
+        
+        // @TODO Actual impl, for now just bind to existing.
+        RHI::CreateDevice();
     }
-
+    
     void FRenderManager::FrameStart(const FUpdateContext& UpdateContext)
     {
         LUMINA_PROFILE_SCOPE();
@@ -105,8 +110,9 @@ namespace Lumina
         #if WITH_EDITOR
         ImGuiRenderer->StartFrame(UpdateContext);
         #endif
+        
     }
-
+    
     void FRenderManager::FrameEnd()
     {
         LUMINA_PROFILE_SCOPE();

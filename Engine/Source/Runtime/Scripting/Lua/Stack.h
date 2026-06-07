@@ -564,8 +564,10 @@ namespace Lumina::Lua
 
         static RawT* Get(lua_State* State, int Index)
         {
-            auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
-            if (!ALERT_IF_NOT(Header, "Type is not registered as a userdata for Luau"))
+            // @TODO Fix tags.
+            // auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
+            auto* Header = static_cast<StorageT*>(lua_touserdata(State, Index));
+            if (Header == nullptr)
             {
                 return nullptr;
             }

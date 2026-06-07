@@ -17,6 +17,7 @@
 #include "Renderer/ShaderCompiler.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/CommandList.h"
+#include "Renderer/RHI.h"
 #include "TaskSystem/TaskGraph.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/Import/ImportHelpers.h"
@@ -6983,7 +6984,6 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Raw AO read bindlessly; declare it so the tracker inserts the RT -> shader-read barrier.
         GraphicsState.Reads(InputImage);
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.SetRenderPass(RenderPass);
@@ -7006,6 +7006,7 @@ namespace Lumina
     void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
     {
         //@TODO BROKEN, GPU CRASH ACCESSING TEXTURE
+        
         return;
         
         const FFrameData& Frame = *RenderFrame;

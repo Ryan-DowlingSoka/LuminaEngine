@@ -1,6 +1,9 @@
 #pragma once
 
 // Win32 hygiene
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef NODRAWTEXT
 #define NODRAWTEXT
 #endif
@@ -10,6 +13,7 @@
 #ifndef NORESOURCE
 #define NORESOURCE
 #endif
+
 
 // Standard library: only headers that are small, ubiquitous, or pulled transitively by EASTL.
 #include <memory>

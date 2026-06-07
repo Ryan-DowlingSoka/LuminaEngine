@@ -51,5 +51,18 @@ namespace Lumina
         // NumLODs, so out-of-range values safely degrade to the coarsest LOD.
         PROPERTY(Editable, Category = "Rendering")
         int32 ForcedLODIndex = -1;
+        
+        FUNCTION(Script)
+        void SetMaterialAtSlot(CMaterialInterface* Material, uint32 Slot)
+        {
+            if (MaterialOverrides.size() < Slot)
+            {
+                MaterialOverrides.push_back(Material);
+            }
+            else
+            {
+                MaterialOverrides[Slot] = Material;
+            }
+        }
     };
 }

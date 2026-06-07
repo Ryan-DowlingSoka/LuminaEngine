@@ -8,6 +8,12 @@ function Script:OnReady()
 
 	math.randomseed(os.time())
 
+
+	local TestMaterial: CMaterial = Asset.Hard("/Game/Materials/M_BackroomsFloor")
+	local TestEntity = 3145734	
+	local StaticMeshComp: SStaticMeshComponent = World.GetComponent(TestEntity, SStaticMeshComponent)
+	StaticMeshComp:SetMaterialAtSlot(TestMaterial, 0)
+
     for x = -100, 100, 10 do
         for z = -100, 100, 10 do
         	if math.random() < 0.3 then
