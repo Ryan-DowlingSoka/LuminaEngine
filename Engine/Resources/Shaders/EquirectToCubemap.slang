@@ -14,7 +14,7 @@ struct FPushConstants
     uint _Pad0;
     uint _Pad1;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 #define EQUIRECT_TILE 8
 
@@ -22,7 +22,7 @@ struct FPushConstants
 [numthreads(EQUIRECT_TILE, EQUIRECT_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    RWTexture2DArray<float4> uSkyCube = uBindlessRWTex2DArray[PC.SkyCubeUAV];
+    RWTexture2DArray<float4> uSkyCube = gRWTextures2DArray[Pass().SkyCubeUAV];
 
     uint Width, Height, Layers;
     uSkyCube.GetDimensions(Width, Height, Layers);
@@ -42,7 +42,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 
     // Sanitize here: this is the gate between the raw HDR panorama (which may hold Inf/NaN) and the IBL
     // cube the convolutions read, so a finite cube keeps the whole downstream chain stable.
-    float3 Color = SanitizeRadiance(SampleBindless2DLevel(PC.EquirectSRV, SAMPLER_LINEAR_CLAMP, float2(u, v), 0.0).rgb);
+    float3 Color = SanitizeRadiance(SampleTexture2DLevel(Pass().EquirectSRV, SAMPLER_LINEAR_CLAMP, float2(u, v), 0.0).rgb);
 
     uSkyCube[DTid] = float4(Color, 1.0);
 }

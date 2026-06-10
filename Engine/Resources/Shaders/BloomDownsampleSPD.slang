@@ -4,7 +4,7 @@
 
 // Single-pass bloom downsampler: one dispatch builds the whole mip chain (daxa gen_hiz pattern,
 // like DepthPyramidSPD). Bloom needs only 5 mips so phase 1 alone suffices, no atomic/last-WG hand-off.
-// Bindless: HDR via uBindlessTex2D[HDRIndex], per-mip writes via uBindlessRWTex2D[MipUAV[i]].
+// Bindless: HDR via gTextures2D[HDRIndex], per-mip writes via gRWTextures2D[MipUAV[i]].
 
 #define TILE_THREAD_WIDTH 16
 #define TILE_THREAD_COUNT (TILE_THREAD_WIDTH * TILE_THREAD_WIDTH)
@@ -27,7 +27,7 @@ struct FPushConstants
     uint   MipUAV[BLOOM_MAX_MIPS];
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 // Ping-pong LDS like DepthPyramidSPD: alternating reductions write to disjoint
 // halves so no slot is read+written across a barrier.
@@ -40,13 +40,13 @@ float3 Reduce4(float3 a, float3 b, float3 c, float3 d)
 
 void StoreMip(uint Mip, int2 Pos, float3 V)
 {
-    uBindlessRWTex2D[PC.MipUAV[Mip]][Pos] = float4(V, 0);
+    gRWTextures2D[Pass().MipUAV[Mip]][Pos] = float4(V, 0);
 }
 
 float3 SampleHDR(float2 UV)
 {
-    return uBindlessTex2D[PC.HDRIndex].SampleLevel(
-        uBindlessSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
+    return gTextures2D[Pass().HDRIndex].SampleLevel(
+        gSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
 }
 
 float3 QuadraticThreshold(float3 Color, float Threshold, float3 Curve)
@@ -114,7 +114,7 @@ void DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread,
     Q3 = float3(0, 0, 0);
 
     const int2 BaseDst = int2(Tile * TILE_THREAD_WIDTH + TileThread) * 2;
-    const float2 InvMip0Size = 1.0 / float2(PC.PyramidSize);
+    const float2 InvMip0Size = 1.0 / float2(Pass().PyramidSize);
 
     [unroll]
     for (uint qi = 0; qi < 4; ++qi)
@@ -122,12 +122,12 @@ void DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread,
         const int2 SubI = int2(qi & 1, qi >> 1);
         const int2 DstP = BaseDst + SubI;
 
-        if (all(uint2(DstP) < PC.PyramidSize))
+        if (all(uint2(DstP) < Pass().PyramidSize))
         {
             const float2 UV = (float2(DstP) + 0.5) * InvMip0Size;
-            const float3 V  = PrefilterHDR(UV, PC.InvHDRSize, PC.Threshold, PC.KneeCurve);
+            const float3 V  = PrefilterHDR(UV, Pass().InvHDRSize, Pass().Threshold, Pass().KneeCurve);
 
-            uBindlessRWTex2D[PC.MipUAV[0]][DstP] = float4(V, 0);
+            gRWTextures2D[Pass().MipUAV[0]][DstP] = float4(V, 0);
 
             if      (qi == 0) Q0 = V;
             else if (qi == 1) Q1 = V;
@@ -143,7 +143,7 @@ void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread,
     const int   DstMip  = StartMip + 2;
     const float3 V      = Reduce4(Q0, Q1, Q2, Q3);
     const int2  DstP    = int2(Tile * TILE_THREAD_WIDTH + TileThread);
-    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+    const uint2 DstSize = max(Pass().PyramidSize >> uint(DstMip), uint2(1, 1));
 
     if (all(uint2(DstP) < DstSize))
     {
@@ -164,7 +164,7 @@ void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex
     const uint2 RemainingTile = uint2(1, 1) * uint(TILE_THREAD_WIDTH >> (MipIndex + 1));
     const int2  DstP    = int2(TileThread + Tile * RemainingTile);
     const int2  SrcP    = int2(TileThread) * 2;
-    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+    const uint2 DstSize = max(Pass().PyramidSize >> uint(DstMip), uint2(1, 1));
     const bool  Active  = all(TileThread < RemainingTile) && all(uint2(DstP) < DstSize);
 
     if (Active)
@@ -182,17 +182,17 @@ void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex
 
 void DownsampleTile_Phase1(uint2 Tile, uint2 TileThread)
 {
-    if (PC.NumMips < 1) return;
+    if (Pass().NumMips < 1) return;
     float3 Q0, Q1, Q2, Q3;
     DownsampleMipN0_BaseCase(Tile, TileThread, Q0, Q1, Q2, Q3);
 
-    if (PC.NumMips < 2) return;
+    if (Pass().NumMips < 2) return;
     DownsampleMipN1(-1, Tile, TileThread, Q0, Q1, Q2, Q3);
 
     [unroll]
     for (int mi = 0; mi < 4; ++mi)
     {
-        if (int(PC.NumMips) <= -1 + 3 + mi) return;
+        if (int(Pass().NumMips) <= -1 + 3 + mi) return;
         DownsampleMipN2_N5(-1, Tile, TileThread, mi);
     }
 }

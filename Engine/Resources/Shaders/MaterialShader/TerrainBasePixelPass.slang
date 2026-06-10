@@ -2,7 +2,7 @@
 #include "Includes/IBLRuntime.slang"
 #include "Includes/ShadowSampling.slang"
 
-#define PC (*(FTerrainPushConstants*)gPC.PassAddr)
+FTerrainPushConstants* Pass() { return GetPassArgs<FTerrainPushConstants>(); }
 
 struct PSInput
 {
@@ -73,7 +73,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     if (HasFlag(LightFlags, ELightFlags::Directional))
     {
         // Constant safety bias only; NormalOffsetWS handles slope acne. ShadowParams.y is the per-light constant bias.
-        return 0.00015 + 0.0003 * SlopeFactor + uLightData[0].ShadowParams.y;
+        return 0.00015 + 0.0003 * SlopeFactor + LightData().ShadowParams.y;
     }
 
     return 0.0015 + 0.004 * SlopeFactor;
@@ -84,11 +84,11 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
 {
     float NdotL       = saturate(dot(Normal, LightDir));
     float OffsetScale = saturate(1.0 - NdotL);
-    float Radius      = uLightData[0].CascadeRadii[CascadeIndex];
-    float Resolution  = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float Radius      = LightData().CascadeRadii[CascadeIndex];
+    float Resolution  = max(LightData().CascadeResolutions[CascadeIndex], 1.0);
     float TexelSize   = (2.0 * Radius) / Resolution;
     // ShadowParams.x scales the normal-offset bias per-light (1.0 = default).
-    return Normal * (TexelSize * 1.4 * OffsetScale * uLightData[0].ShadowParams.x);
+    return Normal * (TexelSize * 1.4 * OffsetScale * LightData().ShadowParams.x);
 }
 
 // Per-cascade UV -> shared atlas UV. Mirrors BasePixelPass.slang::CascadeAtlasUV.
@@ -169,7 +169,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV  = SampleUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
+        float  Depth    = ShadowCascade().SampleLevel(AtlasUV, 0.0).r;
 
         // Expected receiver depth at this offset along its own plane (clamped against silhouette-edge
         // gradient runaway). Only depths in front of the predicted plane count as occluders.
@@ -192,12 +192,12 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     // Filter bounds in shadow texels (per-cascade): floor for smooth near edges, ceiling the max tap
     // count covers gap-free. Texel units self-scale across cascades; see BasePixelPass.slang.
-    float CascadeTexelUV = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float CascadeTexelUV = 1.0 / max(LightData().CascadeResolutions[CascadeIndex], 1.0);
     float MinRadius      = PCSS_MinFilterTexels * CascadeTexelUV;
     float MaxRadius      = PCSS_MaxFilterTexels * CascadeTexelUV;
 
     float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    float Penumbra        = DepthDelta * uLightData[0].ShadowParams.z;
+    float Penumbra        = DepthDelta * LightData().ShadowParams.z;
     float FilterRadius    = clamp(Penumbra, MinRadius, MaxRadius);
 
     // Pull in slightly for partial occlusion, but never below the texel floor (keeps contact edges smooth).
@@ -206,7 +206,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     // Scale tap count with penumbra width so density stays ~constant; at MaxRadius this reaches
     // SHADOW_MAX_SAMPLE_COUNT -> ~1-texel Vogel spacing, gap-free. Matches BasePixelPass.
-    int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    int   BaseTaps    = clamp(int(LightData().ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
@@ -218,7 +218,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 Offset    = VogelDiskSample(i, SampleCount, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV   = CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
+        Shadow += ShadowCascade().SampleCmp(AtlasUV, RefDepth);
     }
     return Shadow / float(SampleCount);
 }
@@ -246,7 +246,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
     int CascadeIndex = 0;
     for (int i = 0; i < NUM_CASCADES; ++i)
     {
-        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+        if (ViewPosition.z > LightData().CascadeSplits[i])
             CascadeIndex = i + 1;
     }
     if (CascadeIndex >= NUM_CASCADES)
@@ -260,13 +260,13 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
 
     float CascadeNear = (CascadeIndex == 0)
         ? 0.0
-        : uLightData[0].CascadeSplits[CascadeIndex - 1];
-    float CascadeFar  = uLightData[0].CascadeSplits[CascadeIndex];
+        : LightData().CascadeSplits[CascadeIndex - 1];
+    float CascadeFar  = LightData().CascadeSplits[CascadeIndex];
     float CascadeLen  = max(CascadeFar - CascadeNear, 1e-4);
     float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
 
     // Cross-fade fraction is per-light (ShadowParams.w); BlendStart = 1 - blend.
-    const float BlendStart = saturate(1.0 - uLightData[0].ShadowParams.w);
+    const float BlendStart = saturate(1.0 - LightData().ShadowParams.w);
     if (LocalT > BlendStart && CascadeIndex + 1 < NUM_CASCADES)
     {
         float BlendT  = saturate((LocalT - BlendStart) / (1.0 - BlendStart));
@@ -286,7 +286,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
     if (CascadeIndex + 1 == NUM_CASCADES)
     {
         // Distance-fade fraction is per-light (ShadowParams2.x); start = 1 - fade.
-        const float FarFadeStart = saturate(1.0 - uLightData[0].ShadowParams2.x);
+        const float FarFadeStart = saturate(1.0 - LightData().ShadowParams2.x);
         if (LocalT > FarFadeStart)
         {
             float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));
@@ -299,7 +299,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
 
 int FindSunShadowDataIndexTerrain()
 {
-    if (uLightData[0].bHasSun == 0u)
+    if (LightData().bHasSun == 0u)
     {
         return INDEX_NONE;
     }
@@ -328,7 +328,7 @@ float3 CascadeDebugColorTerrain(float3 FragmentPos, float3 ViewPosition, float3 
     int CascadeIndex = 0;
     for (int i = 0; i < NUM_CASCADES; ++i)
     {
-        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+        if (ViewPosition.z > LightData().CascadeSplits[i])
             CascadeIndex = i + 1;
     }
     if (CascadeIndex >= NUM_CASCADES)
@@ -429,10 +429,10 @@ float3 EvaluateLightContribution(FLight Light, FShadingContext S, float3 L, floa
 }
 
 
-int   GetTerrainLayerCount()                       { return PC.Params.get().LayerCount; }
+int   GetTerrainLayerCount()                       { return Pass().Params.get().LayerCount; }
 float GetTerrainLayerWeight(float2 HeightUV, int i)
 {
-    return uBindlessTex2DArray[PC.LayerWeightsIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
+    return gTextures2DArray[Pass().LayerWeightsIndex].Sample(gSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
 }
 
 // Hash-to-color for the meshlet debug view; mirrors BasePixelPass so meshes and terrain match.
@@ -457,12 +457,12 @@ float3 TerrainMeshletDebugColor(uint Index)
 float4 GetTerrainLayerWeights4(float2 HeightUV)
 {
     float4 W = float4(0.0, 0.0, 0.0, 0.0);
-    int Count = min(PC.Params.get().LayerCount, 4);
+    int Count = min(Pass().Params.get().LayerCount, 4);
     [unroll] for (int i = 0; i < 4; ++i)
     {
         if (i < Count)
         {
-            W[i] = uBindlessTex2DArray[PC.LayerWeightsIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
+            W[i] = gTextures2DArray[Pass().LayerWeightsIndex].Sample(gSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
         }
     }
     float Total = W.x + W.y + W.z + W.w;
@@ -503,10 +503,10 @@ PSOutput FragmentMain(PSInput Input)
     float  Roughness = Material.Roughness;
     float  Metallic  = Material.Metallic;
 
-    uint MatFlags = uMaterialUniforms[MaterialIndex].Flags;
+    uint MatFlags = Materials()[MaterialIndex].Flags;
     if (HasFlag(MatFlags, MatFlag_Masked))
     {
-        float ClipValue = uMaterialUniforms[MaterialIndex].OpacityClipValue;
+        float ClipValue = Materials()[MaterialIndex].OpacityClipValue;
         if (Alpha < ClipValue)
         {
             discard;
@@ -549,8 +549,8 @@ PSOutput FragmentMain(PSInput Input)
 
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
-    uint3  GridSize   = uSceneData.GridSize.xyz;
-    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    uint3  GridSize   = Scene().GridSize.xyz;
+    uint2  ScreenSize = Scene().ScreenSize.xy;
 
     // Clamp tile index: huge terrain quads lose enough interpolation precision
     // at the edges that ViewPosition.z lands just below ZNear and ZTile wraps.
@@ -563,11 +563,11 @@ PSOutput FragmentMain(PSInput Input)
                                     float2(GridSize.xy) - float2(1.0, 1.0));
     uint3  Tile      = uint3(TileXY, ZTile);
     uint   TileIndex = Tile.x + (Tile.y * GridSize.x) + (Tile.z * GridSize.x * GridSize.y);
-    uint   LightCount = uClusters[TileIndex].Count;
+    uint   LightCount = Clusters()[TileIndex].Count;
 
     float3 Lo = float3(0.0);
 
-    if (uLightData[0].bHasSun != 0)
+    if (LightData().bHasSun != 0)
     {
         FLight Light = GetLightAt(0);
 
@@ -586,7 +586,7 @@ PSOutput FragmentMain(PSInput Input)
     uint SafeLightCount = min(LightCount, (uint)LIGHTS_PER_CLUSTER);
     for (uint i = 0; i < SafeLightCount; ++i)
     {
-        uint   LightIndex = uClusters[TileIndex].LightIndices[i];
+        uint   LightIndex = Clusters()[TileIndex].LightIndices[i];
         // Cluster contents can be stale after a scene switch; an index past the live count reads
         // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
         if (LightIndex >= GetNumLights())
@@ -636,7 +636,7 @@ PSOutput FragmentMain(PSInput Input)
 #endif // UNLIT
 
     // Debug overrides, kept in sync with BasePixelPass.slang so a mode lights up meshes and terrain together.
-    uint DebugMode = uSceneData.CullData.DebugMode;
+    uint DebugMode = Scene().CullData.DebugMode;
     if (DebugMode != DEBUG_MODE_NONE)
     {
         switch (DebugMode)
@@ -671,13 +671,13 @@ PSOutput FragmentMain(PSInput Input)
             case DEBUG_MODE_LIGHT_COMPLEXITY:
             {
                 uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = LightComplexityColor(uClusters[DbgIndex].Count);
+                Color = LightComplexityColor(Clusters()[DbgIndex].Count);
                 break;
             }
             case DEBUG_MODE_CLUSTER_GRID:
             {
                 uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
+                Color = ClusterDebugColor(DbgIndex, Clusters()[DbgIndex].Count);
                 break;
             }
             case DEBUG_MODE_SHADOW_CASCADES:

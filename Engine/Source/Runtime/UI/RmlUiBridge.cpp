@@ -25,12 +25,9 @@
 #include "Memory/MemoryTracking.h"
 #include "Memory/SmartPtr.h"
 #include "Core/Threading/Thread.h"
-#include "Renderer/CommandList.h"
-#include "Renderer/RenderResource.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RenderTypes.h"
 #include "Renderer/Format.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHI.h"
+#include "Renderer/RHITexture.h"
 #include "Scripting/Lua/Reference.h"
 #include <filesystem>
 #include "World/World.h"
@@ -167,7 +164,7 @@ namespace Lumina::RmlUi
         struct FEditorEntry
         {
             Rml::Context*         Context = nullptr;
-            FRHIImage*            Target = nullptr;
+            RHI::FTextureH        Target = {};
             FUIntVector2            Size{0, 0};
             Rml::ElementDocument* Document = nullptr;
             float                 DpiScale = 1.0f;
@@ -255,7 +252,7 @@ namespace Lumina::RmlUi
             return (It != UI->Documents.end()) ? It->second : nullptr;
         }
 
-        struct FWorldTarget { FRHIImage* Image = nullptr; FUIntVector2 Size{0, 0}; };
+        struct FWorldTarget { RHI::FTextureH Image = {}; FUIntVector2 Size{0, 0}; };
         FWorldTarget GetWorldTarget(const CWorld* World)
         {
             if (World == nullptr)
@@ -267,12 +264,13 @@ namespace Lumina::RmlUi
             {
                 return {};
             }
-            FRHIImage* Img = Scene->GetRenderTarget();
-            if (Img == nullptr)
+            const RHI::FTextureH Img = Scene->GetDisplayTexture();
+            if (!RHI::IsValid(Img))
             {
                 return {};
             }
-            return { Img, FUIntVector2(Img->GetSizeX(), Img->GetSizeY()) };
+            const RHI::FTextureDesc Desc = RHI::GetTextureDesc(Img);
+            return { Img, FUIntVector2(Desc.Dimension.x, Desc.Dimension.y) };
         }
 
         int64 GetDocumentWriteTime(const FString& VirtualPath)
@@ -303,11 +301,14 @@ namespace Lumina::RmlUi
                 E.Document = nullptr;
             }
             // Drop the renderer's cached batch for this RT before the RT itself goes away.
-            if (E.Target && S().Renderer != nullptr)
+            if (E.Target.IsValid() && S().Renderer != nullptr)
             {
-                S().Renderer->ReleaseTargetBatch(E.Target.GetReference());
+                S().Renderer->ReleaseTargetBatch(E.Target.Texture);
             }
-            E.Target.SafeRelease();
+            if (E.Target.IsValid())
+            {
+                RHI::Textures::Release(E.Target);
+            }
             E.ResourceID = -1;
             E.BuiltSize  = FUIntVector2(0, 0);
             E.LoadedPath.clear();
@@ -328,20 +329,14 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            FRHIImageDesc Desc;
-            Desc.Extent            = FUIntVector2(Width, Height);
-            Desc.Format            = EFormat::RGBA8_UNORM;
-            Desc.Dimension         = EImageDimension::Texture2D;
-            Desc.NumMips           = 1;
-            Desc.ArraySize         = 1;
-            Desc.NumSamples        = 1;
-            Desc.DebugName         = "WidgetRT";
-            Desc.InitialState      = EResourceStates::ShaderResource;
-            Desc.bKeepInitialState = true;
-            Desc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-
-            E.Target = GRenderContext->CreateImage(Desc);
-            E.ResourceID = (E.Target && E.Target->GetResourceID() >= 0) ? E.Target->GetResourceID() : -1;
+            E.Target = RHI::Textures::Create(RHI::FTexture2DDesc
+            {
+                .Width  = Width,
+                .Height = Height,
+                .Format = EFormat::RGBA8_UNORM,
+                .bRenderTarget = true,
+            });
+            E.ResourceID = E.Target.IsValid() ? (int32)E.Target.SampledSlot : -1;
             E.BuiltSize  = FUIntVector2(Width, Height);
         }
 
@@ -618,7 +613,7 @@ namespace Lumina::RmlUi
         }
 
         const FWorldTarget Tgt = GetWorldTarget(World);
-        if (Tgt.Image != nullptr)
+        if (RHI::IsValid(Tgt.Image))
         {
             // DisplaySize override (set by editor each frame) lets the UI lay out at the
             // panel's aspect instead of the RT's. Falls back to RT size in standalone.
@@ -633,7 +628,7 @@ namespace Lumina::RmlUi
         UI->Context->Update();
     }
 
-    void RenderWorldUI(const CWorld* World, ICommandList& CmdList)
+    void RenderWorldUI(const CWorld* World, RHI::FCmdListH CmdList)
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
@@ -648,7 +643,7 @@ namespace Lumina::RmlUi
         }
 
         const FWorldTarget Tgt = GetWorldTarget(World);
-        if (Tgt.Image == nullptr)
+        if (!RHI::IsValid(Tgt.Image))
         {
             return;
         }
@@ -736,9 +731,9 @@ namespace Lumina::RmlUi
             }
             
             const int32 DormancyFrames = CVarWidgetDormancyFrames.GetValue();
-            if (DormancyFrames > 0 && R.bRmlIdle && !bPathChanged && !bFileChanged && R.Target && State.Renderer != nullptr)
+            if (DormancyFrames > 0 && R.bRmlIdle && !bPathChanged && !bFileChanged && R.Target.IsValid() && State.Renderer != nullptr)
             {
-                if (State.Renderer->GetTargetStableFrames(R.Target.GetReference()) >= (uint32)DormancyFrames)
+                if (State.Renderer->GetTargetStableFrames(R.Target.Texture) >= (uint32)DormancyFrames)
                 {
                     return;   // settled: no Update, no job; keep last RT
                 }
@@ -753,14 +748,14 @@ namespace Lumina::RmlUi
             R.bRmlIdle = (R.Context->GetNextUpdateDelay() > 1.0e6);
 
             // Queue for the render thread (R.ResourceID is read by the scene gather directly).
-            if (R.Document != nullptr && R.Target)
+            if (R.Document != nullptr && R.Target.IsValid())
             {
-                UI->WidgetJobs.push_back(FWidgetRenderJob{ R.Context, R.Target.GetReference(), R.BuiltSize });
+                UI->WidgetJobs.push_back(FWidgetRenderJob{ R.Context, R.Target.Texture, R.BuiltSize });
             }
         });
     }
 
-    void RenderWorldWidgets(const CWorld* World, ICommandList& CmdList)
+    void RenderWorldWidgets(const CWorld* World, RHI::FCmdListH CmdList)
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
@@ -787,7 +782,7 @@ namespace Lumina::RmlUi
         for (size_t k = 0; k < JobCount; ++k)
         {
             const FWidgetRenderJob& Job = UI->WidgetJobs[(State.WidgetRenderCursor + k) % JobCount];
-            if (Job.Context == nullptr || Job.Target == nullptr)
+            if (Job.Context == nullptr || !RHI::IsValid(Job.Target))
             {
                 continue;
             }
@@ -810,21 +805,21 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            // Entity (and its Runtime.Target) can be destroyed before the GPU runs; keep it alive.
-            CmdList.KeepAlive(Job.Target);
-
             // Renderer composites with LoadOp=Load, so clear the RT to transparent first.
-            CmdList.SetImageState(Job.Target, AllSubresources, EResourceStates::CopyDest);
-            CmdList.CommitBarriers();
-            CmdList.ClearImageColor(Job.Target, FColor(0.0f, 0.0f, 0.0f, 0.0f));
+            const float Transparent[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::CmdClearTexture(CmdList, Job.Target, Transparent);
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
 
             State.Renderer->EndFrame();
             State.Renderer->NoteTargetStable(Job.Target, false);      // just changed -> reset
-
-            // Make it sampleable by the scene's widget pass later this frame.
-            CmdList.SetImageState(Job.Target, AllSubresources, EResourceStates::ShaderResource);
-            CmdList.CommitBarriers();
             ++Rendered;
+        }
+
+        if (Rendered > 0)
+        {
+            // Widget RT writes visible to the scene's widget pass sampling them later this frame.
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::RasterColorOut, RHI::EStageFlags::PixelShader);
         }
 
         State.WidgetRenderCursor = (uint32)((State.WidgetRenderCursor + 1) % JobCount);
@@ -875,7 +870,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    void RenderEditorContexts(ICommandList& CmdList)
+    void RenderEditorContexts(RHI::FCmdListH CmdList)
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
@@ -884,9 +879,10 @@ namespace Lumina::RmlUi
             return;
         }
 
+        bool bAnyRendered = false;
         for (auto& E : State.EditorContexts)
         {
-            if (E->Context == nullptr || E->Target == nullptr)
+            if (E->Context == nullptr || !RHI::IsValid(E->Target))
             {
                 continue;
             }
@@ -895,13 +891,21 @@ namespace Lumina::RmlUi
                 continue;
             }
             // Renderer uses LoadOp=Load; clear here so editor can composite its own background under a transparent canvas.
-            CmdList.SetImageState(E->Target, AllSubresources, EResourceStates::CopyDest);
-            CmdList.CommitBarriers();
-            CmdList.ClearImageColor(E->Target, FColor(E->ClearColor.r, E->ClearColor.g, E->ClearColor.b, E->ClearColor.a));
+            const float Clear[4] = { E->ClearColor.x, E->ClearColor.y, E->ClearColor.z, E->ClearColor.w };
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::CmdClearTexture(CmdList, E->Target, Clear);
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
 
             State.Renderer->BeginFrame(CmdList, E->Target, E->Size);
             E->Context->Render();
             State.Renderer->EndFrame();
+            bAnyRendered = true;
+        }
+
+        if (bAnyRendered)
+        {
+            // Preview RT writes visible to ImGui sampling them this frame.
+            RHI::CmdBarrier(CmdList, RHI::EStageFlags::RasterColorOut, RHI::EStageFlags::PixelShader);
         }
     }
 
@@ -1079,7 +1083,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    void SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const FUIntVector2& Size)
+    void SetEditorContextTarget(Rml::Context* Context, RHI::FTextureH Target, const FUIntVector2& Size)
     {
         if (Context == nullptr)
         {

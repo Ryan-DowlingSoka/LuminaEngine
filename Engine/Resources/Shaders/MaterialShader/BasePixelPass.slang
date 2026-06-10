@@ -134,7 +134,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     if (HasFlag(LightFlags, ELightFlags::Directional))
     {
         // Constant safety bias only; NormalOffsetWS() handles slope acne. ShadowParams.y is the per-light constant bias.
-        return 0.00015 + 0.0003 * SlopeFactor + uLightData[0].ShadowParams.y;
+        return 0.00015 + 0.0003 * SlopeFactor + LightData().ShadowParams.y;
     }
 
     // Point/spot: RefDepth is NDC z from the face VP, which clusters near 1.0
@@ -150,13 +150,13 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
     float OffsetScale = saturate(1.0 - NdotL);
 
     // World-space size of one shadow texel: ortho width 2*Radius / per-cascade resolution.
-    float Radius     = uLightData[0].CascadeRadii[CascadeIndex];
-    float Resolution = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float Radius     = LightData().CascadeRadii[CascadeIndex];
+    float Resolution = max(LightData().CascadeResolutions[CascadeIndex], 1.0);
     float TexelSize  = (2.0 * Radius) / Resolution;
 
     // 1.4 ~= sqrt(2): one diagonal texel at max slope, the minimum that clears depth-quantization
     // self-intersection without peter-panning. ShadowParams.x scales per-light (1.0 = default).
-    return Normal * (TexelSize * 1.4 * OffsetScale * uLightData[0].ShadowParams.x);
+    return Normal * (TexelSize * 1.4 * OffsetScale * LightData().ShadowParams.x);
 }
 
 // Pack a per-cascade UV [0,1] into the shared cascade atlas. The atlas tile
@@ -250,7 +250,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV  = SampleUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
+        float  Depth    = ShadowCascade().SampleLevel(AtlasUV, 0.0).r;
 
         // Expected receiver depth at this offset along its own plane (clamped so a runaway gradient at a
         // silhouette edge can't invert the test). Only depths in front of the predicted plane are occluders.
@@ -274,14 +274,14 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     // Filter bounds in shadow texels (per-cascade): a floor so contact shadows still get multi-tap PCF
     // (smooth near edges), and a ceiling the max tap count covers gap-free (no far stipple). Texel units
     // keep softening screen-consistent across cascades, so no explicit CascadeScale is needed here.
-    float CascadeTexelUV = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float CascadeTexelUV = 1.0 / max(LightData().CascadeResolutions[CascadeIndex], 1.0);
     float MinRadius      = PCSS_MinFilterTexels * CascadeTexelUV;
     float MaxRadius      = PCSS_MaxFilterTexels * CascadeTexelUV;
 
     // Stage 2: penumbra grows with receiver-to-blocker depth (ortho NDC-z delta) scaled by per-light
     // softness (ShadowParams.z), clamped between the texel floor and ceiling.
     float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    float Penumbra     = DepthDelta * uLightData[0].ShadowParams.z;
+    float Penumbra     = DepthDelta * LightData().ShadowParams.z;
     float FilterRadius = clamp(Penumbra, MinRadius, MaxRadius);
 
     // Low blocker coverage means partial occlusion, so pull the filter in slightly -- but never below
@@ -291,7 +291,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     // Stage 3: scale tap count with penumbra width so sample density (and thus smoothness) stays roughly
     // constant; at MaxRadius this reaches SHADOW_MAX_SAMPLE_COUNT -> ~1-texel Vogel spacing, gap-free.
-    int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    int   BaseTaps    = clamp(int(LightData().ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
@@ -303,7 +303,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
         float2 Offset    = VogelDiskSample(i, SampleCount, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV   = CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
+        Shadow += ShadowCascade().SampleCmp(AtlasUV, RefDepth);
     }
     return Shadow / float(SampleCount);
 }
@@ -328,7 +328,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         }
 
         // Pick current cascade based on view-space Z against the split table (loaded once into registers).
-        float4 CascadeSplits = uLightData[0].CascadeSplits;
+        float4 CascadeSplits = LightData().CascadeSplits;
         int CascadeIndex = 0;
         for (int i = 0; i < NUM_CASCADES; ++i)
         {
@@ -351,7 +351,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
 
         // Cross-fade fraction is per-light (ShadowParams.w); BlendStart = 1 - blend.
-        const float BlendStart = saturate(1.0 - uLightData[0].ShadowParams.w);
+        const float BlendStart = saturate(1.0 - LightData().ShadowParams.w);
         if (LocalT > BlendStart && CascadeIndex + 1 < NUM_CASCADES)
         {
             float BlendT  = saturate((LocalT - BlendStart) / (1.0 - BlendStart));
@@ -371,7 +371,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         if (CascadeIndex + 1 == NUM_CASCADES)
         {
             // Distance-fade fraction is per-light (ShadowParams2.x); start = 1 - fade.
-            const float FarFadeStart = saturate(1.0 - uLightData[0].ShadowParams2.x);
+            const float FarFadeStart = saturate(1.0 - LightData().ShadowParams2.x);
             if (LocalT > FarFadeStart)
             {
                 float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));
@@ -400,7 +400,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Face);
 
     uint AtlasW, AtlasH;
-    uShadowAtlas.GetDimensions(AtlasW, AtlasH);
+    ShadowAtlas().GetDimensions(AtlasW, AtlasH);
 
     float  AtlasTileTexels  = max(ShadowTile.AtlasUVScale.x, 1e-6) * float(AtlasW);
     float  WorldTexel       = (Light.Radius * 2.0) / max(AtlasTileTexels, 1.0);
@@ -452,13 +452,13 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         {
             continue;
         }
-        Shadow += uShadowAtlas.SampleCmpLevelZero(SampleUV, RefDepth);
+        Shadow += ShadowAtlas().SampleCmpLevelZero(SampleUV, RefDepth);
         Weight += 1.0;
     }
 
     if (Weight <= 0.0)
     {
-        return uShadowAtlas.SampleCmpLevelZero(BaseUV, RefDepth);
+        return ShadowAtlas().SampleCmpLevelZero(BaseUV, RefDepth);
     }
     return Shadow / Weight;
 }
@@ -467,7 +467,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 // cascade debug visualizer; pixel-shader cost is irrelevant in that mode.
 int FindSunShadowDataIndex()
 {
-    if (uLightData[0].bHasSun == 0u)
+    if (LightData().bHasSun == 0u)
     {
         return INDEX_NONE;
     }
@@ -496,7 +496,7 @@ float3 CascadeDebugColor(float3 FragmentPos, float3 ViewPosition, float3 ShadedB
     int CascadeIndex = 0;
     for (int i = 0; i < NUM_CASCADES; ++i)
     {
-        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+        if (ViewPosition.z > LightData().CascadeSplits[i])
             CascadeIndex = i + 1;
     }
     if (CascadeIndex >= NUM_CASCADES)
@@ -544,7 +544,7 @@ float3 ShadowPenumbraDebug(float3 FragmentPos, float3 ViewPosition, float2 Scree
 
     int CascadeIndex = 0;
     for (int i = 0; i < NUM_CASCADES; ++i)
-        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+        if (ViewPosition.z > LightData().CascadeSplits[i])
             CascadeIndex = i + 1;
     if (CascadeIndex >= NUM_CASCADES)
         return float3(0.15, 0.15, 0.15);
@@ -581,7 +581,7 @@ float3 ShadowPenumbraDebug(float3 FragmentPos, float3 ViewPosition, float2 Scree
         float2 Offset    = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV  = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV   = CascadeAtlasUV(SunShadowIdx, CascadeIndex, SampleUV);
-        float  Depth     = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
+        float  Depth     = ShadowCascade().SampleLevel(AtlasUV, 0.0).r;
         float  PlaneDelta = clamp(dot(DepthSlopeUV, Offset), -PCSS_MaxPlaneDepthBias, PCSS_MaxPlaneDepthBias);
         if (Depth < CurrentDepth + PlaneDelta - PCSS_BlockerDepthBias)
         {
@@ -594,11 +594,11 @@ float3 ShadowPenumbraDebug(float3 FragmentPos, float3 ViewPosition, float2 Scree
         return float3(0.0, 0.0, 0.0);
 
     float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
-    float CascadeTexelUV  = 1.0 / max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float CascadeTexelUV  = 1.0 / max(LightData().CascadeResolutions[CascadeIndex], 1.0);
     float MinRadius       = PCSS_MinFilterTexels * CascadeTexelUV;
     float MaxRadius       = PCSS_MaxFilterTexels * CascadeTexelUV;
     float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    float Penumbra        = DepthDelta * uLightData[0].ShadowParams.z;
+    float Penumbra        = DepthDelta * LightData().ShadowParams.z;
     float FilterRadius    = clamp(Penumbra, MinRadius, MaxRadius);
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
     FilterRadius          = max(FilterRadius * lerp(0.75, 1.0, BlockerCoverage), MinRadius);
@@ -710,10 +710,10 @@ PSOutput FragmentMain(PSInput Input)
     float  Roughness = max(Material.Roughness, 0.045);
     float  Metallic  = Material.Metallic;
 
-    uint MatFlags = uMaterialUniforms[MaterialIndex].Flags;
+    uint MatFlags = Materials()[MaterialIndex].Flags;
     if (HasFlag(MatFlags, MatFlag_Masked))
     {
-        float ClipValue = uMaterialUniforms[MaterialIndex].OpacityClipValue;
+        float ClipValue = Materials()[MaterialIndex].OpacityClipValue;
         if (Alpha < ClipValue)
         {
             discard;
@@ -734,7 +734,7 @@ PSOutput FragmentMain(PSInput Input)
     // receive lights/shadows/IBL. No-op on pixels no decal touched. Opaque base pass only.
 #ifndef TRANSLUCENT
     {
-        float2 DBufferUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
+        float2 DBufferUV = Input.Position.xy / float2(Scene().ScreenSize.xy);
         ApplyDBuffer(Albedo, N, Roughness, Metallic, AO, DBufferUV);
     }
 #endif
@@ -767,11 +767,11 @@ PSOutput FragmentMain(PSInput Input)
 
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
-    uint3  GridSize   = uSceneData.GridSize.xyz;
-    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    uint3  GridSize   = Scene().GridSize.xyz;
+    uint2  ScreenSize = Scene().ScreenSize.xy;
 
     // Clamp to ZNear: edge fragments below it make log() negative, wrapping ZTile to a huge value
-    // that overflows uClusters -> garbage light list and an MMU fault. Same hardening as TerrainBasePixelPass.
+    // that overflows Clusters() -> garbage light list and an MMU fault. Same hardening as TerrainBasePixelPass.
     float  ZForTile     = max(abs(ViewPosition.z), ZNear);
     float  ZTileF       = (log(ZForTile / ZNear) * float(GridSize.z)) / log(ZFar / ZNear);
     uint   ZTile        = (uint)clamp(ZTileF, 0.0, float(GridSize.z) - 1.0);
@@ -781,11 +781,11 @@ PSOutput FragmentMain(PSInput Input)
                                        float2(GridSize.xy) - float2(1.0, 1.0));
     uint3  Tile         = uint3(TileXY, ZTile);
     uint   TileIndex    = Tile.x + (Tile.y * GridSize.x) + (Tile.z * GridSize.x * GridSize.y);
-    uint   LightCount   = uClusters[TileIndex].Count;
+    uint   LightCount   = Clusters()[TileIndex].Count;
 
     float3 Lo = float3(0.0);
 
-    if (uLightData[0].bHasSun != 0)
+    if (LightData().bHasSun != 0)
     {
         FLight Light = GetLightAt(0);
 
@@ -806,7 +806,7 @@ PSOutput FragmentMain(PSInput Input)
     uint NumLights      = GetNumLights();   // loop-invariant; hoisted out of the per-light test
     for (uint i = 0; i < SafeLightCount; ++i)
     {
-        uint LightIndex = uClusters[TileIndex].LightIndices[i];
+        uint LightIndex = Clusters()[TileIndex].LightIndices[i];
         // Cluster contents can be stale after a scene switch; an index past the live count reads
         // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
         if (LightIndex >= NumLights)
@@ -816,8 +816,8 @@ PSOutput FragmentMain(PSInput Input)
 
         // Cheap culls read only Position/Radius; the full 64B light is fetched only for survivors, so every
         // distance- or back-face-culled light skips ~48B of global load and never becomes live here.
-        float3 LightPos = uLightData[0].Lights[LightIndex].Position;
-        float  Radius   = uLightData[0].Lights[LightIndex].Radius;
+        float3 LightPos = LightData().Lights[LightIndex].Position;
+        float  Radius   = LightData().Lights[LightIndex].Radius;
 
         float3 LightToFrag = LightPos - WorldPosition;
         float  DistSq      = dot(LightToFrag, LightToFrag);
@@ -851,10 +851,10 @@ PSOutput FragmentMain(PSInput Input)
     // Screen-space AO attenuates the ambient/IBL term only (direct light already has its own occlusion).
     // AOTextureIndex is ~0u for views that didn't run the SSAO pass (e.g. captures) -> treat as unoccluded.
     float SSAO = 1.0;
-    if (uSceneData.SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
+    if (Scene().SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
     {
-        float2 ScreenUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
-        SSAO = SampleBindless2D(uSceneData.SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, ScreenUV).r;
+        float2 ScreenUV = Input.Position.xy / float2(Scene().ScreenSize.xy);
+        SSAO = SampleTexture2D(Scene().SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, ScreenUV).r;
     }
 
     float3 Ambient;
@@ -876,7 +876,7 @@ PSOutput FragmentMain(PSInput Input)
 
 #endif // UNLIT
 
-    uint DebugMode = uSceneData.CullData.DebugMode;
+    uint DebugMode = Scene().CullData.DebugMode;
     if (DebugMode != DEBUG_MODE_NONE)
     {
         switch (DebugMode)
@@ -922,13 +922,13 @@ PSOutput FragmentMain(PSInput Input)
             case DEBUG_MODE_LIGHT_COMPLEXITY:
             {
                 uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = LightComplexityColor(uClusters[DbgIndex].Count);
+                Color = LightComplexityColor(Clusters()[DbgIndex].Count);
                 break;
             }
             case DEBUG_MODE_CLUSTER_GRID:
             {
                 uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
+                Color = ClusterDebugColor(DbgIndex, Clusters()[DbgIndex].Count);
                 break;
             }
             case DEBUG_MODE_SHADOW_CASCADES:
@@ -941,10 +941,10 @@ PSOutput FragmentMain(PSInput Input)
             {
                 // Show the (blurred) screen-space AO factor. White where SSAO is off for this view.
                 float DbgAO = 1.0;
-                if (uSceneData.SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
+                if (Scene().SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
                 {
-                    float2 DbgUV = Input.Position.xy / float2(uSceneData.ScreenSize.xy);
-                    DbgAO = SampleBindless2D(uSceneData.SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, DbgUV).r;
+                    float2 DbgUV = Input.Position.xy / float2(Scene().ScreenSize.xy);
+                    DbgAO = SampleTexture2D(Scene().SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, DbgUV).r;
                 }
                 Color = float3(DbgAO, DbgAO, DbgAO);
                 break;

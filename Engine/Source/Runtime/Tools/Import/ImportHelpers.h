@@ -9,7 +9,7 @@
 #include "Memory/SmartPtr.h"
 #include "Platform/Platform.h"
 #include "Renderer/Format.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHITexture.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 
 namespace Lumina
@@ -17,7 +17,6 @@ namespace Lumina
     struct FAnimationResource;
     struct FMeshResource;
     struct FSkeletonResource;
-    class IRenderContext;
     struct FVertex;
     class FScopedSlowTask;
 }
@@ -50,8 +49,8 @@ namespace Lumina::Import
         RUNTIME_API TOptional<FTextureImportResult> ImportTexture(FStringView RawFilePath, bool bFlipVertical = true, FUIntVector2 Size = {});
         RUNTIME_API TOptional<FTextureImportResult> ImportTexture(TSpan<const uint8> ImageData, bool bFlipVertical = true, FUIntVector2 Size = {});
     
-        /** Creates a raw RHI Image */
-        NODISCARD RUNTIME_API FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad = true, FUIntVector2 Size = {});
+        /** Decodes a file straight into the global texture heap; ImTextureID = ResourceID(). */
+        NODISCARD RUNTIME_API RHI::FManagedTexture CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad = true, FUIntVector2 Size = {});
     }
 
     
@@ -77,9 +76,9 @@ namespace Lumina::Import
 
         struct FMeshImportImage : FImportSettings
         {
-            FFixedString    RelativePath;
-            FRHIImageRef    DisplayImage;
-            TVector<uint8>  Bytes;
+            FFixedString         RelativePath;
+            RHI::FManagedTexture DisplayImage;
+            TVector<uint8>       Bytes;
 
             /** Semantic role from the mesh importer; Auto defers to filename heuristic. */
             ETextureColorSpace IntendedColorSpace = ETextureColorSpace::Auto;
@@ -128,6 +127,13 @@ namespace Lumina::Import
             TVector<TUniquePtr<FSkeletonResource>>      Skeletons;
             /** Populated by the dialog at commit; drives FinalizeMeshImportData and per-asset creation gates. */
             FMeshImportOptions                          CommitOptions;
+
+            // Out-of-line (MeshImport.cpp): the dtor releases preview thumbnails, and all of
+            // these need member TUniquePtrs' types complete, which they are not here.
+            RUNTIME_API FMeshImportData();
+            RUNTIME_API FMeshImportData(FMeshImportData&&) noexcept;
+            RUNTIME_API FMeshImportData& operator=(FMeshImportData&&) noexcept;
+            RUNTIME_API ~FMeshImportData() override;
         };
 
         RUNTIME_API void OptimizeNewlyImportedMesh(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr);

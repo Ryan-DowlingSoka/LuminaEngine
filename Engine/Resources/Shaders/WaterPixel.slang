@@ -19,12 +19,12 @@ float SceneDistFromRaw(float2 UV, float RawDepth)
 
 float SampleSceneDepthRaw(float2 UV)
 {
-    return uBindlessTex2D[PC.SceneDepthIndex].SampleLevel(uBindlessSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
+    return gTextures2D[Pass().SceneDepthIndex].SampleLevel(gSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
 }
 
 float3 SampleSceneColor(float2 UV)
 {
-    return uBindlessTex2D[PC.SceneColorIndex].SampleLevel(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
+    return gTextures2D[Pass().SceneColorIndex].SampleLevel(gSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
 }
 
 // Cheap value-noise fbm used to break up procedural foam so it reads as wispy foam, not a solid white fill.
@@ -62,9 +62,9 @@ float WaterFbm(float2 P)
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
-    FGPUWater W = PC.Waters[Input.WaterIndex];
+    FGPUWater W = Pass().Waters[Input.WaterIndex];
 
-    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    uint2  ScreenSize = Scene().ScreenSize.xy;
     float2 ScreenUV   = Input.Position.xy / float2(ScreenSize);
 
     float SceneRawDepth = SampleSceneDepthRaw(ScreenUV);
@@ -84,8 +84,8 @@ float4 FragmentMain(PSInput Input) : SV_Target0
 
         float2 UV0 = Input.PlanarUV * Tiling + Wind * (GetTime() * Speed);
         float2 UV1 = Input.PlanarUV * Tiling * 1.7 - Wind * (GetTime() * Speed * 0.7);
-        float2 n0  = uBindlessTex2D[W.DetailNormalIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_WRAP], UV0).rg * 2.0 - 1.0;
-        float2 n1  = uBindlessTex2D[W.DetailNormalIndex].Sample(uBindlessSamplers[SAMPLER_LINEAR_WRAP], UV1).rg * 2.0 - 1.0;
+        float2 n0  = gTextures2D[W.DetailNormalIndex].Sample(gSamplers[SAMPLER_LINEAR_WRAP], UV0).rg * 2.0 - 1.0;
+        float2 n1  = gTextures2D[W.DetailNormalIndex].Sample(gSamplers[SAMPLER_LINEAR_WRAP], UV1).rg * 2.0 - 1.0;
         float2 dn  = (n0 + n1) * W.WaveParams.w;
 
         // Perturb the world normal in its tangent plane (world X projected onto the surface as tangent).
@@ -193,7 +193,7 @@ float4 FragmentMain(PSInput Input) : SV_Target0
     float3 Color = lerp(Refracted, Reflection, Fresnel);
 
     // --- Sun specular + subsurface scattering ---
-    if (uLightData[0].bHasSun != 0)
+    if (LightData().bHasSun != 0)
     {
         FLight Sun    = GetLightAt(0);
         float3 L      = normalize(-GetSunDirection());   // surface -> sun
@@ -229,11 +229,11 @@ float4 FragmentMain(PSInput Input) : SV_Target0
         float f1, f2, f3, f4;
         if (W.FoamTextureIndex != WATER_INVALID_TEX)
         {
-            SamplerState FS = uBindlessSamplers[SAMPLER_LINEAR_WRAP];
-            f1 = uBindlessTex2D[W.FoamTextureIndex].Sample(FS, UV1).r;
-            f2 = uBindlessTex2D[W.FoamTextureIndex].Sample(FS, UV2).r;
-            f3 = uBindlessTex2D[W.FoamTextureIndex].Sample(FS, UV3).r;
-            f4 = uBindlessTex2D[W.FoamTextureIndex].Sample(FS, UV4).r;
+            SamplerState FS = gSamplers[SAMPLER_LINEAR_WRAP];
+            f1 = gTextures2D[W.FoamTextureIndex].Sample(FS, UV1).r;
+            f2 = gTextures2D[W.FoamTextureIndex].Sample(FS, UV2).r;
+            f3 = gTextures2D[W.FoamTextureIndex].Sample(FS, UV3).r;
+            f4 = gTextures2D[W.FoamTextureIndex].Sample(FS, UV4).r;
         }
         else
         {

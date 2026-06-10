@@ -1,14 +1,13 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "FileSystem/FileSystem.h"
 #include "Memory/MemoryTracking.h"
 #include "Paths/Paths.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
+#include "Renderer/ShaderLibrary.h"
 #include "Types/Byte.h"
 
 namespace Lumina
@@ -110,37 +109,24 @@ namespace Lumina
     {
         if (!PixelShaderBinaries.empty() && !VertexShaderBinaries.empty())
         {
-            FShaderHeader VertexHeader;
-            VertexHeader.DebugName      = GetName().ToString() + "_VertexShader";
-            VertexHeader.Hash           = Hash::GetHash64(VertexShaderBinaries.data(), VertexShaderBinaries.size() * sizeof(uint32));
-            VertexHeader.Binaries       = VertexShaderBinaries;
-            VertexShader                = GRenderContext->CreateVertexShader(VertexHeader);
-
-            FShaderHeader PixelHeader;
-            PixelHeader.DebugName       = GetName().ToString() + "_PixelShader";
-            PixelHeader.Hash            = Hash::GetHash64(PixelShaderBinaries.data(), PixelShaderBinaries.size() * sizeof(uint32));
-            PixelHeader.Binaries        = PixelShaderBinaries;
-            PixelShader                 = GRenderContext->CreatePixelShader(PixelHeader);
+            // Library entries keyed by asset GUID: stable across reloads, refreshed in place on recompile.
+            const FString Guid = GetGUID().ToString();
+            VertexShader = FShaderLibrary::Commit(FName((Guid + "_VS").c_str()), ERHIShaderType::Vertex,
+                TSpan<const uint32>(VertexShaderBinaries.data(), VertexShaderBinaries.size()));
+            PixelShader  = FShaderLibrary::Commit(FName((Guid + "_PS").c_str()), ERHIShaderType::Fragment,
+                TSpan<const uint32>(PixelShaderBinaries.data(), PixelShaderBinaries.size()));
 
             // Depth-prepass / shadow VS only present for WPO materials; null falls back to global lib shader.
             if (!DepthPrepassVertexShaderBinaries.empty())
             {
-                FShaderHeader Header;
-                Header.DebugName = GetName().ToString() + "_DepthPrepassVS";
-                Header.Hash      = Hash::GetHash64(DepthPrepassVertexShaderBinaries.data(), DepthPrepassVertexShaderBinaries.size() * sizeof(uint32));
-                Header.Binaries  = DepthPrepassVertexShaderBinaries;
-                DepthPrepassVertexShader = GRenderContext->CreateVertexShader(Header);
+                DepthPrepassVertexShader = FShaderLibrary::Commit(FName((Guid + "_DepthVS").c_str()), ERHIShaderType::Vertex,
+                    TSpan<const uint32>(DepthPrepassVertexShaderBinaries.data(), DepthPrepassVertexShaderBinaries.size()));
             }
             if (!ShadowVertexShaderBinaries.empty())
             {
-                FShaderHeader Header;
-                Header.DebugName = GetName().ToString() + "_ShadowVS";
-                Header.Hash      = Hash::GetHash64(ShadowVertexShaderBinaries.data(), ShadowVertexShaderBinaries.size() * sizeof(uint32));
-                Header.Binaries  = ShadowVertexShaderBinaries;
-                ShadowVertexShader = GRenderContext->CreateVertexShader(Header);
+                ShadowVertexShader = FShaderLibrary::Commit(FName((Guid + "_ShadowVS").c_str()), ERHIShaderType::Vertex,
+                    TSpan<const uint32>(ShadowVertexShaderBinaries.data(), ShadowVertexShaderBinaries.size()));
             }
-
-            FBindingSetDesc SetDesc;
 
             // FMaterialUniforms isn't serialized; replay defaults from Parameters so authored values survive load.
             for (const FMaterialParameter& Param : Parameters)
@@ -167,8 +153,7 @@ namespace Lumina
             const uint32 NumTextures = (uint32)Math::Min<size_t>(Textures.size(), MAX_TEXTURES);
             for (uint32 i = 0; i < NumTextures; ++i)
             {
-                FRHIImage* Image = Textures[i] ? Textures[i]->GetRHIRef() : nullptr;
-                const int32 ResourceID = Image ? Image->GetResourceID() : -1;
+                const int32 ResourceID = Textures[i] ? Textures[i]->GetResourceID() : -1;
                 MaterialUniforms.Textures[i] = (ResourceID >= 0) ? (uint32)ResourceID : 0u;
             }
             
@@ -279,12 +264,12 @@ namespace Lumina
         return const_cast<CMaterial*>(this);
     }
     
-    FRHIVertexShader* CMaterial::GetVertexShader() const
+    const FShaderEntry* CMaterial::GetVertexShader() const
     {
         return VertexShader;
     }
 
-    FRHIPixelShader* CMaterial::GetPixelShader() const
+    const FShaderEntry* CMaterial::GetPixelShader() const
     {
         return PixelShader;
     }
@@ -301,7 +286,7 @@ namespace Lumina
 
     void CMaterial::CreateDefaultMaterial()
     {
-        IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
+        IShaderCompiler* ShaderCompiler = GShaderCompiler;
 
         ShaderCompiler->Flush();
         
@@ -368,16 +353,12 @@ namespace Lumina
 
         ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable
         {
-            DefaultMaterial->PixelShader = GRenderContext->CreatePixelShader(Header);
             DefaultMaterial->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-            GRenderContext->OnShaderCompiled(DefaultMaterial->PixelShader, false, true);
         });
 
         ShaderCompiler->CompilerShaderRaw(Move(LoadedVertexString), {}, [](const FShaderHeader& Header) mutable
         {
-            DefaultMaterial->VertexShader = GRenderContext->CreateVertexShader(Header);
             DefaultMaterial->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-            GRenderContext->OnShaderCompiled(DefaultMaterial->PixelShader, false, true);
         });
         
         ShaderCompiler->Flush();
@@ -387,7 +368,7 @@ namespace Lumina
 
     void CMaterial::CreateDefaultTerrainMaterial()
     {
-        IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
+        IShaderCompiler* ShaderCompiler = GShaderCompiler;
 
         ShaderCompiler->Flush();
         
@@ -461,16 +442,12 @@ namespace Lumina
 
         ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable
         {
-            DefaultTerrainMaterial->PixelShader = GRenderContext->CreatePixelShader(Header);
             DefaultTerrainMaterial->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-            GRenderContext->OnShaderCompiled(DefaultTerrainMaterial->PixelShader, false, true);
         });
 
         ShaderCompiler->CompilerShaderRaw(Move(LoadedVertexString), {}, [](const FShaderHeader& Header) mutable
         {
-            DefaultTerrainMaterial->VertexShader = GRenderContext->CreateVertexShader(Header);
             DefaultTerrainMaterial->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-            GRenderContext->OnShaderCompiled(DefaultTerrainMaterial->VertexShader, false, true);
         });
 
         ShaderCompiler->Flush();

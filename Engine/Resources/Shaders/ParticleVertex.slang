@@ -26,7 +26,7 @@ struct FParticlePushConstants
     uint   BillboardToCamera;      // 1 = camera-facing, 0 = world XZ-aligned
     float4 Tint;                   // xyz tint rgb, w intensity multiplier
 };
-#define PC (*(FParticlePushConstants*)gPC.PassAddr)
+FParticlePushConstants* Pass() { return GetPassArgs<FParticlePushConstants>(); }
 
 static const float2 QuadPositions[6] =
 {
@@ -64,7 +64,7 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     uint ParticleIndex = VertexIndex / 6;
     uint QuadIndex     = VertexIndex % 6;
 
-    FGPUParticle P = PC.Particles[ParticleIndex];
+    FGPUParticle P = Pass().Particles[ParticleIndex];
 
     VertexOutput Out;
 
@@ -92,7 +92,7 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
     // Billboard axes: either camera-facing or world-aligned (XZ plane).
     float3 BillboardRight;
     float3 BillboardUp;
-    if (PC.BillboardToCamera != 0u)
+    if (Pass().BillboardToCamera != 0u)
     {
         BillboardRight =  float3(ViewMatrix[0][0], ViewMatrix[0][1], ViewMatrix[0][2]);
         BillboardUp    = -float3(ViewMatrix[1][0], ViewMatrix[1][1], ViewMatrix[1][2]);
@@ -108,8 +108,8 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID)
                     + BillboardUp    * Rotated.y;
 
     Out.UV           = QuadUVs[QuadIndex];
-    Out.Color        = P.Color * float4(PC.Tint.rgb * PC.Tint.w, 1.0);
-    Out.TextureIndex = PC.TextureIndex;
+    Out.Color        = P.Color * float4(Pass().Tint.rgb * Pass().Tint.w, 1.0);
+    Out.TextureIndex = Pass().TextureIndex;
     Out.Position     = mul(GetCameraProjection(), mul(ViewMatrix, float4(WorldPos, 1.0)));
     return Out;
 }

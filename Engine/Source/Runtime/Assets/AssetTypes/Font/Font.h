@@ -6,6 +6,7 @@
 #include "Core/Object/ObjectMacros.h"
 #include "Core/Object/Object.h"
 #include "Renderer/RenderResource.h"
+#include "Renderer/RHITexture.h"
 #include "Font.generated.h"
 
 namespace Lumina
@@ -48,6 +49,7 @@ namespace Lumina
 
         void Serialize(FArchive& Ar) override;
         void PostLoad() override;
+        void OnDestroy() override;
         bool IsAsset() const override { return true; }
 
         const TVector<uint8>& GetFontData() const { return FontData; }
@@ -56,12 +58,9 @@ namespace Lumina
         // True once a usable MSDF atlas is baked (pixels + glyph table present).
         bool HasAtlas() const { return !AtlasPixels.empty() && AtlasWidth > 0 && AtlasHeight > 0 && !Glyphs.empty(); }
 
-        // Lazily uploads AtlasPixels into a bindless GPU image; safe to call repeatedly. Returns the image
-        // (null if no atlas / no render context). World text reads GetResourceID() off this.
-        FRHIImage* GetAtlasImage();
-
-        // The atlas image as a ref (for keep-alive pinning); valid after GetAtlasImage() has uploaded it.
-        const FRHIImageRef& GetAtlasImageRef() const { return AtlasImage; }
+        // Lazily uploads AtlasPixels into the global texture heap; safe to call repeatedly.
+        // Returns the heap ResourceID world text samples by, or -1 if no atlas is baked.
+        int32 GetAtlasResourceID();
 
         uint32 GetAtlasWidth()  const { return AtlasWidth; }
         uint32 GetAtlasHeight() const { return AtlasHeight; }
@@ -117,7 +116,7 @@ namespace Lumina
     private:
 
         THashMap<uint32, int32> GlyphLookup;
-        FRHIImageRef            AtlasImage;
+        RHI::FManagedTexture    AtlasTexture;
 
         // Monotonic; incremented by BuildGlyphLookup. Consumers compare it to detect a re-baked glyph table.
         uint32                  ShapeVersion = 0;

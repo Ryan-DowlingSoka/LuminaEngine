@@ -24,9 +24,9 @@ FragmentOutput FragmentMain(FragmentInput Input)
 {
     FragmentOutput Output;
 
-    FData Data = GetPassData<FData>();
+    FData* Data = GetPassArgs<FData>();
 
-    float2 TexelSize = 1.0 / float2(uSceneData.ScreenSize.xy);
+    float2 TexelSize = 1.0 / float2(Scene().ScreenSize.xy);
 
     // Symmetric 4x4 neighbourhood (offsets -2..1) matching the noise tile size.
     float Result = 0.0;
@@ -35,7 +35,7 @@ FragmentOutput FragmentMain(FragmentInput Input)
         for (int y = -2; y < 2; ++y)
         {
             float2 Offset = float2(x, y) * TexelSize;
-            Result += SampleBindless2D(Data.AOIndex, SAMPLER_POINT_CLAMP, Input.UV + Offset).r;
+            Result += SampleTexture2D(Data.AOIndex, SAMPLER_POINT_CLAMP, Input.UV + Offset).r;
         }
     }
 

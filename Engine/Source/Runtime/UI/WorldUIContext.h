@@ -3,6 +3,7 @@
 #include "Core/Math/Math.h"
 #include "Containers/Array.h"
 #include "Containers/String.h"
+#include "Renderer/RHI.h"
 
 namespace Rml
 {
@@ -12,15 +13,13 @@ namespace Rml
 
 namespace Lumina
 {
-    class FRHIImage;
-
     // One world-space widget to rasterize this frame; built game-thread in Tick, consumed render-thread in Render.
     // Non-owning: the Rml context + RT live on the SWidgetComponent that outlives the frame.
     struct FWidgetRenderJob
     {
-        Rml::Context* Context = nullptr;
-        FRHIImage*    Target = nullptr;
-        FUIntVector2    Size{0, 0};
+        Rml::Context*  Context = nullptr;
+        RHI::FTextureH Target = {};
+        FUIntVector2     Size{0, 0};
     };
 
     // Per-world UI state owned by CWorld: the world's own Rml context + loaded documents (bridge holds only

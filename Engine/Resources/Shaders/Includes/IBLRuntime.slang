@@ -7,7 +7,7 @@
 
 float3 SampleIrradiance(float3 N)
 {
-    return SampleBindlessCubeLevel(gPC.Root.get().SkyIrradianceIndex, SAMPLER_LINEAR_CLAMP, N, 0.0).rgb;
+    return SampleTextureCubeLevel(GetSceneRoot().SkyIrradianceIndex, SAMPLER_LINEAR_CLAMP, N, 0.0).rgb;
 }
 
 // Roughness-driven mip selection. The prefilter cube's mip 0 is mirror,
@@ -16,13 +16,13 @@ float3 SamplePrefilter(float3 R, float Roughness)
 {
     // SkyPrefilterIndex packs the mip count in its top byte (see FSceneRoot) so the prefilter LOD range is
     // known without a per-pixel GetDimensions on the cube.
-    uint Packed         = gPC.Root.get().SkyPrefilterIndex;
+    uint Packed         = GetSceneRoot().SkyPrefilterIndex;
     uint PrefilterIndex = Packed & 0x00FFFFFFu;
     uint NumMips        = Packed >> 24;
 
     float MaxLod = max(float(NumMips) - 1.0, 0.0);
     float Lod    = saturate(Roughness) * MaxLod;
-    float3 Prefiltered = SampleBindlessCubeLevel(PrefilterIndex, SAMPLER_LINEAR_CLAMP, R, Lod).rgb;
+    float3 Prefiltered = SampleTextureCubeLevel(PrefilterIndex, SAMPLER_LINEAR_CLAMP, R, Lod).rgb;
 
     // The prefilter base is far lower-res than the sky cube, so near-mirror reflections look soft. For low
     // roughness, blend in a direct full-res sky-cube tap (its mip 0 at r=0 is the unconvolved environment,
@@ -30,7 +30,7 @@ float3 SamplePrefilter(float3 R, float Roughness)
     float SharpBlend = saturate(1.0 - Roughness * 4.0);
     if (SharpBlend > 0.0)
     {
-        float3 Sharp = SampleBindlessCubeLevel(gPC.Root.get().SkyCubeIndex, SAMPLER_LINEAR_CLAMP, R, 0.0).rgb;
+        float3 Sharp = SampleTextureCubeLevel(GetSceneRoot().SkyCubeIndex, SAMPLER_LINEAR_CLAMP, R, 0.0).rgb;
         Prefiltered  = lerp(Prefiltered, Sharp, SharpBlend);
     }
     return Prefiltered;
@@ -38,7 +38,7 @@ float3 SamplePrefilter(float3 R, float Roughness)
 
 float2 SampleBRDFLUT(float NdotV, float Roughness)
 {
-    return SampleBindless2DLevel(gPC.Root.get().BRDFLutIndex, SAMPLER_LINEAR_CLAMP,
+    return SampleTexture2DLevel(GetSceneRoot().BRDFLutIndex, SAMPLER_LINEAR_CLAMP,
                                  float2(saturate(NdotV), saturate(Roughness)), 0.0).rg;
 }
 

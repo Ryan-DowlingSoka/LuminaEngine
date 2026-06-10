@@ -3,7 +3,6 @@
 #include "imgui_internal.h"
 #include "Containers/Array.h"
 #include "ModuleAPI.h"
-#include "Renderer/RenderResource.h"
 
 
 namespace Lumina
@@ -32,10 +31,6 @@ namespace Lumina
 
         FImDrawDataSnapshot(const FImDrawDataSnapshot&)            = delete;
         FImDrawDataSnapshot& operator=(const FImDrawDataSnapshot&) = delete;
-
-        // Texture refs the render thread must keep alive for the duration of
-        // its recording; populated by the backend via FillReferencedImagesSnapshot.
-        TVector<FRHIImageRef> ReferencedImages;
 
         // Swap ImGui's live draw lists into our persistent copies. Source must
         // be the result of ImGui::GetDrawData() on the game thread, immediately
@@ -131,7 +126,6 @@ namespace Lumina
             }
             Cache.Clear();
             DrawData = {};
-            ReferencedImages.clear();
             bValid = false;
         }
 

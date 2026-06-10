@@ -107,7 +107,6 @@ LuminaThirdParty.Register({ Name = "RmlUi",         IncludeDirs = { "RmlUi/Inclu
 LuminaThirdParty.Register({ Name = "Vulkan",        IncludeDirs = { "vulkan" },             Link = false })
 LuminaThirdParty.Register({ Name = "Volk",          IncludeDirs = { "." } })  -- <volk/volk.h>
 LuminaThirdParty.Register({ Name = "VMA",           IncludeDirs = { "VulkanMemoryAllocator" }, Link = false })
-LuminaThirdParty.Register({ Name = "VKBootstrap",   IncludeDirs = { "vk-bootstrap" } })
 -- SLang headers only; its DLL import libs are wired via the Runtime module's ExtraLinks/LibDirs.
 LuminaThirdParty.Register({ Name = "SLang",         IncludeDirs = { "SLang" },              Link = false })
 
@@ -147,7 +146,7 @@ LuminaThirdParty.RuntimePublicDeps =
     "EA", "Entt", "SPDLog", "NlohmannJson", "StbImage", "RenderDoc",
     "ConcurrentQueue", "RPMalloc", "XXHash", "Miniz", "Tracy",
     "GLFW", "ImGui", "FreeType", "RmlUi",
-    "Vulkan", "Volk", "VMA", "VKBootstrap", "SLang",
+    "Vulkan", "Volk", "VMA", "SLang",
     "MiniAudio", "JoltPhysics", "Recast",
     "ENet",
     "Luau",

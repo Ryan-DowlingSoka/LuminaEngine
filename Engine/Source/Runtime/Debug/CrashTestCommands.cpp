@@ -2,8 +2,7 @@
 
 #include "Core/Console/ConsoleVariable.h"
 #include "Log/Log.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHI.h"
 
 namespace Lumina
 {
@@ -27,6 +26,6 @@ namespace Lumina
             LOG_CRITICAL("crash.gpu: invoking HandleDeviceLost() to exercise GPU crash pipeline");
             Logging::GetLogger()->flush();
 
-            GRenderContext->HandleDeviceLost();
+            RHI::HandleDeviceLost();
         });
 }

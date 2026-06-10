@@ -3,12 +3,10 @@
 
 #include "Core/Engine/Engine.h"
 #include "Log/Log.h"
-#include "Renderer/CommandList.h"
 #include "Renderer/Format.h"
-#include "Renderer/RenderContext.h"
+#include "Renderer/RHICore.h"
+#include "Renderer/ShaderLibrary.h"
 #include "Renderer/RenderResource.h"
-#include "Renderer/RenderTypes.h"
-#include "Renderer/RHIGlobals.h"
 
 #include "Core/Math/Math.h"
 #include <RmlUi/Core.h>
@@ -21,38 +19,35 @@
 #include "Core/Object/Cast.h"
 #include "Core/Object/ObjectCore.h"
 #include "FileSystem/FileSystem.h"
-#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RendererUtils.h"
-#include "Renderer/TextureManager.h"
 #include "Renderer/MaterialManager.h"
 
 #include <chrono>
 
 namespace Lumina
 {
-    struct FRmlUiPushConstants
+    // Mirrors RmlUiCommon.slang::FRmlUiArgs.
+    struct FRmlUiArgs
     {
-        uint64 DrawsAddress;    // per-draw FUiDraw array (transient)
-        uint64 VertexAddress;   // resident batch vertex buffer (vertex pulling)
+        RHI::GPUPtr Draws;      // per-draw FUiDraw array (transient)
+        RHI::GPUPtr Vertices;   // resident batch vertex buffer (vertex pulling)
     };
-    static_assert(sizeof(FRmlUiPushConstants) == 16, "Must match RmlUiCommon.slang::FRmlUiPushConstants.");
-    static_assert(sizeof(FRmlUiPushConstants) <= MaxPushConstantSize, "Push-constants exceed RHI cap.");
 
-    struct FUIMaterialBrushPush
+    // Mirrors UIMaterialGlobals.slang::FUIMaterialArgs (scalar layout).
+    struct FUIMaterialBrushArgs
     {
-        FUIntVector4 ScreenSize;   // .xy = brush resolution
-        float      Time;
-        uint32     MaterialIndex;
-        FUIntVector2 _Pad;
+        RHI::GPUPtr Materials;
+        uint32      ScreenSize[4];   // .xy = brush resolution
+        float       Time;
+        uint32      MaterialIndex;
+        uint32      _Pad[2];
     };
-    static_assert(sizeof(FUIMaterialBrushPush) == 32, "Must match the UIPixelPass.slang push block.");
 
-    // RmlUi wants bilinear + clamp; stock bindless sampler slot 1.
-    static constexpr uint32 GRmlUiSamplerIndex = (uint32)RHI::EBindlessSampler::LinearClamp;
+    // RmlUi wants bilinear + clamp; stock sampler heap slot 1.
+    static constexpr uint32 GRmlUiSamplerIndex = (uint32)RHI::EStockSampler::LinearClamp;
 
     // Vertex layout: pos(8) colour(4) uv(8).
-    static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout drifted; renderer input layout must be updated.");
+    static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout drifted; renderer vertex conversion must be updated.");
 
     FRmlUiRenderer::FRmlUiRenderer() = default;
     FRmlUiRenderer::~FRmlUiRenderer() { Shutdown(); }
@@ -63,27 +58,16 @@ namespace Lumina
         {
             return true;
         }
-        if (GRenderContext == nullptr)
-        {
-            LOG_ERROR("[RmlUi] Initialize called before GRenderContext was alive.");
-            return false;
-        }
 
-        if (!CreatePipeline())
-        {
-            return false;
-        }
+        static_assert(sizeof(FUiVertex) == 24, "FUiVertex must match RmlUiCommon.slang::FUiVertex (stride 24).");
+        static_assert(sizeof(FUiDraw) == 96,   "FUiDraw must match RmlUiCommon.slang::FUiDraw (std430).");
 
-        // 1x1 white fallback for untextured geometry; uploaded on first BeginFrame.
+        DepthState = RHI::CreateDepthStencil(RHI::FDepthStencilDesc{});
+
+        // 1x1 white fallback for untextured geometry.
+        DefaultWhite = RHI::Textures::Create(RHI::FTexture2DDesc{ .Width = 1, .Height = 1, .Format = EFormat::RGBA8_UNORM });
         constexpr uint8 WhitePixel[4] = {255, 255, 255, 255};
-        TVector<uint8> Bytes;
-        Bytes.assign(WhitePixel, WhitePixel + 4);
-        const Rml::TextureHandle DefaultHandle = RegisterTexturePending(Move(Bytes), 1, 1);
-        if (DefaultHandle != 0)
-        {
-            DefaultWhiteImage      = Textures[DefaultHandle].Image;
-            DefaultWhiteResourceID = Textures[DefaultHandle].ResourceID;
-        }
+        RHI::Textures::Upload(DefaultWhite, 0, WhitePixel, sizeof(WhitePixel), 1);
 
         AssetRegistryUpdateHandle = FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddLambda([this]()
         {
@@ -103,6 +87,8 @@ namespace Lumina
 
         FAssetRegistry::Get().GetOnAssetRegistryUpdated().Remove(AssetRegistryUpdateHandle);
 
+        RHI::WaitDeviceIdle();
+
         DrawCalls.clear();
         PendingTextureUploads.clear();
         Geometries.clear();
@@ -118,95 +104,97 @@ namespace Lumina
                 KV.second.BrushMaterial->RemoveFromRoot();
                 KV.second.BrushMaterial = nullptr;
             }
+            if (KV.second.Managed.IsValid())
+            {
+                RHI::Textures::Release(KV.second.Managed);
+            }
         }
         Textures.clear();
+
+        for (auto& KV : TargetBatches)
+        {
+            RHI::Free(KV.second.VertexBuffer);
+            RHI::Free(KV.second.IndexBuffer);
+        }
         TargetBatches.clear();
-        DefaultWhiteImage.SafeRelease();
-        MaterialBufferSet.SafeRelease();
-        MaterialBufferLayout.SafeRelease();
-        MaterialBufferCached = nullptr;
-        Pipeline.SafeRelease();
+
+        RHI::Textures::Release(DefaultWhite);
+
+        for (auto& KV : PipelineByFormat)
+        {
+            RHI::FreeH(KV.second);
+        }
+        PipelineByFormat.clear();
+        for (auto& KV : BrushPipelines)
+        {
+            RHI::FreeH(KV.second);
+        }
+        BrushPipelines.clear();
+        RHI::FreeH(DepthState);
+        DepthState = {};
+
         bInitialized = false;
     }
 
-    bool FRmlUiRenderer::CreatePipeline()
+    RHI::FPipelineH FRmlUiRenderer::GetPipelineForFormat(EFormat Format)
     {
-        static_assert(sizeof(FUiVertex) == 24, "FUiVertex must match RmlUiCommon.slang::FUiVertex (stride 24).");
-        static_assert(sizeof(FUiDraw) == 96,   "FUiDraw must match RmlUiCommon.slang::FUiDraw (std430).");
-
-        if (GRenderManager == nullptr || GRenderManager->GetTextureManager().GetLayout() == nullptr)
+        auto It = PipelineByFormat.find((uint64)Format);
+        if (It != PipelineByFormat.end())
         {
-            LOG_ERROR("[RmlUi] Texture manager bindless layout not available.");
-            return false;
-        }
-        FRHIBindingLayout* BindlessLayout = GRenderManager->GetTextureManager().GetLayout();
-
-        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader(FName("RmlUiVert"));
-        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader(FName("RmlUiPixel"));
-        if (!VS || !PS)
-        {
-            LOG_ERROR("[RmlUi] RmlUiVert.slang / RmlUiPixel.slang not found in shader library.");
-            return false;
+            return It->second;
         }
 
         // Premultiplied alpha: RmlUi pre-multiplies vertex colors.
-        FBlendState BlendState;
-        BlendState.Targets[0].EnableBlend()
-            .SetSrcBlend(EBlendFactor::One)
-            .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-            .SetBlendOp(EBlendOp::Add)
-            .SetSrcBlendAlpha(EBlendFactor::One)
-            .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-            .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc Blend;
+        Blend.bBlendEnable   = true;
+        Blend.ColorOp        = RHI::EBlend::Add;
+        Blend.SrcColorFactor = RHI::EFactor::One;
+        Blend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        Blend.AlphaOp        = RHI::EBlend::Add;
+        Blend.SrcAlphaFactor = RHI::EFactor::One;
+        Blend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest().DisableDepthWrite().DisableStencil();
+        const RHI::FColorTarget ColorTarget { .Format = Format, .Blend = Blend };
+        RHI::FRasterDesc RasterDesc;
+        RasterDesc.Topology     = RHI::ETopology::TriangleList;
+        RasterDesc.ColorTargets = TSpan<const RHI::FColorTarget>(&ColorTarget, 1);
 
-        // No culling; RmlUi doesn't normalize winding.
-        FRasterState RasterState;
-        RasterState.SetCullNone().EnableScissor();
-
-        FRenderState RenderState;
-        RenderState.SetBlendState(BlendState)
-                   .SetDepthStencilState(DepthState)
-                   .SetRasterState(RasterState);
-
-        // Pipeline format-bound to the engine viewport; world RTs share that format today.
-        FRHIImage* TargetImage = FEngine::GetEngineViewport()->GetRenderTarget();
-        if (TargetImage == nullptr)
+        RHI::FPipelineH Pipeline = RHI::Core::CreateGraphicsPipeline("RmlUiVert.slang", "RmlUiPixel.slang", RasterDesc);
+        if (RHI::IsValid(Pipeline))
         {
-            LOG_ERROR("[RmlUi] Engine viewport has no render target yet.");
-            return false;
+            PipelineByFormat.emplace((uint64)Format, Pipeline);
         }
-        FRenderPassDesc PassDesc;
-        FRenderPassDesc::FAttachment Attachment;
-        Attachment.SetImage(TargetImage)
-                  .SetFormat(TargetImage->GetFormat())
-                  .SetLoadOp(ERenderLoadOp::Load);
-        PassDesc.AddColorAttachment(Attachment).SetRenderArea(TargetImage->GetExtent());
-
-        // No input layout: the VS pulls FUiVertex from PC.Vertices by device address.
-        FGraphicsPipelineDesc PipelineDesc;
-        PipelineDesc.SetDebugName("RmlUiPipeline")
-                    .SetPrimType(EPrimitiveType::TriangleList)
-                    .SetVertexShader(VS)
-                    .SetPixelShader(PS)
-                    .SetRenderState(RenderState)
-                    .AddBindingLayout(BindlessLayout);
-
-        Pipeline = GRenderContext->CreateGraphicsPipeline(PipelineDesc, PassDesc);
-        if (!Pipeline)
-        {
-            LOG_ERROR("[RmlUi] Failed to create graphics pipeline.");
-            return false;
-        }
-
-        return true;
+        return Pipeline;
     }
 
-    void FRmlUiRenderer::BeginFrame(ICommandList& CmdList, FRHIImage* Target, const FUIntVector2& ViewportSize, const FUIntVector2& LogicalSize)
+    RHI::FPipelineH FRmlUiRenderer::GetBrushPipeline(const FShaderEntry* VS, const FShaderEntry* PS)
     {
-        CurrentCmdList   = &CmdList;
+        uint64 Key = 0;
+        Hash::HashCombine(Key, VS->PipelineHash());
+        Hash::HashCombine(Key, PS->PipelineHash());
+
+        auto It = BrushPipelines.find(Key);
+        if (It != BrushPipelines.end())
+        {
+            return It->second;
+        }
+
+        const RHI::FColorTarget ColorTarget { .Format = EFormat::RGBA8_UNORM, .Blend = {} };
+        RHI::FRasterDesc RasterDesc;
+        RasterDesc.Topology     = RHI::ETopology::TriangleList;
+        RasterDesc.ColorTargets = TSpan<const RHI::FColorTarget>(&ColorTarget, 1);
+
+        RHI::FPipelineH Pipeline = RHI::CreateGraphicsPipeline(VS->Source(), PS->Source(), RasterDesc);
+        if (RHI::IsValid(Pipeline))
+        {
+            BrushPipelines.emplace(Key, Pipeline);
+        }
+        return Pipeline;
+    }
+
+    void FRmlUiRenderer::BeginFrame(RHI::FCmdListH CmdList, RHI::FTextureH Target, const FUIntVector2& ViewportSize, const FUIntVector2& LogicalSize)
+    {
+        CurrentCmdList   = CmdList;
         CurrentTarget    = Target;
         CurrentSize      = ViewportSize;
         bCachedFrameHashValid = false;
@@ -231,17 +219,6 @@ namespace Lumina
         // Reset the leftover clip rect too: a stale region from the previously rendered context
         // would otherwise clip this one's first draws (preview-into-live bleed).
         CurrentScissor  = Rml::Rectanglei();
-
-        // Cache pass desc so SetGraphicsState avoids Begin/End churn across draws.
-        CurrentPassDesc = FRenderPassDesc{};
-        if (Target != nullptr)
-        {
-            FRenderPassDesc::FAttachment Attachment;
-            Attachment.SetImage(Target)
-                      .SetLoadOp(ERenderLoadOp::Load)
-                      .SetStoreOp(ERenderStoreOp::Store);
-            CurrentPassDesc.AddColorAttachment(Attachment).SetRenderArea(ViewportSize);
-        }
     }
 
     uint64 FRmlUiRenderer::ComputeDrawCallHash() const
@@ -295,16 +272,14 @@ namespace Lumina
         return CachedFrameHash;
     }
 
-    bool FRmlUiRenderer::IsTargetUpToDate(FRHIImage* Target, uint64 Hash) const
+    bool FRmlUiRenderer::IsTargetUpToDate(RHI::FTextureH Target, uint64 Hash) const
     {
-        if (Target == nullptr)
+        if (!RHI::IsValid(Target))
         {
             return false;
         }
-        auto It = TargetBatches.find(Target);
-        return It != TargetBatches.end() && It->second.bValid
-            && It->second.LastHash == Hash
-            && It->second.TargetID == Target->GetResourceID();
+        auto It = TargetBatches.find(Target.Handle);
+        return It != TargetBatches.end() && It->second.bValid && It->second.LastHash == Hash;
     }
 
     void FRmlUiRenderer::AbortFrame()
@@ -317,18 +292,24 @@ namespace Lumina
     void FRmlUiRenderer::ResetFrameState()
     {
         DrawCalls.clear();
-        CurrentCmdList = nullptr;
-        CurrentTarget  = nullptr;
+        CurrentCmdList = {};
+        CurrentTarget  = {};
     }
 
-    void FRmlUiRenderer::ReleaseTargetBatch(FRHIImage* Target)
+    void FRmlUiRenderer::ReleaseTargetBatch(RHI::FTextureH Target)
     {
-        TargetBatches.erase(Target);
+        auto It = TargetBatches.find(Target.Handle);
+        if (It != TargetBatches.end())
+        {
+            RHI::Core::DeferredFree(It->second.VertexBuffer);
+            RHI::Core::DeferredFree(It->second.IndexBuffer);
+            TargetBatches.erase(It);
+        }
     }
 
-    void FRmlUiRenderer::NoteTargetStable(FRHIImage* Target, bool bStable)
+    void FRmlUiRenderer::NoteTargetStable(RHI::FTextureH Target, bool bStable)
     {
-        auto It = TargetBatches.find(Target);
+        auto It = TargetBatches.find(Target.Handle);
         if (It == TargetBatches.end())
         {
             return;
@@ -343,54 +324,37 @@ namespace Lumina
         }
     }
 
-    uint32 FRmlUiRenderer::GetTargetStableFrames(FRHIImage* Target) const
+    uint32 FRmlUiRenderer::GetTargetStableFrames(RHI::FTextureH Target) const
     {
-        auto It = TargetBatches.find(Target);
+        auto It = TargetBatches.find(Target.Handle);
         return It != TargetBatches.end() ? It->second.StableFrames : 0;
     }
 
-    void FRmlUiRenderer::EnsureBatchBuffers(FTargetBatch& Batch, uint32 VertexBytes, uint32 IndexBytes)
+    void FRmlUiRenderer::EnsureBatchBuffers(FTargetBatch& Batch, uint64 VertexBytes, uint64 IndexBytes)
     {
-        if (!Batch.VertexBuffer)
+        if (Batch.VertexBuffer == 0 || Batch.VertexCapacity < VertexBytes)
         {
-            // Storage buffer read by device address in the VS (vertex pulling); rests in ShaderResource.
-            FRHIBufferDesc Desc;
-            Desc.Size              = Math::Max<uint32>(VertexBytes, 4096);
-            Desc.Usage.SetFlag(BUF_StorageBuffer);
-            Desc.bKeepInitialState = true;
-            Desc.InitialState      = EResourceStates::ShaderResource;
-            Desc.DebugName         = "RmlUiVertex";
-            Batch.VertexBuffer     = GRenderContext->CreateBuffer(Desc);
-        }
-        else
-        {
-            RenderUtils::ResizeBufferIfNeeded(Batch.VertexBuffer, VertexBytes, 1.5f, Batch.VBLowUsageFrames);
+            RHI::Core::DeferredFree(Batch.VertexBuffer);
+            Batch.VertexCapacity = Math::Max<uint64>(VertexBytes + VertexBytes / 2, 4096);
+            Batch.VertexBuffer   = RHI::Malloc(Batch.VertexCapacity, RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly);
         }
 
-        if (!Batch.IndexBuffer)
+        if (Batch.IndexBuffer == 0 || Batch.IndexCapacity < IndexBytes)
         {
-            FRHIBufferDesc Desc;
-            Desc.Size              = Math::Max<uint32>(IndexBytes, 4096);
-            Desc.Usage.SetFlag(BUF_IndexBuffer);
-            Desc.bKeepInitialState = true;
-            Desc.InitialState      = EResourceStates::IndexBuffer;
-            Desc.DebugName         = "RmlUiIndex";
-            Batch.IndexBuffer      = GRenderContext->CreateBuffer(Desc);
-        }
-        else
-        {
-            RenderUtils::ResizeBufferIfNeeded(Batch.IndexBuffer, IndexBytes, 1.5f, Batch.IBLowUsageFrames);
+            RHI::Core::DeferredFree(Batch.IndexBuffer);
+            Batch.IndexCapacity = Math::Max<uint64>(IndexBytes + IndexBytes / 2, 4096);
+            Batch.IndexBuffer   = RHI::Malloc(Batch.IndexCapacity, RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly);
         }
     }
 
     void FRmlUiRenderer::EndFrame()
     {
-        if (CurrentCmdList == nullptr)
+        if (!RHI::IsValid(CurrentCmdList))
         {
             return;
         }
-        ICommandList& CmdList = *CurrentCmdList;
-        GPU_PROFILE_SCOPE(CurrentCmdList, "RmlUi");
+        RHI::FCmdListH CL = CurrentCmdList;
+        RHI::CmdBeginMarker(CL, "RmlUi");
 
         // Texture uploads must be outside a render pass.
         UploadPendingTextures();
@@ -399,20 +363,20 @@ namespace Lumina
         // Also outside the UI render pass (each brush opens its own pass).
         RenderMaterialBrushes();
 
-        if (DrawCalls.empty() || CurrentTarget == nullptr)
+        if (DrawCalls.empty() || !RHI::IsValid(CurrentTarget))
         {
+            RHI::CmdEndMarker(CL);
             ResetFrameState();
             return;
         }
 
         LUMINA_PROFILE_SCOPE();
 
-        FTargetBatch& Batch = TargetBatches[CurrentTarget];
+        FTargetBatch& Batch = TargetBatches[CurrentTarget.Handle];
         const uint64 Hash   = bCachedFrameHashValid ? CachedFrameHash : ComputeDrawCallHash();
 
-        const int32 TargetID = CurrentTarget->GetResourceID();
-        const bool bRebuild = !Batch.bValid || Batch.LastHash != Hash || Batch.TargetID != TargetID
-            || !Batch.VertexBuffer || !Batch.IndexBuffer;
+        const bool bRebuild = !Batch.bValid || Batch.LastHash != Hash
+            || Batch.VertexBuffer == 0 || Batch.IndexBuffer == 0;
 
         const float FullW = float(CurrentSize.x);
         const float FullH = float(CurrentSize.y);
@@ -436,16 +400,16 @@ namespace Lumina
                     continue;
                 }
 
-                int32 ResourceID = DefaultWhiteResourceID;
+                uint32 ResourceID = DefaultWhite.SampledSlot;
                 if (Draw.Texture != 0)
                 {
                     auto TexIt = Textures.find(Draw.Texture);
-                    if (TexIt != Textures.end() && TexIt->second.ResourceID >= 0)
+                    if (TexIt != Textures.end() && TexIt->second.ResourceID != RHI::kInvalidHeapSlot)
                     {
                         ResourceID = TexIt->second.ResourceID;
                     }
                 }
-                if (ResourceID < 0)
+                if (ResourceID == RHI::kInvalidHeapSlot)
                 {
                     continue;
                 }
@@ -459,7 +423,7 @@ namespace Lumina
                                 float(Draw.Scissor.Position().x + Draw.Scissor.Width()),
                                 float(Draw.Scissor.Position().y + Draw.Scissor.Height()))
                     : FVector4(0.0f, 0.0f, FullW, FullH);
-                DD.TextureID    = uint32(ResourceID);
+                DD.TextureID    = ResourceID;
                 DD.SamplerIndex = GRmlUiSamplerIndex;
                 DD.Pad0 = 0;
                 DD.Pad1 = 0;
@@ -499,72 +463,78 @@ namespace Lumina
                 Batch.IndexCount = 0;
                 Batch.bValid     = true;
                 Batch.LastHash   = Hash;
-                Batch.TargetID   = TargetID;
                 Batch.Draws.clear();
+                RHI::CmdEndMarker(CL);
                 ResetFrameState();
                 return;
             }
 
-            const uint32 VBytes = uint32(BatchVertices.size() * sizeof(FUiVertex));
-            const uint32 IBytes = uint32(BatchIndices.size()  * sizeof(uint32));
+            const uint64 VBytes = BatchVertices.size() * sizeof(FUiVertex);
+            const uint64 IBytes = BatchIndices.size()  * sizeof(uint32);
             EnsureBatchBuffers(Batch, VBytes, IBytes);
 
-            // Upload bulk geometry into the resident buffers: stage CopyDest barriers-off, let auto barriers
-            // move them to the vertex/index read state when bound below.
-            CmdList.SetBufferState(Batch.VertexBuffer, EResourceStates::CopyDest);
-            CmdList.SetBufferState(Batch.IndexBuffer,  EResourceStates::CopyDest);
-            CmdList.CommitBarriers();
-            CmdList.DisableAutomaticBarriers();
-            CmdList.WriteBuffer(Batch.VertexBuffer, BatchVertices.data(), VBytes);
-            CmdList.WriteBuffer(Batch.IndexBuffer,  BatchIndices.data(),  IBytes);
-            CmdList.EnableAutomaticBarriers();
+            // Stage through the transient ring and copy into the resident buffers. The leading barrier
+            // also orders against any still-executing prior frame reading the old contents.
+            RHI::FTransientAlloc VBStage = RHI::Core::AllocTransient(VBytes, 16);
+            RHI::FTransientAlloc IBStage = RHI::Core::AllocTransient(IBytes, 4);
+            Memory::Memcpy(VBStage.Cpu, BatchVertices.data(), VBytes);
+            Memory::Memcpy(IBStage.Cpu, BatchIndices.data(),  IBytes);
+
+            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::CmdMemcpy(CL, Batch.VertexBuffer, VBStage.Gpu, VBytes);
+            RHI::CmdMemcpy(CL, Batch.IndexBuffer,  IBStage.Gpu, IBytes);
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
 
             Batch.Draws      = BatchDrawData;
             Batch.IndexCount = uint32(BatchIndices.size());
             Batch.LastHash   = Hash;
-            Batch.TargetID   = TargetID;
             Batch.bValid     = true;
         }
 
-        if (Batch.IndexCount == 0 || Batch.Draws.empty() || !Batch.VertexBuffer || !Batch.IndexBuffer)
+        if (Batch.IndexCount == 0 || Batch.Draws.empty() || Batch.VertexBuffer == 0 || Batch.IndexBuffer == 0)
         {
+            RHI::CmdEndMarker(CL);
             ResetFrameState();
             return;
         }
 
-        CmdList.SetImageState(CurrentTarget, AllSubresources, EResourceStates::RenderTarget);
-        CmdList.CommitBarriers();
+        RHI::FPipelineH Pipeline = GetPipelineForFormat(RHI::GetTextureDesc(CurrentTarget).Format);
+        if (!RHI::IsValid(Pipeline))
+        {
+            RHI::CmdEndMarker(CL);
+            ResetFrameState();
+            return;
+        }
 
         // Only the small per-draw data is transient (read in-shader via device address); the bulk
         // vertex/index data lives in the resident buffers above.
-        const size_t DBytes = Batch.Draws.size() * sizeof(FUiDraw);
-        FTransientAlloc DBAlloc = CmdList.AllocateTransient(DBytes, 16);
-        if (DBAlloc.Buffer != nullptr)
-        {
-            Memory::Memcpy(DBAlloc.Cpu, Batch.Draws.data(), DBytes);
+        const RHI::GPUPtr DrawsPtr = RHI::Core::CopyTransientArray(Batch.Draws.data(), Batch.Draws.size());
 
-            // Vertices are pulled by device address; declare the read so the tracker barriers the resident
-            // buffer to ShaderResource (it rests there, so this is a no-op on unchanged frames). Index buffer
-            // stays bound for the indexed draw.
-            FGraphicsState State;
-            State.SetPipeline(Pipeline);
-            State.SetRenderPass(CurrentPassDesc);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.Reads(Batch.VertexBuffer, EResourceStates::ShaderResource);
-            State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(Batch.IndexBuffer).SetFormat(EFormat::R32_UINT).SetOffset(0));
-            State.AddViewport(FViewport(0.0f, FullW, 0.0f, FullH, 0.0f, 1.0f));
-            State.AddScissor(FRect(0, int(CurrentSize.x), 0, int(CurrentSize.y)));
-            CmdList.SetGraphicsState(State);
+        const FRmlUiArgs Args { DrawsPtr, Batch.VertexBuffer };
+        const RHI::GPUPtr ArgsPtr = RHI::Core::CopyTransient(Args);
 
-            FRmlUiPushConstants PC;
-            PC.DrawsAddress  = DBAlloc.Gpu;
-            PC.VertexAddress = Batch.VertexBuffer->GetAddress();
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+        RHI::FRenderAttachment Color;
+        Color.Texture = CurrentTarget;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-            CmdList.DrawIndexed(Batch.IndexCount, 1, 0, 0, 0);
-        }
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = CurrentSize;
 
-        CmdList.EndRenderPass();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        RHI::CmdSetDepthStencilState(CL, DepthState);
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
+        // CW to match the scene's winding; culling is off so it only matters for state leaking into later passes.
+        RHI::CmdSetFrontFace(CL, RHI::EFrontFace::CW);
+        RHI::CmdSetPipeline(CL, Pipeline);
+        RHI::CmdSetViewport(CL, RHI::FRect{ 0, (int)CurrentSize.x, 0, (int)CurrentSize.y });
+        RHI::CmdSetScissor(CL, RHI::FRect{ 0, (int)CurrentSize.x, 0, (int)CurrentSize.y });
+
+        RHI::CmdDrawIndexed(CL, Batch.IndexBuffer, 0, ArgsPtr, Batch.IndexCount, 1, 0, 0, 0, RHI::EIndexType::Uint32);
+
+        RHI::CmdEndRenderPass(CL);
+        RHI::CmdEndMarker(CL);
         ResetFrameState();
     }
 
@@ -666,24 +636,14 @@ namespace Lumina
 
     Rml::TextureHandle FRmlUiRenderer::LoadTextureAsset(Rml::Vector2i& OutDimensions, CTexture* Texture)
     {
-        // Reuse the asset's already-uploaded RHIImage. No re-decode, no re-upload.
-        FRHIImage* RawImage = Texture->GetRHIRef();
-        if (RawImage == nullptr)
-        {
-            LOG_WARN("[RmlUi] LoadTexture: '{}' has no RHI image (asset not yet uploaded?).", Texture->GetName().c_str());
-            return 0;
-        }
-
-        const FRHIImageDesc& ImgDesc = Texture->GetTextureResource().ImageDescription;
-        if (ImgDesc.Extent.x == 0 || ImgDesc.Extent.y == 0)
+        const FUIntVector2 Extent = Texture->GetTextureResource().ImageDescription.Extent;
+        if (Extent.x == 0 || Extent.y == 0)
         {
             LOG_WARN("[RmlUi] LoadTexture: '{}' has zero extent.", Texture->GetName().c_str());
             return 0;
         }
 
-        // Sampled bindless: the image is registered in the texture table on
-        // creation, so its resource id is the index the shader samples.
-        const int32 ResourceID = RawImage->GetResourceID();
+        const int32 ResourceID = Texture->GetResourceID();
         if (ResourceID < 0)
         {
             LOG_WARN("[RmlUi] LoadTexture: '{}' has no bindless resource id.", Texture->GetName().c_str());
@@ -696,13 +656,12 @@ namespace Lumina
 
         const Rml::TextureHandle Handle = NextTextureHandle++;
         FTexture Tex;
-        Tex.Image           = FRHIImageRef(RawImage);
-        Tex.ResourceID      = ResourceID;
+        Tex.ResourceID      = (uint32)ResourceID;
         Tex.AssetKeepalive  = Texture;
         Textures.emplace(Handle, Move(Tex));
 
-        OutDimensions.x = int(ImgDesc.Extent.x);
-        OutDimensions.y = int(ImgDesc.Extent.y);
+        OutDimensions.x = int(Extent.x);
+        OutDimensions.y = int(Extent.y);
         return Handle;
     }
 
@@ -714,22 +673,15 @@ namespace Lumina
             return 0;
         }
 
-        // Persistent RGBA8 brush RT; resting state ShaderResource so the UI can
-        // sample it, transitioned to RenderTarget each frame in RenderMaterialBrushes.
-        FRHIImageDesc Desc;
-        Desc.Extent      = FUIntVector2(Width, Height);
-        Desc.Format      = EFormat::RGBA8_UNORM;
-        Desc.Dimension   = EImageDimension::Texture2D;
-        Desc.NumMips     = 1;
-        Desc.ArraySize   = 1;
-        Desc.NumSamples  = 1;
-        Desc.DebugName   = "UIMaterialBrush";
-        Desc.InitialState = EResourceStates::ShaderResource;
-        Desc.bKeepInitialState = true;
-        Desc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-
-        FRHIImageRef Image = GRenderContext->CreateImage(Desc);
-        if (!Image || Image->GetResourceID() < 0)
+        // Persistent RGBA8 brush RT, rendered each frame in RenderMaterialBrushes and sampled by the UI.
+        RHI::FManagedTexture Image = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Width,
+            .Height = Height,
+            .Format = EFormat::RGBA8_UNORM,
+            .bRenderTarget = true,
+        });
+        if (!Image.IsValid() || Image.SampledSlot == RHI::kInvalidHeapSlot)
         {
             LOG_WARN("[RmlUi] LoadTexture: failed to create brush RT for '{}'.", Material->GetName().c_str());
             return 0;
@@ -739,8 +691,8 @@ namespace Lumina
 
         const Rml::TextureHandle Handle = NextTextureHandle++;
         FTexture Tex;
-        Tex.Image           = Image;
-        Tex.ResourceID      = Image->GetResourceID();
+        Tex.Managed         = Image;
+        Tex.ResourceID      = Image.SampledSlot;
         Tex.BrushMaterial   = Material;
         Tex.BrushSize       = FUIntVector2(Width, Height);
         Tex.BrushSourcePath = FString(SourcePath.data(), SourcePath.size());
@@ -765,29 +717,21 @@ namespace Lumina
             return 0;
         }
 
-        // Resting state ShaderResource; bKeepInitialState pins across frames.
-        FRHIImageDesc Desc;
-        Desc.Extent      = FUIntVector2(uint32(Width), uint32(Height));
-        Desc.Format      = EFormat::RGBA8_UNORM;
-        Desc.Dimension   = EImageDimension::Texture2D;
-        Desc.NumMips     = 1;
-        Desc.ArraySize   = 1;
-        Desc.NumSamples  = 1;
-        Desc.DebugName   = "RmlUiTexture";
-        Desc.InitialState = EResourceStates::ShaderResource;
-        Desc.bKeepInitialState = true;
-        Desc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource);
-
-        FRHIImageRef Image = GRenderContext->CreateImage(Desc);
-        if (!Image || Image->GetResourceID() < 0)
+        RHI::FManagedTexture Image = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = (uint32)Width,
+            .Height = (uint32)Height,
+            .Format = EFormat::RGBA8_UNORM,
+        });
+        if (!Image.IsValid() || Image.SampledSlot == RHI::kInvalidHeapSlot)
         {
             return 0;
         }
 
         const Rml::TextureHandle Handle = NextTextureHandle++;
         FTexture Tex;
-        Tex.Image      = Image;
-        Tex.ResourceID = Image->GetResourceID();
+        Tex.Managed    = Image;
+        Tex.ResourceID = Image.SampledSlot;
         Textures.emplace(Handle, Move(Tex));
 
         FPendingTexture Pending;
@@ -801,21 +745,19 @@ namespace Lumina
 
     void FRmlUiRenderer::UploadPendingTextures()
     {
-        if (PendingTextureUploads.empty() || CurrentCmdList == nullptr)
+        if (PendingTextureUploads.empty())
         {
             return;
         }
-        ICommandList& CmdList = *CurrentCmdList;
 
         for (FPendingTexture& Pending : PendingTextureUploads)
         {
             auto It = Textures.find(Pending.Handle);
-            if (It == Textures.end() || !It->second.Image)
+            if (It == Textures.end() || !It->second.Managed.IsValid())
             {
                 continue;
             }
-            FRHIImage* Image = It->second.Image.GetReference();
-            CmdList.WriteImage(Image, 0, 0, Pending.Bytes.data(), uint32(Pending.Width) * 4, 0);
+            RHI::Textures::Upload(It->second.Managed, 0, Pending.Bytes.data(), Pending.Bytes.size(), (uint32)Pending.Width);
         }
 
         PendingTextureUploads.clear();
@@ -835,6 +777,10 @@ namespace Lumina
             {
                 It->second.BrushMaterial->RemoveFromRoot();
                 It->second.BrushMaterial = nullptr;
+            }
+            if (It->second.Managed.IsValid())
+            {
+                RHI::Textures::Release(It->second.Managed);
             }
             Textures.erase(It);
         }
@@ -864,41 +810,7 @@ namespace Lumina
         CachedMVP = ProjectionMatrix * UserTransform;
     }
 
-    bool FRmlUiRenderer::EnsureMaterialBufferSet()
-    {
-        if (GRenderManager == nullptr)
-        {
-            return false;
-        }
-        FRHIBuffer* MatBuffer = GRenderManager->GetMaterialManager().GetMaterialBuffer();
-        if (MatBuffer == nullptr)
-        {
-            return false;
-        }
-        if (MaterialBufferSet && MaterialBufferCached == MatBuffer)
-        {
-            return true;
-        }
-
-        if (!MaterialBufferLayout)
-        {
-            // Set 0, binding 5 -- mirrors uMaterialUniforms in UIMaterialGlobals.slang.
-            FBindingLayoutDesc LayoutDesc;
-            LayoutDesc.SetDebugName("UIMaterialBuffer")
-                      .SetBindingIndex(0)
-                      .SetVisibility(ERHIShaderType::Fragment)
-                      .AddItem(FBindingLayoutItem::Buffer_SRV(5));
-            MaterialBufferLayout = GRenderContext->CreateBindingLayout(LayoutDesc);
-        }
-
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::BufferSRV(5, MatBuffer));
-        MaterialBufferSet = GRenderContext->CreateBindingSet(SetDesc, MaterialBufferLayout);
-        MaterialBufferCached = MatBuffer;
-        return MaterialBufferSet != nullptr;
-    }
-
-    void FRmlUiRenderer::RevalidateBrushes(ICommandList& CmdList)
+    void FRmlUiRenderer::RevalidateBrushes(RHI::FCmdListH CmdList)
     {
         // Mark each brush stale by whether its source path still resolves to the cached material (stays rooted,
         // so a rename-back resumes without a reload). Driven by the asset-registry broadcast, not per frame.
@@ -918,12 +830,10 @@ namespace Lumina
             {
                 // Source renamed/deleted: clear to transparent and stop rendering
                 // so the document breaks instead of showing the old asset.
-                FRHIImage* StaleRT = Tex.Image.GetReference();
-                CmdList.SetImageState(StaleRT, AllSubresources, EResourceStates::CopyDest);
-                CmdList.CommitBarriers();
-                CmdList.ClearImageColor(StaleRT, FColor(0.0f, 0.0f, 0.0f, 0.0f));
-                CmdList.SetImageState(StaleRT, AllSubresources, EResourceStates::ShaderResource);
-                CmdList.CommitBarriers();
+                const float Transparent[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                RHI::CmdBarrier(CmdList, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+                RHI::CmdClearTexture(CmdList, Tex.Managed.Texture, Transparent);
+                RHI::CmdBarrier(CmdList, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
                 Tex.bBrushStale = true;
             }
             else if (bResolves && Tex.bBrushStale)
@@ -936,17 +846,17 @@ namespace Lumina
 
     void FRmlUiRenderer::RenderMaterialBrushes()
     {
-        if (CurrentCmdList == nullptr || GRenderManager == nullptr)
+        if (!RHI::IsValid(CurrentCmdList) || GRenderManager == nullptr)
         {
             return;
         }
-        ICommandList& CmdList = *CurrentCmdList;
+        RHI::FCmdListH CL = CurrentCmdList;
 
         // Drop brushes whose source asset went away. Event-driven (set on the
         // registry broadcast), so there is no per-frame validation cost.
         if (bBrushRevalidatePending.exchange(false, std::memory_order_acquire))
         {
-            RevalidateBrushes(CmdList);
+            RevalidateBrushes(CL);
         }
 
         if (DrawCalls.empty())
@@ -958,17 +868,9 @@ namespace Lumina
         static const auto StartTime = std::chrono::steady_clock::now();
         const float Time = std::chrono::duration<float>(std::chrono::steady_clock::now() - StartTime).count();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest().DisableDepthWrite().DisableStencil();
-        FRenderState BrushRenderState;
-        BrushRenderState.SetRasterState(RasterState).SetDepthStencilState(DepthState);
-
         // Only render brushes referenced this frame (brushes are shared across all
         // contexts; this scopes work to the drawing context). De-dup repeats.
         TVector<Rml::TextureHandle> Rendered;
-        bool bEnsured = false;
 
         for (const FDrawCall& Draw : DrawCalls)
         {
@@ -999,70 +901,54 @@ namespace Lumina
             {
                 continue;
             }
-            FRHIVertexShader* VS = Material->GetVertexShader();
-            FRHIPixelShader*  PS = Material->GetPixelShader();
+            const FShaderEntry* VS = Material->GetVertexShader();
+            const FShaderEntry*  PS = Material->GetPixelShader();
             if (VS == nullptr || PS == nullptr)
             {
                 continue;
             }
-            if (!bEnsured)
-            {
-                if (!EnsureMaterialBufferSet())
-                {
-                    return;
-                }
-                bEnsured = true;
-            }
 
-            FRHIImage* RT = Tex.Image.GetReference();
-
-            FRenderPassDesc::FAttachment Attachment;
-            Attachment.SetImage(RT).SetLoadOp(ERenderLoadOp::Clear);
-
-            FRenderPassDesc RenderPass;
-            RenderPass.AddColorAttachment(Attachment).SetRenderArea(RT->GetExtent());
-
-            // Per-frame create relies on the pipeline cache and picks up live
-            // recompiles (the material's VS/PS pointers change on compile).
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("UI Material Brush");
-            Desc.SetRenderState(BrushRenderState);
-            Desc.AddBindingLayout(MaterialBufferLayout);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.SetVertexShader(VS);
-            Desc.SetPixelShader(PS);
-
-            FRHIGraphicsPipelineRef BrushPipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-            if (!BrushPipeline)
+            RHI::FPipelineH Pipeline = GetBrushPipeline(VS, PS);
+            if (!RHI::IsValid(Pipeline))
             {
                 continue;
             }
 
-            CmdList.SetImageState(RT, AllSubresources, EResourceStates::RenderTarget);
-            CmdList.CommitBarriers();
+            FUIMaterialBrushArgs Args = {};
+            Args.Materials     = GRenderManager->GetMaterialManager().GetMaterialBuffer();
+            Args.ScreenSize[0] = Tex.BrushSize.x;
+            Args.ScreenSize[1] = Tex.BrushSize.y;
+            Args.Time          = Time;
+            Args.MaterialIndex = (uint32)Material->GetMaterialIndex();
+            const RHI::GPUPtr ArgsPtr = RHI::Core::CopyTransient(Args);
 
-            FGraphicsState State;
-            State.SetPipeline(BrushPipeline);
-            State.SetRenderPass(RenderPass);
-            State.AddBindingSet(MaterialBufferSet.GetReference());
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.AddViewport(FViewport(0.0f, float(Tex.BrushSize.x), 0.0f, float(Tex.BrushSize.y), 0.0f, 1.0f));
-            State.AddScissor(FRect(0, int(Tex.BrushSize.x), 0, int(Tex.BrushSize.y)));
+            RHI::FRenderAttachment Color;
+            Color.Texture  = Tex.Managed.Texture;
+            Color.LoadOp   = RHI::ELoadOp::Clear;
+            Color.StoreOp  = RHI::EStoreOp::Store;
+            Color.Color[0] = 0.0f; Color.Color[1] = 0.0f; Color.Color[2] = 0.0f; Color.Color[3] = 0.0f;
 
-            CmdList.SetGraphicsState(State);
+            RHI::FRenderPassDesc Pass;
+            Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+            Pass.RenderArea       = Tex.BrushSize;
 
-            FUIMaterialBrushPush PC = {};
-            PC.ScreenSize    = FUIntVector4(Tex.BrushSize.x, Tex.BrushSize.y, 0u, 0u);
-            PC.Time          = Time;
-            PC.MaterialIndex = (uint32)Material->GetMaterialIndex();
-            CmdList.SetPushConstants(&PC, sizeof(PC));
+            RHI::CmdBeginRenderPass(CL, Pass);
+            RHI::CmdSetDepthStencilState(CL, DepthState);
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
+            RHI::CmdSetFrontFace(CL, RHI::EFrontFace::CW);
+            RHI::CmdSetPipeline(CL, Pipeline);
+            RHI::CmdSetViewport(CL, RHI::FRect{ 0, (int)Tex.BrushSize.x, 0, (int)Tex.BrushSize.y });
+            RHI::CmdSetScissor(CL, RHI::FRect{ 0, (int)Tex.BrushSize.x, 0, (int)Tex.BrushSize.y });
 
-            CmdList.Draw(3, 1, 0, 0);
+            RHI::CmdDraw(CL, ArgsPtr, 3, 1, 0, 0);
 
-            // Back to ShaderResource so the UI pass can sample it; CommitBarriers
-            // also closes the brush render pass.
-            CmdList.SetImageState(RT, AllSubresources, EResourceStates::ShaderResource);
-            CmdList.CommitBarriers();
+            RHI::CmdEndRenderPass(CL);
+        }
+
+        if (!Rendered.empty())
+        {
+            // Brush RT writes visible to the UI pass sampling them.
+            RHI::CmdBarrier(CL, RHI::EStageFlags::RasterColorOut, RHI::EStageFlags::PixelShader);
         }
     }
 }

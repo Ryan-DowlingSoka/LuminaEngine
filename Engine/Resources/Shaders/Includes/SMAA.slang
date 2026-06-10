@@ -59,7 +59,7 @@ void SMAAMovc(bool4 cond, inout float4 variable, float4 value)
 }
 
 // Bindless adapter. The engine's bindless table exposes textures and samplers as SEPARATE arrays
-// (uBindlessTex2D[] / uBindlessSamplers[]), so the helpers below can't take a combined SMAATex.
+// (gTextures2D[] / gSamplers[]), so the helpers below can't take a combined SMAATex.
 // This thin wrapper bundles the two and mirrors the SMAATex.Sample/SampleLevel interface, so the
 // helper bodies are unchanged -- only their parameter type swaps SMAATex -> SMAATex. The including
 // shader builds one per input from bindless indices in the push constant.

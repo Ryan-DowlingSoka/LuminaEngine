@@ -1,5 +1,5 @@
 // RmlUi vertex shader (fully-bindless, single-draw path). Vertices are pulled from the resident batch
-// buffer by device address (PC.Vertices); each carries a draw index into the per-draw device-address
+// buffer by device address (Pass().Vertices); each carries a draw index into the per-draw device-address
 // buffer (see RmlUiCommon), so the shader just transforms by the per-draw MVP.
 #pragma once
 #include "Includes/RmlUiCommon.slang"
@@ -16,8 +16,8 @@ struct VSOutput
 VSOutput VertexMain(uint VertexID : SV_VulkanVertexID)
 {
     // Indices are rebased to VertexOffset 0, so SV_VulkanVertexID indexes the concatenated batch array.
-    FUiVertex V    = PC.Vertices[VertexID];
-    FUiDraw   Draw = PC.Draws[V.DrawIndex];
+    FUiVertex V    = Pass().Vertices[VertexID];
+    FUiDraw   Draw = Pass().Draws[V.DrawIndex];
 
     VSOutput Output;
     Output.Position  = mul(Draw.MVP, float4(V.Position, 0.0, 1.0));

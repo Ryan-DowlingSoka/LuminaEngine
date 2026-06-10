@@ -5,9 +5,7 @@
 #include "Core/Object/Cast.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -27,9 +25,11 @@ namespace Lumina
                 return;
             }
 
-            ImTextureID TextureID = GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(Texture->TextureResource->RHIImage, FTextureSubresourceSet(CurrentMipLevel, 1, 0, 1));
+            // New-heap sampling by ResourceID (per-mip preview deferred until the new RHI exposes mip SRVs).
+            const int32 TexResourceID = Texture->GetResourceID();
+            ImTextureID TextureID = (ImTextureID)(uint32)(TexResourceID >= 0 ? (uint32)TexResourceID : 0u);
 
-            const FRHIImageDesc& ImageDesc = Texture->TextureResource->ImageDescription;
+            const FTextureResource::FDescription& ImageDesc = Texture->TextureResource->ImageDescription;
             ImVec2 WindowSize = ImGui::GetContentRegionAvail();
             ImVec2 WindowPos = ImGui::GetCursorScreenPos();
 
@@ -192,7 +192,7 @@ namespace Lumina
                 return;
             }
         
-            const FRHIImageDesc& ImageDesc = Texture->TextureResource->ImageDescription;
+            const FTextureResource::FDescription& ImageDesc = Texture->TextureResource->ImageDescription;
         
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", Texture->GetName().c_str());
@@ -229,31 +229,10 @@ namespace Lumina
                     }
                 };
             
-                // Type
-                FString dimensionStr;
-                switch (ImageDesc.Dimension)
-                {
-                    case EImageDimension::Texture2D: dimensionStr = "2D Texture"; break;
-                    case EImageDimension::Texture3D: dimensionStr = "3D Volume"; break;
-                    case EImageDimension::TextureCube: dimensionStr = "Cubemap"; break;
-                    default: dimensionStr = "Unknown"; break;
-                }
-                
                 ImVec4 dimensionColor(0.5f, 0.9f, 0.5f, 1.0f);
-                PropertyRow("Type", dimensionStr, &dimensionColor);
+                PropertyRow("Type", "2D Texture", &dimensionColor);
                 PropertyRow("Resolution", eastl::to_string(ImageDesc.Extent.x) + " x " + eastl::to_string(ImageDesc.Extent.y));
-                
-                if (ImageDesc.Depth > 1)
-                {
-                    PropertyRow("Depth", eastl::to_string(ImageDesc.Depth));
-                }
-                
-                if (ImageDesc.ArraySize > 1)
-                {
-                    ImVec4 arrayColor(0.9f, 0.7f, 0.4f, 1.0f);
-                    PropertyRow("Array Size", eastl::to_string(ImageDesc.ArraySize), &arrayColor);
-                }
-            
+
                 // Format
                 const FFormatInfo& FormatInfo = RHI::Format::Info(ImageDesc.Format);
                 PropertyRow("Pixel Format", FString(FormatInfo.Name));
@@ -424,66 +403,15 @@ namespace Lumina
         
             ImGui::Spacing();
             ImGui::Spacing();
-        
-            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
-            ImGui::SeparatorText("Image Capabilities");
-            ImGuiX::Font::PopFont();
-            
-            ImGui::Spacing();
-        
-            struct FlagInfo
-            {
-                EImageCreateFlags Flag;
-                const char* Name;
-                const char* Description;
-                ImVec4 Color;
-            };
-        
-            FlagInfo flags[] = 
-            {
-                { EImageCreateFlags::ShaderResource, "Shader Resource", "Can be sampled in shaders", ImVec4(0.5f, 0.8f, 1.0f, 1.0f) },
-                { EImageCreateFlags::RenderTarget, "Render Target", "Can be rendered to", ImVec4(1.0f, 0.6f, 0.3f, 1.0f) },
-                { EImageCreateFlags::DepthStencil, "Depth/Stencil", "Used for depth testing", ImVec4(0.6f, 0.4f, 0.9f, 1.0f) },
-                { EImageCreateFlags::Storage, "Storage", "Supports storage operations", ImVec4(0.9f, 0.9f, 0.3f, 1.0f) },
-                { EImageCreateFlags::UnorderedAccess, "Unordered Access", "UAV/RWTexture support", ImVec4(1.0f, 0.4f, 0.6f, 1.0f) },
-                { EImageCreateFlags::InputAttachment, "Input Attachment", "Can be used as input", ImVec4(0.4f, 0.9f, 0.6f, 1.0f) },
-                { EImageCreateFlags::CubeCompatible, "Cube Compatible", "Cubemap compatible", ImVec4(0.7f, 0.5f, 1.0f, 1.0f) },
-                { EImageCreateFlags::Aliasable, "Aliasable", "Memory can be aliased", ImVec4(0.8f, 0.8f, 0.8f, 1.0f) }
-            };
-        
-            bool anyFlagSet = false;
-            for (const auto& flagInfo : flags)
-            {
-                if (ImageDesc.Flags.IsFlagSet(flagInfo.Flag))
-                {
-                    anyFlagSet = true;
-                    ImGui::PushStyleColor(ImGuiCol_Text, flagInfo.Color);
-                    ImGui::Bullet();
-                    ImGui::SameLine();
-                    ImGui::Text("%s", flagInfo.Name);
-                    ImGui::PopStyleColor();
-                    
-                    ImGui::SameLine(200);
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "- %s", flagInfo.Description);
-                }
-            }
-        
-            if (!anyFlagSet)
-            {
-                ImGui::TextDisabled("No special flags set");
-            }
-        
-            ImGui::Spacing();
-            ImGui::Spacing();
-        
+
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Statistics");
             ImGuiX::Font::PopFont();
-            
+
             ImGui::Spacing();
-        
+
             float aspectRatio = (float)ImageDesc.Extent.x / (float)ImageDesc.Extent.y;
-            uint32 baseTexels = ImageDesc.Extent.x * ImageDesc.Extent.y * ImageDesc.Depth * ImageDesc.ArraySize;
+            uint32 baseTexels = ImageDesc.Extent.x * ImageDesc.Extent.y;
             
             if (ImGui::BeginTable("##Stats", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp))
             {

@@ -20,6 +20,7 @@
 #include "Renderer/RendererUtils.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/Vertex.h"
+#include "Renderer/ViewVolume.h"
 #include "TaskSystem/TaskSystem.h"
 
 namespace Lumina::Import::Mesh::GLTF

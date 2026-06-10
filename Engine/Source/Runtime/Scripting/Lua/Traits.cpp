@@ -1,31 +1,27 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "Traits.h"
 #include "Core/Assertions/Assert.h"
 #include "Containers/Array.h"
 #include "Core/Threading/Thread.h"
+#include "lua.h"
 
 namespace Lumina::Lua
 {
-    uint16 FTypeIndex::Next()
-    {
-        static uint16 GNextID = 1;
-        DEBUG_ASSERT(GNextID <= eastl::numeric_limits<uint16>::max(), "Hit the maximum number of allowed userdata!");
-        return GNextID++;
-    }
-
-    uint16 FTypeIndex::GetOrCreate(uint64 TypeKey)
+    uint16 FTypeIndex::GetOrCreate(const char* UniqueTypeName)
     {
         static FMutex Mutex;
-        static THashMap<uint64, uint16> Tags;
+        static THashMap<FString, uint16> Tags;
+        static uint16 GNextTag = 1;
 
         FScopeLock Lock(Mutex);
-        if (auto It = Tags.find(TypeKey); It != Tags.end())
+        FString Key(UniqueTypeName);
+        if (auto It = Tags.find(Key); It != Tags.end())
         {
             return It->second;
         }
 
-        uint16 Tag = Next();
-        Tags.emplace(TypeKey, Tag);
-        return Tag;
+        ASSERT(GNextTag < LUA_UTAG_LIMIT, "Out of Luau userdata tags (LUA_UTAG_LIMIT)");
+        Tags.emplace(eastl::move(Key), GNextTag);
+        return GNextTag++;
     }
 }

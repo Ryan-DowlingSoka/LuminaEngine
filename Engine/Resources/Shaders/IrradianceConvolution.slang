@@ -13,7 +13,7 @@ struct FPushConstants
     uint _Pad0;
     uint _Pad1;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 #define IRRADIANCE_TILE 8
 
@@ -21,7 +21,7 @@ struct FPushConstants
 [numthreads(IRRADIANCE_TILE, IRRADIANCE_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    RWTexture2DArray<float4> uOutCube = uBindlessRWTex2DArray[PC.OutCubeUAV];
+    RWTexture2DArray<float4> uOutCube = gRWTextures2DArray[Pass().OutCubeUAV];
 
     uint Width, Height, Layers;
     uOutCube.GetDimensions(Width, Height, Layers);
@@ -56,7 +56,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         float3 L        = normalize(LocalDir.x * Tangent + LocalDir.y * Bitangent + LocalDir.z * N);
 
         // Tonemapped accumulation suppresses fireflies from bright point sources (same as the prefilter).
-        Sum += FireflyTonemap(SanitizeRadiance(SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb));
+        Sum += FireflyTonemap(SanitizeRadiance(SampleTextureCubeLevel(Pass().SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb));
     }
 
     float3 Irradiance = FireflyUntonemap(Sum / float(NumSamples));

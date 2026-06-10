@@ -342,7 +342,6 @@ Listed alphabetically.
 | stb_image | Single-header image loading library |
 | TinyObjLoader | Lightweight OBJ parser with MTL material support |
 | Tracy | Real-time frame profiler with sampling, GPU zones, and lock contention tracking |
-| vk-bootstrap | Vulkan initialization helper that reduces boilerplate |
 | Volk | Vulkan meta-loader for runtime function loading |
 | Vulkan | Low-level graphics API providing explicit GPU control |
 | VulkanMemoryAllocator | Memory management library for Vulkan with defragmentation |

@@ -344,10 +344,10 @@ namespace Lumina
         // ImageButton gives us a real interactive item: click opens the picker, drag-drop targets work,
         // and double-click jumps to the texture asset editor.
         bool bClicked = false;
-        if (DisplayTexture && DisplayTexture->TextureResource && DisplayTexture->TextureResource->RHIImage.IsValid())
+        if (DisplayTexture && DisplayTexture->GetResourceID() >= 0)
         {
             bClicked = ImGui::ImageButton("##TexThumb",
-                ImGuiX::ToImTextureRef(DisplayTexture->TextureResource->RHIImage),
+                ImGuiX::ToImTextureRef((uint32)DisplayTexture->GetResourceID()),
                 ThumbSize);
         }
         else

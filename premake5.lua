@@ -74,7 +74,6 @@ LuminaWorkspaceSettings({
         include "Engine/Source/ThirdParty/tinyobjloader"
         include "Engine/Source/ThirdParty/MeshOptimizer"
         include "Engine/Source/ThirdParty/MikkTSpace"
-        include "Engine/Source/ThirdParty/vk-bootstrap"
         include "Engine/Source/ThirdParty/json"
         include "Engine/Source/ThirdParty/fastgltf"
         include "Engine/Source/ThirdParty/OpenFBX"

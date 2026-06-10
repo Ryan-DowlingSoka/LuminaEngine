@@ -2,8 +2,7 @@
 #include "TextureRenderTarget.h"
 #include "Core/Object/Class.h"
 #include "Memory/MemoryTracking.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHITexture.h"
 
 namespace Lumina
 {
@@ -41,29 +40,27 @@ namespace Lumina
         // No CPU mip data: the target is GPU-only.
         TextureResource->Mips.clear();
 
-        FRHIImageDesc& Desc = TextureResource->ImageDescription;
-        Desc = FRHIImageDesc{};
-        Desc.Extent             = FUIntVector2(Width  > 0 ? Width  : 1u, Height > 0 ? Height : 1u);
-        Desc.Format             = GetRHIFormat();
-        Desc.Dimension          = EImageDimension::Texture2D;
-        Desc.NumMips            = 1;
-        Desc.InitialState       = EResourceStates::ShaderResource;
-        Desc.bKeepInitialState  = true;
-        Desc.DebugName          = GetName().ToString();
-        // ShaderResource so materials sample it; Storage so the paint compute writes its UAV.
-        Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
-        Desc.Flags.SetFlag(EImageCreateFlags::Storage);
+        const uint32 W = Width  > 0 ? Width  : 1u;
+        const uint32 H = Height > 0 ? Height : 1u;
 
-        // Releases any previous image (FRHIImageRef is ref-counted) and registers the new one
-        // into the bindless table via FTextureManager (FVulkanImage ctor).
-        TextureResource->RHIImage = GRenderContext->CreateImage(Desc);
+        FTextureResource::FDescription& Desc = TextureResource->ImageDescription;
+        Desc = FTextureResource::FDescription{};
+        Desc.Extent  = FUIntVector2(W, H);
+        Desc.Format  = GetRHIFormat();
+        Desc.NumMips = 1;
 
-        // Clear to ClearColor so a sampler never reads uninitialized memory before the first paint.
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CommandList->Open();
-        CommandList->ClearImageFloat(TextureResource->RHIImage, AllSubresources,
-            FColor(ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a));
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Graphics);
+        // New RHI: sampled (materials) + storage (paint compute UAV via Textures::StorageSlot).
+        RHI::Textures::Release(TextureResource->NewTexture);
+        TextureResource->NewTexture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width    = W,
+            .Height   = H,
+            .Format   = GetRHIFormat(),
+            .bStorage = true,
+        });
+
+        // Clear so a sampler never reads uninitialized memory before the first paint/render.
+        const float Clear[4] = { ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a };
+        RHI::Textures::Clear(TextureResource->NewTexture, Clear);
     }
 }

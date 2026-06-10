@@ -21,9 +21,9 @@ struct PSOutput
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    FGPUDecal Decal = PC.Decals[Input.DecalIndex];
+    FGPUDecal Decal = Pass().Decals[Input.DecalIndex];
 
-    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    uint2  ScreenSize = Scene().ScreenSize.xy;
     float2 ScreenUV   = Input.Position.xy / float2(ScreenSize);
 
     // Reconstruct the shaded surface world position from opaque depth at this pixel.

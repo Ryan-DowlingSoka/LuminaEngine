@@ -1,7 +1,10 @@
 #pragma once
 
 #include "RenderResource.h"
+#include "RHI.h"
+#include "RHICore.h"
 #include "Containers/Array.h"
+#include "Lumina.h"
 #include "Core/Serialization/Archiver.h"
 #include "Core/Utils/NonCopyable.h"
 #include "Renderer/Vertex.h"
@@ -156,13 +159,24 @@ namespace Lumina
 
     struct RUNTIME_API FMeshResource : INonCopyable
     {
+        // Device-local meshlet streams; GPUPtr doubles as the shader-visible BDA.
+        // Frame-deferred frees keep in-flight frames safe when a mesh dies.
         struct FMeshBuffers
         {
-            FRHIBufferRef MeshletBuffer;
-            FRHIBufferRef MeshletBoundsBuffer;
-            FRHIBufferRef MeshletVertexBuffer;
-            FRHIBufferRef MeshletTriangleBuffer;
-            FRHIBufferRef MeshletHeaderBuffer;
+            RHI::GPUPtr MeshletBuffer = 0;
+            RHI::GPUPtr MeshletBoundsBuffer = 0;
+            RHI::GPUPtr MeshletVertexBuffer = 0;
+            RHI::GPUPtr MeshletTriangleBuffer = 0;
+            RHI::GPUPtr MeshletHeaderBuffer = 0;
+
+            ~FMeshBuffers()
+            {
+                RHI::Core::DeferredFree(MeshletBuffer);
+                RHI::Core::DeferredFree(MeshletBoundsBuffer);
+                RHI::Core::DeferredFree(MeshletVertexBuffer);
+                RHI::Core::DeferredFree(MeshletTriangleBuffer);
+                RHI::Core::DeferredFree(MeshletHeaderBuffer);
+            }
         };
 
         FName                       Name;

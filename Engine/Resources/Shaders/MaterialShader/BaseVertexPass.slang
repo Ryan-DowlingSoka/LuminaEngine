@@ -22,7 +22,7 @@ struct VSOutput
 [shader("vertex")]
 VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
 {
-    FMeshletDraw Draw = uMeshletDrawList[MeshletSlot];
+    FMeshletDraw Draw = MeshletDrawList()[MeshletSlot];
     FGPUInstance Inst = GetInstance(Draw.InstanceID);
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;

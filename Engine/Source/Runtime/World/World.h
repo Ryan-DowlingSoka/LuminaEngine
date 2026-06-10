@@ -125,12 +125,9 @@ namespace Lumina
         void DispatchPhysicsEvents();
 
         // Game thread: read ECS to compute camera/post-process and populate the scene's
-        // per-frame state. Must run before any render-thread Render() consumes it.
+        // per-frame state. Must run before any render-thread RenderView consumes it.
         void Extract();
 
-        /** Render thread: emit the scene's draw commands from FrameIndex's snapshot. */
-        void Render(ICommandList& CmdList, uint8 FrameIndex) const;
-        
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
 
         entt::entity SpawnPrefab(const FName& Path);
@@ -309,7 +306,7 @@ namespace Lumina
         void RegisterSystems();
         
         //~ Begin Debug Drawing
-        void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) override;
+        void DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale) override;
         void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;
 
         /** Submit a solid translucent triangle batch (3 pre-colored verts per tri). Duration <= 0 draws one frame. */

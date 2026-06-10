@@ -14,13 +14,13 @@ struct FPushConstants
     uint  IntegratedUAV;  // bindless 3D UAV: integrated volume (accum rgb, transmittance)
     uint  _Pad0;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
-    if (DispatchID.x >= PC.GridSize.x || DispatchID.y >= PC.GridSize.y)
+    if (DispatchID.x >= Pass().GridSize.x || DispatchID.y >= Pass().GridSize.y)
     {
         return;
     }
@@ -30,14 +30,14 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 
     // Adjacent slices share a boundary: DFar(z) == DNear(z+1). Carry it forward so the exponential
     // slice distribution costs one pow per slice instead of two. DNear(0) = NearPlane (pow(.,0) == 1).
-    float DNear = PC.NearPlane;
+    float DNear = Pass().NearPlane;
 
-    for (uint z = 0; z < PC.GridSize.z; ++z)
+    for (uint z = 0; z < Pass().GridSize.z; ++z)
     {
-        float4 S      = uBindlessTex3D[PC.ScatterSRV].Load(int4(int(DispatchID.x), int(DispatchID.y), int(z), 0));
+        float4 S      = gTextures3D[Pass().ScatterSRV].Load(int4(int(DispatchID.x), int(DispatchID.y), int(z), 0));
         float  SigmaT = max(S.a, 0.0);
 
-        float DFar = Froxel_SliceDistance(float(z + 1), float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
+        float DFar = Froxel_SliceDistance(float(z + 1), float(Pass().GridSize.z), Pass().NearPlane, Pass().FogRange);
         float Dz   = max(DFar - DNear, 0.0);
 
         float  SliceTrans = exp(-SigmaT * Dz);
@@ -47,7 +47,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         Accum += Trans * SliceInt;
         Trans *= SliceTrans;
 
-        uBindlessRWTex3D[PC.IntegratedUAV][int3(int(DispatchID.x), int(DispatchID.y), int(z))] = float4(Accum, Trans);
+        gRWTextures3D[Pass().IntegratedUAV][int3(int(DispatchID.x), int(DispatchID.y), int(z))] = float4(Accum, Trans);
 
         DNear = DFar;
     }

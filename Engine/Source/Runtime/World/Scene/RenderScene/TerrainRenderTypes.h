@@ -3,6 +3,7 @@
 #include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 #include "Renderer/RenderResource.h"
+#include "World/Scene/RenderScene/SceneRenderTypes.h"
 
 #ifndef VERIFY_SSBO_ALIGNMENT
 #define VERIFY_SSBO_ALIGNMENT(Type) \
@@ -110,20 +111,20 @@ namespace Lumina
     struct FTerrainGPUState
     {
         /** R32_FLOAT mirror of CPU Heightmap. */
-        FRHIImageRef    HeightmapTexture;
+        FSceneImage     HeightmapTexture;
 
         /** RGBA8 normal; derived on GPU. */
-        FRHIImageRef    NormalTexture;
+        FSceneImage     NormalTexture;
 
         /** R8_UNORM array, one slice per layer. */
-        FRHIImageRef    LayerWeightTexture;
+        FSceneImage     LayerWeightTexture;
 
-        FRHIBufferRef   ChunkInfoBuffer;
-        FRHIBufferRef   MeshletInfoBuffer;
-        FRHIBufferRef   VisibleMeshletBuffer;
+        FSceneBuffer    ChunkInfoBuffer;
+        FSceneBuffer    MeshletInfoBuffer;
+        FSceneBuffer    VisibleMeshletBuffer;
 
         /** Single FDrawIndirectArguments slot; cull atomic-increments InstanceCount. */
-        FRHIBufferRef   IndirectDrawBuffer;
+        FSceneBuffer    IndirectDrawBuffer;
 
         uint32  AllocatedResolution = 0;
         uint32  AllocatedLayerCount = 0;

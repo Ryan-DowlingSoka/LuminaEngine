@@ -57,13 +57,9 @@ namespace Lumina
                     
                     ImGui::SetNextItemWidth(200.0f);
 
-                    if (Texture != nullptr)
+                    if (Texture != nullptr && Texture->GetResourceID() >= 0)
                     {
-                        if (FRHIImageRef& Image = Texture->TextureResource->RHIImage)
-                        {
-                            ImTextureRef ImText = GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(Image);
-                            ImGui::Image(ImText, ImVec2(164.0f, 164.0f));
-                        }
+                        ImGui::Image(ImGuiX::ToImTextureRef((uint32)Texture->GetResourceID()), ImVec2(164.0f, 164.0f));
                     }
                     
                     ReturnSize = 200.0f;

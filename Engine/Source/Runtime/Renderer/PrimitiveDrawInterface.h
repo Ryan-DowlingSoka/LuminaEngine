@@ -17,7 +17,8 @@ namespace Lumina
         IPrimitiveDrawInterface(IPrimitiveDrawInterface&&) = default;
         IPrimitiveDrawInterface& operator=(IPrimitiveDrawInterface&&) = default;
         
-        virtual void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) = 0;
+        // ResourceID = global-heap slot of the billboard texture (e.g. CTexture::GetResourceID()).
+        virtual void DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale) = 0;
         
         
         virtual void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = 0.0f) = 0;

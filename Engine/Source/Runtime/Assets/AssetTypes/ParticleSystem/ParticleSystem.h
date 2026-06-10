@@ -3,7 +3,8 @@
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectHandleTyped.h"
 #include "Core/Object/ObjectMacros.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHIFwd.h"
+#include "Renderer/RHI.h"
 #include "ParticleSystem.generated.h"
 
 namespace Lumina
@@ -130,7 +131,7 @@ namespace Lumina
         void PostLoad() override;
         void OnDestroy() override;
 
-        FRHIComputeShader* GetCustomComputeShader() const { return ComputeShader; }
+        const FShaderEntry* GetCustomComputeShader() const { return ComputeShader; }
         bool HasCustomComputeShader() const { return ComputeShader != nullptr; }
         bool UsesCustomShader() const { return ShaderMode == EParticleShaderMode::Custom && HasCustomComputeShader(); }
 
@@ -261,17 +262,16 @@ namespace Lumina
         PROPERTY(Editable, Category = "Render")
         bool bWriteDepth = false;
 
-        FRHIComputeShaderRef ComputeShader;
+        const FShaderEntry* ComputeShader = nullptr;
     };
 
     /** Render-thread-only GPU + sim state per emitter; lives in FForwardRenderScene::ParticleGPUStates,
      *  NOT on the component, so the render thread never touches a component the game thread may have destroyed. */
     struct FParticleGPUState
     {
-        FRHIBufferRef   ParticleBuffer;      // RW structured buffer of FGPUParticle (64B stride)
-        FRHIBufferRef   SimParamsBuffer;     // Constant buffer, 288 bytes
-        FRHIBufferRef   RenderParamsBuffer;  // Constant buffer, 48 bytes
-        FRHIBufferRef   SpawnCounterBuffer;  // Single uint, cleared per frame
+        RHI::GPUPtr     ParticleBuffer     = 0;  // RW structured buffer of FGPUParticle (64B stride)
+        uint64          ParticleBufferSize = 0;
+        RHI::GPUPtr     SpawnCounterBuffer = 0;  // Single uint, cleared per frame
         uint32          AllocatedMax        = 0;
         float           SpawnAccumulator    = 0.0f;
         float           TotalTime           = 0.0f;

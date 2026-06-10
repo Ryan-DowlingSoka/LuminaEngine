@@ -24,17 +24,17 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
 
     // Tail-thread guard: out-of-range threads still participate in the
     // cooperative loads and barriers below, they just never test or write.
-    uint3 Grid          = uSceneData.GridSize.xyz;
+    uint3 Grid          = Scene().GridSize.xyz;
     uint  NumClusters   = Grid.x * Grid.y * Grid.z;
     bool  bValidCluster = Index < NumClusters;
 
-    float3 ClusterMin = bValidCluster ? uClusters[Index].MinPoint.xyz : float3(0.0);
-    float3 ClusterMax = bValidCluster ? uClusters[Index].MaxPoint.xyz : float3(0.0);
+    float3 ClusterMin = bValidCluster ? Clusters()[Index].MinPoint.xyz : float3(0.0);
+    float3 ClusterMax = bValidCluster ? Clusters()[Index].MaxPoint.xyz : float3(0.0);
 
-    uint LightCount = uLightData[0].NumLights;
+    uint LightCount = LightData().NumLights;
 
     // Directional light is always at index 0; skip since it applies globally.
-    uint StartIndex = (LightCount > 0 && HasFlag(uLightData[0].Lights[0].Flags, ELightFlags::Directional)) ? 1u : 0u;
+    uint StartIndex = (LightCount > 0 && HasFlag(LightData().Lights[0].Flags, ELightFlags::Directional)) ? 1u : 0u;
 
     float4x4 View         = GetCameraView();
     uint     VisibleCount = 0;
@@ -46,8 +46,8 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
         uint LoadIndex = Base + Local;
         if (LoadIndex < LightCount)
         {
-            float3 ViewPos = mul(View, float4(uLightData[0].Lights[LoadIndex].Position, 1.0)).xyz;
-            gLightViewPosRadius[Local] = float4(ViewPos, uLightData[0].Lights[LoadIndex].Radius);
+            float3 ViewPos = mul(View, float4(LightData().Lights[LoadIndex].Position, 1.0)).xyz;
+            gLightViewPosRadius[Local] = float4(ViewPos, LightData().Lights[LoadIndex].Radius);
         }
         else
         {
@@ -70,7 +70,7 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
                 float4 LightVP = gLightViewPosRadius[j];
                 if (SphereAABBIntersection(LightVP.xyz, LightVP.w, ClusterMin, ClusterMax))
                 {
-                    uClusters[Index].LightIndices[VisibleCount] = GlobalLight;
+                    Clusters()[Index].LightIndices[VisibleCount] = GlobalLight;
                     ++VisibleCount;
                     if (VisibleCount >= LIGHTS_PER_CLUSTER)
                     {
@@ -85,6 +85,6 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
 
     if (bValidCluster)
     {
-        uClusters[Index].Count = VisibleCount;
+        Clusters()[Index].Count = VisibleCount;
     }
 }

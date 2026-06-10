@@ -1,33 +1,34 @@
 #pragma once
 #include "MaterialManager.h"
+#include "RHI.h"
+#include "RHITexture.h"
 #include "RenderResource.h"
-#include "RenderTypes.h"
-#include "TextureManager.h"
 #include "Core/Delegates/Delegate.h"
+#include "Memory/SmartPtr.h"
 
 
 namespace Lumina
 {
-    class ICommandList;
     class IImGuiRenderer;
-    class IRenderContext;
-    class FRHICommandList;
+    class FSpirVShaderCompiler;
+    class FShaderLibrary;
     class FUpdateContext;
 }
 
 namespace Lumina
 {
-    // Immutable GPU resources shared by every render scene (BRDF LUT, SMAA LUTs, editor icons).
-    // Built once on the first scene, aliased by ref after; released in ~FRenderManager pre-teardown.
+    // Immutable GPU resources shared by every render scene (BRDF LUT, SMAA LUTs, editor icons),
+    // registered in the global texture heap. Built once on the first scene, aliased after.
     struct FSharedRenderResources
     {
-        FRHIImageRef    BRDFLut;
-        FRHIImageRef    SMAAArea;
-        FRHIImageRef    SMAASearch;
+        RHI::FManagedTexture    BRDFLut;
+        uint32                  BRDFLutUAV = RHI::kInvalidHeapSlot;
+        RHI::FManagedTexture    SMAAArea;
+        RHI::FManagedTexture    SMAASearch;
 
         #if WITH_EDITOR
         // PointLight, DirectionalLight, SkyLight, SpotLight, Camera, Character, ParticleSystem.
-        FRHIImageRef    EditorIcons[7];
+        RHI::FManagedTexture    EditorIcons[7];
         #endif
 
         bool            bInitialized = false;
@@ -55,6 +56,9 @@ namespace Lumina
 
         void SwapchainResized(FVector2 NewSize);
 
+        // Render thread: rebuild the primary swapchain (vsync / present-mode change).
+        RUNTIME_API void RecreatePrimarySwapchain();
+
 
         #if WITH_EDITOR
         IImGuiRenderer* GetImGuiRenderer() const { return ImGuiRenderer; }
@@ -62,8 +66,6 @@ namespace Lumina
 
         uint32 GetCurrentFrameIndex() const { return CurrentFrameIndex; }
 
-        NODISCARD RHI::FTextureManager& GetTextureManager() const { return *TextureManager.get(); }
-        NODISCARD RHI::FTextureManager* TryGetTextureManager() const { return TextureManager.get(); }
         NODISCARD RHI::FMaterialManager& GetMaterialManager() const { return *MaterialManager.get(); }
 
         // Lazily populated by the first render scene; aliased by all later scenes.
@@ -75,13 +77,16 @@ namespace Lumina
         IImGuiRenderer*                     ImGuiRenderer = nullptr;
         #endif
 
-        TUniquePtr<RHI::FTextureManager>    TextureManager;
         TUniquePtr<RHI::FMaterialManager>   MaterialManager;
+
+        // Backing storage for GShaderLibrary / GShaderCompiler.
+        FShaderLibrary*                     ShaderLibrary = nullptr;
+        FSpirVShaderCompiler*               ShaderCompiler = nullptr;
 
         FSharedRenderResources              SharedRenderResources;
 
-        // Reused each frame so its FUploadManager transient chunk pool persists and recycles.
-        FRHICommandListRef                  FrameCommandList;
+        // New RHI owns presentation: the primary window swapchain.
+        RHI::FSwapchainH                    Swapchain;
 
         uint8                               CurrentFrameIndex = 0;
     };

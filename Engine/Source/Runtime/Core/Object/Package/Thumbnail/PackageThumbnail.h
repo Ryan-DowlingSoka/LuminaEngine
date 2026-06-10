@@ -1,8 +1,10 @@
-﻿#pragma once
+#pragma once
+#include "Core/Templates/LuminaTemplate.h"
+#include "Core/Threading/Atomic.h"
 #include "Containers/Array.h"
 #include "Core/Serialization/Archiver.h"
 #include "Platform/GenericPlatform.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHITexture.h"
 
 namespace Lumina
 {
@@ -20,7 +22,15 @@ namespace Lumina
         uint32 ImageWidth = 0;
         uint32 ImageHeight = 0;
         TVector<uint8> ImageData;
-        FRHIImageRef LoadedImage;
+        RHI::FManagedTexture LoadedImage;
+
+        ~FPackageThumbnail()
+        {
+            if (LoadedImage.IsValid())
+            {
+                RHI::Textures::Release(LoadedImage);
+            }
+        }
 
         TAtomic<EState> LoadState{EState::None};
 

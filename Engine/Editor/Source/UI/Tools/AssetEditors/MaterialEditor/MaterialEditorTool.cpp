@@ -1,4 +1,4 @@
-﻿#include "MaterialEditorTool.h"
+#include "MaterialEditorTool.h"
 #include "imgui-node-editor/imgui_node_editor.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
@@ -9,9 +9,8 @@
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "Renderer/MaterialTypes.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
+#include "Renderer/ShaderLibrary.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetRegistry/AssetData.h"
@@ -632,7 +631,7 @@ namespace Lumina
             CompilationResult.bIsError = false;
             bGLSLPreviewDirty = true;
 
-            IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
+            IShaderCompiler* ShaderCompiler = GShaderCompiler;
 
             // Crash-dump-friendly shader names: "<MaterialName> [Stage]" instead of the generic "RawShader".
             const FString MatName = Material->GetName().c_str();
@@ -660,19 +659,17 @@ namespace Lumina
             ShaderCompiler->CompilerShaderRaw(VertexSource, Move(VSOptions), [this](const FShaderHeader& Header) mutable
             {
                 CMaterial* Material = Cast<CMaterial>(Asset.Get());
-                FRHIVertexShaderRef VertexShader = GRenderContext->CreateVertexShader(Header);
                 Material->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                Material->VertexShader = VertexShader;
-                GRenderContext->OnShaderCompiled(VertexShader, false, true);
+                Material->VertexShader = FShaderLibrary::Commit(FName((Material->GetGUID().ToString() + "_VS").c_str()), ERHIShaderType::Vertex,
+                    TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
             });
 
             ShaderCompiler->CompilerShaderRaw(Tree, Move(Options), [this](const FShaderHeader& Header) mutable
             {
                 CMaterial* Material = Cast<CMaterial>(Asset.Get());
-                FRHIPixelShaderRef PixelShader = GRenderContext->CreatePixelShader(Header);
                 Material->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                Material->PixelShader = PixelShader;
-                GRenderContext->OnShaderCompiled(PixelShader, false, true);
+                Material->PixelShader = FShaderLibrary::Commit(FName((Material->GetGUID().ToString() + "_PS").c_str()), ERHIShaderType::Fragment,
+                    TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
             });
             
             const bool bIsTerrain     = Material->GetMaterialType() == EMaterialType::Terrain;
@@ -691,18 +688,16 @@ namespace Lumina
                 ShaderCompiler->CompilerShaderRaw(DepthSource, Move(DepthOptions), [this](const FShaderHeader& Header) mutable
                 {
                     CMaterial* M = Cast<CMaterial>(Asset.Get());
-                    FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);
                     M->DepthPrepassVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                    M->DepthPrepassVertexShader = VS;
-                    GRenderContext->OnShaderCompiled(VS, false, true);
+                    M->DepthPrepassVertexShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_DepthVS").c_str()), ERHIShaderType::Vertex,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
                 });
                 ShaderCompiler->CompilerShaderRaw(ShadowSource, Move(ShadowOptions), [this](const FShaderHeader& Header) mutable
                 {
                     CMaterial* M = Cast<CMaterial>(Asset.Get());
-                    FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);
                     M->ShadowVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                    M->ShadowVertexShader = VS;
-                    GRenderContext->OnShaderCompiled(VS, false, true);
+                    M->ShadowVertexShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_ShadowVS").c_str()), ERHIShaderType::Vertex,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
                 });
             }
             else

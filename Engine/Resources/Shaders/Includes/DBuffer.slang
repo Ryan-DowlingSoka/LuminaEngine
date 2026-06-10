@@ -17,7 +17,7 @@ struct FDBufferPushConstants
     uint DBufferCIndex;   // r Roughness g Metallic b AO,  a transmittance
     uint _Pad;
 };
-#define gDBufferPC (*(FDBufferPushConstants*)gPC.PassAddr)
+FDBufferPushConstants* DBufferArgs() { return GetPassArgs<FDBufferPushConstants>(); }
 
 // Blend the accumulated decal layer at ScreenUV into the surface material attributes, in place.
 // Call after the material is resolved and BEFORE lighting so decals receive lights/shadows/IBL.
@@ -25,15 +25,15 @@ void ApplyDBuffer(inout float3 Albedo, inout float3 WorldNormal, inout float Rou
                   inout float Metallic, inout float AO, float2 ScreenUV)
 {
     // Sentinel index (no decals this frame) -> skip the three DBuffer samples; the composite is a no-op.
-    if (gDBufferPC.DBufferAIndex == 0xFFFFFFFFu)
+    if (DBufferArgs().DBufferAIndex == 0xFFFFFFFFu)
     {
         return;
     }
 
-    SamplerState Smp = uBindlessSamplers[SAMPLER_POINT_CLAMP];
-    float4 A = uBindlessTex2D[gDBufferPC.DBufferAIndex].SampleLevel(Smp, ScreenUV, 0.0);
-    float4 B = uBindlessTex2D[gDBufferPC.DBufferBIndex].SampleLevel(Smp, ScreenUV, 0.0);
-    float4 C = uBindlessTex2D[gDBufferPC.DBufferCIndex].SampleLevel(Smp, ScreenUV, 0.0);
+    SamplerState Smp = gSamplers[SAMPLER_POINT_CLAMP];
+    float4 A = gTextures2D[DBufferArgs().DBufferAIndex].SampleLevel(Smp, ScreenUV, 0.0);
+    float4 B = gTextures2D[DBufferArgs().DBufferBIndex].SampleLevel(Smp, ScreenUV, 0.0);
+    float4 C = gTextures2D[DBufferArgs().DBufferCIndex].SampleLevel(Smp, ScreenUV, 0.0);
 
     // BaseColor: standard "over" composite of the decal layer (rgb premultiplied over black) on top of
     // the surface attenuated by the layer transmittance.

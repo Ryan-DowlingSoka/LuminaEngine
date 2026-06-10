@@ -63,9 +63,9 @@ namespace Lumina
 
     void CMaterialExpression_TextureSample::DrawNodeBody()
     {
-        if (Texture.IsValid() && Texture->TextureResource && Texture->TextureResource->RHIImage.IsValid())
+        if (Texture.IsValid() && Texture->GetResourceID() >= 0)
         {
-            ImGui::Image(ImGuiX::ToImTextureRef(Texture->TextureResource->RHIImage), ImVec2(126.0f, 126.f));
+            ImGui::Image(ImGuiX::ToImTextureRef((uint32)Texture->GetResourceID()), ImVec2(126.0f, 126.f));
         }
     }
 

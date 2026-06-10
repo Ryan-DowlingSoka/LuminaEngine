@@ -13,6 +13,23 @@
 
 namespace Lumina::Import::Mesh
 {
+    FMeshImportData::FMeshImportData() = default;
+    FMeshImportData::FMeshImportData(FMeshImportData&&) noexcept = default;
+    FMeshImportData& FMeshImportData::operator=(FMeshImportData&&) noexcept = default;
+
+    FMeshImportData::~FMeshImportData()
+    {
+        // Preview thumbnails are heap textures; release them with the import session.
+        for (const FMeshImportImage& Img : Textures)
+        {
+            RHI::FManagedTexture Tmp = Img.DisplayImage;
+            if (Tmp.IsValid())
+            {
+                RHI::Textures::Release(Tmp);
+            }
+        }
+    }
+
     namespace
     {
         // meshopt_setAllocator stores function pointers only, so static-init is safe.

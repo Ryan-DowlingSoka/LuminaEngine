@@ -1,103 +1,99 @@
 #include "pch.h"
-#include "RenderContext.h"
-#include "RenderResource.h"
-#include "RHIGlobals.h"
-#include "Shader.h"
+#include "ShaderLibrary.h"
 #include "ShaderCompiler.h"
+#include "Memory/Memory.h"
 #include "Paths/Paths.h"
 
 namespace Lumina
 {
-    void FShaderLibrary::CreateAndAddShader(const FName& Path, const FShaderHeader& Header, bool bReloadPipelines)
+    static uint64 EntryHash(const FName& Path, TSpan<const FString> Defines)
     {
-        FRHIShaderRef Shader;
-        
-        switch (Header.Reflection.ShaderType)
-        {
-        case ERHIShaderType::None: break;
-        case ERHIShaderType::Vertex:
-            {
-                Shader = GRenderContext->CreateVertexShader(Header);
-            }
-            break;
-        case ERHIShaderType::Fragment:
-            {
-                Shader = GRenderContext->CreatePixelShader(Header);
-            }
-            break;
-        case ERHIShaderType::Compute:
-            {
-                Shader = GRenderContext->CreateComputeShader(Header);
-            }
-            break;
-        case ERHIShaderType::Geometry:
-            {
-                Shader = GRenderContext->CreateGeometryShader(Header);
-            }
-            break;
-        }
-
-        AddShader(Path, Shader);
-        GRenderContext->OnShaderCompiled(Shader, false, bReloadPipelines);
-    }
-
-    void FShaderLibrary::AddShader(const FName& Path, FRHIShader* Shader)
-    {
-        FScopeLock Lock(Mutex);
-        
         uint64 Hash = Path.GetID();
-        for (const FString& Define : Shader->GetShaderHeader().Defines)
+        for (const FString& Define : Defines)
         {
             Hash::HashCombine(Hash, Define);
         }
-        
-        Shaders.insert_or_assign(Hash, Shader);
-    }
-    
-    FRHIVertexShaderRef FShaderLibrary::GetVertexShader(const FName& Path, TSpan<FString> Macros)
-    {
-        return GRenderContext->GetShaderLibrary()->GetShader<FRHIVertexShader>(Path, Macros);
+        return Hash;
     }
 
-    FRHIPixelShaderRef FShaderLibrary::GetPixelShader(const FName& Path, TSpan<FString> Macros)
+    FShaderLibrary::~FShaderLibrary()
     {
-        return GRenderContext->GetShaderLibrary()->GetShader<FRHIPixelShader>(Path, Macros);
-    }
-
-    FRHIComputeShaderRef FShaderLibrary::GetComputeShader(const FName& Path, TSpan<FString> Macros)
-    {
-        return GRenderContext->GetShaderLibrary()->GetShader<FRHIComputeShader>(Path, Macros);
-    }
-
-    FRHIGeometryShaderRef FShaderLibrary::GetGeometryShader(const FName& Path, TSpan<FString> Macros)
-    {
-        return GRenderContext->GetShaderLibrary()->GetShader<FRHIGeometryShader>(Path, Macros);
-    }
-
-    FRHIShaderRef FShaderLibrary::GetShader(const FName& Path, TSpan<FString> Macros)
-    {
-        uint64 Hash = Path.GetID();
-        for (const FString& Define : Macros)
+        for (auto& [Hash, Entry] : Entries)
         {
-            Hash::HashCombine(Hash, Define);
+            Memory::Delete(Entry);
         }
-        
-        auto It = Shaders.find(Hash);
-        if (It == Shaders.end())
+    }
+
+    FShaderEntry& FShaderLibrary::FindOrCreate(uint64 Hash)
+    {
+        auto It = Entries.find(Hash);
+        if (It == Entries.end())
         {
-            FString ShaderPath = Paths::GetEngineShadersDirectory() + "/" + Path.c_str();
-            FShaderCompileOptions Options;
-            Options.bGenerateReflectionData = true;
-            Options.MacroDefinitions.assign(Macros.begin(), Macros.end());
-            GRenderContext->GetShaderCompiler()->CompileShaderPath(ShaderPath, Options, [&](const FShaderHeader& Header)
+            FShaderEntry* Entry = Memory::New<FShaderEntry>();
+            Entry->ID = NextID++;
+            It = Entries.emplace(Hash, Entry).first;
+        }
+        return *It->second;
+    }
+
+    const FShaderEntry* FShaderLibrary::Get(const FName& Path, TSpan<const FString> Defines)
+    {
+        FShaderLibrary* Library = GShaderLibrary;
+        const uint64 Hash = EntryHash(Path, Defines);
+
+        {
+            FScopeLock Lock(Library->Mutex);
+            FShaderEntry& Entry = Library->FindOrCreate(Hash);
+            if (Entry.IsValid())
             {
-                CreateAndAddShader(Path, Header, true);
-            });
-            
-            GRenderContext->GetShaderCompiler()->Flush();
-            It = Shaders.find(Hash);
+                return &Entry;
+            }
+            if (Entry.Path.IsNone())
+            {
+                Entry.Path = Path;
+                Entry.Defines.assign(Defines.begin(), Defines.end());
+            }
         }
-        
-        return It->second;
+
+        // Not delivered yet (startup batch still in flight, or a variant never requested
+        // before): compile synchronously so the caller's cached pointer is usable now.
+        FShaderCompileOptions Options;
+        Options.bGenerateReflectionData = true;
+        Options.MacroDefinitions.assign(Defines.begin(), Defines.end());
+        GShaderCompiler->CompileShaderPath(Paths::GetEngineShadersDirectory() + "/" + Path.c_str(), Options, [](const FShaderHeader& Header)
+        {
+            Commit(Header);
+        });
+        GShaderCompiler->Flush();
+
+        FScopeLock Lock(Library->Mutex);
+        return &Library->FindOrCreate(Hash);
+    }
+
+    const FShaderEntry* FShaderLibrary::Commit(const FName& Key, ERHIShaderType Type, TSpan<const uint32> Spirv)
+    {
+        FShaderLibrary* Library = GShaderLibrary;
+        FScopeLock Lock(Library->Mutex);
+
+        FShaderEntry& Entry = Library->FindOrCreate(EntryHash(Key, {}));
+        Entry.Path = Key;
+        Entry.Type = Type;
+        Entry.Spirv.assign(Spirv.begin(), Spirv.end());
+        Entry.Generation++;
+        return &Entry;
+    }
+
+    void FShaderLibrary::Commit(const FShaderHeader& Header)
+    {
+        FShaderLibrary* Library = GShaderLibrary;
+        FScopeLock Lock(Library->Mutex);
+
+        const FName Path(Header.DebugName.c_str());
+        FShaderEntry& Entry = Library->FindOrCreate(EntryHash(Path, TSpan<const FString>(Header.Defines.data(), Header.Defines.size())));
+        Entry.Path    = Path;
+        Entry.Defines = Header.Defines;
+        Entry.Type    = Header.Reflection.ShaderType;
+        Entry.Spirv   = Header.Binaries;
+        Entry.Generation++;
     }
 }

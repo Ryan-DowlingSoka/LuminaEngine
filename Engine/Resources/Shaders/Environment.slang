@@ -14,7 +14,7 @@ struct FEnvPushConstants
     uint EquirectWidth;   // equirect base width in texels; drives the anti-aliasing LOD
     uint _Pad1;
 };
-#define PC (*(FEnvPushConstants*)gPC.PassAddr)
+FEnvPushConstants* Pass() { return GetPassArgs<FEnvPushConstants>(); }
 
 struct FragmentInput  { float2 UV : TEXCOORD0; };
 struct FragmentOutput { float4 Color : SV_Target0; };
@@ -34,7 +34,7 @@ float3 GetViewRay(float2 UV)
 [shader("fragment")]
 FragmentOutput FragmentMain(FragmentInput Input)
 {
-    FEnvironmentParams uEnvironment = PC.Env.get();
+    FEnvironmentParams uEnvironment = Pass().Env.get();
 
     float3 Color;
     uint SkyMode = asuint(uEnvironment.Misc.x);
@@ -62,15 +62,15 @@ FragmentOutput FragmentMain(FragmentInput Input)
             float3 dRdx = ddx(RayDir);
             float3 dRdy = ddy(RayDir);
             float pixelAngle      = max(length(dRdx), length(dRdy));   // radians/pixel (chord ~= angle)
-            float texelsPerRadian = float(PC.EquirectWidth) * (1.0 / TWO_PI);
+            float texelsPerRadian = float(Pass().EquirectWidth) * (1.0 / TWO_PI);
             float lod             = log2(max(pixelAngle * texelsPerRadian, 1.0));
             // Sanitize: a half-float-overflow Inf texel (bright sun/lights) sampled straight into the HDR
             // target blows out bloom and flashes the screen white.
-            Color = SanitizeRadiance(SampleBindless2DLevel(PC.EquirectIndex, SAMPLER_LINEAR_WRAP, float2(u, v), lod).rgb);
+            Color = SanitizeRadiance(SampleTexture2DLevel(Pass().EquirectIndex, SAMPLER_LINEAR_WRAP, float2(u, v), lod).rgb);
         }
         else
         {
-            Color = SampleBindlessCubeLevel(PC.SkyCubeIndex, SAMPLER_LINEAR_CLAMP, RayDir, 0.0).rgb;
+            Color = SampleTextureCubeLevel(Pass().SkyCubeIndex, SAMPLER_LINEAR_CLAMP, RayDir, 0.0).rgb;
         }
 
         // Per-pixel overlays (Dynamic only): sun/moon/stars are pixel-scale and blocky in a 256 cube,

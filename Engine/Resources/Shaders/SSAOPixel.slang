@@ -26,15 +26,15 @@ FragmentOutput FragmentMain(FragmentInput Input)
 {
     FragmentOutput Output;
 
-    FData Data = GetPassData<FData>();
+    FData* Data = GetPassArgs<FData>();
 
-    float2 ScreenSize = float2(uSceneData.ScreenSize.xy);
+    float2 ScreenSize = float2(Scene().ScreenSize.xy);
     float2 TexelSize  = 1.0 / ScreenSize;
 
     float4x4 Proj    = GetCameraProjection();
     float4x4 InvProj = GetInverseCameraProjection();
 
-    float DepthC = SampleBindless2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV).r;
+    float DepthC = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV).r;
 
     // Reverse-Z: the far plane / sky is 0. Nothing to occlude there -> fully lit.
     if (DepthC <= 0.0)
@@ -46,8 +46,8 @@ FragmentOutput FragmentMain(FragmentInput Input)
     // View-space position of this pixel and its right/up neighbours, used to reconstruct the normal.
     float3 P  = ReconstructViewPos(Input.UV, DepthC, InvProj);
 
-    float DepthR = SampleBindless2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(TexelSize.x, 0.0)).r;
-    float DepthU = SampleBindless2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(0.0, TexelSize.y)).r;
+    float DepthR = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(TexelSize.x, 0.0)).r;
+    float DepthU = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(0.0, TexelSize.y)).r;
     float3 Px = ReconstructViewPos(Input.UV + float2(TexelSize.x, 0.0), DepthR, InvProj);
     float3 Py = ReconstructViewPos(Input.UV + float2(0.0, TexelSize.y), DepthU, InvProj);
 
@@ -60,21 +60,21 @@ FragmentOutput FragmentMain(FragmentInput Input)
 
     // Tile the 4x4 noise across the screen (wrap point sampler) for a per-pixel TBN rotation.
     float2 NoiseScale = ScreenSize / 4.0;
-    float3 RandomVec  = SampleBindless2D(Data.NoiseIndex, SAMPLER_POINT_WRAP, Input.UV * NoiseScale).xyz;
+    float3 RandomVec  = SampleTexture2D(Data.NoiseIndex, SAMPLER_POINT_WRAP, Input.UV * NoiseScale).xyz;
 
     // Gram-Schmidt: build an orthonormal tangent basis with the noise as the in-plane rotation.
     float3 Tangent   = normalize(RandomVec - N * dot(RandomVec, N));
     float3 Bitangent = cross(N, Tangent);
     float3x3 TBN     = float3x3(Tangent, Bitangent, N);   // rows; mul(v, TBN) = tangent -> view
 
-    float Radius = uSceneData.SSAOSettings.Radius;
-    float Bias   = uSceneData.SSAOSettings.Bias;
+    float Radius = Scene().SSAOSettings.Radius;
+    float Bias   = Scene().SSAOSettings.Bias;
 
     float Occlusion = 0.0;
     for (int i = 0; i < SSAO_KERNEL_SIZE; ++i)
     {
         // Kernel sample: tangent-space hemisphere direction rotated into view space, placed around P.
-        float3 SampleDir = mul(uSceneData.SSAOSettings.Samples[i].xyz, TBN);
+        float3 SampleDir = mul(Scene().SSAOSettings.Samples[i].xyz, TBN);
         float3 SamplePos = P + SampleDir * Radius;
 
         // Project the sample into screen UV to look up the actual scene depth there.
@@ -87,7 +87,7 @@ FragmentOutput FragmentMain(FragmentInput Input)
             continue;
         }
 
-        float SampleDepth = SampleBindless2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, SampleUV).r;
+        float SampleDepth = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, SampleUV).r;
         if (SampleDepth <= 0.0)
         {
             continue;
@@ -101,8 +101,8 @@ FragmentOutput FragmentMain(FragmentInput Input)
         Occlusion += ((SceneZ <= SamplePos.z - Bias) ? 1.0 : 0.0) * RangeCheck;
     }
 
-    float AO = 1.0 - (Occlusion / float(SSAO_KERNEL_SIZE)) * uSceneData.SSAOSettings.Intensity;
-    AO = pow(saturate(AO), uSceneData.SSAOSettings.Power);
+    float AO = 1.0 - (Occlusion / float(SSAO_KERNEL_SIZE)) * Scene().SSAOSettings.Intensity;
+    AO = pow(saturate(AO), Scene().SSAOSettings.Power);
 
     Output.Color = float4(AO, AO, AO, 1.0);
     return Output;

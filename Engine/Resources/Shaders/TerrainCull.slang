@@ -41,7 +41,7 @@ bool ChunkVisible(FFrustum F, float3 BoundsMin, float3 BoundsMax)
     return FrustumContainsSphere(F, Center, Radius);
 }
 
-#define PC (*(FTerrainCullPushConstants*)gPC.PassAddr)
+FTerrainCullPushConstants* Pass() { return GetPassArgs<FTerrainCullPushConstants>(); }
 
 [shader("compute")]
 [numthreads(LOCAL_SIZE_X, 1, 1)]
@@ -50,46 +50,46 @@ void ComputeMain(
     uint    LocalIdx   : SV_GroupIndex)
 {
     const uint ChunkIndex = GroupID.x;
-    if (ChunkIndex >= PC.ChunkCount)
+    if (ChunkIndex >= Pass().ChunkCount)
         return;
 
     // Thread 0 owns the chunk-level test. Broadcast through groupshared so
     // every meshlet thread can short-circuit on a coarse rejection.
     if (LocalIdx == 0)
     {
-        FTerrainChunkInfo Chunk = PC.Chunks[ChunkIndex];
-        gChunkVisible = ChunkVisible(uSceneData.CullData.Frustum, Chunk.BoundsMin, Chunk.BoundsMax);
+        FTerrainChunkInfo Chunk = Pass().Chunks[ChunkIndex];
+        gChunkVisible = ChunkVisible(Scene().CullData.Frustum, Chunk.BoundsMin, Chunk.BoundsMax);
     }
     GroupMemoryBarrierWithGroupSync();
 
     if (!gChunkVisible)
         return;
 
-    FTerrainChunkInfo Chunk = PC.Chunks[ChunkIndex];
+    FTerrainChunkInfo Chunk = Pass().Chunks[ChunkIndex];
 
     // Stride the meshlet test by LOCAL_SIZE_X so chunks larger than the workgroup still cover
     // every meshlet with one thread per pass.
     for (uint Local = LocalIdx; Local < Chunk.MeshletCount; Local += LOCAL_SIZE_X)
     {
         const uint MeshletIndex = Chunk.MeshletOffset + Local;
-        if (MeshletIndex >= PC.MeshletCount)
+        if (MeshletIndex >= Pass().MeshletCount)
             break;
 
-        FTerrainMeshletInfo Meshlet = PC.Meshlets[MeshletIndex];
+        FTerrainMeshletInfo Meshlet = Pass().Meshlets[MeshletIndex];
 
         // Per-meshlet frustum refinement; tighter bounds catch silhouettes the chunk sphere misses.
-        if (!ChunkVisible(uSceneData.CullData.Frustum, Meshlet.BoundsMin, Meshlet.BoundsMax))
+        if (!ChunkVisible(Scene().CullData.Frustum, Meshlet.BoundsMin, Meshlet.BoundsMax))
             continue;
 
         // Append: survivors race for a unique slot in the shared indirect-arg via atomic add.
         uint OldCount;
-        InterlockedAdd(PC.TerrainIndirect[0].InstanceCount, 1, OldCount);
+        InterlockedAdd(Pass().TerrainIndirect[0].InstanceCount, 1, OldCount);
 
-        const uint Slot = PC.TerrainIndirect[0].FirstInstance + OldCount;
+        const uint Slot = Pass().TerrainIndirect[0].FirstInstance + OldCount;
 
         FTerrainVisibleMeshlet Out;
         Out.ChunkIndex   = ChunkIndex;
         Out.MeshletIndex = MeshletIndex;
-        PC.VisibleMeshlets[Slot] = Out;
+        Pass().VisibleMeshlets[Slot] = Out;
     }
 }

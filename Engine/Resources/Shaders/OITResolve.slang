@@ -11,7 +11,7 @@ struct FPushConstants
     uint _Pad0;
     uint _Pad1;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 struct FSInput
 {
@@ -28,14 +28,14 @@ FSOutput FragmentMain(FSInput Input)
 {
     int2 Coords = int2(Input.Coord.xy);
 
-    float Revealage = uBindlessTex2D[PC.RevealageIndex].Load(int3(Coords, 0)).r;
+    float Revealage = gTextures2D[Pass().RevealageIndex].Load(int3(Coords, 0)).r;
 
     if(IsApproximatelyEqual(Revealage, 1.0, 1e-6))
     {
         discard;
     }
 
-    float4 Accum = uBindlessTex2D[PC.AccumIndex].Load(int3(Coords, 0));
+    float4 Accum = gTextures2D[Pass().AccumIndex].Load(int3(Coords, 0));
 
     if(isinf(max3(abs(Accum.rgb))))
     {

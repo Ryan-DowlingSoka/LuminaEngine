@@ -123,7 +123,7 @@ namespace Lumina
         }
     }
 
-    void FWorldManager::RenderWorlds(ICommandList& CmdList, uint8 FrameIndex)
+    void FWorldManager::RenderWorlds_NewRHI(uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -135,7 +135,7 @@ namespace Lumina
                 continue;
             }
 
-            World->Render(CmdList, FrameIndex);
+            World->GetRenderer()->RenderView_NewRHI(FrameIndex);
         }
     }
 

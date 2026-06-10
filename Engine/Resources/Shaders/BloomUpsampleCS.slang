@@ -19,39 +19,39 @@ struct FPushConstants
     float  SrcMip;          // mip level to sample on the source SRV
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 [shader("compute")]
 [numthreads(TILE_WIDTH, TILE_HEIGHT, 1)]
 void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
     const int2 DstP = int2(DispatchID.xy);
-    if (any(uint2(DstP) >= PC.DstSize))
+    if (any(uint2(DstP) >= Pass().DstSize))
     {
         return;
     }
 
     // Destination mip UV: each dest pixel center maps to the same UV on the
     // smaller source thanks to the 1:2 ratio.
-    const float2 UV = (float2(DstP) + 0.5) / float2(PC.DstSize);
-    const float2 T  = PC.SrcTexelSize * PC.Radius;
+    const float2 UV = (float2(DstP) + 0.5) / float2(Pass().DstSize);
+    const float2 T  = Pass().SrcTexelSize * Pass().Radius;
 
     // 3x3 tent. Bilinear samples make this 9 taps without manual corner
     // fetches; the source filter mode is linear-clamp.
-    SamplerState Smp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
-    Texture2D    Src = uBindlessTex2D[PC.SrcIndex];
+    SamplerState Smp = gSamplers[SAMPLER_LINEAR_CLAMP];
+    Texture2D    Src = gTextures2D[Pass().SrcIndex];
 
-    float3 a = Src.SampleLevel(Smp, UV + T * float2(-1.0, -1.0), PC.SrcMip).rgb;
-    float3 b = Src.SampleLevel(Smp, UV + T * float2( 0.0, -1.0), PC.SrcMip).rgb;
-    float3 c = Src.SampleLevel(Smp, UV + T * float2( 1.0, -1.0), PC.SrcMip).rgb;
+    float3 a = Src.SampleLevel(Smp, UV + T * float2(-1.0, -1.0), Pass().SrcMip).rgb;
+    float3 b = Src.SampleLevel(Smp, UV + T * float2( 0.0, -1.0), Pass().SrcMip).rgb;
+    float3 c = Src.SampleLevel(Smp, UV + T * float2( 1.0, -1.0), Pass().SrcMip).rgb;
 
-    float3 d = Src.SampleLevel(Smp, UV + T * float2(-1.0,  0.0), PC.SrcMip).rgb;
-    float3 e = Src.SampleLevel(Smp, UV + T * float2( 0.0,  0.0), PC.SrcMip).rgb;
-    float3 f = Src.SampleLevel(Smp, UV + T * float2( 1.0,  0.0), PC.SrcMip).rgb;
+    float3 d = Src.SampleLevel(Smp, UV + T * float2(-1.0,  0.0), Pass().SrcMip).rgb;
+    float3 e = Src.SampleLevel(Smp, UV + T * float2( 0.0,  0.0), Pass().SrcMip).rgb;
+    float3 f = Src.SampleLevel(Smp, UV + T * float2( 1.0,  0.0), Pass().SrcMip).rgb;
 
-    float3 g = Src.SampleLevel(Smp, UV + T * float2(-1.0,  1.0), PC.SrcMip).rgb;
-    float3 h = Src.SampleLevel(Smp, UV + T * float2( 0.0,  1.0), PC.SrcMip).rgb;
-    float3 i = Src.SampleLevel(Smp, UV + T * float2( 1.0,  1.0), PC.SrcMip).rgb;
+    float3 g = Src.SampleLevel(Smp, UV + T * float2(-1.0,  1.0), Pass().SrcMip).rgb;
+    float3 h = Src.SampleLevel(Smp, UV + T * float2( 0.0,  1.0), Pass().SrcMip).rgb;
+    float3 i = Src.SampleLevel(Smp, UV + T * float2( 1.0,  1.0), Pass().SrcMip).rgb;
 
     float3 Tent =  e * 4.0;
     Tent       += (b + d + f + h) * 2.0;
@@ -60,6 +60,6 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 
     // Additive: dest already has the downsample contribution from SPD plus any
     // accumulated upsample from a deeper-mip step.
-    float3 Prev = uBindlessRWTex2D[PC.DstUAV][DstP].rgb;
-    uBindlessRWTex2D[PC.DstUAV][DstP] = float4(Prev + Tent, 0);
+    float3 Prev = gRWTextures2D[Pass().DstUAV][DstP].rgb;
+    gRWTextures2D[Pass().DstUAV][DstP] = float4(Prev + Tent, 0);
 }

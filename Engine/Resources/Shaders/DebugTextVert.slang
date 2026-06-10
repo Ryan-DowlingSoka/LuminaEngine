@@ -14,14 +14,14 @@ struct VertexOutput
 [shader("vertex")]
 VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID, uint InstanceIndex : SV_VulkanInstanceID)
 {
-    FGPUGlyph Glyph = PC.Glyphs[InstanceIndex];
+    FGPUGlyph Glyph = Pass().Glyphs[InstanceIndex];
 
     const float2 Corner = kTextQuadCorners[VertexIndex];          // (0,0)=top-left .. (1,1)=bottom-right
     // Vulkan NDC is Y-down with a positive-height viewport (the Y-flip lives in the camera projection, which
     // screen-space text bypasses), so top-left pixel (0,0) maps to NDC (-1, -1).
     const float2 Px     = lerp(Glyph.PlaneMin, Glyph.PlaneMax, Corner);
-    const float2 NDC    = float2(Px.x / float(PC.ScreenWidth)  * 2.0 - 1.0,
-                                 Px.y / float(PC.ScreenHeight) * 2.0 - 1.0);
+    const float2 NDC    = float2(Px.x / float(Pass().ScreenWidth)  * 2.0 - 1.0,
+                                 Px.y / float(Pass().ScreenHeight) * 2.0 - 1.0);
 
     // Atlas row 0 = glyph top, and Corner.y=0 is the top here, so V maps straight (no flip).
     const float U = lerp(Glyph.UVRect.x, Glyph.UVRect.z, Corner.x);

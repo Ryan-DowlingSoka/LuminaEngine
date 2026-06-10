@@ -52,7 +52,7 @@ namespace Lumina
     private:
         
         int32           NextAvailable = 0;
-        TBitVector      Allocated;
+        FBitVector      Allocated;
         FSharedMutex    Mutex;
     };
 }

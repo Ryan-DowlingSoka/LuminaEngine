@@ -2,8 +2,6 @@
 #include "Font.h"
 #include "Core/Object/Class.h"
 #include "Core/Serialization/Archiver.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
 
 namespace Lumina
 {
@@ -25,8 +23,14 @@ namespace Lumina
     void CFont::PostLoad()
     {
         BuildGlyphLookup();
-        
-        GetAtlasImage();
+
+        GetAtlasResourceID();
+    }
+
+    void CFont::OnDestroy()
+    {
+        RHI::Textures::Release(AtlasTexture);
+        Super::OnDestroy();
     }
 
     void CFont::BuildGlyphLookup()
@@ -50,39 +54,28 @@ namespace Lumina
         return &Glyphs[It->second];
     }
 
-    FRHIImage* CFont::GetAtlasImage()
+    int32 CFont::GetAtlasResourceID()
     {
-        if (AtlasImage)
+        if (AtlasTexture.IsValid())
         {
-            return AtlasImage;
+            return (int32)AtlasTexture.ResourceID();
         }
 
-        if (!HasAtlas() || GRenderContext == nullptr)
+        if (!HasAtlas())
         {
-            return nullptr;
+            return -1;
         }
 
         // Linear RGBA8 MTSDF -- distance data, never sRGB; sampled bilinearly by the text pixel shader.
-        FRHIImageDesc Desc;
-        Desc.Format = EFormat::RGBA8_UNORM;
-        Desc.Extent = FUIntVector2(AtlasWidth, AtlasHeight);
-        Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
-        Desc.NumMips = 1;
-        Desc.InitialState = EResourceStates::ShaderResource;
-        Desc.bKeepInitialState = true;
-        Desc.DebugName = "Font MSDF Atlas";
+        AtlasTexture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = AtlasWidth,
+            .Height = AtlasHeight,
+            .Format = EFormat::RGBA8_UNORM
+        });
+        RHI::Textures::Upload(AtlasTexture, 0, AtlasPixels.data(), AtlasPixels.size(), AtlasWidth);
 
-        AtlasImage = GRenderContext->CreateImage(Desc);
-
-        const uint32 RowPitch = AtlasWidth * 4u;
-
-        FRHICommandListRef TransferCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Transfer());
-        TransferCommandList->Open();
-        TransferCommandList->WriteImage(AtlasImage, 0, 0, AtlasPixels.data(), RowPitch, 0);
-        TransferCommandList->Close();
-        GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Transfer);
-
-        return AtlasImage;
+        return (int32)AtlasTexture.ResourceID();
     }
 
     // Minimal UTF-8 decoder: advances Index past one code point, returning it (0xFFFD on malformed input).

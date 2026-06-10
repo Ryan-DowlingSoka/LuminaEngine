@@ -18,9 +18,9 @@ struct FPushConstants
     uint   _Pad2;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
-#define SMAA_RT_METRICS (PC.RTMetrics)
+#define SMAA_RT_METRICS (Pass().RTMetrics)
 #include "Includes/SMAA.slang"
 
 struct VSOutput
@@ -33,12 +33,12 @@ struct VSOutput
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
     SMAATex colorTex;
-    colorTex.Tex = uBindlessTex2D[PC.TexIndex0];
-    colorTex.Smp = uBindlessSamplers[SAMPLER_POINT_CLAMP];
+    colorTex.Tex = gTextures2D[Pass().TexIndex0];
+    colorTex.Smp = gSamplers[SAMPLER_POINT_CLAMP];
 
     float4 offset[3];
     SMAAEdgeDetectionOffsets(Input.UV, offset);
 
-    float2 edges = SMAALumaEdgeDetectionPS(Input.UV, offset, colorTex, PC.EdgeThreshold);
+    float2 edges = SMAALumaEdgeDetectionPS(Input.UV, offset, colorTex, Pass().EdgeThreshold);
     return float4(edges, 0.0, 1.0);
 }

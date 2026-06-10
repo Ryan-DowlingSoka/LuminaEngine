@@ -16,14 +16,14 @@ struct VSOutput
     float4 Position : SV_Position;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 [shader("vertex")]
 VSOutput VertexMain(
     uint VertexIndex   : SV_VulkanVertexID,
     uint InstanceIndex : SV_VulkanInstanceID)
 {
-    FMeshletDraw Draw        = uMeshletDrawList[InstanceIndex];
+    FMeshletDraw Draw        = MeshletDrawList()[InstanceIndex];
     FGPUInstance Inst        = GetInstance(Draw.InstanceID);
     float4x4     ModelMatrix = Inst.ModelMatrix;
 
@@ -65,6 +65,6 @@ VSOutput VertexMain(
     $MATERIAL_VERTEX_INPUTS
     WorldPos.xyz += Material.WorldPositionOffset;
 
-    Output.Position = mul(GetShadowViewProjection(PC.ShadowDataIndex, (uint)PC.ViewIndex), WorldPos);
+    Output.Position = mul(GetShadowViewProjection(Pass().ShadowDataIndex, (uint)Pass().ViewIndex), WorldPos);
     return Output;
 }

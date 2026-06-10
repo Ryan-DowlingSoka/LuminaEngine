@@ -21,6 +21,8 @@
 #include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
+#include "Renderer/RHI.h"
+#include "Renderer/RenderThread.h"
 #include "UI/RmlUiBridge.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
@@ -65,36 +67,47 @@ namespace Lumina
         {
             return;
         }
-        
-        FRHIImageRef RenderTarget = World->GetRenderer()->GetRenderTarget();
-        if (!RenderTarget)
-        {
-            return;
-        }
-    
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CommandList->Open();
-    
-        FRHIStagingImageRef StagingImage = GRenderContext->CreateStagingImage(RenderTarget->GetDescription(), ERHIAccess::HostRead);
-        CommandList->CopyImage(RenderTarget, FTextureSlice(), StagingImage, FTextureSlice());
-    
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList);
-    
-        size_t RowPitch = 0;
-        void* MappedMemory = GRenderContext->MapStagingTexture(StagingImage, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
-        if (!MappedMemory)
+
+        const RHI::FTextureH RenderTarget = World->GetRenderer()->GetDisplayTexture();
+        if (!RHI::IsValid(RenderTarget))
         {
             return;
         }
 
-        const uint32 SourceWidth  = RenderTarget->GetDescription().Extent.x;
-        const uint32 SourceHeight = RenderTarget->GetDescription().Extent.y;
+        const RHI::FTextureDesc Desc = RHI::GetTextureDesc(RenderTarget);
+        const uint32 SourceWidth  = Desc.Dimension.x;
+        const uint32 SourceHeight = Desc.Dimension.y;
+        const RHI::GPUPtr Readback = RHI::Malloc((uint64)SourceWidth * SourceHeight * 4u, RHI::kDefaultAlign, RHI::EMemoryType::CPURead);
 
-        ThumbnailUtils::StoreDownsampledRGBA(*Package->GetPackageThumbnail(),
-            static_cast<const uint8*>(MappedMemory), SourceWidth, SourceHeight, RowPitch);
+        // Submit on the render thread (the sole graphics submitter) so this never
+        // races the in-flight frame's command lists.
+        auto RecordCapture = [&]()
+        {
+            RHI::FCmdListH CL = RHI::OpenCommandList();
+            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::CmdCopyTextureToMemory(CL, RenderTarget, RHI::FTextureSlice{}, Readback, SourceWidth);
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::Host);
+            RHI::Submit(CL);
+            RHI::WaitDeviceIdle();
+            RHI::ResetCommandList(CL);
+        };
 
-        GRenderContext->UnMapStagingTexture(StagingImage);
+        if (GRenderThread != nullptr && GRenderThread->IsRunning())
+        {
+            GRenderThread->EnqueueAndWait("ToolThumbnailCapture", [&RecordCapture]() { RecordCapture(); });
+        }
+        else
+        {
+            RecordCapture();
+        }
+
+        if (const void* MappedMemory = RHI::ToHost(Readback))
+        {
+            ThumbnailUtils::StoreDownsampledRGBA(*Package->GetPackageThumbnail(),
+                static_cast<const uint8*>(MappedMemory), SourceWidth, SourceHeight, (size_t)SourceWidth * 4u);
+        }
+
+        RHI::Free(Readback);
     }
 
     void FEditorTool::Initialize()
@@ -531,10 +544,11 @@ namespace Lumina
         {
             if (IRenderScene* Scene = World->GetRenderer())
             {
-                if (FRHIImage* RT = Scene->GetRenderTarget())
+                const FUIntVector2 Extent = Scene->GetRenderExtent();
+                if (Extent.x > 0 && Extent.y > 0)
                 {
-                    RTW = RT->GetSizeX();
-                    RTH = RT->GetSizeY();
+                    RTW = Extent.x;
+                    RTH = Extent.y;
                 }
             }
         }

@@ -35,17 +35,17 @@ struct FPostProcessPushConstants
     uint HDRIndex;          // bindless 2D SRV: pre-tone-map HDR (linear-clamp)
 };
 
-#define PC (*(FPostProcessPushConstants*)gPC.PassAddr)
+FPostProcessPushConstants* Pass() { return GetPassArgs<FPostProcessPushConstants>(); }
 
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
     // Scene inputs as wrappers named to match the codegen's `uSceneColor.Sample(uv)` references.
-    FSceneTex uSceneColor;    uSceneColor.Tex    = uBindlessTex2D[PC.SceneColorIndex]; uSceneColor.Smp    = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
-    FSceneTex uSceneDepth;    uSceneDepth.Tex    = uBindlessTex2D[PC.SceneDepthIndex]; uSceneDepth.Smp    = uBindlessSamplers[SAMPLER_POINT_CLAMP];
-    FSceneTex uHDRSceneColor; uHDRSceneColor.Tex = uBindlessTex2D[PC.HDRIndex];        uHDRSceneColor.Smp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+    FSceneTex uSceneColor;    uSceneColor.Tex    = gTextures2D[Pass().SceneColorIndex]; uSceneColor.Smp    = gSamplers[SAMPLER_LINEAR_CLAMP];
+    FSceneTex uSceneDepth;    uSceneDepth.Tex    = gTextures2D[Pass().SceneDepthIndex]; uSceneDepth.Smp    = gSamplers[SAMPLER_POINT_CLAMP];
+    FSceneTex uHDRSceneColor; uHDRSceneColor.Tex = gTextures2D[Pass().HDRIndex];        uHDRSceneColor.Smp = gSamplers[SAMPLER_LINEAR_CLAMP];
 
-    uint   MaterialIndex = PC.MaterialIndex;
+    uint   MaterialIndex = Pass().MaterialIndex;
     float2 UV0           = Input.UV;
     float4 SceneColor    = uSceneColor.Sample(Input.UV);
 

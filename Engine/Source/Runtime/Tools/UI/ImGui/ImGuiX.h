@@ -11,12 +11,12 @@
 #include "Core/LuminaMacros.h"
 #include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
+#include "Renderer/RHITexture.h"
 
 struct ImGuiWindow;
 
 namespace Lumina
 {
-    class FRHIImage;
     struct FARFilter;
     class CClass;
 }
@@ -159,8 +159,10 @@ namespace Lumina::ImGuiX
     // Writes the chosen asset's GUID into InOutGUID and returns true when it changes.
     RUNTIME_API bool AssetReferenceCombo(const char* StrId, CClass* FilterClass, FGuid& InOutGUID, const char* ItemIcon = nullptr);
     
-    RUNTIME_API ImTextureRef ToImTextureRef(FRHIImage* Image);
     RUNTIME_API ImTextureRef ToImTextureRef(FStringView Path);
+    // Direct new-heap ResourceID (scene display targets sample the global heap). ~0u -> placeholder.
+    RUNTIME_API ImTextureRef ToImTextureRef(uint32 ResourceID);
+    RUNTIME_API ImTextureRef ToImTextureRef(const RHI::FManagedTexture& Texture);
 
     RUNTIME_API FString FormatSize(size_t Bytes);
 

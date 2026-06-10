@@ -307,7 +307,7 @@ struct FBoneTransform
 // One entry per surviving meshlet emitted by MeshletCull.slang.
 struct FMeshletDraw
 {
-    uint InstanceID;         // Into uInstance
+    uint InstanceID;         // Into Instances()
     uint MeshletLocalIndex;  // Local offset inside instance's surface range
 };
 
@@ -345,7 +345,7 @@ struct FGPUInstance
     uint                    BoneOffset;
     uint                    MaterialIndex;
     uint                    EntityID;
-    // Base into uPreSkinnedVertices for this instance's entity (skinning compute writes,
+    // Base into PreSkinnedVertices() for this instance's entity (skinning compute writes,
     // draw VS reads). 0 for static instances.
     uint                    SkinnedVertexBase;
 
@@ -381,6 +381,7 @@ struct FLightShadow
     int    _Padding;
 };
 
+// 32 B, must match FBillboardInstance in SceneRenderTypes.h (scalar layout needs the explicit pad).
 struct FBillboardInstance
 {
     float3          Position;
@@ -389,6 +390,7 @@ struct FBillboardInstance
     private uint    ColorPack;
     uint            TextureIndex;
     uint            EntityID;
+    uint            _Pad0;
 
     property float3 ColorTint { get { return UnpackColor(ColorPack).rgb; }}
 };
@@ -481,7 +483,7 @@ struct FCullView
 {
     float4 FrustumPlanes[6];   // 96B
     float4 ViewOriginAndFlags; // 16B: xyz=origin (camera / light pos), w=asuint(flags)
-    uint   DrawListOffset;     // Into uMeshletDrawList
+    uint   DrawListOffset;     // Into MeshletDrawList()
     uint   DrawListCapacity;   // Max FMeshletDraw entries this view may emit
     uint   IndirectArgsOffset; // Into uIndirectArgs (v * NumDraws)
     uint   NumDraws;           // Number of indirect slots owned by this view

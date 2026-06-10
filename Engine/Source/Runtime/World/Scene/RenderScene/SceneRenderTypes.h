@@ -3,11 +3,14 @@
 #include "Core/Math/Math.h"
 
 #include "Containers/Array.h"
+#include "Core/LuminaMacros.h"
+#include "Core/Math/Color.h"
 #include "Core/Threading/Thread.h"
 #include "Platform/GenericPlatform.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderResource.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/ViewVolume.h"
+#include "Renderer/RHI.h"
+#include "Renderer/RHICore.h"
 
 #define MAX_LIGHTS 8192
 #define MAX_SHADOWS 256
@@ -170,6 +173,83 @@ namespace Lumina
 
     ENUM_CLASS_FLAGS(ELightFlags);
 
+    // Scene-owned new-RHI texture plus its global-heap slots. Value type; whoever created it
+    // releases it (views may alias copies of shared images -- only the owner releases).
+    struct FSceneImage
+    {
+        RHI::FTextureH      Texture;
+        uint32              SampledSlot = RHI::kInvalidHeapSlot;
+        TVector<uint32>     MipUAVSlots;
+        RHI::FTextureDesc   Desc;
+
+        bool IsValid() const { return RHI::IsValid(Texture); }
+        explicit operator bool() const { return IsValid(); }
+
+        int32  GetResourceID() const { return SampledSlot == RHI::kInvalidHeapSlot ? -1 : (int32)SampledSlot; }
+        int32  GetMipUAVIndex(uint32 Mip) const { return Mip < (uint32)MipUAVSlots.size() ? (int32)MipUAVSlots[Mip] : -1; }
+        FUIntVector2 GetExtent() const { return FUIntVector2(Desc.Dimension.x, Desc.Dimension.y); }
+        uint32 GetSizeX() const { return Desc.Dimension.x; }
+        uint32 GetSizeY() const { return Desc.Dimension.y; }
+        uint32 GetNumMips() const { return Desc.MipCount; }
+    };
+
+    // bSampled registers an SRV heap slot; bMipUAVs registers one storage slot per mip.
+    inline FSceneImage CreateSceneImage(const RHI::FTextureDesc& Desc, bool bSampled = true, bool bMipUAVs = false)
+    {
+        FSceneImage Out;
+        Out.Desc    = Desc;
+        Out.Texture = RHI::CreateTexture(Desc);
+        if (bSampled)
+        {
+            Out.SampledSlot = RHI::HeapWriteTexture(RHI::Core::GetGlobalHeap(), Out.Texture);
+        }
+        if (bMipUAVs)
+        {
+            Out.MipUAVSlots.resize(Desc.MipCount);
+            for (uint32 Mip = 0; Mip < Desc.MipCount; ++Mip)
+            {
+                Out.MipUAVSlots[Mip] = RHI::HeapWriteRWTexture(RHI::Core::GetGlobalHeap(), Out.Texture, Mip);
+            }
+        }
+        return Out;
+    }
+
+    // Immediate release: caller guarantees no in-flight GPU use (WaitIdle or frame-deferred externally).
+    inline void ReleaseSceneImage(FSceneImage& Image)
+    {
+        if (!Image.IsValid())
+        {
+            Image = {};
+            return;
+        }
+        if (Image.SampledSlot != RHI::kInvalidHeapSlot)
+        {
+            RHI::HeapFreeTexture(RHI::Core::GetGlobalHeap(), Image.SampledSlot);
+        }
+        for (uint32 Slot : Image.MipUAVSlots)
+        {
+            RHI::HeapFreeRWTexture(RHI::Core::GetGlobalHeap(), Slot);
+        }
+        RHI::FreeH(Image.Texture);
+        Image = {};
+    }
+
+    // Plain device-local allocation reached only by GPU address (BDA).
+    struct FSceneBuffer
+    {
+        RHI::GPUPtr Ptr  = 0;
+        uint64      Size = 0;
+
+        RHI::GPUPtr GetAddress() const { return Ptr; }
+        uint64      GetSize() const { return Size; }
+        explicit operator bool() const { return Ptr != 0; }
+    };
+
+    inline FSceneBuffer CreateSceneBuffer(uint64 Size)
+    {
+        return FSceneBuffer{ RHI::Malloc(Size, RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly), Size };
+    }
+
     struct FShadowAtlasConfig
     {
         uint32 AtlasResolution    = GShadowAtlasResolution;    // Atlas is square: AtlasResolution x AtlasResolution.
@@ -191,24 +271,34 @@ namespace Lumina
         FShadowAtlas(const FShadowAtlasConfig& InConfig)
             : Config(InConfig)
         {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(InConfig.AtlasResolution);
-            ImageDesc.Format            = EFormat::D32;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.InitialState      = EResourceStates::DepthWrite;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.ArraySize         = 1;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName         = "Shadow Atlas";
-
-            ShadowAtlas = GRenderContext->CreateImage(ImageDesc);
-
             MinLevel = Log2Floor(Config.MinTileResolution);
             MaxLevel = Log2Floor(Config.MaxTileResolution);
             NumLevels = (MaxLevel - MinLevel) + 1;
             FreeLists.resize(NumLevels);
 
             FreeTiles();
+        }
+
+        ~FShadowAtlas()
+        {
+            ReleaseSceneImage(ShadowAtlas);
+        }
+
+        // GPU image created lazily: the atlas is a scene member constructed before scene Init.
+        void InitImage()
+        {
+            if (ShadowAtlas.IsValid())
+            {
+                return;
+            }
+
+            RHI::FTextureDesc Desc;
+            Desc.Type      = RHI::ETextureType::Tex2D;
+            Desc.Dimension = FUIntVector3(Config.AtlasResolution, Config.AtlasResolution, 1);
+            Desc.Format    = EFormat::D32;
+            Desc.Usage     = RHI::EImageUsageFlags::DepthAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
+
+            ShadowAtlas = CreateSceneImage(Desc);
         }
 
         // Quantizes up to next pow2 and clamps to [Min,Max]. Returns INDEX_NONE if full.
@@ -270,7 +360,7 @@ namespace Lumina
         }
 
         const FShadowTile& GetTile(int32 TileIndex) const { return Tiles[TileIndex]; }
-        FRHIImageRef GetImage() const { return ShadowAtlas; }
+        const FSceneImage& GetImage() const { return ShadowAtlas; }
 
         const FShadowAtlasConfig& GetConfig() const { return Config; }
         const TVector<FShadowTile>& GetAllocatedTiles() const { return Tiles; }
@@ -303,7 +393,7 @@ namespace Lumina
             return V + 1;
         }
 
-        FRHIImageRef ShadowAtlas;
+        FSceneImage ShadowAtlas;
         FShadowAtlasConfig Config;
         TVector<FShadowTile> Tiles;
         TVector<TVector<FTileRect>> FreeLists;   // Indexed by (log2(size) - MinLevel). Used LIFO; cleared (keeps capacity) per frame.
@@ -428,13 +518,7 @@ namespace Lumina
         FVector4 Samples[SSAO_KERNEL_SIZE];
     };
 
-    struct FGBuffer
-    {
-        FRHIImageRef Normals;
-        FRHIImageRef Material;
-        FRHIImageRef AlbedoSpec;
-    };
-    
+    // 32 byte layout, must match FBillboardInstance in Common.slang.
     struct alignas(16) FBillboardInstance
     {
         FVector3        Position;
@@ -443,7 +527,9 @@ namespace Lumina
         uint32          ColorPack;
         uint32          TextureIndex;
         uint32          EntityID;
+        uint32          _Pad0 = 0;
     };
+    static_assert(sizeof(FBillboardInstance) == 32, "FBillboardInstance layout must match shader");
 
     // World-space UI widget quad. Matches FWidgetInstance in Common.slang (96B, dense).
     struct alignas(16) FWidgetInstance

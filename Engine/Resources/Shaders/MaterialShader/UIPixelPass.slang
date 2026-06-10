@@ -12,7 +12,7 @@ struct PSInput
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
-    uint   MaterialIndex = uSceneData.MaterialIndex;
+    uint   MaterialIndex = UIArgs().MaterialIndex;
     float2 UV0           = Input.UV;
 
     // Surface aliases. Zeroed because there is no rasterized geometry feeding

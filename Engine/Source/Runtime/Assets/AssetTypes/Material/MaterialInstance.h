@@ -54,8 +54,8 @@ namespace Lumina
         FMaterialUniforms* GetMaterialUniforms() override { return &MaterialUniforms; }
         const TVector<FMaterialParameter>& GetMaterialParams() const { return Parameters; }
 
-        FRHIVertexShader* GetVertexShader() const override;
-        FRHIPixelShader* GetPixelShader() const override;
+        const FShaderEntry* GetVertexShader() const override;
+        const FShaderEntry* GetPixelShader() const override;
 
         EMaterialType GetMaterialType() const override;
         bool DoesCastShadows() const override;

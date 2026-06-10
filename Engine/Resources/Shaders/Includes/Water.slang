@@ -32,7 +32,7 @@ struct FWaterPushConstants
     uint       SceneColorIndex; // bindless 2D SRV: HDR scene copy (refraction + SSR color)
     uint       SceneDepthIndex; // bindless 2D SRV: opaque scene depth (raw reverse-Z NDC [0,1])
 };
-#define PC (*(FWaterPushConstants*)gPC.PassAddr)
+FWaterPushConstants* Pass() { return GetPassArgs<FWaterPushConstants>(); }
 
 static const float WATER_PI = 3.14159265;
 static const uint  WATER_INVALID_TEX = 0xFFFFFFFFu;

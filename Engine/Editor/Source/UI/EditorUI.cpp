@@ -1,4 +1,4 @@
-﻿#include "EditorUI.h"
+#include "EditorUI.h"
 #include <cfloat>
 #include <filesystem>
 #include <imgui.h>
@@ -75,11 +75,11 @@
 #include "Properties/Customizations/ScriptComponentCustomization.h"
 #include "Properties/Customizations/AssetRefPropertyCustomization.h"
 #include "Renderer/CustomPrimitiveData.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderDocImpl.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RenderThread.h"
 #include "Renderer/ShaderCompiler.h"
+#include "Renderer/ShaderLibrary.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Thumbnails/ThumbnailManager.h"
@@ -90,7 +90,6 @@
 #include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/TaskSystemProfilerEditorTool.h"
-#include "Tools/GPUProfilerEditorTool.h"
 #include "Tools/NetworkEditorTool.h"
 #include "Tools/PluginBrowserEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
@@ -108,7 +107,6 @@
 #include "Tools/Debug/SettingsEditorTool.h"
 #include "Settings/EditorSettings.h"
 #include "Config/EngineSettings.h"
-#include "Tools/TextureBrowserEditorTool.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
@@ -1631,7 +1629,7 @@ namespace Lumina
                             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
 
                             IRenderScene* SceneRenderer = Tool->GetWorld()->GetRenderer();
-                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetRenderTarget());
+                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetDisplayResourceID());
 
                             Tool->bViewportFocused = ImGui::IsWindowFocused();
                             Tool->bViewportHovered = ImGui::IsWindowHovered();
@@ -1652,7 +1650,7 @@ namespace Lumina
                         if (DrawViewportWindow)
                         {
                             IRenderScene* SceneRenderer = Tool->GetWorld()->GetRenderer();
-                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetRenderTarget());
+                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetDisplayResourceID());
 
                             Tool->bViewportFocused = ImGui::IsWindowFocused();
                             Tool->bViewportHovered = ImGui::IsWindowHovered();
@@ -2121,9 +2119,11 @@ namespace Lumina
                     {
                         if (ImGui::MenuItem(LE_ICON_HAMMER " Recompile"))
                         {
-                            GRenderContext->GetShaderCompiler()->CompileShaderPath(Directory.path().string().c_str(), {}, [&](const FShaderHeader& Header)
+                            // Commit refreshes the entry in place and bumps its generation; scene
+                            // pipeline caches key on it, so new pipelines build on next use.
+                            GShaderCompiler->CompileShaderPath(Directory.path().string().c_str(), {}, [](const FShaderHeader& Header)
                             {
-                                GRenderContext->GetShaderLibrary()->CreateAndAddShader(Header.DebugName, Header, true);
+                                FShaderLibrary::Commit(Header);
                             });
                         }
 
@@ -2194,7 +2194,6 @@ namespace Lumina
         DrawToolMenuItem<FAssetRegistryEditorTool>(LE_ICON_DATABASE " Asset Registry", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
         DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
-        DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
         DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
         DrawToolMenuItem<FNetworkEditorTool>(LE_ICON_LAN " Network", this);
@@ -2203,7 +2202,6 @@ namespace Lumina
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         DrawToolMenuItem<FPluginBrowserEditorTool>(LE_ICON_PUZZLE " Plugin Browser", this);
-        DrawToolMenuItem<FTextureBrowserEditorTool>(LE_ICON_TEXTURE " Texture Browser", this);
 
         ImGui::Spacing();
         
@@ -2263,10 +2261,15 @@ namespace Lumina
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "Settings");
         ImGui::Separator();
         
-        bool bVSyncEnabled = GRenderContext->IsVSyncEnabled();
+        const bool bVSyncEnabled = RHI::GetVSync();
         if (ImGui::MenuItem(LE_ICON_DISC_PLAYER " V-Sync", nullptr, bVSyncEnabled))
         {
-            GRenderContext->SetVSyncEnabled(!bVSyncEnabled);
+            const bool bNewVSync = !bVSyncEnabled;
+            ENQUEUE_RENDER_COMMAND(ToggleVSync)([bNewVSync]
+            {
+                RHI::SetVSync(bNewVSync);
+                GRenderManager->RecreatePrimarySwapchain();
+            });
         }
         
         if (ImGui::BeginMenu(LE_ICON_PALETTE " Theme"))

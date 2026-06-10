@@ -57,7 +57,7 @@ struct FComposePushConstants
     uint AdaptedLumIndex;   // bindless SRV: 1x1 adapted luminance
     uint _Pad;
 };
-#define Push (*(FComposePushConstants*)gPC.PassAddr)
+FComposePushConstants* Pass() { return GetPassArgs<FComposePushConstants>(); }
 
 struct VSOutput
 {
@@ -255,14 +255,14 @@ float3 ApplyFilmGrain(float3 X, float2 PixelPos, float Time, float Intensity, fl
 [shader("fragment")]
 float4 FragmentMain(VSOutput Input) : SV_Target0
 {
-    FColorGradingConstants PC = Push.Constants.get();
-    SamplerState Smp    = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
-    Texture2D    HDRTex = uBindlessTex2D[Push.HDRIndex];
+    FColorGradingConstants Grading = Pass().Constants.get();
+    SamplerState Smp    = gSamplers[SAMPLER_LINEAR_CLAMP];
+    Texture2D    HDRTex = gTextures2D[Pass().HDRIndex];
 
     // Radial chromatic aberration, applied to the HDR fetch so the lens artifact is graded and
     // tone-mapped with everything else rather than stamped on in display space.
     float3 Color;
-    float  CA = PC.BloomTint.a;
+    float  CA = Grading.BloomTint.a;
     if (CA > 0.0)
     {
         float2 Center = Input.UV - 0.5;
@@ -277,64 +277,64 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
     }
 
     // Bloom composite (linear HDR space, before grading).
-    if (PC.BloomIntensity > 0.0)
+    if (Grading.BloomIntensity > 0.0)
     {
-        float3 Bloom = uBindlessTex2D[Push.BloomIndex].SampleLevel(Smp, Input.UV, 0.0).rgb;
-        Color += Bloom * PC.BloomTint.rgb * PC.BloomIntensity;
+        float3 Bloom = gTextures2D[Pass().BloomIndex].SampleLevel(Smp, Input.UV, 0.0).rgb;
+        Color += Bloom * Grading.BloomTint.rgb * Grading.BloomIntensity;
     }
 
     // Auto-exposure: scale toward the middle-grey key from adapted luminance, clamped to the EV range.
-    // Key <= 0 disables it and manual PC.Exposure stands alone.
+    // Key <= 0 disables it and manual Grading.Exposure stands alone.
     float AEScale = 1.0;
-    if (PC.AutoExposureKey > 0.0)
+    if (Grading.AutoExposureKey > 0.0)
     {
-        float AdaptedLum = uBindlessTex2D[Push.AdaptedLumIndex].SampleLevel(Smp, float2(0.5, 0.5), 0.0).r;
-        AEScale = clamp(PC.AutoExposureKey / max(AdaptedLum, 1e-4),
-                        PC.AutoExposureMinMul, PC.AutoExposureMaxMul);
+        float AdaptedLum = gTextures2D[Pass().AdaptedLumIndex].SampleLevel(Smp, float2(0.5, 0.5), 0.0).r;
+        AEScale = clamp(Grading.AutoExposureKey / max(AdaptedLum, 1e-4),
+                        Grading.AutoExposureMinMul, Grading.AutoExposureMaxMul);
     }
-    Color *= PC.Exposure * AEScale;
+    Color *= Grading.Exposure * AEScale;
 
-    if (PC.WhiteTemp != 0.0 || PC.WhiteTint != 0.0)
+    if (Grading.WhiteTemp != 0.0 || Grading.WhiteTint != 0.0)
     {
-        Color = WhiteBalance(Color, PC.WhiteTemp, PC.WhiteTint);
+        Color = WhiteBalance(Color, Grading.WhiteTemp, Grading.WhiteTint);
     }
 
-    Color = LiftGammaGain(Color, PC.Shadows.rgb, PC.Midtones.rgb, PC.Highlights.rgb);
+    Color = LiftGammaGain(Color, Grading.Shadows.rgb, Grading.Midtones.rgb, Grading.Highlights.rgb);
 
     // Color filter, lerp by intensity so saturation is independent of strength.
-    float3 Filtered = Color * PC.ColorFilter.rgb;
-    Color = lerp(Color, Filtered, saturate(PC.ColorFilter.a));
-    if (PC.ColorFilter.a > 1.0)
+    float3 Filtered = Color * Grading.ColorFilter.rgb;
+    Color = lerp(Color, Filtered, saturate(Grading.ColorFilter.a));
+    if (Grading.ColorFilter.a > 1.0)
     {
         // Allow >1 to push past full filter for stylized passes.
-        Color = lerp(Color, Filtered, PC.ColorFilter.a - 1.0);
+        Color = lerp(Color, Filtered, Grading.ColorFilter.a - 1.0);
     }
 
-    Color = ApplyContrast(Color, PC.Contrast);
+    Color = ApplyContrast(Color, Grading.Contrast);
     Color = max(Color, 0.0);
-    Color = ApplySaturation(Color, PC.Saturation);
+    Color = ApplySaturation(Color, Grading.Saturation);
     Color = max(Color, 0.0);
 
-    Color = ApplyTonemap(Color, PC.TonemapMode);
+    Color = ApplyTonemap(Color, Grading.TonemapMode);
 
-    Color = ApplyVignette(Color, Input.UV, PC.VignetteIntensity, PC.VignetteRoundness, PC.VignetteSmoothness, PC.VignetteColor.rgb);
+    Color = ApplyVignette(Color, Input.UV, Grading.VignetteIntensity, Grading.VignetteRoundness, Grading.VignetteSmoothness, Grading.VignetteColor.rgb);
 
     // Display gamma (post-tonemap), a designer knob; the 1/2.2 sRGB encode is applied separately below.
-    if (PC.Gamma != 1.0)
+    if (Grading.Gamma != 1.0)
     {
-        Color = pow(max(Color, 0.0), float3(1.0 / PC.Gamma));
+        Color = pow(max(Color, 0.0), float3(1.0 / Grading.Gamma));
     }
 
     // Film grain (display space, pre-OETF). Knobs packed into the LGG triplet's .a slots to keep the block at 160 B.
-    Color = ApplyFilmGrain(Color, Input.Position.xy, PC.Time,
-                           PC.Shadows.a, PC.Midtones.a, PC.Highlights.a);
+    Color = ApplyFilmGrain(Color, Input.Position.xy, Grading.Time,
+                           Grading.Shadows.a, Grading.Midtones.a, Grading.Highlights.a);
     Color = max(Color, 0.0);
 
     // sRGB encode: the swapchain target is _UNORM not _SRGB, so bake the OETF here.
     static const float INV_GAMMA = 1.0 / 2.2;
     Color = pow(max(Color, 0.0), float3(INV_GAMMA));
 
-    Color += ScreenSpaceDither(Input.Position.xy, PC.Time);
+    Color += ScreenSpaceDither(Input.Position.xy, Grading.Time);
 
     return float4(Color, 1.0);
 }

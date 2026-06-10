@@ -1,17 +1,20 @@
 #pragma once
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHI.h"
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
     // A single paint/clear request against a render-target texture. Enqueued game-side, drained into
     // the frame snapshot during Extract, executed as a compute dispatch in TexturePaintPass.
+    // Asset deletion mid-flight is safe: RHI::Textures::Release is frame-deferred, so the handle and
+    // UAV slot outlive this op's frame.
     struct FTexturePaintOp
     {
         enum class EMode : uint8 { Paint, Clear };
 
-        // Holds the target image alive across the frame boundary (the source asset may be
-        // destroyed between enqueue and the render thread consuming this op).
-        FRHIImageRef    Target;
+        RHI::FTextureH  Target;                              // for clears
+        uint32          TargetUAV = RHI::kInvalidHeapSlot;   // mip-0 storage slot, for paints
+        FUIntVector2    TargetExtent = FUIntVector2(0);
 
         EMode           Mode        = EMode::Paint;
 

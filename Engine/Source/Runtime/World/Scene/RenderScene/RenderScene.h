@@ -32,8 +32,17 @@ namespace Lumina
         // concurrently; Extract back-pressures on the slot's consumed fence.
         virtual void Extract(const FViewVolume&, const SPostProcessSettings* PostProcess) = 0;
 
-        // Render thread: record this view's draws from the slot's snapshot.
-        virtual void RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex) = 0;
+        // Render thread: record + submit this frame's rendering through RHI:: into the scene's
+        // heap-registered targets. Display happens by ResourceID (GetDisplayResourceID).
+        virtual void RenderView_NewRHI(uint8 FrameIndex) {}
+
+        // New-heap ResourceID of the scene's final display image (for new-RHI ImGui viewport
+        // sampling). ~0u = none (old scenes that render to an old-RHI target).
+        virtual uint32 GetDisplayResourceID() const { return ~0u; }
+
+        // New-RHI handle of the final display image, for in-CL composite passes
+        // (RmlUi world overlay). Invalid handle = none.
+        virtual RHI::FTextureH GetDisplayTexture() const { return {}; }
 
         // Render thread: release the slot after the last CPU read for this frame.
         virtual void SignalFrameConsumed(uint8 FrameIndex) {}
@@ -44,13 +53,14 @@ namespace Lumina
         // bOverViewport=false skips the readback that frame.
         virtual void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) {}
 
-        virtual FRHIImage* GetRenderTarget() const = 0;
+        // Pixel extent of the scene's render target. Use this for sizing.
+        virtual FUIntVector2 GetRenderExtent() const = 0;
 
         // Scene-capture views: render the world from an extra camera into its own RT (gather once, shade each).
-        // Register returns an opaque handle (-1 on fail); SetCaptureView/GetCaptureRenderTarget drive + display it.
+        // Register returns an opaque handle (-1 on fail); display via the capture's heap ResourceID.
         virtual int32 RegisterCaptureView(const FUIntVector2& Size) { return -1; }
         virtual void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) {}
-        virtual FRHIImage* GetCaptureRenderTarget(int32 Handle) const { return nullptr; }
+        virtual int32 GetCaptureDisplayResourceID(int32 Handle) const { return -1; }
 
         // Re-create the scene's render target at a new size. Used by transient render paths
         // (e.g. thumbnail capture) needing a fixed RT independent of the swapchain.

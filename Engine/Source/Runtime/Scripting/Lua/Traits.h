@@ -42,31 +42,25 @@ namespace Lumina::Lua
     
     struct FTypeIndex final
     {
-        // Hands out the next process-global tag.
-        RUNTIME_API static uint16 Next();
-
-        // Resolves a stable type key to a process-global tag.
-        RUNTIME_API static uint16 GetOrCreate(uint64 TypeKey);
+        // Resolves a unique type name to a process-global tag. Keyed by exact string match so
+        // distinct types can never alias a tag; the registry lives once in the Runtime module,
+        // so every DLL resolves the same type to the same tag.
+        RUNTIME_API static uint16 GetOrCreate(const char* UniqueTypeName);
     };
-    
+
 
     template<typename T>
     struct TClassTraits
     {
         static uint16 Tag()
         {
-            static const uint16 STag = FTypeIndex::GetOrCreate(StableTypeKey());
-            return STag;
-        }
-
-    private:
-        static uint16 StableTypeKey()
-        {
+            // The signature string embeds T and is identical in every module built by the same compiler.
             #if defined(_MSC_VER)
-            return Hash::FNV1a::GetHash64(__FUNCSIG__);
+            static const uint16 STag = FTypeIndex::GetOrCreate(__FUNCSIG__);
             #else
-            return Hash::FNV1a::GetHash64(__PRETTY_FUNCTION__);
+            static const uint16 STag = FTypeIndex::GetOrCreate(__PRETTY_FUNCTION__);
             #endif
+            return STag;
         }
     };
     

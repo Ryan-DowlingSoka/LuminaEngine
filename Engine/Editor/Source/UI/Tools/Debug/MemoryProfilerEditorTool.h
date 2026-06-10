@@ -1,13 +1,12 @@
 #pragma once
 #include "UI/Tools/EditorTool.h"
 #include "Memory/MemoryTracking.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHI.h"
 
 namespace Lumina
 {
     // Unified CPU + GPU memory tool. CPU = always-on category tracker (baseline, watch Delta,
-    // then capture call-stacks). GPU = backend-agnostic heap/purpose stats via IRenderContext.
+    // then capture call-stacks). GPU = per-heap allocator stats via RHI::GetGPUMemoryStats.
     class FMemoryProfilerEditorTool : public FEditorTool
     {
     public:
@@ -41,11 +40,7 @@ namespace Lumina
         void DrawScriptMemory();
 
         // GPU sub-panels.
-        void DrawCategorySegmentBar(float Height);
-        void DrawGPUCategoryTable();
         void DrawGPUHeaps();
-        void DrawUploadPath();
-        void DrawResourceCounts();
 
         // CPU sub-panels.
         void DrawCPUComposition();
@@ -54,12 +49,9 @@ namespace Lumina
         void DrawCallSites();
 
         // GPU snapshot (backend-agnostic). Refreshed on a timer; always available.
-        FGPUMemoryStats         GPUStats;
-        FGPUMemoryCategoryUsage GPUCategories[(int)EGPUMemoryCategory::Count] = {};
-        FGPUDeviceInfo          DeviceInfo;
+        RHI::FGPUMemoryStats    GPUStats;
+        RHI::FGPUDeviceInfo     DeviceInfo;
         bool                    bDeviceInfoValid = false;
-        uint32                  ResourceCounts[RRT_Num] = {};
-        uint32                  TotalResources = 0;
 
         // Total bytes the Luau VM has allocated (whole shared global state across script threads).
         size_t                  LuaBytes = 0;

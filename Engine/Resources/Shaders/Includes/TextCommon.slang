@@ -30,7 +30,7 @@ struct FTextPushConstants
     uint  ScreenWidth;       // viewport pixel size (debug screen-space text only; 0 for world text)
     uint  ScreenHeight;
 };
-#define PC (*(FTextPushConstants*)gPC.PassAddr)
+FTextPushConstants* Pass() { return GetPassArgs<FTextPushConstants>(); }
 
 // Quad corners, indexed by SV_VertexID. x: 0=left/1=right, y: 0=bottom/1=top (in the text plane).
 static const float2 kTextQuadCorners[6] =

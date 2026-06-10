@@ -989,10 +989,10 @@ namespace Lumina
         if (bViewportHovered)
         {
             IRenderScene* Renderer = World->GetRenderer();
-            if (Renderer != nullptr && Renderer->GetRenderTarget() != nullptr)
+            if (Renderer != nullptr)
             {
-                const uint32 PickerWidth  = Renderer->GetRenderTarget()->GetExtent().x;
-                const uint32 PickerHeight = Renderer->GetRenderTarget()->GetExtent().y;
+                const uint32 PickerWidth  = Renderer->GetRenderExtent().x;
+                const uint32 PickerHeight = Renderer->GetRenderExtent().y;
 
                 const ImVec2 WinPos = ImGui::GetWindowPos();
                 const ImVec2 Mouse  = ImGui::GetMousePos();

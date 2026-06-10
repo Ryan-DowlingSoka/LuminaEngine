@@ -17,7 +17,7 @@ struct FPushConstants
     float FogRange;
     uint  _Pad0;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 struct PSInput
 {
@@ -35,10 +35,10 @@ float IGN(float2 PixelPos)
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
-    FExponentialHeightFogParams uFog = PC.Fog.get();
+    FExponentialHeightFogParams uFog = Pass().Fog.get();
 
     float2 UV    = Input.UV;
-    float  Depth = uBindlessTex2D[PC.DepthIndex].SampleLevel(uBindlessSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
+    float  Depth = gTextures2D[Pass().DepthIndex].SampleLevel(gSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
 
     // Reverse-Z: Depth == 0 is the far plane (sky) -> full aerial perspective to range.
     float ViewDist;
@@ -49,15 +49,15 @@ float4 FragmentMain(PSInput Input) : SV_Target0
     }
     else
     {
-        ViewDist = PC.FogRange;
+        ViewDist = Pass().FogRange;
     }
 
-    float W = Froxel_DistanceToW(ViewDist, PC.NearPlane, PC.FogRange);
+    float W = Froxel_DistanceToW(ViewDist, Pass().NearPlane, Pass().FogRange);
     // Dither the depth sample by < half a slice to break exponential-Z banding into
     // fine per-pixel grain instead of visible color steps.
-    W = saturate(W + (IGN(Input.Position.xy) - 0.5) / float(PC.GridZ));
+    W = saturate(W + (IGN(Input.Position.xy) - 0.5) / float(Pass().GridZ));
 
-    float4 Fog = uBindlessTex3D[PC.IntegratedIndex].SampleLevel(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], float3(UV, W), 0.0);
+    float4 Fog = gTextures3D[Pass().IntegratedIndex].SampleLevel(gSamplers[SAMPLER_LINEAR_CLAMP], float3(UV, W), 0.0);
 
     float Transmittance = saturate(Fog.a);
     float Opacity       = min(1.0 - Transmittance, uFog.HeightParams.w);  // clamp by FogMaxOpacity

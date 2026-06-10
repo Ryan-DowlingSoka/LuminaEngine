@@ -13,7 +13,7 @@ struct FGPUDecal
     float4x4 DecalToWorld;   // decal-local cube -> world (entity transform, scale = box extents)
     float    FadeAngleCos;   // cos(max angle) between surface normal and decal forward; below => fade
     float    Opacity;        // master coverage multiplier
-    uint     MaterialIndex;  // index into uMaterialUniforms
+    uint     MaterialIndex;  // index into Materials()
     uint     Flags;          // reserved
 };
 
@@ -26,12 +26,12 @@ struct FDecalPushConstants
     uint       DepthIndex;   // bindless resource ID of opaque scene depth (raw reverse-Z NDC [0,1])
     uint       _Pad;
 };
-#define PC (*(FDecalPushConstants*)gPC.PassAddr)
+FDecalPushConstants* Pass() { return GetPassArgs<FDecalPushConstants>(); }
 
 // Opaque scene depth (raw reverse-Z NDC [0,1]) sampled point-clamped from the bindless table.
 float SampleDecalSceneDepth(float2 UV)
 {
-    return uBindlessTex2D[PC.DepthIndex].SampleLevel(uBindlessSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
+    return gTextures2D[Pass().DepthIndex].SampleLevel(gSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
 }
 
 // Unit cube corner table (12 triangles / 36 verts), local space [-0.5, 0.5]. Indexed by SV_VertexID.

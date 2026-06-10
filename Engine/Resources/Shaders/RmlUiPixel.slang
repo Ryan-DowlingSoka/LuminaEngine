@@ -3,9 +3,6 @@
 #pragma once
 #include "Includes/RmlUiCommon.slang"
 
-[[vk::binding(0, 0)]] Texture2D     uBindlessTex2D[];
-[[vk::binding(1, 0)]] SamplerState  uBindlessSamplers[];
-
 struct PSInput
 {
     float4 Position : SV_Position;
@@ -17,7 +14,7 @@ struct PSInput
 [shader("fragment")]
 float4 FragmentMain(PSInput Input) : SV_Target0
 {
-    FUiDraw Draw = PC.Draws[Input.DrawIndex];
+    FUiDraw Draw = Pass().Draws[Input.DrawIndex];
 
     // Shader-side scissor (axis-aligned, framebuffer pixels).
     float2 P = Input.Position.xy;
@@ -26,6 +23,6 @@ float4 FragmentMain(PSInput Input) : SV_Target0
         discard;
     }
 
-    float4 Texel = uBindlessTex2D[Draw.TextureID].Sample(uBindlessSamplers[Draw.SamplerIndex], Input.UV);
+    float4 Texel = SampleTexture2D(Draw.TextureID, Draw.SamplerIndex, Input.UV);
     return Input.Colour * Texel;
 }

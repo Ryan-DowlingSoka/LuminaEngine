@@ -1,16 +1,29 @@
 #pragma once
+#include "GlobalRHI.slang"
 
-// Shared push block for the bindless ImGui backend; only TextureID changes between draws, so a 32 B
-// push constant beats a per-draw buffer. VS pulls ImDrawVert from VertexAddr and maps pixels -> NDC via
-// Scale/Translate, PS samples by TextureID.
+// Bindless ImGui pass: vertices pulled by device address, textures sampled from the
+// global heap by ResourceID. Args re-point per draw (TextureID changes).
 
-struct FImGuiPushConstants
+struct FImGuiArgs
 {
     float2   Scale;        // 2 / DisplaySize
     float2   Translate;    // -1 - DisplayPos * Scale
-    uint     TextureID;    // bindless resource id (FRHIImage::GetResourceID / font atlas)
-    uint     SamplerIndex; // stock bindless sampler index
-    uint64_t VertexAddr;   // device address of the transient ImDrawVert array (vertex pulling)
+    uint     TextureID;    // heap ResourceID (gTextures2D[])
+    uint     SamplerIndex; // SAMPLER_* heap slot
+    uint64_t VertexAddr;   // device address of the transient ImDrawVert array
 };
 
-[[vk::push_constant]] FImGuiPushConstants PC;
+// Mirrors ImDrawVert (pos float2 @0, uv float2 @8, col RGBA8 @16), stride 20.
+struct ImDrawVert
+{
+    float2 Position;
+    float2 UV;
+    uint   Color;
+};
+
+struct FImGuiInterpolants
+{
+    float4 Position : SV_Position;
+    float4 Color    : COLOR;
+    float2 UV       : TEXCOORD0;
+};

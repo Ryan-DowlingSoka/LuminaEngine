@@ -1,9 +1,9 @@
 #include "pch.h"
 #include "ShaderCompiler.h"
-#include "RenderContext.h"
 #include "ShaderCache.h"
+#include "ShaderLibrary.h"
 #include "RenderResource.h"
-#include "RHIGlobals.h"
+#include "RHI.h"
 #include "slang-com-ptr.h"
 #include "slang.h"
 #include "Core/Plugin/Plugin.h"
@@ -18,6 +18,9 @@
 
 namespace Lumina
 {
+    IShaderCompiler* GShaderCompiler = nullptr;
+    FShaderLibrary*  GShaderLibrary  = nullptr;
+
     class FSlangBlob : public ISlangBlob
     {
     public:
@@ -126,7 +129,7 @@ namespace Lumina
             FShaderHeader Cached;
             if (SrcHash != 0 && FShaderCache::TryLoad(ShaderPaths[i], CompileOptions[i].MacroDefinitions, SrcHash, Cached))
             {
-                GRenderContext->GetCrashTracker().RegisterShader(Cached.Binaries, Cached.DebugName);
+                RHI::GetCrashTracker().RegisterShader(Cached.Binaries, Cached.DebugName);
                 OnCompleted(Move(Cached));
                 ++NumHits;
                 continue;
@@ -376,7 +379,7 @@ namespace Lumina
         
                 LOG_TRACE("Compiled {0} in {1:.2f} ms (Thread {2})", FileName, DurationMs.count(), Thread);
         
-                GRenderContext->GetCrashTracker().RegisterShader(Shader.Binaries, Shader.DebugName);
+                RHI::GetCrashTracker().RegisterShader(Shader.Binaries, Shader.DebugName);
 
                 FShaderCache::Save(Paths[i], Options[i].MacroDefinitions, SourceHashes[i], Shader);
 
@@ -438,8 +441,8 @@ namespace Lumina
                     LOG_WARN("Shader cache: failed to load {}", Info.VirtualPath.c_str());
                     return;
                 }
-                GRenderContext->GetCrashTracker().RegisterShader(Header.Binaries, Header.DebugName);
-                GRenderContext->GetShaderLibrary()->CreateAndAddShader(Header.DebugName, Header, false);
+                RHI::GetCrashTracker().RegisterShader(Header.Binaries, Header.DebugName);
+                FShaderLibrary::Commit(Header);
                 ++Loaded;
             });
             LOG_INFO("Shader cache: loaded {} packaged shaders (no source available).", Loaded);
@@ -454,11 +457,9 @@ namespace Lumina
 
             CompileShaderPaths(Shaders, Options, [&] (const FShaderHeader& Header)
             {
-                GRenderContext->GetShaderLibrary()->CreateAndAddShader(Header.DebugName, Header, false);
+                FShaderLibrary::Commit(Header);
             });
         }
-
-        GRenderContext->OnShaderCompiled(nullptr, false, true);
     }
 
     void FSpirVShaderCompiler::Shutdown()
@@ -675,7 +676,7 @@ namespace Lumina
         
             LOG_TRACE("Compiled raw shader in {0:.2f} ms (Thread {1})", DurationMs.count(), Thread);
         
-            GRenderContext->GetCrashTracker().RegisterShader(Shader.Binaries, Shader.DebugName);
+            RHI::GetCrashTracker().RegisterShader(Shader.Binaries, Shader.DebugName);
             
             Callback(Move(Shader));
         });

@@ -22,7 +22,7 @@ struct FPushConstants
     uint   ScatterUAV;   // bindless 3D UAV index of the froxel scatter volume
     uint   _Pad0;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 // Cornette-Shanks: a smoother, energy-normalized HG. Same `G` control, but the
 // lobe isn't as much of a needle.
@@ -46,12 +46,12 @@ float PhaseVolumetric(float CosTheta, float G)
 // the clustered light grid; jitter breaks the slice banding before the integrate.
 float3 FroxelToWorld(uint3 Coord, float3 Jitter)
 {
-    float2 UV  = (float2(Coord.xy) + Jitter.xy) / float2(PC.GridSize.xy);
+    float2 UV  = (float2(Coord.xy) + Jitter.xy) / float2(Pass().GridSize.xy);
     float2 NDC = UV * 2.0 - 1.0;
 
     float4 ViewH   = mul(GetInverseCameraProjection(), float4(NDC, 1.0, 1.0));
     float3 ViewRay = ViewH.xyz / ViewH.w;            // far-plane point in view space
-    float  Dist    = Froxel_SliceDistance(float(Coord.z) + Jitter.z, float(PC.GridSize.z), PC.NearPlane, PC.FogRange);
+    float  Dist    = Froxel_SliceDistance(float(Coord.z) + Jitter.z, float(Pass().GridSize.z), Pass().NearPlane, Pass().FogRange);
     float3 ViewPos = ViewRay * (Dist / max(-ViewRay.z, 1e-4));  // view Z = -Dist
     return mul(GetInverseCameraView(), float4(ViewPos, 1.0)).xyz;
 }
@@ -77,7 +77,7 @@ float SampleSunShadow(FLight Light, float3 WorldPos)
         {
             FLightShadow Tile = GetShadowTile(Light.ShadowDataIndex, c);
             float2 AUV = UV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-            return uShadowCascade.SampleCmpLevelZero(AUV, P.z - 0.0005);
+            return ShadowCascade().SampleCmpLevelZero(AUV, P.z - 0.0005);
         }
     }
     return 1.0;
@@ -114,21 +114,21 @@ float SampleSpotShadow(FLight Light, float3 WorldPos)
     }
     float2 UV  = saturate(P.xy * 0.5 + 0.5);
     float2 AUV = Tile.AtlasUVOffset + UV * Tile.AtlasUVScale;
-    return uShadowAtlas.SampleCmpLevelZero(AUV, P.z - 0.0005);
+    return ShadowAtlas().SampleCmpLevelZero(AUV, P.z - 0.0005);
 }
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
-    if (any(DispatchID >= PC.GridSize))
+    if (any(DispatchID >= Pass().GridSize))
     {
         return;
     }
 
     // Sample the slice center. The apply-pass screen-space depth dither + 128 Z slices
     // keep banding down without per-frame jitter (which needs temporal accumulation).
-    FExponentialHeightFogParams uFog = PC.Fog.get();
+    FExponentialHeightFogParams uFog = Pass().Fog.get();
 
     float3 WorldPos = FroxelToWorld(DispatchID, float3(0.5, 0.5, 0.5));
     float3 ToCam    = normalize(GetCameraPosition() - WorldPos);
@@ -145,7 +145,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     float3 InScatter = GetAmbientLightColor() * GetAmbientLightIntensity();
 
     // Sun.
-    if (PC.bSunVolumetric != 0)
+    if (Pass().bSunVolumetric != 0)
     {
         FLight Sun     = GetLightAt(0);
         float3 SunDir  = normalize(Sun.Direction);
@@ -156,10 +156,10 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     }
 
     // Opted-in local point/spot lights.
-    uint NumLocal = min(PC.NumLocalVolumetric, (uint)FROXEL_MAX_LOCAL_LIGHTS);
+    uint NumLocal = min(Pass().NumLocalVolumetric, (uint)FROXEL_MAX_LOCAL_LIGHTS);
     for (uint li = 0; li < NumLocal; ++li)
     {
-        FLight L    = GetLightAt(PC.LocalLightIndices[li]);
+        FLight L    = GetLightAt(Pass().LocalLightIndices[li]);
         float3 ToL  = L.Position - WorldPos;
         float  Dist = length(ToL);
         if (Dist > L.Radius)
@@ -197,5 +197,5 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     }
 
     float3 Scatter = SigmaS * InScatter * Intensity;
-    uBindlessRWTex3D[PC.ScatterUAV][DispatchID] = float4(Scatter, SigmaT);
+    gRWTextures3D[Pass().ScatterUAV][DispatchID] = float4(Scatter, SigmaT);
 }

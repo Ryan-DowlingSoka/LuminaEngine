@@ -6,7 +6,7 @@ namespace Lumina
     template<typename T>
     struct THandle
     {
-        uint64 Handle;
+        uint64 Handle = 0;
     };
     
     template<typename T>
@@ -24,7 +24,7 @@ namespace Lumina
         {
             DtorFn = Fn;
         }
-    
+        
         template<typename... TArgs>
         HandleT Emplace(TArgs&&... Value)
         {
@@ -34,8 +34,10 @@ namespace Lumina
             }
             
             uint32 Index = Head;
+            DEBUG_ASSERT(Index != kNotInFreeList && Index != kEndOfList);
             
             FEntry* Entry = Get(Index);
+            
             Head = Entry->Next;
             Entry->Next = kNotInFreeList;
             
@@ -117,29 +119,29 @@ namespace Lumina
         
         static constexpr uint32 CapacityForSegmentCount(uint32 SegmentCount)
         {
-            return ((1 < kSmallSegmentsToSkip) << SegmentCount) - (1 << kSmallSegmentsToSkip);
+            return ((1 << kSmallSegmentsToSkip) << SegmentCount) - (1 << kSmallSegmentsToSkip);
         }
         
         void AddSegment()
         {
             uint64 SegmentSize = SlotsInSegments(UsedSegments);
-            auto Entry = Memory::Malloc(sizeof(FEntry) * SegmentSize);
-            auto Segment = static_cast<FEntry*>(Entry);
+            auto* Entry = Memory::Malloc(sizeof(FEntry) * SegmentSize);
+            auto* Segment = static_cast<FEntry*>(Entry);
             
-            Segment[UsedSegments++] = Segment;
+            Segments[UsedSegments++] = Segment;
             
             uint32 SegmentOffset = CapacityForSegmentCount(UsedSegments - 1);
             for (uint64 i = SegmentSize; i > 0; --i)
             {
-                Segment[i - 1].Gen = 0;
-                Segment[i - 1].Next = Head;
-                Head = i + SegmentOffset;
+                Segment[i - 1].Gen      = 0;
+                Segment[i - 1].Next     = Head;
+                Head                    = i + SegmentOffset;
             }
         }
         
         FEntry* Get(uint32 Index)
         {
-            uint64 Segment = 63 - std::countl_zero(Index);
+            uint64 Segment = 63 - std::countl_zero(static_cast<uint64>((Index >> kSmallSegmentsToSkip) + 1));
             uint32 Slot = Index - CapacityForSegmentCount(Segment);
             
             return &Segments[Segment][Slot];
@@ -161,10 +163,10 @@ namespace Lumina
         
     private:
         
-        FDtorFn     DtorFn;
-        uint32      UsedSegments = 0;
-        uint32      Head = kEndOfList;
-        FEntry*     Segments[26]{};
+        FDtorFn     DtorFn          = nullptr;
+        uint32      UsedSegments    = 0;
+        uint32      Head            = kEndOfList;
+        FEntry*     Segments[26]    {nullptr};
     };
     
 }

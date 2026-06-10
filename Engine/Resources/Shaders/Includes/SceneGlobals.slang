@@ -1,15 +1,9 @@
 #pragma once
 #include "Common.slang"
+#include "GlobalRHI.slang"
 
-// ---------------------------------------------------------------------------
-//  Shader param model. The only bound descriptor set is the bindless texture
-//  table (set 0). Scene data is reached by buffer device address through a single
-//  per-frame root (gPC.Root); per-pass constants ride a second transient block at
-//  gPC.PassAddr, accessed via `#define PC (*(FMyPassConstants*)gPC.PassAddr)`. The
-//  field aliases below let shader bodies read uInstance[i] / uSceneData.X directly.
-// ---------------------------------------------------------------------------
 // Device addresses of every scene buffer + bindless indices for the IBL/shadow textures. Must match
-// FSceneRoot in SceneRenderTypes.h (128 B, scalar layout). Reached through gPC.Root below.
+// FSceneRoot in SceneRenderTypes.h (128 B, scalar layout).
 struct FSceneRoot
 {
     FSceneGlobalData*    SceneData;
@@ -35,98 +29,37 @@ struct FSceneRoot
     uint  SkyCubeIndex;          // bindless cube SRV (full-res sky; sharp near-mirror reflections)
 };
 
+// gRHI.Args (GlobalRHI's single 8-byte push-constant pointer) points to this transient block.
 struct FRootConstants
 {
-    ConstBufferPointer<FSceneRoot> Root;     // per-frame scene root (transient)
-    uint64_t                       PassAddr; // per-pass constants block (transient), 0 if none
+    FSceneRoot* Root;     // per-frame scene root (transient)
+    uint64_t    PassAddr; // per-pass args block (transient), 0 if none
 };
-[[vk::push_constant]] FRootConstants gPC;
 
-// The PC macro must deref (not copy by value): a by-value load of a struct with PhysicalStorageBuffer
-// pointer fields trips spirv-val. gPC.PassAddr is 0 for passes that take no per-pass constants.
+// Never load FSceneRoot by value (PhysicalStorageBuffer pointer fields trip spirv-val); return the
+// pointer and let field access auto-deref. Slang CSEs this to one root load per function.
+FSceneRoot* GetSceneRoot() { return ((FRootConstants*)gRHI.Args).Root; }
 
-// Field aliases so shader bodies read uInstance[i] / uSceneData.X directly. Slang CSEs the repeated
-// Root.get() within a function, so it's one root load per function.
-#define uSceneData             (gPC.Root.get().SceneData[0])
-#define uLightData             (gPC.Root.get().Lights)
-#define uInstance              (gPC.Root.get().Instances)
-#define uBoneMatrices          (gPC.Root.get().Bones)
-#define uClusters              (gPC.Root.get().Clusters)
-#define uMaterialUniforms      (gPC.Root.get().Materials)
-#define uBillboards            (gPC.Root.get().Billboards)
-#define uCullViews             (gPC.Root.get().CullViews)
-#define uMeshletDrawList       (gPC.Root.get().MeshletDrawListPtr)
-#define uInstanceMeshletPrefix (gPC.Root.get().InstanceMeshletPrefixPtr)
-#define uPreSkinnedVertices    (gPC.Root.get().PreSkinnedVerticesPtr)
-#define uSkinDescriptors       (gPC.Root.get().SkinDescriptorsPtr)
-#define uWidgets               (gPC.Root.get().WidgetsPtr)
-
-
-// The bindless table is the ONLY descriptor set scene passes bind, so it lives at set 0.
-[[vk::binding(0, 0)]] Texture2D                                 uBindlessTex2D[];
-[[vk::binding(0, 0)]] TextureCube                               uBindlessTexCube[];
-[[vk::binding(0, 0)]] Texture3D                                 uBindlessTex3D[];
-[[vk::binding(0, 0)]] Texture2DArray                            uBindlessTex2DArray[];
-[[vk::binding(0, 0)]] RWTexture2D<float4>                       uBindlessRWTex2D[];
-[[vk::binding(0, 0)]] RWTexture3D<float4>                       uBindlessRWTex3D[];
-// Cube/cube-array storage images register their UAVs as 2D-array views (cube storage views are
-// illegal in Vulkan), so cube writes index this array at GetMipUAVIndex(mip) with [int3(x,y,face)].
-[[vk::binding(0, 0)]] RWTexture2DArray<float4>                  uBindlessRWTex2DArray[];
-// Coherent alias of the same descriptor array for cross-workgroup hand-offs (SPD mip-5 / mip-11).
-// SPIR-V Coherent is per-OpVariable, so a second variable at this binding rides coherency per-access.
-[[vk::binding(0, 0)]] globallycoherent RWTexture2D<float4>      uBindlessRWTex2DCoherent[];
-[[vk::binding(1, 0)]] SamplerState                              uBindlessSamplers[];
-// Comparison-sampler alias of the same sampler table (VkSampler carries compareEnable; only
-// uBindlessCmpSamplers[SAMPLER_SHADOW] is a comparison sampler, used for shadow SampleCmp).
-[[vk::binding(1, 0)]] SamplerComparisonState                    uBindlessCmpSamplers[];
-
-// Stock sampler indices. Keep in lockstep with EBindlessSampler in
-// Engine/Source/Runtime/Renderer/TextureManager.h.
-static const uint SAMPLER_LINEAR_WRAP        = 0;
-static const uint SAMPLER_LINEAR_CLAMP       = 1;
-static const uint SAMPLER_LINEAR_MIRROR      = 2;
-static const uint SAMPLER_POINT_WRAP         = 3;
-static const uint SAMPLER_POINT_CLAMP        = 4;
-static const uint SAMPLER_ANISO_WRAP         = 5;
-static const uint SAMPLER_ANISO_CLAMP        = 6;
-static const uint SAMPLER_SHADOW             = 7;
-static const uint SAMPLER_MIN_REDUCTION      = 8;
-static const uint SAMPLER_MAX_REDUCTION      = 9;
-
-
-T GetPassData<T>()
+// Per-pass args for scene passes; each pass declares its struct and wraps this in a file-local Pass().
+Ptr<T> GetPassArgs<T>()
 {
-    return *(T*)gPC.PassAddr;
+    return (T*)((FRootConstants*)gRHI.Args).PassAddr;
 }
 
-// Convenience wrappers around the bindless table. ResourceID matches
-// FRHIImage::GetResourceID() on the C++ side.
-SamplerState GetBindlessSampler(uint SamplerIndex) { return uBindlessSamplers[SamplerIndex]; }
-
-float4 SampleBindless2D(uint ResourceID, uint SamplerIndex, float2 UV)
-{
-    return uBindlessTex2D[ResourceID].Sample(uBindlessSamplers[SamplerIndex], UV);
-}
-
-float4 SampleBindless2DLevel(uint ResourceID, uint SamplerIndex, float2 UV, float Lod)
-{
-    return uBindlessTex2D[ResourceID].SampleLevel(uBindlessSamplers[SamplerIndex], UV, Lod);
-}
-
-float4 SampleBindlessCube(uint ResourceID, uint SamplerIndex, float3 Dir)
-{
-    return uBindlessTexCube[ResourceID].Sample(uBindlessSamplers[SamplerIndex], Dir);
-}
-
-float4 SampleBindlessCubeLevel(uint ResourceID, uint SamplerIndex, float3 Dir, float Lod)
-{
-    return uBindlessTexCube[ResourceID].SampleLevel(uBindlessSamplers[SamplerIndex], Dir, Lod);
-}
-
-float4 SampleBindless3D(uint ResourceID, uint SamplerIndex, float3 UVW)
-{
-    return uBindlessTex3D[ResourceID].Sample(uBindlessSamplers[SamplerIndex], UVW);
-}
+// Scene buffer accessors (pointers; field/index access auto-derefs).
+FSceneGlobalData*   Scene()                 { return GetSceneRoot().SceneData; }
+FLightData*         LightData()             { return GetSceneRoot().Lights; }
+FGPUInstance*       Instances()             { return GetSceneRoot().Instances; }
+FBoneTransform*     Bones()                 { return GetSceneRoot().Bones; }
+FCluster*           Clusters()              { return GetSceneRoot().Clusters; }
+FMaterialUniforms*  Materials()             { return GetSceneRoot().Materials; }
+FBillboardInstance* Billboards()            { return GetSceneRoot().Billboards; }
+FCullView*          CullViews()             { return GetSceneRoot().CullViews; }
+FMeshletDraw*       MeshletDrawList()       { return GetSceneRoot().MeshletDrawListPtr; }
+uint*               InstanceMeshletPrefix() { return GetSceneRoot().InstanceMeshletPrefixPtr; }
+FPreSkinnedVertex*  PreSkinnedVertices()    { return GetSceneRoot().PreSkinnedVerticesPtr; }
+FSkinDescriptor*    SkinDescriptors()       { return GetSceneRoot().SkinDescriptorsPtr; }
+FWidgetInstance*    Widgets()               { return GetSceneRoot().WidgetsPtr; }
 
 // HDR environment panoramas carry +Inf / NaN texels (half-float overflow of very bright suns or LED
 // lights). Left unguarded they poison the IBL cubes -- Inf*weight and Inf-Inf produce NaN, which the BRDF
@@ -177,7 +110,7 @@ FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
 // -- a single structured load like the static path, no per-pass skinning.
 FVertexData LoadSkinnedVertex(FMeshlet M, uint VertexLocalIdx, uint SkinnedVertexBase)
 {
-    FPreSkinnedVertex S = uPreSkinnedVertices[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
+    FPreSkinnedVertex S = PreSkinnedVertices()[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
 
     FVertexData Data;
     Data.Position = float3(S.Px, S.Py, S.Pz);
@@ -196,7 +129,7 @@ float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalId
 
 float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint SkinnedVertexBase)
 {
-    FPreSkinnedVertex S = uPreSkinnedVertices[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
+    FPreSkinnedVertex S = PreSkinnedVertices()[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
     return float3(S.Px, S.Py, S.Pz);
 }
 
@@ -213,10 +146,10 @@ FPreSkinnedVertex SkinVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
 
-    FBoneTransform B0 = uBoneMatrices[BoneOffset + JointIndices.x];
-    FBoneTransform B1 = uBoneMatrices[BoneOffset + JointIndices.y];
-    FBoneTransform B2 = uBoneMatrices[BoneOffset + JointIndices.z];
-    FBoneTransform B3 = uBoneMatrices[BoneOffset + JointIndices.w];
+    FBoneTransform B0 = Bones()[BoneOffset + JointIndices.x];
+    FBoneTransform B1 = Bones()[BoneOffset + JointIndices.y];
+    FBoneTransform B2 = Bones()[BoneOffset + JointIndices.z];
+    FBoneTransform B3 = Bones()[BoneOffset + JointIndices.w];
 
     // Linear blend of the row-stored skinning matrices, then transform by explicit row dots.
     // Rigid per bone, so the same 3x3 rows rotate Tangent and its handedness sign is preserved.
@@ -240,43 +173,44 @@ FPreSkinnedVertex SkinVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     return Out;
 }
 
-float  GetMaterialScalar (uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Scalars[Index];  }
-float4 GetMaterialVec4   (uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Vectors[Index];  }
-uint   GetMaterialTexture(uint MatIndex, uint Index) { return uMaterialUniforms[MatIndex].Textures[Index]; }
+float  GetMaterialScalar (uint MatIndex, uint Index) { return Materials()[MatIndex].Scalars[Index];  }
+float4 GetMaterialVec4   (uint MatIndex, uint Index) { return Materials()[MatIndex].Vectors[Index];  }
+uint   GetMaterialTexture(uint MatIndex, uint Index) { return Materials()[MatIndex].Textures[Index]; }
 
-FGPUInstance GetInstance(uint InstanceID) { return uInstance[InstanceID]; }
+FGPUInstance GetInstance(uint InstanceID) { return Instances()[InstanceID]; }
 
-FLight GetLightAt(uint Index)       { return uLightData[0].Lights[Index]; }
-uint   GetNumLights()               { return uLightData[0].NumLights;     }
-float3 GetSunDirection()            { return uLightData[0].SunDirection;  }
-float3 GetAmbientLightColor()       { return uLightData[0].AmbientLight.xyz; }
-float  GetAmbientLightIntensity()   { return uLightData[0].AmbientLight.w;   }
-bool   HasIBL()                     { return uLightData[0].bHasIBL != 0u;     }
+FLight GetLightAt(uint Index)       { return LightData().Lights[Index]; }
+uint   GetNumLights()               { return LightData().NumLights;     }
+float3 GetSunDirection()            { return LightData().SunDirection;  }
+float3 GetAmbientLightColor()       { return LightData().AmbientLight.xyz; }
+float  GetAmbientLightIntensity()   { return LightData().AmbientLight.w;   }
+bool   HasIBL()                     { return LightData().bHasIBL != 0u;     }
 
 // Callers must check Light.ShadowDataIndex != INDEX_NONE first.
 float4x4 GetShadowViewProjection(int ShadowDataIndex, uint ViewIndex)
 {
-    return uLightData[0].Shadows[ShadowDataIndex].ViewProjection[ViewIndex];
+    return LightData().Shadows[ShadowDataIndex].ViewProjection[ViewIndex];
 }
 
 FLightShadow GetShadowTile(int ShadowDataIndex, uint Face)
 {
-    return uLightData[0].Shadows[ShadowDataIndex].Shadow[Face];
+    return LightData().Shadows[ShadowDataIndex].Shadow[Face];
 }
 
-float    GetTime()                  { return uSceneData.Time;       }
-float    GetDeltaTime()             { return uSceneData.DeltaTime;  }
-float    GetNearPlane()             { return uSceneData.NearPlane;  }
-float    GetFarPlane()              { return uSceneData.FarPlane;   }
+float    GetTime()                  { return Scene().Time;       }
+float    GetDeltaTime()             { return Scene().DeltaTime;  }
+float    GetNearPlane()             { return Scene().NearPlane;  }
+float    GetFarPlane()              { return Scene().FarPlane;   }
+uint2    GetScreenSize()            { return Scene().ScreenSize.xy; }
 
-float3   GetCameraPosition()        { return uSceneData.CameraView.CameraPosition.xyz; }
-float3   GetCameraUp()              { return uSceneData.CameraView.CameraUp.xyz;       }
-float3   GetCameraRight()           { return uSceneData.CameraView.CameraRight.xyz;    }
-float3   GetCameraForward()         { return uSceneData.CameraView.CameraForward.xyz;  }
-float4x4 GetCameraView()            { return uSceneData.CameraView.CameraView;         }
-float4x4 GetInverseCameraView()     { return uSceneData.CameraView.InverseCameraView;  }
-float4x4 GetCameraProjection()      { return uSceneData.CameraView.CameraProjection;   }
-float4x4 GetInverseCameraProjection(){ return uSceneData.CameraView.InverseCameraProjection; }
+float3   GetCameraPosition()        { return Scene().CameraView.CameraPosition.xyz; }
+float3   GetCameraUp()              { return Scene().CameraView.CameraUp.xyz;       }
+float3   GetCameraRight()           { return Scene().CameraView.CameraRight.xyz;    }
+float3   GetCameraForward()         { return Scene().CameraView.CameraForward.xyz;  }
+float4x4 GetCameraView()            { return Scene().CameraView.CameraView;         }
+float4x4 GetInverseCameraView()     { return Scene().CameraView.InverseCameraView;  }
+float4x4 GetCameraProjection()      { return Scene().CameraView.CameraProjection;   }
+float4x4 GetInverseCameraProjection(){ return Scene().CameraView.InverseCameraProjection; }
 
 float3 WorldToView(float3 WorldPos)
 {
@@ -320,11 +254,11 @@ float3 ReconstructViewPos(float2 UV, float Depth, float4x4 InvProj)
 }
 
 // Froxel index for a fragment from view-space depth + screen position. Mirrors the tile math in
-// ClusterBuild/LightCull; clamps stop edge fragments below ZNear from indexing past uClusters.
+// ClusterBuild/LightCull; clamps stop edge fragments below ZNear from indexing past Clusters().
 uint ComputeClusterIndex(float ViewZ, float2 ScreenPos)
 {
-    uint3  Grid       = uSceneData.GridSize.xyz;
-    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    uint3  Grid       = Scene().GridSize.xyz;
+    uint2  ScreenSize = Scene().ScreenSize.xy;
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
 

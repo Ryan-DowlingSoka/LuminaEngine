@@ -1,6 +1,8 @@
-﻿#pragma once
-#include "RenderResource.h"
+#pragma once
+#include "RenderResource.h"   // RHI::Format::BytesPerBlock
+#include "RHITexture.h"
 #include "Containers/Array.h"
+#include "Core/Serialization/Archiver.h"
 
 namespace Lumina
 {
@@ -15,16 +17,32 @@ namespace Lumina
             uint32 SlicePitch;
             TVector<uint8> Pixels;
         };
-        
-        FRHIImageDesc           ImageDescription;
-        FRHIImageRef            RHIImage;
+
+        // Serialized texture description: exactly what Textures::Create needs at load.
+        struct FDescription
+        {
+            FUIntVector2 Extent  = FUIntVector2(1, 1);
+            uint8        NumMips = 1;
+            EFormat      Format  = EFormat::UNKNOWN;
+
+            friend FArchive& operator << (FArchive& Ar, FDescription& Data)
+            {
+                Ar << Data.Extent;
+                Ar << Data.NumMips;
+                Ar << Data.Format;
+                return Ar;
+            }
+        };
+
+        FDescription            ImageDescription;
+        RHI::FManagedTexture    NewTexture;
         TFixedVector<FMip, 1>   Mips;
 
         uint64 CalcTotalSizeBytes() const
         {
             uint64 BytesPerBlock = RHI::Format::BytesPerBlock(ImageDescription.Format);
             uint64 TotalSize = 0;
-            
+
             for (const FMip& Mip : Mips)
             {
                 TotalSize += (uint64)Mip.RowPitch * Mip.Height * Mip.Depth;
@@ -42,7 +60,7 @@ namespace Lumina
                 Data.Mips.clear();
                 Data.Mips.resize(Data.ImageDescription.NumMips);
             }
-            
+
             for (FMip& Mip : Data.Mips)
             {
                 Ar << Mip.Width;
@@ -52,7 +70,7 @@ namespace Lumina
                 Ar << Mip.SlicePitch;
                 Ar << Mip.Pixels;
             }
-            
+
             return Ar;
         }
     };

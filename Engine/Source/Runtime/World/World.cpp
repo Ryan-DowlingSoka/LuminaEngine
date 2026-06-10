@@ -10,6 +10,7 @@
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Textures/TextureRenderTarget.h"
+#include "Renderer/RHITexture.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/ObjectCore.h"
@@ -330,34 +331,37 @@ namespace Lumina
 
     void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength, float Hardness, CTexture* BrushMask)
     {
-        if (Target == nullptr || Target->GetRHIRef() == nullptr)
+        if (Target == nullptr || !Target->GetTextureResource().NewTexture.IsValid())
         {
             return;
         }
 
         FTexturePaintOp Op;
-        Op.Target     = Target->GetTextureResource().RHIImage;
-        Op.Mode       = FTexturePaintOp::EMode::Paint;
-        Op.CenterUV   = UV;
-        Op.RadiusUV   = RadiusUV;
-        Op.Color      = Color;
-        Op.Strength   = Strength;
-        Op.Hardness   = Hardness;
-        Op.BrushIndex = (BrushMask != nullptr && BrushMask->GetRHIRef() != nullptr) ? BrushMask->GetRHIRef()->GetResourceID() : -1;
+        Op.Target       = Target->GetTextureResource().NewTexture.Texture;
+        Op.TargetUAV    = RHI::Textures::StorageSlot(Target->GetTextureResource().NewTexture, 0);
+        Op.TargetExtent = FUIntVector2(Target->GetWidth(), Target->GetHeight());
+        Op.Mode         = FTexturePaintOp::EMode::Paint;
+        Op.CenterUV     = UV;
+        Op.RadiusUV     = RadiusUV;
+        Op.Color        = Color;
+        Op.Strength     = Strength;
+        Op.Hardness     = Hardness;
+        Op.BrushIndex   = (BrushMask != nullptr) ? BrushMask->GetResourceID() : -1;
         RenderTargetPaintQueue.enqueue(Move(Op));
     }
 
     void CWorld::ClearRenderTarget(CTextureRenderTarget* Target, const FVector4& Color)
     {
-        if (Target == nullptr || Target->GetRHIRef() == nullptr)
+        if (Target == nullptr || !Target->GetTextureResource().NewTexture.IsValid())
         {
             return;
         }
 
         FTexturePaintOp Op;
-        Op.Target = Target->GetTextureResource().RHIImage;
-        Op.Mode   = FTexturePaintOp::EMode::Clear;
-        Op.Color  = Color;
+        Op.Target       = Target->GetTextureResource().NewTexture.Texture;
+        Op.TargetExtent = FUIntVector2(Target->GetWidth(), Target->GetHeight());
+        Op.Mode         = FTexturePaintOp::EMode::Clear;
+        Op.Color        = Color;
         RenderTargetPaintQueue.enqueue(Move(Op));
     }
 
@@ -602,7 +606,7 @@ namespace Lumina
         if (!GIsHeadless)
         {
             FlushRenderingCommands();
-            GRenderContext->WaitIdle();
+            RHI::WaitDeviceIdle();
         }
 
         RmlUi::DestroyWorldUI(this);
@@ -746,21 +750,6 @@ namespace Lumina
         }
 
         PhysicsScene->DispatchPendingEvents();
-    }
-
-    void CWorld::Render(ICommandList& CmdList, uint8 FrameIndex) const
-    {
-        LUMINA_PROFILE_SCOPE();
-
-        RmlUi::RenderWorldWidgets(this, CmdList);
-
-        if (RenderScene)
-        {
-            RenderScene->RenderView_RenderThread(CmdList, FrameIndex);
-        }
-
-        // Composite this world's UI onto its render target, right after its scene.
-        RmlUi::RenderWorldUI(this, CmdList);
     }
 
     void CWorld::Extract()
@@ -2283,13 +2272,13 @@ namespace Lumina
         bSystemsDirty = true;
     }
 
-    void CWorld::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)
+    void CWorld::DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale)
     {
         if (RenderScene == nullptr)
         {
             return;
         }
-        RenderScene->DrawBillboard(Image, Location, Scale);
+        RenderScene->DrawBillboard(ResourceID, Location, Scale);
     }
 
     void CWorld::DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness, bool bDepthTest, float Duration)

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FontAtlasBaker.h"
+#include "Core/Templates/LuminaTemplate.h"
 #include "Font.h"
 
 #include <cmath>

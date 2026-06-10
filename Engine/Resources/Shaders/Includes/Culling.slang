@@ -82,16 +82,16 @@ float SphereFrontDepth(float FrontZ, float ZNear, float ZFar)
 // Returns true if the sphere is fully occluded and can be skipped.
 bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
 {
-    float  ZNear = uSceneData.NearPlane;
-    float  ZFar  = uSceneData.FarPlane;
+    float  ZNear = Scene().NearPlane;
+    float  ZFar  = Scene().FarPlane;
 
-    float3 ViewCenter = mul(uSceneData.CameraView.CameraView, float4(CenterWS, 1.0)).xyz;
+    float3 ViewCenter = mul(Scene().CameraView.CameraView, float4(CenterWS, 1.0)).xyz;
     float  ViewRadius = RadiusWS * 1.02; // Tiny dilation for conservatism.
 
     float4 ClipAABB;
     if (!ProjectSphereClip(ViewCenter, ViewRadius, ZNear,
-                           uSceneData.CameraView.CameraProjection[0][0],
-                           uSceneData.CameraView.CameraProjection[1][1],
+                           Scene().CameraView.CameraProjection[0][0],
+                           Scene().CameraView.CameraProjection[1][1],
                            ClipAABB))
     {
         // Sphere straddles the near plane: treat as visible.
@@ -102,8 +102,8 @@ bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
     // +Y-down NDC, so this is a direct mapping with no per-axis swap.
     float4 UvAABB = saturate(ClipAABB * 0.5 + 0.5);
 
-    float Width  = (UvAABB.z - UvAABB.x) * uSceneData.CullData.PyramidWidth;
-    float Height = (UvAABB.w - UvAABB.y) * uSceneData.CullData.PyramidHeight;
+    float Width  = (UvAABB.z - UvAABB.x) * Scene().CullData.PyramidWidth;
+    float Height = (UvAABB.w - UvAABB.y) * Scene().CullData.PyramidHeight;
 
     // Pick a mip where a single bilinear tap (2x2) covers the AABB.
     float Level = max(ceil(log2(max(Width, Height) * 0.5)), 0.0);
@@ -112,7 +112,7 @@ bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
 
     // Bindless Hi-Z tap with the MIN-reduction sampler returns the minimum
     // depth of the 2x2 footprint. In reverse-Z, min == farthest.
-    float PyramidDepth = SampleBindless2DLevel(uSceneData.CullData.DepthPyramidIndex, SAMPLER_MIN_REDUCTION, SampleUV, Level).x;
+    float PyramidDepth = SampleTexture2DLevel(Scene().CullData.DepthPyramidIndex, SAMPLER_MIN_REDUCTION, SampleUV, Level).x;
 
     float FrontZ      = ViewCenter.z - ViewRadius;
     float DepthSphere = SphereFrontDepth(FrontZ, ZNear, ZFar);

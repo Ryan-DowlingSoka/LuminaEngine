@@ -17,7 +17,7 @@ struct FPushConstants
     float AdaptationSpeed;  // eye-adaptation rate (per second)
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 groupshared float gLogLum[THREAD_COUNT];
 
@@ -29,8 +29,8 @@ void ComputeMain(uint3 LocalID : SV_GroupThreadID)
 
     // Sample the cell center of a TILE_DIM x TILE_DIM grid over the whole frame.
     float2 UV = (float2(LocalID.xy) + 0.5) / float(TILE_DIM);
-    float3 Color = uBindlessTex2D[PC.HDRIndex].SampleLevel(
-        uBindlessSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
+    float3 Color = gTextures2D[Pass().HDRIndex].SampleLevel(
+        gSamplers[SAMPLER_LINEAR_CLAMP], UV, 0.0).rgb;
 
     float Luma = max(dot(Color, float3(0.2126, 0.7152, 0.0722)), 1e-5);
     gLogLum[Local] = log(Luma);
@@ -52,7 +52,7 @@ void ComputeMain(uint3 LocalID : SV_GroupThreadID)
     {
         float TargetLum = exp(gLogLum[0] / float(THREAD_COUNT));
 
-        float PrevLum = uBindlessRWTex2D[PC.AdaptUAV][int2(0, 0)].r;
+        float PrevLum = gRWTextures2D[Pass().AdaptUAV][int2(0, 0)].r;
         // Seed the feedback on the first run (1x1 image starts uncleared). The range test also
         // catches NaN/Inf (any NaN comparison is false), so we snap to the target, not garbage.
         if (!(PrevLum > 1e-6 && PrevLum < 1e6))
@@ -61,9 +61,9 @@ void ComputeMain(uint3 LocalID : SV_GroupThreadID)
         }
 
         // Exponential approach, framerate independent.
-        float Blend     = 1.0 - exp(-PC.DeltaTime * PC.AdaptationSpeed);
+        float Blend     = 1.0 - exp(-Pass().DeltaTime * Pass().AdaptationSpeed);
         float AdaptedLum = PrevLum + (TargetLum - PrevLum) * Blend;
 
-        uBindlessRWTex2D[PC.AdaptUAV][int2(0, 0)] = float4(AdaptedLum, 0.0, 0.0, 0.0);
+        gRWTextures2D[Pass().AdaptUAV][int2(0, 0)] = float4(AdaptedLum, 0.0, 0.0, 0.0);
     }
 }

@@ -16,7 +16,6 @@ namespace Lumina
         struct FScript;
     }
 
-    class FRHIViewport;
     class FWorldManager;
     class FAssetRegistry;
     class FRenderManager;
@@ -51,8 +50,8 @@ namespace Lumina
         RUNTIME_API bool Update(bool bApplicationWantsExit);
         RUNTIME_API virtual void OnUpdateStage(const FUpdateContext& Context);
 
-        RUNTIME_API static FRHIViewport* GetEngineViewport();
-        
+        RUNTIME_API static FUIntVector2 GetEngineViewportSize();
+
         RUNTIME_API void SetEngineViewportSize(const FUIntVector2& InSize);
         
         /** Used to optionally load a project as a DLL from the command line */

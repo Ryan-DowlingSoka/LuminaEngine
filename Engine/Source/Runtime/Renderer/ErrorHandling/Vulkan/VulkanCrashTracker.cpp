@@ -315,7 +315,7 @@ namespace Lumina::RHI
         PANIC("Vulkan detected a crash");
     }
 
-    void FVulkanCrashTracker::EnableDeviceFeatures(vkb::DeviceBuilder& Builder)
+    void* FVulkanCrashTracker::GetDeviceCreatePNext()
     {
         #if WITH_AFTERMATH
         static VkDeviceDiagnosticsConfigCreateInfoNV DiagnosticsConfig = {};
@@ -325,8 +325,9 @@ namespace Lumina::RHI
                                 | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV
                                 | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
 
-
-        Builder.add_pNext(&DiagnosticsConfig);
+        return &DiagnosticsConfig;
+        #else
+        return nullptr;
         #endif
     }
 

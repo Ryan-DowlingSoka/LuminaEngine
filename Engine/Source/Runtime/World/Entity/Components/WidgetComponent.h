@@ -4,7 +4,7 @@
 #include "Containers/String.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Assets/AssetRef.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHITexture.h"
 #include "WidgetComponent.generated.h"
 
 namespace Rml
@@ -21,11 +21,11 @@ namespace Lumina
     {
         Rml::Context*         Context = nullptr;
         Rml::ElementDocument* Document = nullptr;
-        FRHIImageRef          Target;
+        RHI::FManagedTexture  Target;
         FUIntVector2            BuiltSize{0, 0};
         FString               LoadedPath;
         int64                 DocWriteTime = 0;   // last-seen .rml mtime, for hot-reload
-        int32                 ResourceID   = -1;  // bindless id of Target, read by the gather
+        int32                 ResourceID   = -1;  // global-heap id of Target, read by the gather
         bool                  bVisible     = true;// set by the render gather (frustum); gates Update/rasterize
         bool                  bRmlIdle     = false;// last Update reported no pending animation/transition (GetNextUpdateDelay infinite)
 
@@ -34,8 +34,26 @@ namespace Lumina
 
         FWidgetRuntime(const FWidgetRuntime&) {}
         FWidgetRuntime& operator=(const FWidgetRuntime&) { return *this; }
-        FWidgetRuntime(FWidgetRuntime&&) noexcept = default;
-        FWidgetRuntime& operator=(FWidgetRuntime&&) noexcept = default;
+
+        FWidgetRuntime(FWidgetRuntime&& Other) noexcept { *this = Move(Other); }
+        FWidgetRuntime& operator=(FWidgetRuntime&& Other) noexcept
+        {
+            Context      = Other.Context;
+            Document     = Other.Document;
+            Target       = Other.Target;
+            BuiltSize    = Other.BuiltSize;
+            LoadedPath   = Move(Other.LoadedPath);
+            DocWriteTime = Other.DocWriteTime;
+            ResourceID   = Other.ResourceID;
+            bVisible     = Other.bVisible;
+            bRmlIdle     = Other.bRmlIdle;
+            // Clear the source so a later teardown of the moved-from runtime can't double-release.
+            Other.Context    = nullptr;
+            Other.Document   = nullptr;
+            Other.Target     = {};
+            Other.ResourceID = -1;
+            return *this;
+        }
     };
 
     // Renders an RmlUi document onto a world-space quad. Laid out + rasterized into Runtime.Target each

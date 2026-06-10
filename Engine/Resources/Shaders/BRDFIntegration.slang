@@ -1,9 +1,19 @@
+#include "Includes/SceneGlobals.slang"
 #include "Includes/IBL.slang"
 
 // Bakes the split-sum BRDF integration LUT once at init, indexed by (NdotV, Roughness) -> (scale, bias);
 // runtime IBL specular collapses to one multiply-add against the pre-filtered cubemap.
 
-[[vk::binding(0)]] RWTexture2D<float2> uBRDFLut;
+// Matches FBRDFArgs in ForwardRenderScene.cpp (BakeBRDFLUT).
+struct FBRDFArgs
+{
+    uint OutUAV;    // storage heap slot of the LUT
+    uint _Pad0;
+    uint _Pad1;
+    uint _Pad2;
+};
+
+FBRDFArgs* Pass() { return GetPassArgs<FBRDFArgs>(); }
 
 #define BRDF_LUT_TILE 8
 
@@ -12,7 +22,7 @@
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
     uint Width, Height;
-    uBRDFLut.GetDimensions(Width, Height);
+    gRWTextures2D[Pass().OutUAV].GetDimensions(Width, Height);
 
     if (DTid.x >= Width || DTid.y >= Height)
     {
@@ -24,5 +34,6 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float NdotV     = (float(DTid.x) + 0.5) / float(Width);
     float Roughness = (float(DTid.y) + 0.5) / float(Height);
 
-    uBRDFLut[DTid.xy] = IntegrateBRDF(NdotV, Roughness);
+    float2 BRDF = IntegrateBRDF(NdotV, Roughness);
+    gRWTextures2D[Pass().OutUAV][DTid.xy] = float4(BRDF, 0.0, 0.0);
 }

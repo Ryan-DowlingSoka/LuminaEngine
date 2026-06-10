@@ -8,11 +8,9 @@
 #include "encoder/basisu_enc.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RendererUtils.h"
-#include "Renderer/RenderTypes.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHITexture.h"
 #include "Tools/Import/ImportHelpers.h"
 #include "Thumbnails/ThumbnailUtils.h"
 #include "Core/Math/Math.h"
@@ -109,13 +107,10 @@ namespace Lumina
         const uint32 MaxDim  = Math::Max(Width, Height);
         const uint32 NumMips = (uint32)std::floor(std::log2((float)MaxDim)) + 1u;
 
-        FRHIImageDesc ImageDescription;
-        ImageDescription.Format            = EFormat::RGBA16_FLOAT;
-        ImageDescription.Extent            = FUIntVector2(Width, Height);
-        ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
-        ImageDescription.NumMips           = (uint8)NumMips;
-        ImageDescription.InitialState      = EResourceStates::ShaderResource;
-        ImageDescription.bKeepInitialState = true;
+        FTextureResource::FDescription ImageDescription;
+        ImageDescription.Format  = EFormat::RGBA16_FLOAT;
+        ImageDescription.Extent  = FUIntVector2(Width, Height);
+        ImageDescription.NumMips = (uint8)NumMips;
 
         if (!Texture->TextureResource)
         {
@@ -125,12 +120,6 @@ namespace Lumina
         Texture->TextureResource->ImageDescription = ImageDescription;
         Texture->TextureResource->Mips.clear();
         Texture->TextureResource->Mips.resize(NumMips);
-
-        FRHIImageRef RHIImage = GRenderContext->CreateImage(ImageDescription);
-        Texture->TextureResource->RHIImage = RHIImage;
-
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
-        CommandList->Open();
 
         uint32 MipW = Width, MipH = Height;
         TVector<float> NextFloat;
@@ -149,8 +138,6 @@ namespace Lumina
 
             const uint32 RowPitch   = MipW * 8u;
             const uint32 SlicePitch = RowPitch * MipH;
-
-            CommandList->WriteImage(RHIImage, 0, MipIndex, Halves.data(), RowPitch, 1);
 
             FTextureResource::FMip& Mip = Texture->TextureResource->Mips[MipIndex];
             Mip.Width      = MipW;
@@ -171,8 +158,19 @@ namespace Lumina
             }
         }
 
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
+        // New RHI: create + upload from the CPU mips (same path as CTexture::PostLoad).
+        Texture->TextureResource->NewTexture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Width,
+            .Height = Height,
+            .Mips   = NumMips,
+            .Format = EFormat::RGBA16_FLOAT,
+        });
+        for (uint32 i = 0; i < NumMips; ++i)
+        {
+            const FTextureResource::FMip& Mip = Texture->TextureResource->Mips[i];
+            RHI::Textures::Upload(Texture->TextureResource->NewTexture, i, Mip.Pixels.data(), Mip.Pixels.size(), Mip.Width);
+        }
 
         return true;
     }
@@ -253,13 +251,10 @@ namespace Lumina
             TranscodeTarget = basist::transcoder_texture_format::cTFBC7_RGBA;
         }
 
-        FRHIImageDesc ImageDescription;
-        ImageDescription.Format            = StoredFormat;
-        ImageDescription.Extent            = FUIntVector2(Width, Height);
-        ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
-        ImageDescription.NumMips           = static_cast<uint8>(NumMips);
-        ImageDescription.InitialState      = EResourceStates::ShaderResource;
-        ImageDescription.bKeepInitialState = true;
+        FTextureResource::FDescription ImageDescription;
+        ImageDescription.Format  = StoredFormat;
+        ImageDescription.Extent  = FUIntVector2(Width, Height);
+        ImageDescription.NumMips = static_cast<uint8>(NumMips);
 
         if (!Texture->TextureResource)
         {
@@ -270,13 +265,7 @@ namespace Lumina
         Texture->TextureResource->Mips.clear();
         Texture->TextureResource->Mips.resize(NumMips);
 
-        FRHIImageRef RHIImage = GRenderContext->CreateImage(ImageDescription);
-        Texture->TextureResource->RHIImage = RHIImage;
-
         const uint32 BytesPerBlock = RHI::Format::BytesPerBlock(StoredFormat);
-
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
-        CommandList->Open();
 
         for (uint32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
         {
@@ -303,8 +292,6 @@ namespace Lumina
                 continue;
             }
 
-            CommandList->WriteImage(RHIImage, 0, MipIndex, TranscodedData.data(), RowPitch, 1);
-
             FTextureResource::FMip& Mip = Texture->TextureResource->Mips[MipIndex];
             Mip.Width      = LevelInfo.m_width;
             Mip.Height     = LevelInfo.m_height;
@@ -314,8 +301,23 @@ namespace Lumina
             Mip.Pixels     = Move(TranscodedData);
         }
 
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
+        // New RHI: create + upload the (block-compressed) mips into the global heap.
+        const FUIntVector2 Extent = Texture->TextureResource->ImageDescription.Extent;
+        Texture->TextureResource->NewTexture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Extent.x,
+            .Height = Extent.y,
+            .Mips   = NumMips,
+            .Format = StoredFormat,
+        });
+        for (uint32 i = 0; i < NumMips; ++i)
+        {
+            const FTextureResource::FMip& Mip = Texture->TextureResource->Mips[i];
+            if (!Mip.Pixels.empty())
+            {
+                RHI::Textures::Upload(Texture->TextureResource->NewTexture, i, Mip.Pixels.data(), Mip.Pixels.size(), Mip.Width);
+            }
+        }
 
         return true;
     }

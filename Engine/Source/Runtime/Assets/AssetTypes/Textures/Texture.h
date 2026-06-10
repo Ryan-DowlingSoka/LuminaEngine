@@ -46,9 +46,15 @@ namespace Lumina
         bool IsAsset() const override { return true; }
 
 
-        FORCEINLINE FRHIImage* GetRHIRef() const { return TextureResource.get() ? TextureResource->RHIImage : nullptr; }
         FTextureResource& GetTextureResource() const { return *TextureResource.get(); }
         uint8 GetNumMips() const { return TextureResource.get() ? TextureResource->Mips.size() : 0u; }
+
+        // New-RHI global-heap ResourceID for sampling (gTextures2D[id]); -1 if not resident.
+        int32 GetResourceID() const
+        {
+            return (TextureResource.get() && TextureResource->NewTexture.IsValid())
+                 ? (int32)TextureResource->NewTexture.ResourceID() : -1;
+        }
 
         PROPERTY(Editable)
         ETextureColorSpace ColorSpace = ETextureColorSpace::SRGB;

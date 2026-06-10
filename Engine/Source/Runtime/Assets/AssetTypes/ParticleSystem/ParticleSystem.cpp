@@ -1,8 +1,6 @@
 #include "pch.h"
 #include "ParticleSystem.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
-#include "Renderer/Shader.h"
+#include "Renderer/ShaderLibrary.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 
 namespace Lumina
@@ -35,11 +33,8 @@ namespace Lumina
     {
         if (!ComputeShaderBinaries.empty())
         {
-            FShaderHeader Header;
-            Header.DebugName    = GetName().ToString() + "_ComputeShader";
-            Header.Hash         = Hash::GetHash64(ComputeShaderBinaries.data(), ComputeShaderBinaries.size() * sizeof(uint32));
-            Header.Binaries     = ComputeShaderBinaries;
-            ComputeShader       = GRenderContext->CreateComputeShader(Header);
+            ComputeShader = FShaderLibrary::Commit(FName((GetGUID().ToString() + "_CS").c_str()), ERHIShaderType::Compute,
+                TSpan<const uint32>(ComputeShaderBinaries.data(), ComputeShaderBinaries.size()));
         }
     }
 

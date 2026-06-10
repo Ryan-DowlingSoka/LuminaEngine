@@ -6,9 +6,6 @@
 #include "Core/Engine/Engine.h"
 #include "imgui/misc/freetype/imgui_freetype.h"
 
-#include "Renderer/CommandList.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/UI/Notification/ImGuiNotifications.h"
 #include <imgui.h>
@@ -436,27 +433,20 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        const uint8 Slot = FrameIndex % FRAMES_IN_FLIGHT;
+        const uint8 Slot = FrameIndex % RHI::kFramesInFlight;
 
         // Must wait: game thread wrapping the ring while render thread reads it → null draw lists.
         WaitForSnapshotSlot(Slot, SnapshotProduced[Slot].load(std::memory_order_acquire));
 
         ImGuiIO& Io = ImGui::GetIO();
-        Io.DisplaySize.x = static_cast<float>(FEngine::GetEngineViewport()->GetSize().x);
-        Io.DisplaySize.y = static_cast<float>(FEngine::GetEngineViewport()->GetSize().y);
+        const FUIntVector2 ViewportSize = FEngine::GetEngineViewportSize();
+        Io.DisplaySize.x = static_cast<float>(ViewportSize.x);
+        Io.DisplaySize.y = static_cast<float>(ViewportSize.y);
 
         ImGuiX::Notifications::Render();
         ImGui::Render();
 
         ProcessTextureUpdates_GameThread();
-
-        // Do NOT call RenderPlatformWindowsDefault: cross-thread present ordering trips SyncVal WRITE_AFTER_PRESENT.
-        if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-        {
-            ImGui::UpdatePlatformWindows();
-            ForwardSecondaryPlatformWindowInput();
-            CaptureViewports_GameThread(Slot);
-        }
 
         FImDrawDataSnapshot& Snapshot = Snapshots[Slot];
         Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
@@ -474,24 +464,13 @@ namespace Lumina
             SnapshotDrawData->Textures = nullptr;
         }
 
-        Snapshot.ReferencedImages.clear();
-        FillReferencedImagesSnapshot(Snapshot.ReferencedImages);
-
         SnapshotProduced[Slot].fetch_add(1, std::memory_order_release);
         return &Snapshot;
     }
 
-    void IImGuiRenderer::RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot, uint8 FrameIndex)
-    {
-        LUMINA_PROFILE_SCOPE();
-
-        OnEndFrame(CmdList, Snapshot);
-        RenderViewports_RenderThread(FrameIndex % FRAMES_IN_FLIGHT);
-    }
-
     void IImGuiRenderer::SignalSnapshotSlotConsumed(uint8 FrameIndex)
     {
-        const uint8 Slot = FrameIndex % FRAMES_IN_FLIGHT;
+        const uint8 Slot = FrameIndex % RHI::kFramesInFlight;
         SnapshotConsumed[Slot].fetch_add(1, std::memory_order_release);
         { std::lock_guard<std::mutex> Lock(SnapshotSlotMutex); }
         SnapshotSlotCV.notify_all();

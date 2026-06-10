@@ -22,9 +22,7 @@ struct FPushConstants
     uint   MipUAV[SPD_MAX_MIPS];
 };
 
-// Per-pass constants live in a transient block addressed by gPC.PassAddr. The deref macro keeps PC an
-// lvalue into that BDA memory (no by-value copy, which would trip spirv-val on the pointer field).
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 // Ping-pong LDS: alternating reduction passes write to disjoint halves so no
 // slot is read+written across a barrier.
@@ -42,23 +40,23 @@ void StoreMip(uint Mip, int2 Pos, float Value)
     // coherent alias so the SPIR-V Coherent decoration lands on these stores.
     if (Mip == 5 || Mip == 11)
     {
-        uBindlessRWTex2DCoherent[PC.MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
+        gRWTextures2DCoherent[Pass().MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
     }
     else
     {
-        uBindlessRWTex2D[PC.MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
+        gRWTextures2D[Pass().MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
     }
 }
 
 float LoadMip5Coherent(int2 Pos, int2 MaxIdx)
 {
-    return uBindlessRWTex2DCoherent[PC.MipUAV[5]][clamp(Pos, int2(0, 0), MaxIdx)].x;
+    return gRWTextures2DCoherent[Pass().MipUAV[5]][clamp(Pos, int2(0, 0), MaxIdx)].x;
 }
 
 float SampleSrcDepth(float2 UV)
 {
-    return uBindlessTex2D[PC.SrcDepthIndex].SampleLevel(
-        uBindlessSamplers[SAMPLER_MIN_REDUCTION], UV, 0.0f).x;
+    return gTextures2D[Pass().SrcDepthIndex].SampleLevel(
+        gSamplers[SAMPLER_MIN_REDUCTION], UV, 0.0f).x;
 }
 
 float4 DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread)
@@ -71,12 +69,12 @@ float4 DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread)
         const int2 SubI = int2(qi >> 1, qi & 1);
         const int2 DstP = int2(Tile * TILE_THREAD_WIDTH + TileThread) * 2 + SubI;
 
-        if (all(uint2(DstP) < PC.PyramidSize))
+        if (all(uint2(DstP) < Pass().PyramidSize))
         {
-            const float2 UV = (float2(DstP) + 0.5f) * PC.InvPyramidSize;
+            const float2 UV = (float2(DstP) + 0.5f) * Pass().InvPyramidSize;
             const float  V  = SampleSrcDepth(UV);
 
-            uBindlessRWTex2D[PC.MipUAV[0]][DstP] = float4(V, 0, 0, 0);
+            gRWTextures2D[Pass().MipUAV[0]][DstP] = float4(V, 0, 0, 0);
             Quad[qi] = V;
         }
     }
@@ -87,8 +85,8 @@ float4 DownsampleMipN0_FromMip5(uint2 Tile, uint2 TileThread)
 {
     float4 Quad = float4(1, 1, 1, 1);
 
-    const uint2 SrcMipSize = max(PC.PyramidSize >> 5u, uint2(1, 1));
-    const uint2 DstMipSize = max(PC.PyramidSize >> 6u, uint2(1, 1));
+    const uint2 SrcMipSize = max(Pass().PyramidSize >> 5u, uint2(1, 1));
+    const uint2 DstMipSize = max(Pass().PyramidSize >> 6u, uint2(1, 1));
     const int2  SrcMaxIdx  = int2(SrcMipSize) - 1;
 
     [unroll]
@@ -106,7 +104,7 @@ float4 DownsampleMipN0_FromMip5(uint2 Tile, uint2 TileThread)
             const float D = LoadMip5Coherent(SrcP + int2(1, 1), SrcMaxIdx);
             const float V = Reduce4(A, B, C, D);
 
-            uBindlessRWTex2D[PC.MipUAV[6]][DstP] = float4(V, 0, 0, 0);
+            gRWTextures2D[Pass().MipUAV[6]][DstP] = float4(V, 0, 0, 0);
             Quad[qi] = V;
         }
     }
@@ -118,7 +116,7 @@ void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread, float4 Quad)
     const int   DstMip  = StartMip + 2;
     const float V       = Reduce4(Quad.x, Quad.y, Quad.z, Quad.w);
     const int2  DstP    = int2(Tile * TILE_THREAD_WIDTH + TileThread);
-    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+    const uint2 DstSize = max(Pass().PyramidSize >> uint(DstMip), uint2(1, 1));
 
     if (all(uint2(DstP) < DstSize))
     {
@@ -139,7 +137,7 @@ void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex
     const uint2 RemainingTile = uint2(1, 1) * uint(TILE_THREAD_WIDTH >> (MipIndex + 1));
     const int2  DstP    = int2(TileThread + Tile * RemainingTile);
     const int2  SrcP    = int2(TileThread) * 2;
-    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+    const uint2 DstSize = max(Pass().PyramidSize >> uint(DstMip), uint2(1, 1));
     const bool  Active  = all(TileThread < RemainingTile) && all(uint2(DstP) < DstSize);
 
     if (Active)
@@ -157,32 +155,32 @@ void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex
 
 void DownsampleTile_Phase1(uint2 Tile, uint2 TileThread)
 {
-    if (PC.NumMips < 1) return;
+    if (Pass().NumMips < 1) return;
     const float4 Quad = DownsampleMipN0_BaseCase(Tile, TileThread);
 
-    if (PC.NumMips < 2) return;
+    if (Pass().NumMips < 2) return;
     DownsampleMipN1(-1, Tile, TileThread, Quad);
 
     [unroll]
     for (int mi = 0; mi < 4; ++mi)
     {
-        if (int(PC.NumMips) <= -1 + 3 + mi) return;
+        if (int(Pass().NumMips) <= -1 + 3 + mi) return;
         DownsampleMipN2_N5(-1, Tile, TileThread, mi);
     }
 }
 
 void DownsampleTile_Phase2(uint2 Tile, uint2 TileThread)
 {
-    if (PC.NumMips <= 6) return;
+    if (Pass().NumMips <= 6) return;
     const float4 Quad = DownsampleMipN0_FromMip5(Tile, TileThread);
 
-    if (PC.NumMips <= 7) return;
+    if (Pass().NumMips <= 7) return;
     DownsampleMipN1(5, Tile, TileThread, Quad);
 
     [unroll]
     for (int mi = 0; mi < 4; ++mi)
     {
-        if (int(PC.NumMips) <= 5 + 3 + mi) return;
+        if (int(Pass().NumMips) <= 5 + 3 + mi) return;
         DownsampleMipN2_N5(5, Tile, TileThread, mi);
     }
 }
@@ -198,15 +196,15 @@ void ComputeMain(
 
     DownsampleTile_Phase1(Tile, TT);
 
-    if (PC.NumMips <= 6) return;
+    if (Pass().NumMips <= 6) return;
 
     // Cross-WG hand-off: the atomic on the BDA counter is the only Device-scope
     // memory event; the bool broadcasts the result through a workgroup barrier.
     if (all(TT == uint2(0, 0)))
     {
         uint OldCount;
-        InterlockedAdd(PC.AtomicCounter[0], 1u, OldCount);
-        SpdIsLastWorkgroup = ((OldCount + 1u) == PC.NumWorkGroups);
+        InterlockedAdd(Pass().AtomicCounter[0], 1u, OldCount);
+        SpdIsLastWorkgroup = ((OldCount + 1u) == Pass().NumWorkGroups);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -215,11 +213,11 @@ void ComputeMain(
 
     if (all(TT == uint2(0, 0)))
     {
-        PC.AtomicCounter[0] = 0u;
+        Pass().AtomicCounter[0] = 0u;
     }
 
     // Walk mip-5 in 64x64 sub-tiles. Pyramids up to 2048-wide fit in one.
-    const uint2 Mip5Size      = max(PC.PyramidSize >> 5u, uint2(1, 1));
+    const uint2 Mip5Size      = max(Pass().PyramidSize >> 5u, uint2(1, 1));
     const uint2 Mip5TileCount = max(Mip5Size >> 6u, uint2(1, 1));
 
     for (uint ty = 0; ty < Mip5TileCount.y; ++ty)

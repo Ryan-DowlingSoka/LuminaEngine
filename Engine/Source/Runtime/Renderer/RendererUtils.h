@@ -1,24 +1,16 @@
 ﻿#pragma once
 
 #include <algorithm>
-#include "RenderResource.h"
+#include "RHITexture.h"
 #include "Containers/Array.h"
 #include "Core/Functional/FunctionRef.h"
 #include "Platform/GenericPlatform.h"
 
-namespace Lumina
-{
-    class FRHIBuffer;
-}
-
 namespace Lumina::RenderUtils
 {
-    // Grows immediately on overflow; shrinks only after sustained low usage (hysteresis, no thrash).
-    // LowUsageFrames is per-buffer state the caller persists.
-    RUNTIME_API bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor, uint32& LowUsageFrames);
-    
-    RUNTIME_API FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, FUIntVector2 Size = {});
-    
+    // Decodes raw image bytes straight into the global texture heap; ImTextureID = ResourceID().
+    RUNTIME_API RHI::FManagedTexture CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, FUIntVector2 Size = {});
+
     inline uint32 CalculateMipCount(uint32 Width, uint32 Height)
     {
         uint32 Levels = 1;

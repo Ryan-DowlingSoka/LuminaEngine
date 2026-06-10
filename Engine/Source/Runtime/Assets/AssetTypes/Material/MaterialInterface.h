@@ -58,8 +58,8 @@ namespace Lumina
         int32 GetMaterialIndex() const { return MaterialIndex; }
         void SetMaterialIndex(int32 Index) { MaterialIndex = Index; }
 
-        virtual FRHIVertexShader* GetVertexShader() const { return nullptr; }
-        virtual FRHIPixelShader* GetPixelShader() const { return nullptr; }
+        virtual const FShaderEntry* GetVertexShader() const { return nullptr; }
+        virtual const FShaderEntry* GetPixelShader() const { return nullptr; }
 
         virtual EMaterialType GetMaterialType() const { return EMaterialType::None; };
 

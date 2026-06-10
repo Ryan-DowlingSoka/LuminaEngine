@@ -1,3 +1,5 @@
+#include "Includes/SceneGlobals.slang"
+
 // Data-driven particle simulation: one shader for all effects, driven by FParticleSimParams.
 // Layout must stay in sync with CParticleSystem, ForwardRenderScene particle passes, and ParticleVertex.slang.
 
@@ -65,9 +67,18 @@ struct FParticleSimParams
     float4  Timing;              // x=DeltaTime, y=TotalTime, z=SystemAge, w=unused
 };
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<FGPUParticle>    Particles;
-[[vk::binding(1, 0)]] ConstantBuffer<FParticleSimParams>  SimParams;
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint>            SpawnCounter;   // scratch counter, sized 4 bytes
+// Everything by device address; matches FParticleSimArgs in ForwardRenderScene.cpp.
+struct FParticleSimArgs
+{
+    FParticleSimParams* Params;
+    FGPUParticle*       Particles;
+    uint*               SpawnCounter;   // scratch counter, sized 4 bytes
+};
+
+FParticleSimArgs*   SimArgs()      { return GetPassArgs<FParticleSimArgs>(); }
+FParticleSimParams* SimParams()    { return SimArgs().Params; }
+FGPUParticle*       Particles()    { return SimArgs().Particles; }
+uint*               SpawnCounter() { return SimArgs().SpawnCounter; }
 
 uint WangHash(uint x)
 {
@@ -256,45 +267,45 @@ float3 ComputeInitialVelocity(inout uint state, uint mode, uint shape, float3 sp
 
 void SpawnParticle(uint Index, inout FGPUParticle P)
 {
-    uint seed = WangHash(Index * 73856093u ^ SimParams.Counts.z);
+    uint seed = WangHash(Index * 73856093u ^ SimParams().Counts.z);
 
-    uint shape = SimParams.Modes.x;
-    uint velMode = SimParams.Modes.y;
+    uint shape = SimParams().Modes.x;
+    uint velMode = SimParams().Modes.y;
 
-    float3 fwd   = SimParams.EmitterForward.xyz;
-    float3 rgt   = SimParams.EmitterRight.xyz;
-    float3 up_   = SimParams.EmitterUp.xyz;
+    float3 fwd   = SimParams().EmitterForward.xyz;
+    float3 rgt   = SimParams().EmitterRight.xyz;
+    float3 up_   = SimParams().EmitterUp.xyz;
 
     float3 spawnOffset = SampleEmitterShape(seed, shape,
-                                            SimParams.ShapeSize.xyz, SimParams.ShapeSize.w,
+                                            SimParams().ShapeSize.xyz, SimParams().ShapeSize.w,
                                             fwd, rgt, up_);
 
-    float3 spawnPos = SimParams.EmitterPosition.xyz + spawnOffset;
+    float3 spawnPos = SimParams().EmitterPosition.xyz + spawnOffset;
 
     float3 vel = ComputeInitialVelocity(seed, velMode, shape, spawnOffset,
-                                        SimParams.VelocityMin, SimParams.VelocityMax,
-                                        SimParams.SpeedAndLifetime.xy,
-                                        SimParams.ShapeSize.w,
+                                        SimParams().VelocityMin, SimParams().VelocityMax,
+                                        SimParams().SpeedAndLifetime.xy,
+                                        SimParams().ShapeSize.w,
                                         fwd, rgt, up_);
 
-    float lifetime = lerp(SimParams.SpeedAndLifetime.z, SimParams.SpeedAndLifetime.w, RandUnit(seed));
-    float size     = lerp(SimParams.SizeRange.x,        SimParams.SizeRange.y,        RandUnit(seed));
-    float rotation = lerp(SimParams.RotationRange.x,    SimParams.RotationRange.y,    RandUnit(seed));
-    float rotSpeed = lerp(SimParams.RotationRange.z,    SimParams.RotationRange.w,    RandUnit(seed));
+    float lifetime = lerp(SimParams().SpeedAndLifetime.z, SimParams().SpeedAndLifetime.w, RandUnit(seed));
+    float size     = lerp(SimParams().SizeRange.x,        SimParams().SizeRange.y,        RandUnit(seed));
+    float rotation = lerp(SimParams().RotationRange.x,    SimParams().RotationRange.y,    RandUnit(seed));
+    float rotSpeed = lerp(SimParams().RotationRange.z,    SimParams().RotationRange.w,    RandUnit(seed));
     float particleSeed = RandUnit(seed);
 
     // Emitter velocity inheritance: EmitterVelocity is packed in the .w components
     // of the emitter basis vectors; NoiseParams.y is the 0-1 inheritance factor.
-    float3 EmitterVelocity = float3(SimParams.EmitterForward.w,
-                                    SimParams.EmitterRight.w,
-                                    SimParams.EmitterUp.w);
-    vel += EmitterVelocity * SimParams.NoiseParams.y;
+    float3 EmitterVelocity = float3(SimParams().EmitterForward.w,
+                                    SimParams().EmitterRight.w,
+                                    SimParams().EmitterUp.w);
+    vel += EmitterVelocity * SimParams().NoiseParams.y;
 
     P.Position      = spawnPos;
     P.Age           = 0.0;
     P.Velocity      = vel;
     P.Lifetime      = max(lifetime, 0.01);
-    P.Color         = SimParams.StartColor;
+    P.Color         = SimParams().StartColor;
     P.Size          = size;
     P.Rotation      = radians(rotation);
     P.RotationSpeed = radians(rotSpeed);
@@ -303,20 +314,20 @@ void SpawnParticle(uint Index, inout FGPUParticle P)
 
 void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)
 {
-    P.Velocity += SimParams.Gravity.xyz * DeltaTime;
+    P.Velocity += SimParams().Gravity.xyz * DeltaTime;
 
-    float3 noiseStrength = SimParams.NoiseStrength.xyz;
+    float3 noiseStrength = SimParams().NoiseStrength.xyz;
     if (any(noiseStrength > 0.0))
     {
         float3 turbulence = CurlishNoise(P.Position,
                                          TotalTime,
-                                         SimParams.NoiseStrength.w,
-                                         SimParams.NoiseParams.x);
+                                         SimParams().NoiseStrength.w,
+                                         SimParams().NoiseParams.x);
         P.Velocity += turbulence * noiseStrength * DeltaTime;
     }
 
     // Exponential drag (1st order). Keeps behavior framerate-independent.
-    float drag = SimParams.Gravity.w;
+    float drag = SimParams().Gravity.w;
     if (drag > 0.0)
     {
         P.Velocity *= exp(-drag * DeltaTime);
@@ -327,11 +338,11 @@ void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)
 
     // Color over life
     float lifeT = saturate(P.Age / P.Lifetime);
-    P.Color = lerp(SimParams.StartColor, SimParams.EndColor, lifeT);
+    P.Color = lerp(SimParams().StartColor, SimParams().EndColor, lifeT);
 
     // Size over life (random end per-particle but deterministic via Seed)
-    float endSize = lerp(SimParams.SizeRange.z, SimParams.SizeRange.w, P.Seed);
-    float startSize = lerp(SimParams.SizeRange.x, SimParams.SizeRange.y, P.Seed);
+    float endSize = lerp(SimParams().SizeRange.z, SimParams().SizeRange.w, P.Seed);
+    float startSize = lerp(SimParams().SizeRange.x, SimParams().SizeRange.y, P.Seed);
     P.Size = lerp(startSize, endSize, lifeT);
 }
 
@@ -341,13 +352,13 @@ void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)
 void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
 {
     uint Index = DispatchThreadID.x;
-    uint MaxParticles = SimParams.Counts.x;
+    uint MaxParticles = SimParams().Counts.x;
     if (Index >= MaxParticles)
     {
         return;
     }
 
-    FGPUParticle P = Particles[Index];
+    FGPUParticle P = Particles()[Index];
 
     bool bAlive = (P.Lifetime > 0.0) && (P.Age < P.Lifetime);
 
@@ -355,8 +366,8 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
     {
         // Race for a spawn slot: first SpawnCount dead particles (in thread order) spawn this frame.
         uint myAlloc;
-        InterlockedAdd(SpawnCounter[0], 1u, myAlloc);
-        if (myAlloc < SimParams.Counts.y)
+        InterlockedAdd(SpawnCounter()[0], 1u, myAlloc);
+        if (myAlloc < SimParams().Counts.y)
         {
             SpawnParticle(Index, P);
         }
@@ -371,7 +382,7 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
     }
     else
     {
-        float dt = SimParams.Timing.x;
+        float dt = SimParams().Timing.x;
         P.Age += dt;
         if (P.Age >= P.Lifetime)
         {
@@ -382,9 +393,9 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
         }
         else
         {
-            SimulateParticle(P, dt, SimParams.Timing.y);
+            SimulateParticle(P, dt, SimParams().Timing.y);
         }
     }
 
-    Particles[Index] = P;
+    Particles()[Index] = P;
 }

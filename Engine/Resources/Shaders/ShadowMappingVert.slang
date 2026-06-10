@@ -2,7 +2,7 @@
 #include "Includes/SceneGlobals.slang"
 
 // Unified shadow VS for CSM / point / spot. SV_InstanceID indexes the
-// per-view slice of uMeshletDrawList; PC.ViewIndex picks the ViewProjection.
+// per-view slice of MeshletDrawList(); Pass().ViewIndex picks the ViewProjection.
 
 struct FPushConstants
 {
@@ -15,14 +15,14 @@ struct VSOutput
     float4 Position : SV_Position;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 [shader("vertex")]
 VSOutput VertexMain(
     uint VertexIndex   : SV_VulkanVertexID,
     uint InstanceIndex : SV_VulkanInstanceID)
 {
-    FMeshletDraw Draw        = uMeshletDrawList[InstanceIndex];
+    FMeshletDraw Draw        = MeshletDrawList()[InstanceIndex];
     FGPUInstance Inst        = GetInstance(Draw.InstanceID);
     float4x4     ModelMatrix = Inst.ModelMatrix;
 
@@ -58,6 +58,6 @@ VSOutput VertexMain(
     }
 
     float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
-    Output.Position = mul(GetShadowViewProjection(PC.ShadowDataIndex, (uint)PC.ViewIndex), WorldPos);
+    Output.Position = mul(GetShadowViewProjection(Pass().ShadowDataIndex, (uint)Pass().ViewIndex), WorldPos);
     return Output;
 }

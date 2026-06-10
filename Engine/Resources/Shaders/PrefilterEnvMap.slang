@@ -13,7 +13,7 @@ struct FPushConstants
     float Roughness;
     uint  NumSamples;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 #define PREFILTER_TILE 8
 
@@ -21,7 +21,7 @@ struct FPushConstants
 [numthreads(PREFILTER_TILE, PREFILTER_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    RWTexture2DArray<float4> uOutMip = uBindlessRWTex2DArray[PC.OutMipUAV];
+    RWTexture2DArray<float4> uOutMip = gRWTextures2DArray[Pass().OutMipUAV];
 
     uint Width, Height, Layers;
     uOutMip.GetDimensions(Width, Height, Layers);
@@ -38,14 +38,14 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float3 R = N;
     float3 V = N;
 
-    const uint NumSamples = max(PC.NumSamples, 1u);
+    const uint NumSamples = max(Pass().NumSamples, 1u);
     float3     Sum        = float3(0.0, 0.0, 0.0);
     float      Weight     = 0.0;
 
     for (uint i = 0u; i < NumSamples; ++i)
     {
         float2 Xi    = Hammersley(i, NumSamples);
-        float3 H     = ImportanceSampleGGX(Xi, N, PC.Roughness);
+        float3 H     = ImportanceSampleGGX(Xi, N, Pass().Roughness);
         float3 L     = normalize(2.0 * dot(V, H) * H - V);
         float  NdotL = saturate(dot(N, L));
 
@@ -53,7 +53,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
         {
             // NdotL weighting (UE4 / learnopengl): samples toward N count more, grazing less.
             // Sanitize per-sample so one Inf texel can't turn the whole accumulator into Inf/NaN.
-            float3 Radiance = SanitizeRadiance(SampleBindlessCubeLevel(PC.SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb);
+            float3 Radiance = SanitizeRadiance(SampleTextureCubeLevel(Pass().SrcCubeSRV, SAMPLER_LINEAR_CLAMP, L, 0.0).rgb);
             // Accumulate in tonemapped space so a tiny bright source (city light, sun) hit by only a few
             // samples can't produce a blocky/sparkly firefly in the prefiltered mip.
             Sum    += FireflyTonemap(Radiance) * NdotL;

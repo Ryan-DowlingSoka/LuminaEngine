@@ -1,14 +1,14 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Grid params are read from the per-frame scene snapshot (uSceneData), NOT live render-thread
+// Grid params are read from the per-frame scene snapshot (Scene()), NOT live render-thread
 // state. LightCull (which fills these clusters) and the base pass (which looks up the tiles) both
 // index off the same snapshot frustum/screen size; sourcing the AABBs from live projection/screen
 // size instead would bin lights into a different frustum than the lookup -> whole tiles light with
 // the wrong lights whenever live and snapshot diverge (camera motion between extract and render).
 float3 ScreenToView(float2 ScreenCoord)
 {
-    float2 UV       = ScreenCoord / float2(uSceneData.ScreenSize.xy);
+    float2 UV       = ScreenCoord / float2(Scene().ScreenSize.xy);
     float4 NDC      = float4(UV * 2.0 - 1.0, 1.0, 1.0);
     float4 ViewCoord = mul(GetInverseCameraProjection(), NDC);
     ViewCoord       /= ViewCoord.w;
@@ -27,8 +27,8 @@ float3 LineIntersectionWithZPlane(float3 StartPoint, float3 EndPoint, float ZDis
 [numthreads(64, 1, 1)]
 void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 {
-    uint3 GridSize   = uSceneData.GridSize.xyz;
-    uint2 ScreenSize = uSceneData.ScreenSize.xy;
+    uint3 GridSize   = Scene().GridSize.xyz;
+    uint2 ScreenSize = Scene().ScreenSize.xy;
 
     uint TileIndex  = DispatchID.x;
     uint TotalTiles = GridSize.x * GridSize.y * GridSize.z;
@@ -63,6 +63,6 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     float3 MinBounds = min(min(MinPointNear, MinPointFar), min(MaxPointNear, MaxPointFar));
     float3 MaxBounds = max(max(MinPointNear, MinPointFar), max(MaxPointNear, MaxPointFar));
 
-    uClusters[TileIndex].MinPoint = float4(MinBounds, 0.0);
-    uClusters[TileIndex].MaxPoint = float4(MaxBounds, 0.0);
+    Clusters()[TileIndex].MinPoint = float4(MinBounds, 0.0);
+    Clusters()[TileIndex].MaxPoint = float4(MaxBounds, 0.0);
 }

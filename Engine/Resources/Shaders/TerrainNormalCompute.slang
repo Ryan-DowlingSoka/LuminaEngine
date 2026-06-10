@@ -1,5 +1,4 @@
-// Standalone (no SceneGlobals): including scene bindings would transition uHDRSceneColor to
-// SHADER_READ each dispatch and collide with later LoadOp::Load color uses. NormalLayout owns set 0.
+#include "Includes/SceneGlobals.slang"
 
 // Matches FTerrainNormalParams in TerrainRenderTypes.h.
 struct FTerrainNormalParams
@@ -15,23 +14,25 @@ struct FTerrainNormalParams
     int     _Pad;
 };
 
-// Pulled from a transient ring slot via buffer device address.
-struct FPushConstants
+// Matches FTerrainNormalArgs in ForwardRenderScene.cpp (TerrainUpdatePass): scalar
+// params plus heightmap SRV / normal UAV heap indices.
+struct FTerrainNormalArgs
 {
-    ConstBufferPointer<FTerrainNormalParams> Params;
+    FTerrainNormalParams Params;
+    uint HeightmapIndex;
+    uint NormalUAV;
+    uint _Pad0;
+    uint _Pad1;
 };
-[[vk::push_constant]] FPushConstants PC;
 
-[[vk::binding(0, 0)]] Sampler2D                            uHeightmap;
-[[vk::binding(1, 0)]] RWTexture2D<float4>                  uNormalOut;
+FTerrainNormalArgs* Pass() { return GetPassArgs<FTerrainNormalArgs>(); }
 
-// Central-difference normals. We sample the heightmap with clamp semantics
-// (clamp-to-edge sampler on the RHI side) so border pixels stay stable.
+// Central-difference normals. Heightmap sampled clamp-to-edge so border pixels stay stable.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    FTerrainNormalParams Params = PC.Params.get();
+    FTerrainNormalParams Params = Pass().Params;
 
     if ((int)DTid.x >= Params.RegionSizeX || (int)DTid.y >= Params.RegionSizeY)
         return;
@@ -42,10 +43,10 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float InvRes = 1.0 / float(Params.Resolution);
     float Stride = Params.TileWorldSize / float(Params.Resolution - 1);
 
-    float HL = uHeightmap.SampleLevel(float2(float(X - 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
-    float HR = uHeightmap.SampleLevel(float2(float(X + 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
-    float HD = uHeightmap.SampleLevel(float2(float(X    ) + 0.5, float(Y - 1) + 0.5) * InvRes, 0).r;
-    float HU = uHeightmap.SampleLevel(float2(float(X    ) + 0.5, float(Y + 1) + 0.5) * InvRes, 0).r;
+    float HL = SampleTexture2DLevel(Pass().HeightmapIndex, SAMPLER_LINEAR_CLAMP, float2(float(X - 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
+    float HR = SampleTexture2DLevel(Pass().HeightmapIndex, SAMPLER_LINEAR_CLAMP, float2(float(X + 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
+    float HD = SampleTexture2DLevel(Pass().HeightmapIndex, SAMPLER_LINEAR_CLAMP, float2(float(X    ) + 0.5, float(Y - 1) + 0.5) * InvRes, 0).r;
+    float HU = SampleTexture2DLevel(Pass().HeightmapIndex, SAMPLER_LINEAR_CLAMP, float2(float(X    ) + 0.5, float(Y + 1) + 0.5) * InvRes, 0).r;
 
     float dHdx = (HR - HL) * Params.MaxHeight / (2.0 * Stride);
     float dHdz = (HU - HD) * Params.MaxHeight / (2.0 * Stride);
@@ -55,5 +56,5 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 
     // Pack XZ slope into [0,1]; Y is reconstructed in the vertex shader.
     float2 Packed = Normal.xz * 0.5 + 0.5;
-    uNormalOut[int2(X, Y)] = float4(Packed.x, Packed.y, 0.0, 1.0);
+    gRWTextures2D[Pass().NormalUAV][int2(X, Y)] = float4(Packed.x, Packed.y, 0.0, 1.0);
 }

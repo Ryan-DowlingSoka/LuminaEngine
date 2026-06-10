@@ -20,12 +20,11 @@ struct FShadowTex
 FShadowTex MakeShadowTex(uint Index)
 {
     FShadowTex S;
-    S.Tex = uBindlessTex2D[Index];
-    S.Cmp = uBindlessCmpSamplers[SAMPLER_SHADOW];
-    S.Pt  = uBindlessSamplers[SAMPLER_POINT_CLAMP];
+    S.Tex = gTextures2D[Index];
+    S.Cmp = gCmpSamplers[SAMPLER_SHADOW];
+    S.Pt  = gSamplers[SAMPLER_POINT_CLAMP];
     return S;
 }
 
-#define uShadowCascade      MakeShadowTex(gPC.Root.get().ShadowCascadeIndex)
-#define uShadowAtlas        MakeShadowTex(gPC.Root.get().ShadowAtlasIndex)
-#define uShadowCascadePoint MakeShadowTex(gPC.Root.get().ShadowCascadeIndex)
+FShadowTex ShadowCascade() { return MakeShadowTex(GetSceneRoot().ShadowCascadeIndex); }
+FShadowTex ShadowAtlas()   { return MakeShadowTex(GetSceneRoot().ShadowAtlasIndex); }

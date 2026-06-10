@@ -369,9 +369,33 @@ namespace Lumina
 
         void* Allocate(SIZE_T Size, SIZE_T Alignment = 16) { return Arena.Allocate(Size, Alignment); }
 
-        template<typename T, typename... Args>
-        T* Alloc(Args&&... args) { return new (Arena.Allocate(sizeof(T), alignof(T))) T(Forward<Args>(args)...); }
+        template<typename T, typename... TArgs>
+        T* Alloc(TArgs&&... Args) { return new (Arena.Allocate(sizeof(T), alignof(T))) T(Forward<TArgs>(Args)...); }
 
+        template<typename T, typename F>
+        requires(!std::is_trivially_constructible_v<T>)
+        T* AllocArray(size_t N, F&& f)
+        {
+            void* Mem = Arena.Allocate(sizeof(T) * N, alignof(T));
+            T* Ptr = static_cast<T*>(Mem);
+            
+            for (size_t i = 0; i < N; ++i)
+            {
+                new (Ptr + i) T(f(i));
+            }   
+
+            return Ptr;
+        }
+        
+        template<typename T>
+        requires(std::is_trivially_constructible_v<T>)
+        T* AllocArray(size_t N)
+        {
+            void* Mem = Arena.Allocate(sizeof(T) * N, alignof(T));
+            std::memset(Mem, 0, sizeof(T) * N);
+            return static_cast<T*>(Mem);
+        }
+        
         FBlockLinearAllocator& GetAllocator() const { return Arena; }
         FFrameArenaAllocator   Eastl(const char* Name = "scratch") const { return FFrameArenaAllocator(&Arena, Name); }
 

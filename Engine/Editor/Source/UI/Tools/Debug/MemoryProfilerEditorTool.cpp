@@ -8,9 +8,7 @@
 #include "Memory/Memory.h"
 #include "Memory/MemoryTracking.h"
 #include "Platform/Process/PlatformProcess.h"
-#include "Renderer/RHIGlobals.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHI.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
@@ -28,25 +26,6 @@ namespace Lumina
             if (Fraction > 0.85f) { return ImVec4(0.90f, 0.32f, 0.28f, 1.0f); }
             if (Fraction > 0.65f) { return ImVec4(0.92f, 0.70f, 0.25f, 1.0f); }
             return ImVec4(0.30f, 0.78f, 0.45f, 1.0f);
-        }
-
-        ImVec4 CategoryColor(EGPUMemoryCategory Category)
-        {
-            switch (Category)
-            {
-            case EGPUMemoryCategory::RenderTarget:  return ImVec4(0.36f, 0.62f, 0.92f, 1.0f);
-            case EGPUMemoryCategory::DepthStencil:  return ImVec4(0.45f, 0.78f, 0.95f, 1.0f);
-            case EGPUMemoryCategory::ShadowMap:     return ImVec4(0.62f, 0.48f, 0.92f, 1.0f);
-            case EGPUMemoryCategory::Texture:       return ImVec4(0.95f, 0.62f, 0.35f, 1.0f);
-            case EGPUMemoryCategory::Cubemap:       return ImVec4(0.95f, 0.78f, 0.30f, 1.0f);
-            case EGPUMemoryCategory::VolumeTexture: return ImVec4(0.55f, 0.85f, 0.55f, 1.0f);
-            case EGPUMemoryCategory::VertexBuffer:  return ImVec4(0.40f, 0.85f, 0.70f, 1.0f);
-            case EGPUMemoryCategory::IndexBuffer:   return ImVec4(0.35f, 0.72f, 0.62f, 1.0f);
-            case EGPUMemoryCategory::UniformBuffer: return ImVec4(0.85f, 0.55f, 0.75f, 1.0f);
-            case EGPUMemoryCategory::StorageBuffer: return ImVec4(0.78f, 0.45f, 0.62f, 1.0f);
-            case EGPUMemoryCategory::Staging:       return ImVec4(0.70f, 0.70f, 0.74f, 1.0f);
-            default:                                return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
-            }
         }
 
         // "12.3 MB (12884901 bytes)" -- human-readable plus exact, so an AI gets both the
@@ -109,11 +88,10 @@ namespace Lumina
     {
         DrawHelpTextRow("Overview",
             "One picture of both memory pools: CPU (process heap, tracked by category) and GPU "
-            "(device memory, broken down by resource purpose). Backend-agnostic -- no API specifics.");
+            "(device memory per heap). Backend-agnostic -- no API specifics.");
         DrawHelpTextRow("GPU breakdown",
-            "Per-category sizes are estimated from each live resource's description (extent, format, "
-            "mips). Heap totals are device truth from the allocator. The two differ by driver overhead "
-            "and fragmentation.");
+            "Heap totals are device truth from the allocator (VMA budgets), including driver "
+            "overhead and fragmentation.");
         DrawHelpTextRow("Finding a CPU leak",
             "On the CPU tab: click Set Baseline at a known-good moment, let the suspect run, then watch "
             "the Delta column. The category that keeps climbing is your leak. Tick Capture call stacks "
@@ -131,26 +109,12 @@ namespace Lumina
         Categories.resize(N);
 #endif
 
-        if (GRenderContext)
+        RHI::GetGPUMemoryStats(GPUStats);
+        if (!bDeviceInfoValid)
         {
-            GRenderContext->GetGPUMemoryStats(GPUStats);
-            GatherGPUMemoryByCategory(GPUCategories, (uint32)EGPUMemoryCategory::Count);
-
-            if (!bDeviceInfoValid)
-            {
-                DeviceInfo = GRenderContext->GetDeviceInfo();
-                bDeviceInfoValid = true;
-            }
+            DeviceInfo = RHI::GetDeviceInfo();
+            bDeviceInfoValid = !DeviceInfo.Name.empty();
         }
-
-        for (uint32 i = 0; i < RRT_Num; ++i) { ResourceCounts[i] = 0; }
-        TotalResources = 0;
-        FRHIResourceList::ForEach([this](IRHIResource* Resource)
-        {
-            const ERHIResourceType Type = Resource->GetResourceType();
-            if (Type < RRT_Num) { ResourceCounts[Type]++; }
-            TotalResources++;
-        });
 
         LuaBytes = (size_t)Lua::FScriptingContext::Get().GetScriptMemoryUsageBytes();
 
@@ -289,60 +253,8 @@ namespace Lumina
 
     // Overview
 
-    void FMemoryProfilerEditorTool::DrawCategorySegmentBar(float Height)
-    {
-        uint64 Total = 0;
-        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-        {
-            Total += GPUCategories[i].Bytes;
-        }
-
-        const ImVec2 Origin = ImGui::GetCursorScreenPos();
-        const float  Width = ImGui::GetContentRegionAvail().x;
-        ImDrawList*  Draw = ImGui::GetWindowDrawList();
-
-        Draw->AddRectFilled(Origin, ImVec2(Origin.x + Width, Origin.y + Height), IM_COL32(30, 31, 34, 255), 4.0f);
-
-        if (Total > 0)
-        {
-            const float MouseX = ImGui::GetIO().MousePos.x;
-            const bool  bHoverRow = ImGui::IsMouseHoveringRect(Origin, ImVec2(Origin.x + Width, Origin.y + Height));
-            float X = Origin.x;
-
-            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-            {
-                if (GPUCategories[i].Bytes == 0) { continue; }
-
-                const float Seg = Width * (float)((double)GPUCategories[i].Bytes / (double)Total);
-                const ImVec4 C = CategoryColor((EGPUMemoryCategory)i);
-                Draw->AddRectFilled(ImVec2(X, Origin.y), ImVec2(X + Seg, Origin.y + Height),
-                    ImGui::GetColorU32(C));
-
-                if (bHoverRow && MouseX >= X && MouseX < X + Seg)
-                {
-                    ImGui::SetTooltip("%s\n%s  (%.1f%%)",
-                        GetGPUMemoryCategoryName((EGPUMemoryCategory)i),
-                        ImGuiX::FormatSize(GPUCategories[i].Bytes).c_str(),
-                        100.0f * (float)((double)GPUCategories[i].Bytes / (double)Total));
-                }
-                X += Seg;
-            }
-        }
-
-        ImGui::Dummy(ImVec2(Width, Height));
-    }
-
     void FMemoryProfilerEditorTool::DrawOverviewTab()
     {
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "GPU memory by purpose");
-        ImGui::Spacing();
-        DrawCategorySegmentBar(22.0f);
-        ImGui::Spacing();
-        DrawGPUCategoryTable();
-
-        ImGui::Spacing();
-        ImGui::Separator();
         ImGui::Spacing();
 
         // Side-by-side rolling timelines.
@@ -364,67 +276,6 @@ namespace Lumina
 
     // GPU
 
-    void FMemoryProfilerEditorTool::DrawGPUCategoryTable()
-    {
-        uint64 Total = 0;
-        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-        {
-            Total += GPUCategories[i].Bytes;
-        }
-
-        struct FRow { EGPUMemoryCategory Cat; uint64 Bytes; uint32 Count; };
-        TFixedVector<FRow, (int)EGPUMemoryCategory::Count> Rows;
-        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-        {
-            if (GPUCategories[i].Count > 0)
-            {
-                Rows.push_back({ (EGPUMemoryCategory)i, GPUCategories[i].Bytes, GPUCategories[i].Count });
-            }
-        }
-        eastl::sort(Rows.begin(), Rows.end(), [](const FRow& A, const FRow& B) { return A.Bytes > B.Bytes; });
-
-        const ImGuiTableFlags Flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
-        if (ImGui::BeginTable("##GPUCats", 4, Flags))
-        {
-            ImGui::TableSetupColumn("Category", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Size",     ImGuiTableColumnFlags_WidthFixed, 110);
-            ImGui::TableSetupColumn("Count",    ImGuiTableColumnFlags_WidthFixed, 70);
-            ImGui::TableSetupColumn("Share",    ImGuiTableColumnFlags_WidthFixed, 140);
-            ImGui::TableHeadersRow();
-
-            for (const FRow& Row : Rows)
-            {
-                ImGui::TableNextRow();
-
-                ImGui::TableSetColumnIndex(0);
-                const ImVec4 C = CategoryColor(Row.Cat);
-                ImGui::PushID((int)Row.Cat);
-                ImGui::ColorButton("##c", C, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(10, 10));
-                ImGui::PopID();
-                ImGui::SameLine();
-                ImGui::TextUnformatted(GetGPUMemoryCategoryName(Row.Cat));
-
-                ImGui::TableSetColumnIndex(1);
-                ImGui::TextUnformatted(ImGuiX::FormatSize(Row.Bytes).c_str());
-
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%u", Row.Count);
-
-                ImGui::TableSetColumnIndex(3);
-                const float Share = (Total > 0) ? (float)((double)Row.Bytes / (double)Total) : 0.0f;
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, C);
-                ImGui::ProgressBar(Share, ImVec2(-1, 0), FString().sprintf("%.1f%%", Share * 100.0f).c_str());
-                ImGui::PopStyleColor();
-            }
-
-            ImGui::EndTable();
-        }
-
-        ImGui::TextDisabled(LE_ICON_INFORMATION " Estimated %s across %u tracked resources (heap truth on the GPU tab).",
-            ImGuiX::FormatSize(Total).c_str(),
-            ResourceCounts[RRT_Image] + ResourceCounts[RRT_Buffer] + ResourceCounts[RRT_StagingImage]);
-    }
-
     void FMemoryProfilerEditorTool::DrawGPUHeaps()
     {
         ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Device heaps");
@@ -440,7 +291,7 @@ namespace Lumina
             ImGui::TableSetupColumn("Allocs", ImGuiTableColumnFlags_WidthFixed, 80);
             ImGui::TableHeadersRow();
 
-            for (const FGPUMemoryHeapStats& Heap : GPUStats.Heaps)
+            for (const RHI::FGPUMemoryHeapStats& Heap : GPUStats.Heaps)
             {
                 ImGui::TableNextRow();
 
@@ -486,77 +337,6 @@ namespace Lumina
         ImGui::TextDisabled("Allocator: %s in %u allocations across %u blocks.",
             ImGuiX::FormatSize((size_t)GPUStats.TotalAllocated).c_str(),
             GPUStats.TotalAllocations, GPUStats.TotalBlocks);
-
-        ImGui::Spacing();
-        DrawUploadPath();
-    }
-
-    void FMemoryProfilerEditorTool::DrawUploadPath()
-    {
-        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Upload path (FUploadManager)");
-        ImGui::Spacing();
-
-        if (!GPUStats.bUploadPoolValid)
-        {
-            ImGui::TextColored(ImVec4(0.92f, 0.70f, 0.25f, 1.0f),
-                LE_ICON_ALERT " Upload pool unavailable - chunk uploads use the default allocator (slower).");
-            return;
-        }
-
-        const bool bFastPath = GPUStats.bUploadDeviceLocal && GPUStats.bUploadHostVisible;
-        if (bFastPath)
-        {
-            ImGui::TextColored(ImVec4(0.50f, 0.90f, 0.60f, 1.0f),
-                LE_ICON_CHECK " Fast path: writing CPU data straight into VRAM (DeviceLocal + HostVisible).");
-        }
-        else
-        {
-            ImGui::TextColored(ImVec4(0.92f, 0.70f, 0.25f, 1.0f),
-                LE_ICON_ALERT " Fallback: uploads land in host (system RAM) - no ReBAR/BAR window in use.");
-        }
-
-        // The memory-type flags VMA actually selected, plus which heap it draws from.
-        FString Flags;
-        if (GPUStats.bUploadDeviceLocal)  { Flags += "DEVICE_LOCAL "; }
-        if (GPUStats.bUploadHostVisible)  { Flags += "HOST_VISIBLE "; }
-        if (GPUStats.bUploadHostCoherent) { Flags += "HOST_COHERENT "; }
-
-        ImGui::TextDisabled("Memory type %u -> heap %u  [%s]",
-            GPUStats.UploadMemoryType, GPUStats.UploadHeapIndex, Flags.c_str());
-    }
-
-    void FMemoryProfilerEditorTool::DrawResourceCounts()
-    {
-        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Live resources");
-        ImGui::Spacing();
-
-        const ImGuiTableFlags Flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
-        if (ImGui::BeginTable("##ResCounts", 2, Flags, ImVec2(0, 220)))
-        {
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 90);
-            ImGui::TableHeadersRow();
-
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Total");
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%u", TotalResources);
-
-            for (uint32 Type = RRT_None + 1; Type < RRT_Num; ++Type)
-            {
-                if (ResourceCounts[Type] == 0) { continue; }
-
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(GetRHIResourceTypeName((ERHIResourceType)Type));
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%u", ResourceCounts[Type]);
-            }
-
-            ImGui::EndTable();
-        }
     }
 
     void FMemoryProfilerEditorTool::DrawGPUTab()
@@ -571,47 +351,6 @@ namespace Lumina
         ImGui::Spacing();
 
         DrawGPUHeaps();
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // Pie + counts side by side.
-        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float HalfW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
-
-        ImGui::BeginChild("##GPUPie", ImVec2(HalfW, 280), false);
-        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Memory by purpose");
-
-        TFixedVector<const char*, (int)EGPUMemoryCategory::Count> Labels;
-        TFixedVector<float, (int)EGPUMemoryCategory::Count> Values;
-        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-        {
-            if (GPUCategories[i].Bytes > 0)
-            {
-                Labels.push_back(GetGPUMemoryCategoryName((EGPUMemoryCategory)i));
-                Values.push_back((float)((double)GPUCategories[i].Bytes / (1024.0 * 1024.0)));
-            }
-        }
-
-        if (!Values.empty() && ImPlot::BeginPlot("##GPUPiePlot", ImVec2(-1, 240), ImPlotFlags_Equal | ImPlotFlags_NoMouseText))
-        {
-            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
-            ImPlot::SetupAxesLimits(0, 1, 0, 1);
-            ImPlot::PlotPieChart(Labels.data(), Values.data(), (int)Values.size(), 0.5, 0.5, 0.4, "%.0f", 90.0,
-                ImPlotPieChartFlags_Normalize);
-            ImPlot::EndPlot();
-        }
-        else if (Values.empty())
-        {
-            ImGui::TextDisabled("No GPU resources tracked yet.");
-        }
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-
-        ImGui::BeginChild("##GPUCounts", ImVec2(0, 280), false);
-        DrawResourceCounts();
-        ImGui::EndChild();
     }
 
     // CPU
@@ -1069,55 +808,13 @@ namespace Lumina
         R += "## GPU heaps\n";
         R += "| Heap | Type | Used | Budget | Used% | Allocated | Blocks | Allocs |\n";
         R += "|------|------|------|--------|-------|-----------|--------|--------|\n";
-        for (const FGPUMemoryHeapStats& H : GPUStats.Heaps)
+        for (const RHI::FGPUMemoryHeapStats& H : GPUStats.Heaps)
         {
             const float Frac = (H.BudgetBytes > 0) ? (float)((double)H.UsageBytes / (double)H.BudgetBytes) : 0.0f;
             R += FString().sprintf("| %u | %s | %s | %s | %.1f%% | %s | %u | %u |\n",
                 H.HeapIndex, H.bReBAR ? "Device (ReBAR)" : H.bDeviceLocal ? (H.bHostVisible ? "Device (BAR)" : "Device") : "Host",
                 SizeBoth(H.UsageBytes).c_str(), SizeBoth(H.BudgetBytes).c_str(), Frac * 100.0f,
                 SizeBoth(H.AllocatedBytes).c_str(), H.BlockCount, H.AllocationCount);
-        }
-        R += "\n";
-
-        // GPU memory by purpose
-        {
-            uint64 Total = 0;
-            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i) { Total += GPUCategories[i].Bytes; }
-
-            struct FRow { EGPUMemoryCategory Cat; uint64 Bytes; uint32 Count; };
-            TFixedVector<FRow, (int)EGPUMemoryCategory::Count> Rows;
-            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
-            {
-                if (GPUCategories[i].Count > 0)
-                {
-                    Rows.push_back({ (EGPUMemoryCategory)i, GPUCategories[i].Bytes, GPUCategories[i].Count });
-                }
-            }
-            eastl::sort(Rows.begin(), Rows.end(), [](const FRow& A, const FRow& B) { return A.Bytes > B.Bytes; });
-
-            R += "## GPU memory by purpose (estimated from resource descriptions, sorted by size)\n";
-            R += FString().sprintf("Total estimated: %s\n\n", SizeBoth(Total).c_str());
-            R += "| Purpose | Size | Count | Share% | Avg/resource |\n";
-            R += "|---------|------|-------|--------|--------------|\n";
-            for (const FRow& Row : Rows)
-            {
-                const float Share = (Total > 0) ? 100.0f * (float)((double)Row.Bytes / (double)Total) : 0.0f;
-                const uint64 Avg = (Row.Count > 0) ? (Row.Bytes / Row.Count) : 0;
-                R += FString().sprintf("| %s | %s | %u | %.1f%% | %s |\n",
-                    GetGPUMemoryCategoryName(Row.Cat), SizeBoth(Row.Bytes).c_str(),
-                    Row.Count, Share, SizeBoth(Avg).c_str());
-            }
-            R += "\n";
-        }
-
-        // Live RHI resources
-        R += "## Live RHI resources\n";
-        R += FString().sprintf("Total: %u\n\n", TotalResources);
-        R += "| Type | Count |\n|------|-------|\n";
-        for (uint32 Type = RRT_None + 1; Type < RRT_Num; ++Type)
-        {
-            if (ResourceCounts[Type] == 0) { continue; }
-            R += FString().sprintf("| %s | %u |\n", GetRHIResourceTypeName((ERHIResourceType)Type), ResourceCounts[Type]);
         }
         R += "\n";
 

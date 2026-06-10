@@ -1715,8 +1715,8 @@ namespace Lumina
         // also fall through to entity picking / marquee behind it.
         if (!bModeOwnsInput && ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) && !RmlUi::WorldUIWantsMouse(World))
         {
-            uint32 PickerWidth = World->GetRenderer()->GetRenderTarget()->GetExtent().x;
-            uint32 PickerHeight = World->GetRenderer()->GetRenderTarget()->GetExtent().y;
+            uint32 PickerWidth = World->GetRenderer()->GetRenderExtent().x;
+            uint32 PickerHeight = World->GetRenderer()->GetRenderExtent().y;
             
             ImVec2 viewportScreenPos = ImGui::GetWindowPos();
             ImVec2 mousePos = ImGui::GetMousePos();
@@ -2160,10 +2160,11 @@ namespace Lumina
         DrawOffscreenSelectionIndicators(ViewportOrigin, ViewportSize, CameraComponent);
 
         // Selected-camera PiP, pinned bottom-right. The render scene shades it into a capture
-        // RT (in UpdateCameraPreview); here we just composite it.
+        // view (in UpdateCameraPreview); here we just composite it by its heap ResourceID.
         if (bCameraPreviewActive && CameraPreviewHandle >= 0)
         {
-            if (FRHIImage* PreviewRT = World->GetRenderer()->GetCaptureRenderTarget(CameraPreviewHandle))
+            const int32 PreviewID = World->GetRenderer()->GetCaptureDisplayResourceID(CameraPreviewHandle);
+            if (PreviewID >= 0)
             {
                 const float Scale  = 0.6f;
                 const float Margin = 14.0f;
@@ -2176,7 +2177,7 @@ namespace Lumina
                 DL->AddRectFilled(ImVec2(Min.x - 3.0f, Min.y - 18.0f), ImVec2(Max.x + 3.0f, Max.y + 3.0f),
                     IM_COL32(0, 0, 0, 190), 4.0f);
                 DL->AddText(ImVec2(Min.x + 2.0f, Min.y - 16.0f), IM_COL32(235, 235, 235, 220), "Camera Preview");
-                DL->AddImage(ImGuiX::ToImTextureRef(PreviewRT), Min, Max);
+                DL->AddImage(ImGuiX::ToImTextureRef((uint32)PreviewID), Min, Max);
                 DL->AddRect(Min, Max, IM_COL32(255, 255, 255, 110), 2.0f);
             }
         }

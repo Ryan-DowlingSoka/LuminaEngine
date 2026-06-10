@@ -22,35 +22,35 @@ struct FPushConstants
     float   ColorA;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    uint2 Px = PC.RectMin + DTid.xy;
-    if (Px.x >= PC.RectMax.x || Px.y >= PC.RectMax.y)   return;
-    if (Px.x >= PC.TargetSize.x || Px.y >= PC.TargetSize.y) return;
+    uint2 Px = Pass().RectMin + DTid.xy;
+    if (Px.x >= Pass().RectMax.x || Px.y >= Pass().RectMax.y)   return;
+    if (Px.x >= Pass().TargetSize.x || Px.y >= Pass().TargetSize.y) return;
 
     float2 Center = float2(Px) + 0.5f;
-    float  Dist   = length(Center - PC.CenterPx);
-    if (Dist > PC.RadiusPx)
+    float  Dist   = length(Center - Pass().CenterPx);
+    if (Dist > Pass().RadiusPx)
     {
         return;
     }
 
-    float Falloff = saturate(1.0f - Dist / max(PC.RadiusPx, 1e-4f));
-    float Mask    = pow(Falloff, max(PC.Hardness, 1e-3f));
+    float Falloff = saturate(1.0f - Dist / max(Pass().RadiusPx, 1e-4f));
+    float Mask    = pow(Falloff, max(Pass().Hardness, 1e-3f));
 
-    if (PC.BrushIndex >= 0)
+    if (Pass().BrushIndex >= 0)
     {
         // Map the brush rect onto [0,1]^2 and sample the mask's red channel as coverage.
-        float2 BrushUV = (Center - (PC.CenterPx - PC.RadiusPx)) / (2.0f * PC.RadiusPx);
-        Mask *= uBindlessTex2D[PC.BrushIndex].SampleLevel(uBindlessSamplers[SAMPLER_LINEAR_CLAMP], BrushUV, 0.0f).r;
+        float2 BrushUV = (Center - (Pass().CenterPx - Pass().RadiusPx)) / (2.0f * Pass().RadiusPx);
+        Mask *= gTextures2D[Pass().BrushIndex].SampleLevel(gSamplers[SAMPLER_LINEAR_CLAMP], BrushUV, 0.0f).r;
     }
 
-    float  Alpha = saturate(Mask * PC.Strength);
-    float4 Color = float4(PC.ColorR, PC.ColorG, PC.ColorB, PC.ColorA);
-    float4 Dst   = uBindlessRWTex2D[PC.TargetIndex][Px];
-    uBindlessRWTex2D[PC.TargetIndex][Px] = lerp(Dst, Color, Alpha);
+    float  Alpha = saturate(Mask * Pass().Strength);
+    float4 Color = float4(Pass().ColorR, Pass().ColorG, Pass().ColorB, Pass().ColorA);
+    float4 Dst   = gRWTextures2D[Pass().TargetIndex][Px];
+    gRWTextures2D[Pass().TargetIndex][Px] = lerp(Dst, Color, Alpha);
 }

@@ -12,8 +12,7 @@
 #include "Core/Object/Package/Package.h"
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
 #include "Paths/Paths.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHITexture.h"
 
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
@@ -227,39 +226,29 @@ namespace Lumina
                 return;
             }
             
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.Extent = {256, 256};
-            ImageDesc.Format = EFormat::RGBA8_UNORM;
-            ImageDesc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
-            FRHIImageRef Image = GRenderContext->CreateImage(ImageDesc);
-            
-            FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Transfer());
-            CommandList->Open();
-            
-            const uint8 BytesPerPixel = RHI::Format::BytesPerBlock(ImageDesc.Format);
-            const uint32 RowBytes = ImageDesc.Extent.x * BytesPerPixel;
-            
+            constexpr uint32 ThumbExtent = 256;
+            RHI::FManagedTexture Image = RHI::Textures::Create(RHI::FTexture2DDesc
+            {
+                .Width  = ThumbExtent,
+                .Height = ThumbExtent,
+                .Format = EFormat::RGBA8_UNORM,
+            });
+
+            const uint8 BytesPerPixel = RHI::Format::BytesPerBlock(EFormat::RGBA8_UNORM);
+            const uint32 RowBytes = ThumbExtent * BytesPerPixel;
+
             TVector<uint8> FlippedData(Thumbnail->ImageData.size());
             uint8* Destination = FlippedData.data();
             const uint8* Source = Thumbnail->ImageData.data();
 
-            for (uint32 y = 0; y < ImageDesc.Extent.y; ++y)
+            for (uint32 y = 0; y < ThumbExtent; ++y)
             {
-                const uint32 FlippedY = ImageDesc.Extent.y - 1 - y;
+                const uint32 FlippedY = ThumbExtent - 1 - y;
                 Memory::Memcpy(Destination + FlippedY * RowBytes, Source + y * RowBytes, RowBytes);
             }
-    
-            const uint32 RowPitch = RowBytes;
-            constexpr uint32 DepthPitch = 0;
-            
-            CommandList->BeginTrackingImageState(Image, AllSubresources, EResourceStates::Unknown);
-            CommandList->WriteImage(Image, 0, 0, FlippedData.data(), RowPitch, DepthPitch);
-            CommandList->SetPermanentImageState(Image, EResourceStates::ShaderResource);
-            
-            CommandList->Close();
-            GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Transfer);
-            
+
+            RHI::Textures::Upload(Image, 0, FlippedData.data(), FlippedData.size(), ThumbExtent);
+
             Thumbnail->LoadedImage = Image;
             Thumbnail->LoadState.store(FPackageThumbnail::EState::Loaded, std::memory_order_release);
 

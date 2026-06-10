@@ -1,7 +1,6 @@
 #pragma once
 
 #include <volk/volk.h>
-#include "VkBootstrap.h"
 #if WITH_AFTERMATH
 // Aftermath exposes its SPIR-V helpers only when VULKAN_H_ is defined; volk includes vulkan_core.h
 // (not vulkan.h), so define it manually to make GFSDK_Aftermath_GetShaderHashSpirv visible.
@@ -28,8 +27,8 @@ namespace Lumina::RHI
 
         void OnDeviceLost() override;
 
-        // Call after device creation to enable Aftermath features
-        void EnableDeviceFeatures(vkb::DeviceBuilder& Builder);
+        // Aftermath diagnostics-config pNext for vkCreateDevice (null when Aftermath is off).
+        void* GetDeviceCreatePNext();
 
         // Set by CreateDevice when VK_EXT_device_fault was successfully enabled.
         void SetDeviceFaultEnabled(bool bEnabled) { bDeviceFaultEnabled = bEnabled; }

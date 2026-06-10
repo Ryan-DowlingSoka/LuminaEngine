@@ -1,9 +1,11 @@
-﻿#pragma once
+#pragma once
 #include <condition_variable>
 #include "Core/Delegates/Delegate.h"
 #include "Memory/Allocators/Allocator.h"
 #include "Memory/SmartPtr.h"
-#include "Renderer/BindingCache.h"
+#include "Renderer/RHI.h"
+#include "Renderer/RHICore.h"
+#include "Renderer/RHITexture.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskGraph.h"
 #include "World/Entity/Components/LineBatcherComponent.h"
@@ -37,15 +39,15 @@ namespace Lumina
     class CMaterialInterface;
     class CMaterial;
 
-    /** Scene rendering via Clustered Forward Rendering. */
+    /** Scene rendering via Clustered Forward Rendering, recorded entirely through the new RHI. */
     class FForwardRenderScene : public IRenderScene
     {
     public:
-        
+
         FForwardRenderScene(CWorld* InWorld);
         ~FForwardRenderScene() override = default;
         LE_NO_COPYMOVE(FForwardRenderScene);
-        
+
         // Per-entity shared data. FProcessedDrawItem carries an EntityRecordIndex
         // into this table so Transform/Bounds aren't duplicated per surface.
         struct FEntityRecord
@@ -83,15 +85,17 @@ namespace Lumina
 
         // Per-thread local batch table; worker linear-searches it to dedup draws.
         // Merge walks these, making it O(unique batches x threads), not O(instances).
+        // Shader entries are library-owned (immortal) and resolved on the game thread; the
+        // render thread builds pipelines from their SPIR-V via the scene pipeline cache.
         struct alignas(64) FLocalBatchEntry
         {
             FDrawBatchKey                       Key;
-            FRHIVertexShader*                   VertexShader = nullptr;
-            FRHIPixelShader*                    PixelShader  = nullptr;
+            const FShaderEntry*                 VertexShader = nullptr;
+            const FShaderEntry*                 PixelShader  = nullptr;
             // Per-material depth-prepass / shadow VS. Null for non-WPO materials
             // -- renderer falls back to the global.
-            FRHIVertexShader*                   DepthVertexShader  = nullptr;
-            FRHIVertexShader*                   ShadowVertexShader = nullptr;
+            const FShaderEntry*                 DepthVertexShader  = nullptr;
+            const FShaderEntry*                 ShadowVertexShader = nullptr;
             TFrameVector<FDrawKey>              LocalDraws;
             TFrameVector<uint32>                LocalDrawCounts;
             TFrameVector<uint32>                LocalMeshletCounts;
@@ -111,10 +115,10 @@ namespace Lumina
         // by material. Per-entity bits (CastShadow / bDrawInDepthPass) added in ResolveSlot.
         struct FCachedMaterialResolve
         {
-            FRHIVertexShader*   VertexShader;
-            FRHIPixelShader*    PixelShader;
-            FRHIVertexShader*   DepthVertexShader;
-            FRHIVertexShader*   ShadowVertexShader;
+            const FShaderEntry* VertexShader;
+            const FShaderEntry* PixelShader;
+            const FShaderEntry* DepthVertexShader;
+            const FShaderEntry* ShadowVertexShader;
             uint64              MaterialID;
             uint16              MaterialIdx;
             bool                bTranslucent;
@@ -137,31 +141,23 @@ namespace Lumina
             TFrameVector<FLocalBatchEntry>      LocalBatches;
             // 48B/bone (last row dropped). Arena-backed; arena block must exceed one thread's worst-case bone vector.
             TFrameVector<FBoneTransform>        BonesData;
-            TFrameHashMap<CMesh*, uint8>  PinnedMeshDedupe;
-            // Heap-backed so refs survive the per-thread arena reset.
-            TVector<FRHIBufferRef>              PinnedMeshBuffers;
             // Per-thread material resolve cache; linear-scanned (few unique materials per thread).
             TFrameVector<FMaterialCacheEntry>   MaterialCache;
-            // Fast path for PinnedMeshDedupe: skip the hash for consecutive same-mesh entities.
-            CMesh*                              LastPinnedMesh = nullptr;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
 
             FThreadLocalDrawData() = default;
             explicit FThreadLocalDrawData(FFrameArenaAllocator A)
-                : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A), PinnedMeshDedupe(A)
+                : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A)
                 , MaterialCache(A), Arena(A) {}
-            
+
             void ResetForFrame(FFrameArenaAllocator A)
             {
                 Items            = TFrameVector<FProcessedDrawItem>(A);
                 EntityRecords    = TFrameVector<FEntityRecord>(A);
                 LocalBatches     = TFrameVector<FLocalBatchEntry>(A);
                 BonesData        = TFrameVector<FBoneTransform>(A);
-                PinnedMeshDedupe = TFrameHashMap<CMesh*, uint8>(A);
                 MaterialCache    = TFrameVector<FMaterialCacheEntry>(A);
-                PinnedMeshBuffers.clear();
-                LastPinnedMesh   = nullptr;
                 Arena            = A;
                 Stats            = {};
             }
@@ -182,14 +178,14 @@ namespace Lumina
             float       OuterFOVDegrees;
         };
 
-        // Per-frame extracted snapshot. FRAMES_IN_FLIGHT instances in FrameRing;
+        // Per-frame extracted snapshot. RHI::kFramesInFlight instances in FrameRing;
         // game thread writes one in Extract, render thread reads it in RenderView.
         struct FFrameData
         {
             struct FDecalBatch
             {
                 // Ref-held shaders (not the live CMaterial*) so a deleted decal asset can't dangle
-                // the render thread; the refcount keeps the shaders alive past the material's death.
+                // the render thread; the refcount keeps the bytecode alive past the material's death.
                 FRenderMaterialShaders Shaders;
                 uint32      FirstInstance;
                 uint32      Count;
@@ -198,7 +194,7 @@ namespace Lumina
             // A run of glyph instances sharing one font atlas; one instanced draw per batch.
             struct FTextBatch
             {
-                uint32      AtlasIndex   = 0;   // bindless ResourceID of the font atlas
+                uint32      AtlasIndex   = 0;   // global-heap ResourceID of the font atlas
                 uint32      AtlasWidth   = 0;
                 uint32      AtlasHeight  = 0;
                 float       DistanceRange = 0.0f; // px range baked into the MSDF (drives shader AA)
@@ -270,8 +266,8 @@ namespace Lumina
 
                 bool                    bReady              = false;  // asset ready to simulate
                 bool                    bUsesCustomShader   = false;
-                FRHIComputeShaderRef    CustomComputeShader;          // set iff bUsesCustomShader
-                uint32                  TextureIndex        = 0u;     // bindless slot, resolved game-side
+                const FShaderEntry*     CustomComputeShader = nullptr;  // set iff bUsesCustomShader
+                uint32                  TextureIndex        = 0u;     // heap ResourceID, resolved game-side
             };
 
             // Per-frame snapshot of enabled capture views, in registration order. The shared cull fills
@@ -301,7 +297,6 @@ namespace Lumina
                 TVector<uint32>                  OpaqueDrawList;
                 TVector<uint32>                  OpaqueOccluderDrawList;
                 TVector<uint32>                  TranslucentDrawList;
-                TVector<FRHIBufferRef>           PinnedMeshBuffersThisFrame;
                 FSceneCullContext                SceneCullContext;
                 TVector<uint32>                  DrawMeshletStartOffsets;
                 TVector<uint32>                  InstanceMeshletPrefix;
@@ -310,7 +305,7 @@ namespace Lumina
             struct FViews
             {
                 TVector<FCullView>               CullViews;
-                TVector<FDrawIndirectArguments>  IndirectArgs;
+                TVector<RHI::FDrawIndirectArguments> IndirectArgs;
                 uint32                           TotalMeshletBound   = 0;
                 uint32                           NumDrawsPerView     = 0;
                 uint32                           CameraLateViewIndex = ~0u;
@@ -340,10 +335,8 @@ namespace Lumina
                 TVector<FGPUDecal>               DecalExtracts;
                 TVector<FDecalBatch>             DecalBatches;
                 TVector<FWidgetInstance>         WidgetInstances;
-                TVector<FRHIImageRef>            PinnedWidgetRTs;
                 TVector<FGPUGlyph>               GlyphInstances;
                 TVector<FTextBatch>              TextBatches;
-                TVector<FRHIImageRef>            PinnedFontAtlases;
 
                 TVector<FGPUGlyph>               DebugTextGlyphs;
                 FTextBatch                       DebugTextBatch;
@@ -352,7 +345,9 @@ namespace Lumina
             struct FVolumetrics
             {
                 FEnvironmentParams               EnvironmentParams = {};
-                FRHIImage*                       EnvironmentMapImage = nullptr;
+                // HDRI env map (heap ResourceID + width for the equirect LOD); -1 = none.
+                int32                            EnvironmentMapID    = -1;
+                uint32                           EnvironmentMapWidth = 0;
                 FExponentialHeightFogParams      FogParams           = {};
                 bool                             bHasFog             = false;
                 bool                             bVolumetricFog      = false;
@@ -471,9 +466,10 @@ namespace Lumina
         // shading runs per FSceneView into its own image chain. Index 0 is primary; rest are captures.
         struct FSceneView
         {
-            FRHIViewportRef                                 Viewport;
-            FViewportState                                  ViewportState;
-            FUIntVector2                                      Size = FUIntVector2(0);
+            // Final display-referred RGBA8 target; the editor viewport / capture preview samples
+            // Output.GetResourceID() from the global heap.
+            FSceneImage                                     Output;
+            FUIntVector2                                    Size = FUIntVector2(0);
             bool                                            bIsPrimary = false;
 
             // Capture views only: camera to render from (set each frame before Extract) and whether
@@ -483,13 +479,11 @@ namespace Lumina
 
             // Indexed by ENamedImage. Per-view slots own their image; view-independent slots (BRDF LUT,
             // sky cubes, SMAA LUTs, editor icons) alias the shared image so reads go through CurrentView.
-            TArray<FRHIImageRef, (int)ENamedImage::Num>     Images = {};
-            FRHIImageRef                                    BloomChainImage;
+            TArray<FSceneImage, (int)ENamedImage::Num>      Images = {};
+            FSceneImage                                     BloomChainImage;
 
             // Per-view cluster grid (GPU-written, reached by device address via the scene root).
-            FRHIBufferRef                                   ClusterBuffer;
-            // All scene data (camera, lights, instances, ...) now reaches shaders by device address
-            // through FSceneRoot, so a view owns no descriptor sets.
+            FSceneBuffer                                    ClusterBuffer;
 
             // Cluster-grid cache: view-space AABBs depend only on this view's projection
             // + RT size, so the build is skipped while those are unchanged.
@@ -501,12 +495,12 @@ namespace Lumina
 
         void Init() override;
         void Shutdown() override;
-        
+
         void BeginFrame() override { }
         void EndFrame() override { }
-        
+
         void Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess) override;
-        void RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex) override;
+        void RenderView_NewRHI(uint8 FrameIndex) override;
         void SignalFrameConsumed(uint8 FrameIndex) override;
         void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { PendingPostProcessMaterials = Materials; }
         void SwapchainResized(FVector2 NewSize);
@@ -514,39 +508,43 @@ namespace Lumina
 
         int32 RegisterCaptureView(const FUIntVector2& Size) override;
         void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) override;
-        FRHIImage* GetCaptureRenderTarget(int32 Handle) const override;
-        
-        void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) override;
+        int32 GetCaptureDisplayResourceID(int32 Handle) const override;
+
+        void DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale) override;
         void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness, bool bDepthTest, float Duration) override { }
 
-        static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
-        
-        FRHIBuffer* GetPreSkinnedVerticesBuffer() const { return PreSkinnedVerticesBuffer; }
+        FSceneBuffer GetPreSkinnedVerticesBuffer() const { return PreSkinnedVerticesBuffer; }
         // Per-view images route through CurrentView; shared slots are aliased into every view.
         // Falls back to the shared store during Init before any view exists.
-        FRHIImage* GetNamedImage(ENamedImage Image) const { return CurrentView ? CurrentView->Images[(int)Image] : NamedImages[(int)Image]; }
+        const FSceneImage& GetNamedImage(ENamedImage Image) const { return CurrentView ? CurrentView->Images[(int)Image] : NamedImages[(int)Image]; }
 
         // Ringed accessors for the cull-pass scratch (see IndirectArgsRing).
-        FRHIBuffer* GetIndirectArgs()     const { return IndirectArgsRing[CurrentFrameSlot]; }
-        FRHIBuffer* GetMeshletDrawList()  const { return MeshletDrawListRing[CurrentFrameSlot]; }
-        FRHIBuffer* GetMeshletDeferList() const { return MeshletDeferListRing[CurrentFrameSlot]; }
-        FRHIBuffer* GetDeferCount()       const { return DeferCountRing[CurrentFrameSlot]; }
-        FRHIBuffer* GetSpdCounter()       const { return SpdCounterRing[CurrentFrameSlot]; }
+        FSceneBuffer GetIndirectArgs()     const { return IndirectArgsRing[CurrentFrameSlot]; }
+        FSceneBuffer GetMeshletDrawList()  const { return MeshletDrawListRing[CurrentFrameSlot]; }
+        FSceneBuffer GetMeshletDeferList() const { return MeshletDeferListRing[CurrentFrameSlot]; }
+        FSceneBuffer GetDeferCount()       const { return DeferCountRing[CurrentFrameSlot]; }
+        FSceneBuffer GetSpdCounter()       const { return SpdCounterRing[CurrentFrameSlot]; }
 
         // MSAA scratch RT when enabled, else the 1x image; use for the render-target
         // binding on geometry passes that participate in MSAA. 1x image is the resolve target.
-        FRHIImage* GetSceneColorRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR_MS) : GetNamedImage(ENamedImage::HDR); }
-        FRHIImage* GetSceneDepthRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Depth_MS) : GetNamedImage(ENamedImage::DepthAttachment); }
-        FRHIImage* GetPickerRT()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker_MS) : GetNamedImage(ENamedImage::Picker); }
+        const FSceneImage& GetSceneColorRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR_MS) : GetNamedImage(ENamedImage::HDR); }
+        const FSceneImage& GetSceneDepthRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Depth_MS) : GetNamedImage(ENamedImage::DepthAttachment); }
+        const FSceneImage& GetPickerRT()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker_MS) : GetNamedImage(ENamedImage::Picker); }
 
-        /** Resolve target, null when MSAA off (no resolve needed). Caller adds via FAttachment::SetResolveImage. */
-        FRHIImage* GetSceneColorResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR) : nullptr; }
-        FRHIImage* GetSceneDepthResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::DepthAttachment) : nullptr; }
-        FRHIImage* GetPickerResolve()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker) : nullptr; }
+        /** Resolve target, invalid handle when MSAA off (no resolve needed). */
+        RHI::FTextureH GetSceneColorResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR).Texture : RHI::FTextureH{}; }
+        RHI::FTextureH GetSceneDepthResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::DepthAttachment).Texture : RHI::FTextureH{}; }
+        RHI::FTextureH GetPickerResolve()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker).Texture : RHI::FTextureH{}; }
 
         uint8 GetMSAASampleCount() const { return MSAASampleCount; }
-        
-        FRHIImage* GetRenderTarget() const override;
+
+        uint32 GetDisplayResourceID() const override;
+        RHI::FTextureH GetDisplayTexture() const override { return SceneViews[0].Output.Texture; }
+        // Primary view's final display image / named image (screenshot readback sources;
+        // GetNamedImage routes through CurrentView, which may point at a capture).
+        const FSceneImage& GetDisplayImage() const { return SceneViews[0].Output; }
+        const FSceneImage& GetPrimaryNamedImage(ENamedImage Image) const { return SceneViews[0].Images[(int)Image]; }
+        FUIntVector2 GetRenderExtent() const override;
         const FSceneRenderStats& GetRenderStats() const override;
         FSceneRenderSettings& GetSceneRenderSettings() override;
         entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const override;
@@ -554,52 +552,43 @@ namespace Lumina
         void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) override;
     #endif
         const FShadowAtlas* GetShadowAtlas() const override { return &ShadowAtlas; }
-        
-        
+
+
     private:
 
         // Shared (view-independent) per-frame buffers: instances, bones, lights, cull
         // views, the cull-scratch rings, etc. Per-view Scene/Cluster buffers live on FSceneView.
         void InitBuffers();
         // Per-view image chain (HDR/LDR/Depth/Pyramid/Picker/post scratch/SMAA/bloom/...)
-        // sized to View.Viewport's render target. Shared images are aliased into View.Images.
+        // sized to View.Size. Shared images are aliased into View.Images.
         void InitViewImages(FSceneView& View);
-        // (Re)builds the primary view's images/buffers/binding sets + viewport state. Called
-        // on init and swapchain resize.
+        // Releases the per-view-owned images (Output, bloom, MS, and the per-view ENamedImage
+        // slots); shared aliases are just cleared. Caller guarantees the GPU is idle.
+        void ReleaseViewImages(FSceneView& View);
+        // (Re)builds the primary view's images at the current size. Called on init and resize.
         void InitFrameResources();
-        // Per-view binding sets (scene rw/ro per slot, compose, SMAA, OIT) against the
-        // shared layouts, referencing this view's per-view buffers/images.
-        void CreateViewBindingSets(FSceneView& View);
 
-        // Allocates + wires a new FSceneView (per-view images, Scene/Cluster buffers, binding
-        // sets) around an existing viewport/RT, appends it to SceneViews, and returns it.
-        FSceneView& AddSceneView(const FRHIViewportRef& Viewport, bool bPrimary);
+        // Allocates + wires a new FSceneView (per-view images, cluster buffer) at Size,
+        // appends it to SceneViews, and returns it.
+        FSceneView& AddSceneView(const FUIntVector2& Size, bool bPrimary);
 
         // Render thread: shade the current capture view (CurrentView) into its RT. Reduced single-pass
         // (no two-pass occlusion); geometry/shadows/sky were already produced by the shared passes.
-        void RenderCaptureView(ICommandList& CmdList);
+        void RenderCaptureView(RHI::FCmdListH CL);
 
-        // The view being shaded's final output RT (the live SceneViewport's RT). Primary and
-        // capture passes write here; GetRenderTarget() (public) always returns the primary's.
-        FRHIImage* GetViewOutputTarget() const { return SceneViewport ? SceneViewport->GetRenderTarget() : nullptr; }
-
-        // Re-point CurrentView + every live per-view member (binding sets, viewport, bloom) at View
-        // so the shading passes operate on it. Called once per view in RenderView_RenderThread.
+        // Re-point CurrentView + the per-view aliases at View so the shading passes operate on it.
         void PointAtView(FSceneView& View)
         {
-            CurrentView                = &View;
-            BloomChain                 = View.BloomChainImage;
-            SceneViewportState         = View.ViewportState;
-            SceneViewport              = View.Viewport.GetReference();
+            CurrentView = &View;
         }
 
         // Aliases the process-wide immutable resources (BRDF LUT, SMAA LUTs, editor
         // icons) into this scene's NamedImages, building them once on the first scene.
         void InitSharedResources();
 
-        // Bakes the BRDF integration LUT and returns it (no NamedImages assignment).
-        FRHIImageRef BakeBRDFLUT();
-        
+        // Bakes the BRDF integration LUT into the shared resources (compute, synchronous).
+        void BakeBRDFLUT();
+
         void InitSkyCube(uint32 FaceSize);
 
         void InitIBLConvolutionTargets(const FIBLBakeResolution& Resolution);
@@ -614,70 +603,71 @@ namespace Lumina
         void ResetPass_GameThread();
 
         // Render thread: depth + shadow atlas clears recorded onto the cmd list.
-        void ResetPass_RenderThread(ICommandList& CmdList);
-        
-        void CullPassEarly(ICommandList& CmdList);
-        void CullPassLate(ICommandList& CmdList);
+        void ResetPass_RenderThread(RHI::FCmdListH CL);
+
+        void CullPassEarly(RHI::FCmdListH CL);
+        void CullPassLate(RHI::FCmdListH CL);
 
         // Skins every visible skeletal entity once into the pre-skinned vertex buffer,
         // before any draw pass that reads skinned geometry.
-        void SkinningPass(ICommandList& CmdList);
+        void SkinningPass(RHI::FCmdListH CL);
 
-        // Replays Frame.PaintOps as compute brush dispatches into each target's bindless UAV, then
-        // restores them to ShaderResource so the geometry passes can sample them.
-        void TexturePaintPass(ICommandList& CmdList);
+        // Replays Frame.PaintOps as compute brush dispatches into each target's bindless UAV.
+        void TexturePaintPass(RHI::FCmdListH CL);
 
-        
-        void DepthPrePassEarly(ICommandList& CmdList);
-        void DepthPrePassLate(ICommandList& CmdList);
-        void DepthPyramidPass(ICommandList& CmdList);
-        void ClusterBuildPass(ICommandList& CmdList);
-        void LightCullPass(ICommandList& CmdList);
-        void PointShadowPass(ICommandList& CmdList);
-        void SpotShadowPass(ICommandList& CmdList);
-        void CascadedShowPass(ICommandList& CmdList);
-        void DecalPass(ICommandList& CmdList);
-        void BasePass(ICommandList& CmdList);
-        void BillboardPass(ICommandList& CmdList);
-        void WidgetPass(ICommandList& CmdList);
-        void TextPass(ICommandList& CmdList);
-        void DebugTextPass(ICommandList& CmdList);
-        void WidgetPickerPass(ICommandList& CmdList);
-        void ParticleSimulatePass(ICommandList& CmdList);
-        void ParticleRenderPass(ICommandList& CmdList);
-        void TerrainUpdatePass(ICommandList& CmdList);
-        void TerrainCullPass(ICommandList& CmdList);
-        void TerrainDepthPrePass(ICommandList& CmdList);
-        void TerrainRenderPass(ICommandList& CmdList);
-        void SSAOPass(ICommandList& CmdList);
-        void SSAOBlurPass(ICommandList& CmdList);
-        void TransparentPass(ICommandList& CmdList);
-        void OITResolvePass(ICommandList& CmdList);
-        void FroxelInjectPass(ICommandList& CmdList);
-        void FroxelIntegratePass(ICommandList& CmdList);
-        void FroxelApplyPass(ICommandList& CmdList);
-        void WaterPass(ICommandList& CmdList);
-        void UnderwaterPass(ICommandList& CmdList);
-        void EnvironmentPass(ICommandList& CmdList);
-        void SkyCubeCapturePass(ICommandList& CmdList);
-        void IrradianceConvolutionPass(ICommandList& CmdList);
-        void PrefilterEnvMapPass(ICommandList& CmdList);
-        void BatchedLineDraw(ICommandList& CmdList);
-        void BatchedTriangleDraw(ICommandList& CmdList);
-        void BloomPass(ICommandList& CmdList);
-        void AutoExposurePass(ICommandList& CmdList);
-        void ToneMappingPass(ICommandList& CmdList);
-        void PostProcessMaterialPass(ICommandList& CmdList);
-        void SMAAEdgeDetectionPass(ICommandList& CmdList);
-        void SMAABlendWeightPass(ICommandList& CmdList);
-        void SMAANeighborhoodBlendPass(ICommandList& CmdList);
+
+        void DepthPrePassEarly(RHI::FCmdListH CL);
+        void DepthPrePassLate(RHI::FCmdListH CL);
+        // Shared body of the early/late depth prepass: one cull-view's slice of the indirect args.
+        void RecordDepthPrePassSlice(RHI::FCmdListH CL, uint32 ViewIndex, bool bClearDepth);
+        void DepthPyramidPass(RHI::FCmdListH CL);
+        void ClusterBuildPass(RHI::FCmdListH CL);
+        void LightCullPass(RHI::FCmdListH CL);
+        void PointShadowPass(RHI::FCmdListH CL);
+        void SpotShadowPass(RHI::FCmdListH CL);
+        void CascadedShowPass(RHI::FCmdListH CL);
+        void DecalPass(RHI::FCmdListH CL);
+        void BasePass(RHI::FCmdListH CL);
+        void BillboardPass(RHI::FCmdListH CL);
+        void WidgetPass(RHI::FCmdListH CL);
+        void TextPass(RHI::FCmdListH CL);
+        void DebugTextPass(RHI::FCmdListH CL);
+        void WidgetPickerPass(RHI::FCmdListH CL);
+        void ParticleSimulatePass(RHI::FCmdListH CL);
+        void ParticleRenderPass(RHI::FCmdListH CL);
+        void TerrainUpdatePass(RHI::FCmdListH CL);
+        void TerrainCullPass(RHI::FCmdListH CL);
+        void TerrainDepthPrePass(RHI::FCmdListH CL);
+        void TerrainRenderPass(RHI::FCmdListH CL);
+        void SSAOPass(RHI::FCmdListH CL);
+        void SSAOBlurPass(RHI::FCmdListH CL);
+        void TransparentPass(RHI::FCmdListH CL);
+        void OITResolvePass(RHI::FCmdListH CL);
+        void FroxelInjectPass(RHI::FCmdListH CL);
+        void FroxelIntegratePass(RHI::FCmdListH CL);
+        void FroxelApplyPass(RHI::FCmdListH CL);
+        void WaterPass(RHI::FCmdListH CL);
+        void UnderwaterPass(RHI::FCmdListH CL);
+        void EnvironmentPass(RHI::FCmdListH CL);
+        void SkyCubeCapturePass(RHI::FCmdListH CL);
+        void IrradianceConvolutionPass(RHI::FCmdListH CL);
+        void PrefilterEnvMapPass(RHI::FCmdListH CL);
+        void BatchedLineDraw(RHI::FCmdListH CL);
+        void BatchedTriangleDraw(RHI::FCmdListH CL);
+        void BloomPass(RHI::FCmdListH CL);
+        void AutoExposurePass(RHI::FCmdListH CL);
+        void ToneMappingPass(RHI::FCmdListH CL);
+        void PostProcessMaterialPass(RHI::FCmdListH CL);
+        void SMAAEdgeDetectionPass(RHI::FCmdListH CL);
+        void SMAABlendWeightPass(RHI::FCmdListH CL);
+        void SMAANeighborhoodBlendPass(RHI::FCmdListH CL);
         //~ End Render Passes
 
         // Game-thread half: ECS reads + parallel Process* tasks + cull/shadow setup.
         void CompileDrawCommands_GameThread();
 
-        // Render-thread half: buffer resize + WriteBuffer commands; reads game-thread state.
-        void CompileDrawCommands_RenderThread(ICommandList& CmdList);
+        // Render-thread half: buffer resize + upload commands; reads game-thread state.
+        void CompileDrawCommands_RenderThread(RHI::FCmdListH CL);
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
@@ -686,7 +676,7 @@ namespace Lumina
         // Runs serially before the parallel gather so the context is immutable during it.
         void BuildSceneCullContext();
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
-        
+
         void ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount);
@@ -698,7 +688,7 @@ namespace Lumina
         // Builds the per-frame FCullView array and seeds IndirectArgs per view. Runs
         // after AllocateShadowTiles (ViewProjection filled) and before the buffer upload.
         void BuildCullViews(const FViewVolume& ViewVolume);
-        
+
         // Line batching split into graph-schedulable phases so the heavy parallel cull is dispatched as a
         // first-class root node (its chunks enter the queue at Dispatch, alongside the mesh fan-out) instead
         // of being fired from inside a single node at runtime (which bubbled the pool). Prepare runs inline
@@ -708,29 +698,76 @@ namespace Lumina
         void   BatchLineChunks(const Task::FParallelRange& Range);
         void   FinalizeBatchedLines(FLineBatcherComponent& Batcher);
         void   ProcessBatchedTriangles(FTriangleBatcherComponent& Batcher);
-        
+
         void NotifyMaxLightsHit();
 
         // CPU early-out for shadow requests: false when the light's attenuation sphere
         // is fully outside the camera frustum, skipping its shadow view/tile/slice.
         bool ShouldRequestShadow(const FVector3& LightPosition, float LightRadius) const;
 
+        //~ Begin new-RHI helpers
+
+        // Static state of one graphics pipeline. Everything else (viewport/scissor, cull mode,
+        // front face, depth-stencil, depth bias, line width) is dynamic.
+        struct FGraphicsPipelineKey
+        {
+            const FShaderEntry* VS = nullptr;
+            const FShaderEntry* PS = nullptr;    // null = depth-only
+            RHI::ETopology  Topology = RHI::ETopology::TriangleList;
+            bool            bWireframe = false;
+            bool            bAlphaToCoverage = false;
+            uint8           SampleCount = 1;
+            EFormat         DepthFormat = EFormat::UNKNOWN;
+            TFixedVector<RHI::FColorTarget, 4> ColorTargets;
+        };
+
+        RHI::FPipelineH      GetOrCreatePipeline(const FGraphicsPipelineKey& Key);
+        RHI::FPipelineH      GetOrCreateComputePipeline(const FShaderEntry* CS);
+        RHI::FDepthStencilH  GetOrCreateDepthState(const RHI::FDepthStencilDesc& Desc);
+
+        // Engine-wide per-draw args: FRootConstants{SceneRoot, PassData} in the transient ring;
+        // the returned address is what every CmdDraw/CmdDispatch pushes as gRHI.Args.
+        template<typename T>
+        RHI::GPUPtr MakeArgs(const T& PassData)
+        {
+            return RHI::Core::CopyTransient(FRootConstants{ CurrentSceneRootAddr, RHI::Core::CopyTransient(PassData) });
+        }
+        RHI::GPUPtr MakeArgs()
+        {
+            return RHI::Core::CopyTransient(FRootConstants{ CurrentSceneRootAddr, 0 });
+        }
+
+        // Sets the full-extent viewport + scissor for the current render area.
+        static void SetViewportScissor(RHI::FCmdListH CL, const FUIntVector2& Extent);
+
+        // CPU -> device-local copy through the transient ring.
+        static void WriteBuffer(RHI::FCmdListH CL, RHI::GPUPtr Dst, const void* Data, uint64 Size);
+
+        // Grow/shrink-with-hysteresis for the persistent GPU buffers; the replaced
+        // allocation is queued on DeferredFrees for the current slot.
+        void ResizeBufferIfNeeded(FSceneBuffer& Buffer, uint64 NeededSize, float SlackFactor, uint32& LowUsageCounter);
+
+        // Frame-deferred destruction: freed when this slot's previous GPU work has completed.
+        void DeferFree(RHI::GPUPtr Ptr);
+        void DeferRelease(FSceneImage& Image);
+
+        //~ End new-RHI helpers
 
     private:
-        
+
         // The only persistent per-frame buffers left. Everything CPU-dynamic (instances/lights/bones/
         // billboards/widgets/cull views/skin descriptors/env+fog params/meshlet prefix) is uploaded to
-        // the command-list transient ring each frame; the GPU-written cull/draw rings have own members.
+        // the transient ring each frame; the GPU-written cull/draw rings have own members.
         // Pre-skinned vertices are GPU-written device-local scratch (skinning compute writes, draw VS reads
         // via BDA). Debug line/triangle geometry is ring-allocated at its draw site, no persistent buffer.
-        FRHIBufferRef                                   PreSkinnedVerticesBuffer;
+        FSceneBuffer                                    PreSkinnedVerticesBuffer;
         // Per-buffer hysteresis counters for ResizeBufferIfNeeded's shrink path (consecutive
         // frames of sustained low usage). Persisted so memory is reclaimed after the scene shrinks.
         uint32                                          PreSkinnedVerticesLowUsage = 0;
-        TArray<uint32, FRAMES_IN_FLIGHT>                IndirectArgsRingLowUsage = {};
-        TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDrawListRingLowUsage = {};
-        TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDeferListRingLowUsage = {};
-        TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
+        TArray<uint32, RHI::kFramesInFlight>                IndirectArgsRingLowUsage = {};
+        TArray<uint32, RHI::kFramesInFlight>                MeshletDrawListRingLowUsage = {};
+        TArray<uint32, RHI::kFramesInFlight>                MeshletDeferListRingLowUsage = {};
+        TArray<FSceneImage, (int)ENamedImage::Num>      NamedImages = {};
 
         /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */
         uint8                                           MSAASampleCount = 1;
@@ -756,12 +793,6 @@ namespace Lumina
         uint32                                  CurrentCameraEarlyView = 0;
         uint32                                  CurrentCameraLateView  = ~0u;
 
-        // Live pointer into CurrentView->BloomChainImage.
-        FRHIImage*                              BloomChain = nullptr;
-
-        FViewportState                          SceneViewportState;
-        // Live pointer into CurrentView->Viewport.
-        FRHIViewport*                           SceneViewport = nullptr;
         FDelegateHandle                         SwapchainResizedHandle;
         CWorld*                                 World = nullptr;
 
@@ -773,13 +804,13 @@ namespace Lumina
         // IBL change-tracking: persistent SkyCube/Irradiance/Prefilter rebuilt only when
         // these last-baked inputs change. bIBLConvolutionDirty gates the costly convolution.
         FEnvironmentParams                      LastIBLEnvironmentParams = {};
-        FRHIImage*                              LastIBLEnvironmentMap    = nullptr;
+        int32                                   LastIBLEnvironmentMapID  = -1;
         FVector3                               LastIBLSunDirection      = FVector3(0.0f);
         bool                                    bLastIBLHasSun           = false;
         bool                                    bIBLValid                = false;
 
         FEnvironmentParams                      LastConvolvedEnvironmentParams = {};
-        FRHIImage*                              LastConvolvedEnvironmentMap    = nullptr;
+        int32                                   LastConvolvedEnvironmentMapID  = -1;
         FVector3                               LastConvolvedSunDirection      = FVector3(0.0f);
         bool                                    bLastConvolvedHasSun           = false;
         bool                                    bIBLConvolutionValid           = false;
@@ -795,11 +826,18 @@ namespace Lumina
         FEnvironmentParams                      LastUploadedEnvironmentParams = {};
         bool                                    bEnvironmentParamsUploaded    = false;
 
-        FBindingCache                           BindingCache;
+        // New-RHI pipeline / depth-state caches, keyed by hashed static state. Pipelines from a
+        // recompiled material key on the new shader object pointers, so stale entries just idle.
+        THashMap<uint64, RHI::FPipelineH>       PipelineCache;
+        THashMap<uint64, RHI::FDepthStencilH>   DepthStateCache;
+
+        // Frame-deferred GPU frees, processed at RenderView entry for the (already GPU-idle) slot.
+        TArray<TVector<RHI::GPUPtr>,  RHI::kFramesInFlight> DeferredBufferFrees;
+        TArray<TVector<FSceneImage>,  RHI::kFramesInFlight> DeferredImageReleases;
 
         // SSAO setup, built once in Init(): the 4x4 tangent-rotation noise texture (sampled tiled with
         // a wrap point sampler) and the cached hemisphere kernel copied into each frame's SceneGlobalData.
-        FRHIImageRef                            SSAONoiseTexture;
+        RHI::FManagedTexture                    SSAONoiseTexture;
         FSSAOSettings                           CachedSSAOSettings = {};
 
         // Latest post-process material list from the world; captured into
@@ -808,30 +846,24 @@ namespace Lumina
 
         // Bindless scene model: shared (per-frame) buffer addresses filled in CompileDrawCommands; the
         // per-view root (adds this view's camera + clusters + IBL indices) is uploaded to a transient
-        // and its address kept in CurrentSceneRootAddr, which every pass pushes as FRootConstants.RootAddr.
+        // and its address kept in CurrentSceneRootAddr, which rides in every draw's FRootConstants.
         FSceneRoot                                                      SceneRootShared = {};
         uint64                                                          CurrentSceneRootAddr = 0;
         // Builds the per-view FSceneRoot transient (shared addrs + view camera/clusters/IBL) -> address.
-        uint64 BuildViewSceneRoot(ICommandList& CmdList, FSceneView& View, uint64 SceneDataAddr);
+        uint64 BuildViewSceneRoot(FSceneView& View, uint64 SceneDataAddr);
 
-        // Push the engine-wide root constants for a pass: the current view's scene root + this pass's
-        // own constants (uploaded to a transient). Replaces every per-pass SetPushConstants.
-        template<typename T> void PushRootConstants(ICommandList& CmdList, const T& PassData);
-        void PushRootConstants(ICommandList& CmdList);   // pass with no own constants
-
-        // GPU-atomic-written by CullMeshlets, consumed by DrawIndirect, so it can't be
-        // BUF_Dynamic (no dynamic offset to vkCmdDrawIndirect). Manual N-buffer ring.
-        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         IndirectArgsRing = {};
+        // GPU-atomic-written by CullMeshlets, consumed by DrawIndirect. Manual N-buffer ring.
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          IndirectArgsRing = {};
 
         // Cull-pass scratch, ringed like IndirectArgsRing so frame N+1's cull overlaps
         // frame N's draws instead of stalling on a WAR barrier on one shared buffer.
-        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         MeshletDrawListRing = {};
-        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         MeshletDeferListRing = {};
-        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         DeferCountRing = {};
-        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         SpdCounterRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDrawListRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDeferListRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          DeferCountRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          SpdCounterRing = {};
 
         // Frame slot index for ringed scene resources. Set at the top of
-        // RenderView_RenderThread from GRenderManager->GetCurrentFrameIndex().
+        // RenderView_NewRHI from the frame index.
         uint8                                                           CurrentFrameSlot = 0;
 
         FShadowAtlas                            ShadowAtlas;
@@ -891,14 +923,14 @@ namespace Lumina
         // balanced work units for the parallel line batch (no drain). Reused so it doesn't churn the heap.
         struct FLineChunk { const FLineBatcherComponent::FLineInstance* Data; uint32 Count; };
         TVector<FLineChunk>                     LineChunkScratch;
-        
+
         FTaskGraph                              DrawTaskGraph;
         FTaskGraph                              DedupTaskGraph;
 
-        TArray<FFrameData,      FRAMES_IN_FLIGHT>       FrameRing;
-        TArray<TAtomic<uint64>, FRAMES_IN_FLIGHT>       SlotConsumedCount;
-        TArray<uint64,          FRAMES_IN_FLIGHT>       SlotProducedCount = {};
-        TArray<TAtomic<bool>,   FRAMES_IN_FLIGHT>       SlotHasPendingConsume = {};
+        TArray<FFrameData,      RHI::kFramesInFlight>       FrameRing;
+        TArray<TAtomic<uint64>, RHI::kFramesInFlight>       SlotConsumedCount;
+        TArray<uint64,          RHI::kFramesInFlight>       SlotProducedCount = {};
+        TArray<TAtomic<bool>,   RHI::kFramesInFlight>       SlotHasPendingConsume = {};
         FMutex                                          SlotMutex;
         std::condition_variable                         SlotCV;
 
@@ -909,16 +941,16 @@ namespace Lumina
         void SignalSlotConsumed(uint8 Slot);
 
 #if USING(WITH_EDITOR)
-        static constexpr uint32                 PickerReadbackRingSize = FRAMES_IN_FLIGHT + 1;
+        static constexpr uint32                 PickerReadbackRingSize = RHI::kFramesInFlight + 1;
         // Side of the square copied around the cursor; large enough to still contain
         // the click pixel after the few-frame cursor drift before readback consumes it.
         static constexpr uint32                 PickerRegionExtent = 64;
         struct FPickerReadbackSlot
         {
-            FRHIStagingImageRef Staging;
+            RHI::GPUPtr         Readback = 0;       // CPURead buffer, Width*Height*4 bytes
             uint32              OriginX = 0;        // top-left of the copied region, in picker texels
             uint32              OriginY = 0;
-            uint32              Width = 0;          // region dimensions == staging image extent
+            uint32              Width = 0;          // region dimensions
             uint32              Height = 0;
             uint64              SubmittedFrame = 0;
             bool                bPending = false;
@@ -931,8 +963,8 @@ namespace Lumina
         // avoid torn reads: bit 0 = over-viewport, bits 1..21 = X, bits 22..42 = Y.
         TAtomic<uint64>                         PickerCursorPacked = 0;
 
-        // Schedules the per-frame picker -> staging copy after the last picker RT write.
-        void IssuePickerReadback(ICommandList& CmdList);
+        // Schedules the per-frame picker -> readback copy after the last picker RT write.
+        void IssuePickerReadback(RHI::FCmdListH CL);
 #endif
 
     };

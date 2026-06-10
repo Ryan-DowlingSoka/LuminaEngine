@@ -81,7 +81,7 @@ namespace Lumina
             Task::ParallelFor((uint32)Images.size(), [&](uint32 Index)
             {
                 FMeshImportImage& Texture = *Images[Index];
-                if (Texture.DisplayImage)
+                if (Texture.DisplayImage.IsValid())
                 {
                     return;
                 }
@@ -265,7 +265,7 @@ namespace Lumina
                         const FMeshImportImage& Img = Images[i];
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        if (Img.DisplayImage)
+                        if (Img.DisplayImage.IsValid())
                         {
                             ImGui::Image(ImGuiX::ToImTextureRef(Img.DisplayImage), ImVec2(ThumbSize, ThumbSize));
                         }

@@ -3,6 +3,11 @@
 #include "Log/Log.h"
 #include "Containers/String.h"
 
+namespace Lumina::RHI
+{
+    RUNTIME_API void HandleDeviceLost();
+}
+
 namespace Lumina::Vulkan
 {
     // Modal Win32 dialog with the failing call site; WindowedApp builds have no console,
@@ -63,7 +68,7 @@ do {                                                                            
             #x, __FILE__, __LINE__, (uint32)result, Vulkan::VkResultToString(result));  \
         if (result == VK_ERROR_DEVICE_LOST)                                             \
         {                                                                               \
-            Lumina::GRenderContext->HandleDeviceLost();                                 \
+            Lumina::RHI::HandleDeviceLost();                                            \
         }                                                                               \
         else                                                                            \
         {                                                                               \

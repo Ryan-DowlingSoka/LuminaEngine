@@ -4,7 +4,7 @@
 #include "Containers/String.h"
 #include "Core/Threading/Atomic.h"
 #include "Platform/Filesystem/DirectoryWatcher.h"
-#include "Renderer/RHIFwd.h"
+#include "Renderer/RHITexture.h"
 #include "UI/ColorTextEdit/TextEditor.h"
 #include "UI/Tools/AssetEditors/AssetEditorTool.h"
 
@@ -93,7 +93,7 @@ namespace Lumina
         size_t                      CachedStatusUndoIndex = ~size_t(0);
 
         Rml::Context*               PreviewContext = nullptr;
-        FRHIImageRef                PreviewTarget;
+        RHI::FManagedTexture        PreviewTarget;
         uint32                      PreviewWidth = 0;
         uint32                      PreviewHeight = 0;
 

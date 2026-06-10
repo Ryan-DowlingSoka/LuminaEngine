@@ -4,17 +4,15 @@
 #include "Core/Math/Math.h"
 #include "Core/Object/ObjectCore.h"
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
-#include "Renderer/CommandList.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RenderResource.h"
 #include "Renderer/RenderThread.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHI.h"
 #include "World/WorldTypes.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneRenderTypes.h"
+#include "World/Scene/RenderScene/Forward/ForwardRenderScene.h"
 
 namespace Lumina
 {
@@ -109,34 +107,38 @@ namespace Lumina
         const uint8 FrameIndex = (uint8)GRenderManager->GetCurrentFrameIndex();
         World->Extract();
 
-        FRHIImage*          RenderTarget = nullptr;
-        FRHIStagingImageRef StagingImage;
+        bool   bCaptured = false;
+        uint32 SourceWidth = 0;
+        uint32 SourceHeight = 0;
+        RHI::GPUPtr Readback = 0;
 
         // Submit on the render thread (the sole graphics submitter) so we never race the
         // swapchain frame. Capture is game-thread only, so EnqueueAndWait can't self-deadlock.
         auto RecordCapture = [&]()
         {
-            FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-            CommandList->Open();
-            World->Render(*CommandList, FrameIndex);
+            IRenderScene* Scene = World->GetRenderer();
+            Scene->RenderView_NewRHI(FrameIndex);
 
-            RenderTarget = World->GetRenderer()->GetRenderTarget();
-            if (RenderTarget == nullptr)
+            auto* Forward = static_cast<FForwardRenderScene*>(Scene);
+            const FSceneImage& Output = Forward->GetDisplayImage();
+            if (!Output.IsValid())
             {
-                CommandList->Close();
                 return;
             }
 
-            StagingImage = GRenderContext->CreateStagingImage(RenderTarget->GetDescription(), ERHIAccess::HostRead);
-            CommandList->CopyImage(RenderTarget, FTextureSlice(), StagingImage, FTextureSlice());
+            SourceWidth  = Output.GetSizeX();
+            SourceHeight = Output.GetSizeY();
+            Readback = RHI::Malloc((uint64)SourceWidth * SourceHeight * 4u, RHI::kDefaultAlign, RHI::EMemoryType::CPURead);
 
-            CommandList->Close();
-            GRenderContext->ExecuteCommandList(CommandList);
+            RHI::FCmdListH CL = RHI::OpenCommandList();
+            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::CmdCopyTextureToMemory(CL, Output.Texture, RHI::FTextureSlice{}, Readback, SourceWidth);
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::Host);
+            RHI::Submit(CL);
+            RHI::WaitDeviceIdle();
+            RHI::ResetCommandList(CL);
 
-            // Wait on just this submission, not the whole device.
-            FRHIEventQueryRef Query = GRenderContext->CreateEventQuery();
-            GRenderContext->SetEventQuery(Query, ECommandQueue::Graphics);
-            GRenderContext->WaitEventQuery(Query);
+            bCaptured = true;
         };
 
         if (GRenderThread != nullptr && GRenderThread->IsRunning())
@@ -154,25 +156,23 @@ namespace Lumina
             Scene->SignalFrameConsumed(FrameIndex);
         }
 
-        if (RenderTarget == nullptr || !StagingImage.IsValid())
+        if (!bCaptured || Readback == 0)
         {
+            if (Readback != 0)
+            {
+                RHI::Free(Readback);
+            }
             return false;
         }
 
-        size_t RowPitch = 0;
-        void* MappedMemory = GRenderContext->MapStagingTexture(StagingImage, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
-        if (MappedMemory == nullptr)
+        const void* MappedMemory = RHI::ToHost(Readback);
+        if (MappedMemory != nullptr)
         {
-            return false;
+            ThumbnailUtils::StoreDownsampledRGBA(Thumbnail, static_cast<const uint8*>(MappedMemory),
+                SourceWidth, SourceHeight, (size_t)SourceWidth * 4u);
         }
 
-        const uint32 SourceWidth  = RenderTarget->GetDescription().Extent.x;
-        const uint32 SourceHeight = RenderTarget->GetDescription().Extent.y;
-
-        ThumbnailUtils::StoreDownsampledRGBA(Thumbnail, static_cast<const uint8*>(MappedMemory),
-            SourceWidth, SourceHeight, RowPitch);
-
-        GRenderContext->UnMapStagingTexture(StagingImage);
-        return true;
+        RHI::Free(Readback);
+        return MappedMemory != nullptr;
     }
 }

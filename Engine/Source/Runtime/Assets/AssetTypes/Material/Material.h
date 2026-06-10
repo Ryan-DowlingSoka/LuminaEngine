@@ -44,12 +44,12 @@ namespace Lumina
         FMaterialUniforms* GetMaterialUniforms() override { return &MaterialUniforms; }
         
         CMaterial* GetMaterial() const override;
-        FRHIVertexShader* GetVertexShader() const override;
-        FRHIPixelShader* GetPixelShader() const override;
+        const FShaderEntry* GetVertexShader() const override;
+        const FShaderEntry* GetPixelShader() const override;
 
         // Per-material depth-prepass / shadow VS only populated for WPO materials; null falls back to global lib.
-        FRHIVertexShader* GetDepthPrepassVertexShader() const { return DepthPrepassVertexShader; }
-        FRHIVertexShader* GetShadowVertexShader() const { return ShadowVertexShader; }
+        const FShaderEntry* GetDepthPrepassVertexShader() const { return DepthPrepassVertexShader; }
+        const FShaderEntry* GetShadowVertexShader() const { return ShadowVertexShader; }
         bool UsesWorldPositionOffset() const { return bUsesWorldPositionOffset; }
 
         static CMaterial* GetDefaultMaterial();
@@ -119,10 +119,11 @@ namespace Lumina
 
         FMaterialUniforms                       MaterialUniforms;
 
-        FRHIVertexShaderRef                     VertexShader;
-        FRHIPixelShaderRef                      PixelShader;
-        FRHIVertexShaderRef                     DepthPrepassVertexShader;
-        FRHIVertexShaderRef                     ShadowVertexShader;
+        // Library entries keyed by asset GUID; recompiles refresh them in place.
+        const FShaderEntry*                     VertexShader = nullptr;
+        const FShaderEntry*                     PixelShader = nullptr;
+        const FShaderEntry*                     DepthPrepassVertexShader = nullptr;
+        const FShaderEntry*                     ShadowVertexShader = nullptr;
         
     protected:
         

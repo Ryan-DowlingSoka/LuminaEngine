@@ -2,9 +2,8 @@
 #include "Texture.h"
 #include "Core/Object/Class.h"
 #include "Memory/MemoryTracking.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHITexture.h"
 
 namespace Lumina
 {
@@ -34,20 +33,23 @@ namespace Lumina
     {
         LUMINA_MEMORY_SCOPE("Textures");
 
-        TextureResource->RHIImage = GRenderContext->CreateImage(TextureResource->ImageDescription);
+        const FTextureResource::FDescription& Desc = TextureResource->ImageDescription;
 
-        FRHICommandListRef TransferCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
-        TransferCommandList->Open();
+        // New RHI: create the sampled texture in the global heap + upload every mip.
+        TextureResource->NewTexture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Desc.Extent.x,
+            .Height = Desc.Extent.y,
+            .Mips   = (uint32)TextureResource->Mips.size(),
+            .Format = Desc.Format,
+        });
 
         for (uint8 i = 0; i < TextureResource->Mips.size(); ++i)
         {
-            FTextureResource::FMip& Mip = TextureResource->Mips[i];
-            const uint32 RowPitch = Mip.RowPitch;
-            TransferCommandList->WriteImage(TextureResource->RHIImage, 0, i, Mip.Pixels.data(), RowPitch, 1);
+            const FTextureResource::FMip& Mip = TextureResource->Mips[i];
+            // RowPitchTexels = mip width: pixel rows are tightly packed at the mip's width.
+            RHI::Textures::Upload(TextureResource->NewTexture, i, Mip.Pixels.data(), Mip.Pixels.size(), Mip.Width);
         }
-
-        TransferCommandList->Close();
-        GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Compute);
 
 #if !USING(WITH_EDITOR)
         // CPU pixels are dead after upload in cooked builds; editor retains them for reimport/thumbnails.
@@ -61,5 +63,9 @@ namespace Lumina
 
     void CTexture::OnDestroy()
     {
+        if (TextureResource)
+        {
+            RHI::Textures::Release(TextureResource->NewTexture);
+        }
     }
 }

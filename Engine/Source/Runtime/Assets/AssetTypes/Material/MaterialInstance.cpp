@@ -42,9 +42,9 @@ namespace Lumina
                 }
                 break;
             case EMaterialParameterType::Texture:
-                if (Param.Index < MAX_TEXTURES && Override.Texture && Override.Texture->TextureResource && Override.Texture->TextureResource->RHIImage.IsValid())
+                if (Param.Index < MAX_TEXTURES && Override.Texture && Override.Texture->GetResourceID() >= 0)
                 {
-                    Uniforms.Textures[Param.Index] = Override.Texture->GetRHIRef()->GetResourceID();
+                    Uniforms.Textures[Param.Index] = (uint32)Override.Texture->GetResourceID();
                 }
                 break;
             }
@@ -161,9 +161,9 @@ namespace Lumina
 
         if (Param.Index < MAX_TEXTURES)
         {
-            if (TextureValue && TextureValue->TextureResource && TextureValue->TextureResource->RHIImage.IsValid())
+            if (TextureValue && TextureValue->GetResourceID() >= 0)
             {
-                MaterialUniforms.Textures[Param.Index] = TextureValue->GetRHIRef()->GetResourceID();
+                MaterialUniforms.Textures[Param.Index] = (uint32)TextureValue->GetResourceID();
             }
             else
             {
@@ -226,12 +226,12 @@ namespace Lumina
         }
     }
 
-    FRHIVertexShader* CMaterialInstance::GetVertexShader() const
+    const FShaderEntry* CMaterialInstance::GetVertexShader() const
     {
         return Material ? Material->GetVertexShader() : nullptr;
     }
 
-    FRHIPixelShader* CMaterialInstance::GetPixelShader() const
+    const FShaderEntry* CMaterialInstance::GetPixelShader() const
     {
         return Material ? Material->GetPixelShader() : nullptr;
     }

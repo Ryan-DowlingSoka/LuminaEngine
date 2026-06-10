@@ -33,8 +33,8 @@ namespace Lumina
         // Game thread: snapshot world state for the render thread. Pair with the prior frame's RenderWorlds.
         void ExtractWorlds();
 
-        // Render thread: emit each world's draws from FrameIndex's snapshot.
-        void RenderWorlds(ICommandList& CmdList, uint8 FrameIndex);
+        // Render thread: each scene records + submits its frame through RHI:: itself.
+        void RenderWorlds_NewRHI(uint8 FrameIndex);
 
         // Render thread: release the slot after the last per-frame CPU read.
         void SignalFrameConsumed(uint8 FrameIndex);

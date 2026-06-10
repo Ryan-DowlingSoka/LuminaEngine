@@ -8,7 +8,7 @@ struct FPushConstants
 {
     uint NumViews;
     uint Phase;              // CULL_PHASE_EARLY or CULL_PHASE_LATE
-    uint CameraLateViewIndex; // Only consumed in LATE; index into uCullViews.
+    uint CameraLateViewIndex; // Only consumed in LATE; index into CullViews().
     uint _Pad;
     // Cull-private scratch, addressed by device pointer (not a descriptor) so draw/post passes
     // never bind or transition them. State tracked CPU-side via State.Writes; 8-byte aligned here.
@@ -17,21 +17,21 @@ struct FPushConstants
     uint*                   DeferCount;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 // Appends a surviving meshlet into the view's slice; centralized so both phases share the atomic protocol.
 void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocalIdx)
 {
     uint IndirectIndex = View.IndirectArgsOffset + DrawID;
     uint OldCount;
-    InterlockedAdd(PC.IndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
+    InterlockedAdd(Pass().IndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
 
-    uint Slot = PC.IndirectArgs[IndirectIndex].FirstInstance + OldCount;
+    uint Slot = Pass().IndirectArgs[IndirectIndex].FirstInstance + OldCount;
 
     FMeshletDraw Draw;
     Draw.InstanceID        = InstanceID;
     Draw.MeshletLocalIndex = MeshletLocalIdx;
-    uMeshletDrawList[Slot] = Draw;
+    MeshletDrawList()[Slot] = Draw;
 }
 
 // Recover (InstanceID, MeshletLocalIdx) from a flat thread index via binary search on the inclusive
@@ -41,20 +41,20 @@ bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint M
     InstanceID      = 0u;
     MeshletLocalIdx = 0u;
 
-    uint TotalWork = uSceneData.CullData.TotalMeshletBound;
+    uint TotalWork = Scene().CullData.TotalMeshletBound;
     if (flat_idx >= TotalWork)
     {
         return false;
     }
 
-    // Find the largest i with uInstanceMeshletPrefix[i] <= flat_idx. Invariant: prefix[lo] <= flat_idx
+    // Find the largest i with InstanceMeshletPrefix()[i] <= flat_idx. Invariant: prefix[lo] <= flat_idx
     // < prefix[hi] (hi may be the sentinel NumInstances); prefix[0] == 0 keeps the lo=0 base case valid.
     uint Lo = 0u;
-    uint Hi = uSceneData.CullData.InstanceNum;
+    uint Hi = Scene().CullData.InstanceNum;
     while (Hi - Lo > 1u)
     {
         uint Mid = (Lo + Hi) >> 1u;
-        if (uInstanceMeshletPrefix[Mid] <= flat_idx)
+        if (InstanceMeshletPrefix()[Mid] <= flat_idx)
         {
             Lo = Mid;
         }
@@ -65,7 +65,7 @@ bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint M
     }
 
     InstanceID      = Lo;
-    MeshletLocalIdx = flat_idx - uInstanceMeshletPrefix[Lo];
+    MeshletLocalIdx = flat_idx - InstanceMeshletPrefix()[Lo];
     return true;
 }
 
@@ -120,11 +120,11 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
     float3 InstCenter    = Inst.BoundsCenter;
     float  InstRadius    = Inst.BoundsRadius;
     float  DistToCamera  = length(InstCenter - CamPos);
-    float  MaxShadowDist = uSceneData.CullData.ShadowMaxDistance;
+    float  MaxShadowDist = Scene().CullData.ShadowMaxDistance;
 
     for (uint v = 0; v < NumViews; ++v)
     {
-        FCullView View = uCullViews[v];
+        FCullView View = CullViews()[v];
 
         // Camera-late view is owned by phase 1; skip in phase 0 so we don't
         // emit doubles when a meshlet passes both HZB tests.
@@ -198,15 +198,15 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
         {
             // Micro-poly reject: if the meshlet projects sub-pixel we can drop
             // it entirely. Packaged with occlusion so shadow views don't pay.
-            float3 ViewCenter = mul(uSceneData.CameraView.CameraView, float4(WorldCenter, 1.0)).xyz;
+            float3 ViewCenter = mul(Scene().CameraView.CameraView, float4(WorldCenter, 1.0)).xyz;
             float4 ClipAABB;
             if (ProjectSphereClip(ViewCenter, WorldRadius,
-                                  uSceneData.NearPlane,
-                                  uSceneData.CameraView.CameraProjection[0][0],
-                                  uSceneData.CameraView.CameraProjection[1][1],
+                                  Scene().NearPlane,
+                                  Scene().CameraView.CameraProjection[0][0],
+                                  Scene().CameraView.CameraProjection[1][1],
                                   ClipAABB))
             {
-                float2 ScreenSize = float2(uSceneData.ScreenSize.xy);
+                float2 ScreenSize = float2(Scene().ScreenSize.xy);
                 float2 MinPx = (ClipAABB.xy * 0.5 + 0.5) * ScreenSize;
                 float2 MaxPx = (ClipAABB.zw * 0.5 + 0.5) * ScreenSize;
 
@@ -222,14 +222,14 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 // Defer to phase 1. Phase 1 owns the camera-late view slice
                 // and re-tests against the rebuilt HZB before emitting.
                 uint DeferSlot;
-                InterlockedAdd(PC.DeferCount[0], 1, DeferSlot);
+                InterlockedAdd(Pass().DeferCount[0], 1, DeferSlot);
 
                 FMeshletDeferred Entry;
                 Entry.InstanceID        = InstanceID;
                 Entry.MeshletLocalIndex = MeshletLocalIdx;
                 Entry.DrawID            = DrawID;
                 Entry._Pad              = 0u;
-                PC.DeferList[DeferSlot] = Entry;
+                Pass().DeferList[DeferSlot] = Entry;
                 continue;
             }
         }
@@ -243,12 +243,12 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 {
     // Same flat-index reconstruction as RunEarlyPhase (large dispatches folded into Y on the C++ side).
     uint ThreadIdx = GlobalID.x + GroupID.y * 65535u * 64u;
-    uint Count     = PC.DeferCount[0];
+    uint Count     = Pass().DeferCount[0];
 
     if (ThreadIdx >= Count)
         return;
 
-    FMeshletDeferred Entry = PC.DeferList[ThreadIdx];
+    FMeshletDeferred Entry = Pass().DeferList[ThreadIdx];
 
     // Reconstruct world-space bounds as phase 0 did; transforms are baked into the Instance buffer
     // before phase 0, so re-deriving is stable.
@@ -275,7 +275,7 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
     if (IsHiZOccluded(WorldCenter, WorldRadius))
         return;
 
-    FCullView CameraLate = uCullViews[CameraLateViewIndex];
+    FCullView CameraLate = CullViews()[CameraLateViewIndex];
     EmitMeshlet(CameraLate, Entry.DrawID, Entry.InstanceID, Entry.MeshletLocalIndex);
 }
 
@@ -283,12 +283,12 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 [numthreads(LOCAL_SIZE_X, 1, 1)]
 void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupID)
 {
-    if (PC.Phase == CULL_PHASE_LATE)
+    if (Pass().Phase == CULL_PHASE_LATE)
     {
-        RunLatePhase(GlobalID, GroupID, PC.CameraLateViewIndex);
+        RunLatePhase(GlobalID, GroupID, Pass().CameraLateViewIndex);
     }
     else
     {
-        RunEarlyPhase(GlobalID, GroupID, PC.NumViews);
+        RunEarlyPhase(GlobalID, GroupID, Pass().NumViews);
     }
 }

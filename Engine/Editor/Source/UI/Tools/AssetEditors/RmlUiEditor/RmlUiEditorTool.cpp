@@ -6,17 +6,15 @@
 #include "Settings/EditorSettings.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
-#include "Renderer/CommandList.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RenderResource.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RHITexture.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiKeyCapture.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "UI/RmlUiBridge.h"
+#include "UI/RmlUiRenderer.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -1300,7 +1298,7 @@ namespace Lumina
         }
         EnsurePreviewTarget(EffW, EffH);
 
-        if (PreviewTarget == nullptr || PreviewContext == nullptr)
+        if (!PreviewTarget.IsValid() || PreviewContext == nullptr)
         {
             ImGui::TextDisabled("Preview unavailable.");
             return;
@@ -1316,7 +1314,7 @@ namespace Lumina
         case EBgMode::Transparent: ClearColor = FVector4(0.0f, 0.0f, 0.0f, 0.0f); break;
         }
         RmlUi::SetEditorContextClearColor(PreviewContext, ClearColor);
-        RmlUi::SetEditorContextTarget(PreviewContext, PreviewTarget.GetReference(), FUIntVector2(PreviewWidth, PreviewHeight));
+        RmlUi::SetEditorContextTarget(PreviewContext, PreviewTarget.Texture, FUIntVector2(PreviewWidth, PreviewHeight));
 
         // Scrollable / pan child for the canvas.
         ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(18, 18, 22, 255));
@@ -1397,7 +1395,7 @@ namespace Lumina
         }
         // Transparent, draw nothing, the pane background shows through.
 
-        const ImTextureID Tex = GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(PreviewTarget.GetReference());
+        const ImTextureID Tex = (ImTextureID)(uint64)PreviewTarget.SampledSlot;
         DL->AddImage(Tex, CanvasMin, CanvasMax);
         DL->AddRect(CanvasMin, CanvasMax, IM_COL32(80, 80, 95, 255), 0.0f, 0, 1.0f);
 
@@ -1752,20 +1750,24 @@ namespace Lumina
         {
             return;
         }
-        if (PreviewTarget != nullptr && PreviewWidth == Width && PreviewHeight == Height)
+        if (PreviewTarget.IsValid() && PreviewWidth == Width && PreviewHeight == Height)
         {
             return;
         }
 
-        FRHIImageDesc Desc;
-        Desc.Format = EFormat::RGBA8_UNORM;
-        Desc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-        Desc.Extent = FUIntVector2(Width, Height);
-        Desc.InitialState = EResourceStates::RenderTarget;
-        Desc.bKeepInitialState = true;
-        Desc.DebugName = "RmlUiEditorPreview";
+        if (PreviewTarget.IsValid())
+        {
+            RmlUi::GetRenderer()->ReleaseTargetBatch(PreviewTarget.Texture);
+            RHI::Textures::Release(PreviewTarget);
+        }
 
-        PreviewTarget = GRenderContext->CreateImage(Desc);
+        PreviewTarget = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Width,
+            .Height = Height,
+            .Format = EFormat::RGBA8_UNORM,
+            .bRenderTarget = true,
+        });
         PreviewWidth = Width;
         PreviewHeight = Height;
 
@@ -1780,11 +1782,18 @@ namespace Lumina
         if (PreviewContext != nullptr)
         {
             RmlUi::ClearEditorContextDocument(PreviewContext);
-            RmlUi::SetEditorContextTarget(PreviewContext, nullptr, FUIntVector2(0, 0));
+            RmlUi::SetEditorContextTarget(PreviewContext, {}, FUIntVector2(0, 0));
             RmlUi::DestroyEditorContext(PreviewContext);
             PreviewContext = nullptr;
         }
-        PreviewTarget = nullptr;
+        if (PreviewTarget.IsValid())
+        {
+            if (FRmlUiRenderer* Renderer = RmlUi::GetRenderer())
+            {
+                Renderer->ReleaseTargetBatch(PreviewTarget.Texture);
+            }
+            RHI::Textures::Release(PreviewTarget);
+        }
         PreviewWidth = 0;
         PreviewHeight = 0;
     }

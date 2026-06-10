@@ -12,7 +12,7 @@ struct VertexOutput
 [shader("vertex")]
 VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID, uint InstanceIndex : SV_VulkanInstanceID)
 {
-    FGPUGlyph Glyph = PC.Glyphs[InstanceIndex];
+    FGPUGlyph Glyph = Pass().Glyphs[InstanceIndex];
 
     const float2 Corner = kTextQuadCorners[VertexIndex];
 

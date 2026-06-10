@@ -8,9 +8,9 @@
 #include "Particles/ParticleStockModules.h"
 #include "UI/Tools/NodeGraph/Particle/ParticleCompiler.h"
 #include "Paths/Paths.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RHIGlobals.h"
+#include "Renderer/RenderResource.h"
 #include "Renderer/ShaderCompiler.h"
+#include "Renderer/ShaderLibrary.h"
 #include "World/entity/components/environmentcomponent.h"
 #include "World/Entity/Components/SkyLightComponent.h"
 #include "World/entity/components/lightcomponent.h"
@@ -367,13 +367,11 @@ namespace Lumina
             return;
         }
 
-        IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
+        IShaderCompiler* ShaderCompiler = GShaderCompiler;
         ShaderCompiler->CompilerShaderRaw(Source, {}, [this](const FShaderHeader& Header) mutable
         {
             CParticleSystem* PS = Cast<CParticleSystem>(Asset.Get());
-            PS->ComputeShader = GRenderContext->CreateComputeShader(Header);
             PS->ComputeShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-            GRenderContext->OnShaderCompiled(PS->ComputeShader, false, true);
         });
         ShaderCompiler->Flush();
 

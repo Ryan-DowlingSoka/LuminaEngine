@@ -6,6 +6,7 @@
 #include "Core/Math/Math.h"
 #include "Containers/String.h"
 #include "Memory/SmartPtr.h"
+#include "Renderer/RHI.h"
 
 namespace Rml
 {
@@ -15,8 +16,6 @@ namespace Rml
 namespace Lumina
 {
     class CWorld;
-    class ICommandList;
-    class FRHIImage;
     class FRmlUiRenderer;
     struct FWorldUIContext;
     struct SWidgetComponent;
@@ -39,13 +38,13 @@ namespace Lumina::RmlUi
 
     // Game thread: update one world's DOM (called from CWorld::Extract).
     RUNTIME_API void            TickWorldUI(CWorld* World);
-    // Render thread: composite one world's UI onto its render target (from CWorld::Render).
-    RUNTIME_API void            RenderWorldUI(const CWorld* World, ICommandList& CmdList);
+    // Render thread: composite one world's UI onto its render target (from the scene's RenderView).
+    RUNTIME_API void            RenderWorldUI(const CWorld* World, RHI::FCmdListH CmdList);
 
     // World-space widgets (SWidgetComponent): Tick lays each document into its RT (game thread, in Extract),
     // Render rasterizes the queued RTs (render thread), Release tears one down from on_destroy.
     RUNTIME_API void            TickWorldWidgets(CWorld* World);
-    RUNTIME_API void            RenderWorldWidgets(const CWorld* World, ICommandList& CmdList);
+    RUNTIME_API void            RenderWorldWidgets(const CWorld* World, RHI::FCmdListH CmdList);
     RUNTIME_API void            ReleaseWidget(CWorld* World, SWidgetComponent& Component);
 
     // The world whose context the `UI.*` Lua module targets. Set when a world comes
@@ -54,7 +53,7 @@ namespace Lumina::RmlUi
 
     // Editor-only preview contexts (not bound to any world); ticked/rendered here.
     RUNTIME_API void            TickEditorContexts();
-    RUNTIME_API void            RenderEditorContexts(ICommandList& CmdList);
+    RUNTIME_API void            RenderEditorContexts(RHI::FCmdListH CmdList);
 
     RUNTIME_API Rml::Context*   GetContextForWorld(CWorld* World);
 
@@ -93,7 +92,7 @@ namespace Lumina::RmlUi
     // Editor preview contexts. Caller owns lifetime; pass Target=nullptr to skip a frame.
     RUNTIME_API Rml::Context*   CreateEditorContext(const char* Name, const FUIntVector2& InitialSize);
     RUNTIME_API void            DestroyEditorContext(Rml::Context* Context);
-    RUNTIME_API void            SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const FUIntVector2& Size);
+    RUNTIME_API void            SetEditorContextTarget(Rml::Context* Context, RHI::FTextureH Target, const FUIntVector2& Size);
 
     /** Editor contexts skip the world auto-DPI heuristic. */
     RUNTIME_API void            SetEditorContextDpiScale(Rml::Context* Context, float Scale);

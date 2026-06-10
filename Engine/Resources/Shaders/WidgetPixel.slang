@@ -14,7 +14,7 @@ struct FragmentInput
 [shader("fragment")]
 float4 FragmentMain(FragmentInput Input) : SV_Target0
 {
-    float4 Texel = SampleBindless2D(Input.TextureIndex, SAMPLER_LINEAR_CLAMP, Input.UV) * Input.Tint;
+    float4 Texel = SampleTexture2D(Input.TextureIndex, SAMPLER_LINEAR_CLAMP, Input.UV) * Input.Tint;
 
     if (Texel.a < 0.01)
     {

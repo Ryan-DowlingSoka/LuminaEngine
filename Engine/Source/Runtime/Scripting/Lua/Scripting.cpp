@@ -465,11 +465,7 @@ namespace Lumina::Lua
     static void RegisterRenderLibrary(lua_State* L, FRef& GlobalsRef)
     {
         FRef RHITable = GlobalsRef.NewTable("RHI");
-        RHITable.SetFunction<&IRenderContext::WaitIdle>("WaitIdle", GRenderContext);
-        RHITable.SetFunction<&IRenderContext::GetAllocatedMemory>("GetAllocatedMemory", GRenderContext);
-        RHITable.SetFunction<&IRenderContext::GetAvailableMemory>("GetAvailableMemory", GRenderContext);
-        RHITable.SetFunction<&IRenderContext::SetVSyncEnabled>("SetVSyncEnabled");
-        RHITable.SetFunction<&IRenderContext::IsVSyncEnabled>("IsVSyncEnabled");
+        RHITable.SetFunction<&RHI::WaitDeviceIdle>("WaitIdle");
     }
 
     static void RegisterMathLibrary(lua_State* L, FRef& GlobalsRef)

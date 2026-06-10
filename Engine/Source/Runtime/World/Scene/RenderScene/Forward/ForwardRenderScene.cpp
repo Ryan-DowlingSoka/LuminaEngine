@@ -11,16 +11,17 @@
 #include "Core/Windows/Window.h"
 #include "Memory/MemoryTracking.h"
 #include "Paths/Paths.h"
-#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RendererUtils.h"
-#include "Renderer/RHIStaticStates.h"
 #include "Renderer/ShaderCompiler.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/CommandList.h"
+#include "Renderer/ShaderLibrary.h"
 #include "Renderer/RHI.h"
+#include "Renderer/RHICore.h"
+#include "Renderer/RHITexture.h"
+#include "Renderer/RenderManager.h"
 #include "TaskSystem/TaskGraph.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/Import/ImportHelpers.h"
+#include "UI/RmlUiBridge.h"
 #include "World/World.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/BillboardComponent.h"
@@ -70,39 +71,73 @@ namespace Lumina
             "Enable froxel volumetric fog. Still requires an enabled ExponentialHeightFog component.");
     }
 
-    static FVariableRateShadingState MakeWorldShadingRate(const SDefaultWorldSettings& Settings)
+    // RAII GPU debug marker on the new RHI.
+    struct FScopedGPUMarker
     {
-        FVariableRateShadingState ShadingRate;
-        switch (Settings.VariableRateShading)
+        RHI::FCmdListH CL;
+        FScopedGPUMarker(RHI::FCmdListH InCL, const char* Name) : CL(InCL) { RHI::CmdBeginMarker(CL, Name); }
+        ~FScopedGPUMarker() { RHI::CmdEndMarker(CL); }
+    };
+    #define SCENE_MARKER_CONCAT_INNER(A, B) A##B
+    #define SCENE_MARKER_CONCAT(A, B) SCENE_MARKER_CONCAT_INNER(A, B)
+    #define SCENE_GPU_SCOPE(InCL, Name) FScopedGPUMarker SCENE_MARKER_CONCAT(GpuMarker_, __LINE__)(InCL, Name)
+
+    // Coarse stage-level memory barriers between passes (the new RHI has no resource tracking;
+    // images stay GENERAL, so synchronization is stage masks + a full-memory dependency).
+    namespace Barriers
+    {
+        // Compute writes -> any consumer (draws, indirect fetch, later compute, transfer fills/copies).
+        static void ComputeToAll(RHI::FCmdListH CL)
         {
-            case EVariableRateShading::Rate2x2: ShadingRate.SetEnabled(true).SetShadingRate(EVariableShadingRate::e2x2); break;
-            case EVariableRateShading::Rate4x4: ShadingRate.SetEnabled(true).SetShadingRate(EVariableShadingRate::e4x4); break;
-            default: break;
+            RHI::CmdBarrier(CL,
+                RHI::EStageFlags::Compute,
+                RHI::EStageFlags::Compute | RHI::EStageFlags::VertexShader | RHI::EStageFlags::PixelShader |
+                RHI::EStageFlags::IndirectArguments | RHI::EStageFlags::FragmentTests | RHI::EStageFlags::Transfer);
         }
-        return ShadingRate;
+
+        // Raster outputs (color + depth) -> sampled / compute reads + further attachment use.
+        static void RasterToRead(RHI::FCmdListH CL)
+        {
+            RHI::CmdBarrier(CL,
+                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests,
+                RHI::EStageFlags::PixelShader | RHI::EStageFlags::VertexShader | RHI::EStageFlags::Compute |
+                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
+        }
+
+        // Raster outputs -> raster outputs (attachment reuse across passes).
+        static void RasterToRaster(RHI::FCmdListH CL)
+        {
+            RHI::CmdBarrier(CL,
+                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests,
+                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
+        }
+
+        // Transfer (clears/copies/fills) -> everything.
+        static void TransferToAll(RHI::FCmdListH CL)
+        {
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
+        }
+
+        // Everything -> transfer (copy sources must be written).
+        static void AllToTransfer(RHI::FCmdListH CL)
+        {
+            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+        }
     }
 
-    static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
+    // Synchronous pixel upload into a freshly created scene image (init-time LUT path).
+    static void UploadSceneImagePixels(const FSceneImage& Image, const void* Bytes, uint64 Size, uint32 RowPitchTexels)
     {
-        FRHIImageDesc Desc;
-        Desc.Extent            = FUIntVector2(Width, Height);
-        Desc.Format            = Format;
-        Desc.Dimension         = EImageDimension::Texture2D;
-        Desc.NumMips           = 1;
-        Desc.InitialState      = EResourceStates::ShaderResource;
-        Desc.bKeepInitialState = true;
-        Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
-        Desc.DebugName         = DebugName;
+        const RHI::GPUPtr Staging = RHI::Malloc(Size, RHI::kDefaultAlign, RHI::EMemoryType::CPUWrite);
+        Memory::Memcpy(RHI::ToHost(Staging), Bytes, Size);
 
-        FRHIImageRef Image = GRenderContext->CreateImage(Desc);
-
-        FRHICommandListRef Transfer = GRenderContext->CreateCommandList(FCommandListInfo::Transfer());
-        Transfer->Open();
-        Transfer->WriteImage(Image, 0, 0, Bytes, RowPitch, 0);
-        Transfer->Close();
-        GRenderContext->ExecuteCommandList(Transfer, ECommandQueue::Transfer);
-
-        return Image;
+        RHI::FCmdListH CL = RHI::OpenCommandList();
+        RHI::CmdCopyMemoryToTexture(CL, Staging, RowPitchTexels, Image.Texture);
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
+        RHI::Submit(CL);
+        RHI::WaitDeviceIdle();
+        RHI::ResetCommandList(CL);
+        RHI::Free(Staging);
     }
 
     // Hemisphere SSAO kernel: SSAO_KERNEL_SIZE directions in the +Z (tangent-space) hemisphere, scaled so
@@ -135,7 +170,7 @@ namespace Lumina
 
     // 4x4 RGBA32F rotation noise: random vectors in the XY tangent plane (z=0) used to rotate the kernel
     // per-pixel, trading banding for high-frequency noise the (here absent) blur would normally smooth out.
-    static FRHIImageRef CreateSSAONoiseTexture()
+    static RHI::FManagedTexture CreateSSAONoiseTexture()
     {
         std::mt19937 Rng(7331u);
         std::uniform_real_distribution<float> RandM11(-1.0f, 1.0f);
@@ -146,8 +181,9 @@ namespace Lumina
             Noise[i] = FVector4(RandM11(Rng), RandM11(Rng), 0.0f, 0.0f);
         }
 
-        return CreateSMAALUTImage(reinterpret_cast<const uint8*>(Noise), 4, 4,
-                                  EFormat::RGBA32_FLOAT, 4 * sizeof(FVector4), "SSAO Noise");
+        RHI::FManagedTexture Tex = RHI::Textures::Create(RHI::FTexture2DDesc{ .Width = 4, .Height = 4, .Format = EFormat::RGBA32_FLOAT });
+        RHI::Textures::Upload(Tex, 0, Noise, sizeof(Noise), 4);
+        return Tex;
     }
 
 
@@ -161,20 +197,18 @@ namespace Lumina
     {
         LUMINA_MEMORY_SCOPE("Render Scene");
 
-        GRenderContext->WaitIdle();
+        RHI::WaitDeviceIdle();
 
         // MSAA is a scene-global world setting; cached here and used to size every view's
         // MS scratch images. Init runs before any Extract -- read straight from the world.
         const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
         MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
 
-        // Shared (view-independent) buffers + images first; the per-view binding sets
-        // built in AddSceneView reference these.
+        // Shared (view-independent) buffers + images first.
         InitBuffers();
 
-        // Must precede the per-view binding sets so the BRDF + SMAA sets see valid images.
         InitSharedResources();
-        
+
         GenerateSSAOKernel(CachedSSAOSettings);
         SSAONoiseTexture = CreateSSAONoiseTexture();
 
@@ -182,57 +216,43 @@ namespace Lumina
         InitSkyCube(AppliedIBLResolution.SkyCube);
         InitIBLConvolutionTargets(AppliedIBLResolution);
 
+        ShadowAtlas.InitImage();
+
         // Cascade shadow atlas: shared across all views. Capture (preview) cameras reuse the
         // primary camera's CSM cascades rather than fitting their own, so it's created once here.
         {
-            FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = FUIntVector2(GCSMAtlasWidth, GCSMAtlasHeight);
-            ImageDesc.Format = EFormat::D32;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::DepthWrite;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "ShadowCascadeAtlas";
-            NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
+            RHI::FTextureDesc Desc;
+            Desc.Type      = RHI::ETextureType::Tex2D;
+            Desc.Dimension = FUIntVector3(GCSMAtlasWidth, GCSMAtlasHeight, 1);
+            Desc.Format    = EFormat::D32;
+            Desc.Usage     = RHI::EImageUsageFlags::DepthAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
+            NamedImages[(int)ENamedImage::Cascade] = CreateSceneImage(Desc);
         }
 
         // Reserve so capture-view registration never reallocates SceneViews -- the render
         // thread holds raw FSceneView* (CurrentView) and indexes SceneViews by snapshot.
         SceneViews.reserve(MaxSceneViews);
 
-        // Primary view (index 0) tracks the swapchain; AddSceneView builds its per-view
-        // images/buffers/binding sets and lazily creates the shared scene/compose/SMAA/OIT layouts.
-        FRHIViewportRef PrimaryViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
-        AddSceneView(PrimaryViewport, /*bPrimary*/ true);
+        // Primary view (index 0) tracks the swapchain size.
+        AddSceneView(Windowing::GetPrimaryWindowHandle()->GetExtent(), /*bPrimary*/ true);
 
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
     }
 
-    FForwardRenderScene::FSceneView& FForwardRenderScene::AddSceneView(const FRHIViewportRef& Viewport, bool bPrimary)
+    FForwardRenderScene::FSceneView& FForwardRenderScene::AddSceneView(const FUIntVector2& Size, bool bPrimary)
     {
         // SceneViews backing storage is stable during a frame; views are only added/removed
         // at controlled points (init / capture register), never mid-RenderView.
         SceneViews.emplace_back();
         FSceneView& View = SceneViews.back();
-        View.Viewport   = Viewport;
         View.bIsPrimary = bPrimary;
-        View.Size       = Viewport->GetRenderTarget()->GetExtent();
+        View.Size       = Math::Max(Size, FUIntVector2(1));
 
         // Per-view clustered-lighting grid (built from this view's projection).
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FCluster) * NumClusters;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Cluster SSBO";
-            View.ClusterBuffer = GRenderContext->CreateBuffer(BufferDesc);
-        }
+        View.ClusterBuffer = CreateSceneBuffer(sizeof(FCluster) * NumClusters);
         View.bClusterGridDirty = true;   // fresh buffer has undefined contents.
 
         InitViewImages(View);
-        View.ViewportState = MakeViewportStateFromImage(View.Images[(int)ENamedImage::HDR]);
-        CreateViewBindingSets(View);
 
         return View;
     }
@@ -257,11 +277,11 @@ namespace Lumina
             return -1;
         }
 
-        // No WaitIdle: RHI creation is mutex-serialized, the new view isn't referenced by any in-flight
-        // frame, and SceneViews is reserved so the push-back can't reallocate under the render thread.
-        FRHIViewportRef Viewport = GRenderContext->CreateViewport(ClampedSize, "Capture View");
+        // No WaitIdle: resource creation is mutex-serialized, the new view isn't referenced by any
+        // in-flight frame, and SceneViews is reserved so the push-back can't reallocate under the
+        // render thread.
         const int32 Handle = (int32)SceneViews.size();
-        AddSceneView(Viewport, /*bPrimary*/ false);
+        AddSceneView(ClampedSize, /*bPrimary*/ false);
         return Handle;
     }
 
@@ -275,13 +295,13 @@ namespace Lumina
         SceneViews[Handle].bEnabled          = bEnabled;
     }
 
-    FRHIImage* FForwardRenderScene::GetCaptureRenderTarget(int32 Handle) const
+    int32 FForwardRenderScene::GetCaptureDisplayResourceID(int32 Handle) const
     {
-        if (Handle <= 0 || Handle >= (int32)SceneViews.size() || !SceneViews[Handle].Viewport)
+        if (Handle <= 0 || Handle >= (int32)SceneViews.size())
         {
-            return nullptr;
+            return -1;
         }
-        return SceneViews[Handle].Viewport->GetRenderTarget();
+        return SceneViews[Handle].Output.GetResourceID();
     }
 
     void FForwardRenderScene::InitSharedResources()
@@ -290,44 +310,177 @@ namespace Lumina
 
         if (!Shared.bInitialized)
         {
-            Shared.BRDFLut    = BakeBRDFLUT();
-            Shared.SMAAArea   = CreateSMAALUTImage(areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
-            Shared.SMAASearch = CreateSMAALUTImage(searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
+            BakeBRDFLUT();
+
+            Shared.SMAAArea = RHI::Textures::Create(RHI::FTexture2DDesc{ .Width = AREATEX_WIDTH, .Height = AREATEX_HEIGHT, .Format = EFormat::RG8_UNORM });
+            RHI::Textures::Upload(Shared.SMAAArea, 0, areaTexBytes, AREATEX_SIZE, AREATEX_WIDTH);
+
+            Shared.SMAASearch = RHI::Textures::Create(RHI::FTexture2DDesc{ .Width = SEARCHTEX_WIDTH, .Height = SEARCHTEX_HEIGHT, .Format = EFormat::R8_UNORM });
+            RHI::Textures::Upload(Shared.SMAASearch, 0, searchTexBytes, SEARCHTEX_SIZE, SEARCHTEX_WIDTH);
 
             #if USING(WITH_EDITOR)
             const FString Dir = Paths::GetEngineResourceDirectory();
-            Shared.EditorIcons[0] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/PointLight.png", false);
-            Shared.EditorIcons[1] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/DirectionalLight.png", false);
-            Shared.EditorIcons[2] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/SkyLight.png", false);
-            Shared.EditorIcons[3] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/SpotLight.png", false);
-            Shared.EditorIcons[4] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/CameraIcon.png", false);
-            Shared.EditorIcons[5] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/PersonIcon.png", false);
-            Shared.EditorIcons[6] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/Molecule.png", false);
+            const char* IconFiles[7] =
+            {
+                "/Textures/PointLight.png", "/Textures/DirectionalLight.png", "/Textures/SkyLight.png",
+                "/Textures/SpotLight.png", "/Textures/CameraIcon.png", "/Textures/PersonIcon.png",
+                "/Textures/Molecule.png"
+            };
+            for (int i = 0; i < 7; ++i)
+            {
+                if (auto Imported = Import::Textures::ImportTexture(Dir + IconFiles[i], false))
+                {
+                    Shared.EditorIcons[i] = RHI::Textures::Create(RHI::FTexture2DDesc
+                    {
+                        .Width  = Imported->Dimensions.x,
+                        .Height = Imported->Dimensions.y,
+                        .Format = Imported->Format
+                    });
+                    RHI::Textures::Upload(Shared.EditorIcons[i], 0, Imported->Pixels.data(), Imported->Pixels.size(), Imported->Dimensions.x);
+                }
+            }
             #endif
 
             Shared.bInitialized = true;
         }
 
-        NamedImages[(int)ENamedImage::BRDFLut]    = Shared.BRDFLut;
-        NamedImages[(int)ENamedImage::SMAAArea]   = Shared.SMAAArea;
-        NamedImages[(int)ENamedImage::SMAASearch] = Shared.SMAASearch;
+        // Alias the shared (manager-owned) textures into the scene's named-image table; the
+        // scene never releases these slots (ReleaseViewImages only touches per-view entries).
+        auto Alias = [](const RHI::FManagedTexture& Managed, EFormat Format, const FUIntVector2& Extent)
+        {
+            FSceneImage Image;
+            Image.Texture        = Managed.Texture;
+            Image.SampledSlot    = Managed.SampledSlot;
+            Image.Desc.Type      = RHI::ETextureType::Tex2D;
+            Image.Desc.Dimension = FUIntVector3(Extent.x, Extent.y, 1);
+            Image.Desc.Format    = Format;
+            return Image;
+        };
+
+        FSharedRenderResources& SharedNow = GRenderManager->GetSharedRenderResources();
+        NamedImages[(int)ENamedImage::BRDFLut]    = Alias(SharedNow.BRDFLut, EFormat::RG16_FLOAT, FUIntVector2(256, 256));
+        NamedImages[(int)ENamedImage::BRDFLut].MipUAVSlots.push_back(SharedNow.BRDFLutUAV);
+        NamedImages[(int)ENamedImage::SMAAArea]   = Alias(SharedNow.SMAAArea, EFormat::RG8_UNORM, FUIntVector2(AREATEX_WIDTH, AREATEX_HEIGHT));
+        NamedImages[(int)ENamedImage::SMAASearch] = Alias(SharedNow.SMAASearch, EFormat::R8_UNORM, FUIntVector2(SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT));
 
         #if USING(WITH_EDITOR)
-        NamedImages[(int)ENamedImage::PointLightIcon]       = Shared.EditorIcons[0];
-        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Shared.EditorIcons[1];
-        NamedImages[(int)ENamedImage::SkyLightIcon]         = Shared.EditorIcons[2];
-        NamedImages[(int)ENamedImage::SpotLightIcon]        = Shared.EditorIcons[3];
-        NamedImages[(int)ENamedImage::CameraIcon]           = Shared.EditorIcons[4];
-        NamedImages[(int)ENamedImage::CharacterIcon]        = Shared.EditorIcons[5];
-        NamedImages[(int)ENamedImage::ParticleSystemIcon]   = Shared.EditorIcons[6];
+        const ENamedImage IconSlots[7] =
+        {
+            ENamedImage::PointLightIcon, ENamedImage::DirectionalLightIcon, ENamedImage::SkyLightIcon,
+            ENamedImage::SpotLightIcon, ENamedImage::CameraIcon, ENamedImage::CharacterIcon,
+            ENamedImage::ParticleSystemIcon
+        };
+        for (int i = 0; i < 7; ++i)
+        {
+            NamedImages[(int)IconSlots[i]] = Alias(SharedNow.EditorIcons[i], EFormat::RGBA8_UNORM, FUIntVector2(1, 1));
+        }
         #endif
     }
 
     void FForwardRenderScene::Shutdown()
     {
-        GRenderContext->WaitIdle();
+        RHI::WaitDeviceIdle();
 
         FRenderManager::OnSwapchainResized.Remove(SwapchainResizedHandle);
+
+        // Per-view images + cluster buffers.
+        for (FSceneView& View : SceneViews)
+        {
+            ReleaseViewImages(View);
+            if (View.ClusterBuffer)
+            {
+                RHI::Free(View.ClusterBuffer.Ptr);
+                View.ClusterBuffer = {};
+            }
+        }
+        SceneViews.clear();
+        CurrentView = nullptr;
+
+        // Scene-owned shared images (cascade atlas, sky cubes). The other NamedImages slots
+        // alias manager-owned shared resources and are not released here.
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::Cascade]);
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyCube]);
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyIrradiance]);
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyPrefilter]);
+
+        RHI::Textures::Release(SSAONoiseTexture);
+
+        // Persistent GPU buffers + rings.
+        auto FreeBuffer = [](FSceneBuffer& Buffer)
+        {
+            if (Buffer)
+            {
+                RHI::Free(Buffer.Ptr);
+                Buffer = {};
+            }
+        };
+        FreeBuffer(PreSkinnedVerticesBuffer);
+        for (uint32 Slot = 0; Slot < RHI::kFramesInFlight; ++Slot)
+        {
+            FreeBuffer(IndirectArgsRing[Slot]);
+            FreeBuffer(MeshletDrawListRing[Slot]);
+            FreeBuffer(MeshletDeferListRing[Slot]);
+            FreeBuffer(DeferCountRing[Slot]);
+            FreeBuffer(SpdCounterRing[Slot]);
+        }
+
+        // Render-thread-owned terrain / particle GPU state.
+        for (auto& [Entity, State] : TerrainGPUStates)
+        {
+            ReleaseSceneImage(State.HeightmapTexture);
+            ReleaseSceneImage(State.NormalTexture);
+            ReleaseSceneImage(State.LayerWeightTexture);
+            FreeBuffer(State.ChunkInfoBuffer);
+            FreeBuffer(State.MeshletInfoBuffer);
+            FreeBuffer(State.VisibleMeshletBuffer);
+            FreeBuffer(State.IndirectDrawBuffer);
+        }
+        TerrainGPUStates.clear();
+
+        for (auto& [Entity, State] : ParticleGPUStates)
+        {
+            if (State.ParticleBuffer)     { RHI::Free(State.ParticleBuffer); }
+            if (State.SpawnCounterBuffer) { RHI::Free(State.SpawnCounterBuffer); }
+        }
+        ParticleGPUStates.clear();
+
+        // Anything still pending deferred destruction.
+        for (uint32 Slot = 0; Slot < RHI::kFramesInFlight; ++Slot)
+        {
+            for (RHI::GPUPtr Ptr : DeferredBufferFrees[Slot])
+            {
+                RHI::Free(Ptr);
+            }
+            DeferredBufferFrees[Slot].clear();
+            for (FSceneImage& Image : DeferredImageReleases[Slot])
+            {
+                ReleaseSceneImage(Image);
+            }
+            DeferredImageReleases[Slot].clear();
+        }
+
+        #if USING(WITH_EDITOR)
+        for (FPickerReadbackSlot& Slot : PickerReadbackRing)
+        {
+            if (Slot.Readback != 0)
+            {
+                RHI::Free(Slot.Readback);
+                Slot.Readback = 0;
+            }
+        }
+        #endif
+
+        // Pipeline + depth-state caches.
+        for (auto& [Hash, Pipeline] : PipelineCache)
+        {
+            RHI::FreeH(Pipeline);
+        }
+        PipelineCache.clear();
+        for (auto& [Hash, State] : DepthStateCache)
+        {
+            RHI::FreeH(State);
+        }
+        DepthStateCache.clear();
     }
 
     void FForwardRenderScene::WaitForSlotConsumed(uint8 Slot, uint64 Target)
@@ -372,7 +525,7 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
         LUMINA_MEMORY_SCOPE("Render Scene");
 
-        const uint8  Slot        = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
+        const uint8  Slot        = (uint8)(GRenderManager->GetCurrentFrameIndex() % RHI::kFramesInFlight);
         const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
         WaitForSlotConsumed(Slot, SlotProducedCount[Slot]);
 
@@ -412,8 +565,8 @@ namespace Lumina
             {
                 continue;
             }
-            FRHIVertexShader* VS = PPMaterial->GetVertexShader();
-            FRHIPixelShader*  PS = PPMaterial->GetPixelShader();
+            const FShaderEntry* VS = PPMaterial->GetVertexShader();
+            const FShaderEntry*  PS = PPMaterial->GetPixelShader();
             if (VS == nullptr || PS == nullptr)
             {
                 continue;
@@ -425,33 +578,30 @@ namespace Lumina
             Out.MaterialIndex        = (uint32)PPInterface->GetMaterialIndex();
         }
 
-        // Extract drives the primary view via a LOCAL pointer -- never the shared SceneViewport (render-thread
-        // state, repointed per view). Writing it here races RenderView and can flicker a capture onto the main RT.
-        FRHIViewport* PrimaryViewport = SceneViews[0].Viewport.GetReference();
-        PrimaryViewport->SetViewVolume(ViewVolume);
+        const FUIntVector2 PrimarySize = SceneViews[0].Size;
 
         FSceneGlobalData& SceneGlobalData = Frame.SceneGlobalData;
-        SceneGlobalData.CameraData.Location             = FVector4(PrimaryViewport->GetViewVolume().GetViewPosition(), 1.0f);
-        SceneGlobalData.CameraData.Up                   = FVector4(PrimaryViewport->GetViewVolume().GetUpVector(), 1.0f);
-        SceneGlobalData.CameraData.Right                = FVector4(PrimaryViewport->GetViewVolume().GetRightVector(), 1.0f);
-        SceneGlobalData.CameraData.Forward              = FVector4(PrimaryViewport->GetViewVolume().GetForwardVector(), 1.0f);
-        SceneGlobalData.CameraData.View                 = PrimaryViewport->GetViewVolume().GetViewMatrix();
-        SceneGlobalData.CameraData.InverseView          = PrimaryViewport->GetViewVolume().GetInverseViewMatrix();
-        SceneGlobalData.CameraData.Projection           = PrimaryViewport->GetViewVolume().GetProjectionMatrix();
-        SceneGlobalData.CameraData.InverseProjection    = PrimaryViewport->GetViewVolume().GetInverseProjectionMatrix();
-        SceneGlobalData.ScreenSize                      = FVector4(PrimaryViewport->GetSize().x, PrimaryViewport->GetSize().y, 0.0f, 0.0f);
-        SceneGlobalData.GridSize                        = FVector4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
+        SceneGlobalData.CameraData.Location             = FVector4(ViewVolume.GetViewPosition(), 1.0f);
+        SceneGlobalData.CameraData.Up                   = FVector4(ViewVolume.GetUpVector(), 1.0f);
+        SceneGlobalData.CameraData.Right                = FVector4(ViewVolume.GetRightVector(), 1.0f);
+        SceneGlobalData.CameraData.Forward              = FVector4(ViewVolume.GetForwardVector(), 1.0f);
+        SceneGlobalData.CameraData.View                 = ViewVolume.GetViewMatrix();
+        SceneGlobalData.CameraData.InverseView          = ViewVolume.GetInverseViewMatrix();
+        SceneGlobalData.CameraData.Projection           = ViewVolume.GetProjectionMatrix();
+        SceneGlobalData.CameraData.InverseProjection    = ViewVolume.GetInverseProjectionMatrix();
+        SceneGlobalData.ScreenSize                      = FUIntVector4(PrimarySize.x, PrimarySize.y, 0, 0);
+        SceneGlobalData.GridSize                        = FUIntVector4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0);
         SceneGlobalData.Time                            = (float)World->GetTimeSinceWorldCreation();
         SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
-        SceneGlobalData.FarPlane                        = PrimaryViewport->GetViewVolume().GetFar();
-        SceneGlobalData.NearPlane                       = PrimaryViewport->GetViewVolume().GetNear();
+        SceneGlobalData.FarPlane                        = ViewVolume.GetFar();
+        SceneGlobalData.NearPlane                       = ViewVolume.GetNear();
         // SSAO: static kernel + per-world tuning. AOTextureIndex stays the ~0u sentinel here; the render
         // thread patches it (or leaves the sentinel when SSAO is off) before upload. Capture views keep it.
         SceneGlobalData.SSAOSettings                    = CachedSSAOSettings;
         SceneGlobalData.SSAOSettings.Radius             = Frame.CachedWorldSettings.SSAORadius;
         SceneGlobalData.SSAOSettings.Intensity          = Frame.CachedWorldSettings.SSAOIntensity;
         SceneGlobalData.SSAOSettings.Power              = Frame.CachedWorldSettings.SSAOPower;
-        SceneGlobalData.CullData.Frustum                = PrimaryViewport->GetViewVolume().GetFrustum();
+        SceneGlobalData.CullData.Frustum                = ViewVolume.GetFrustum();
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
         SceneGlobalData.CullData.InstanceNum            = (uint32)Frame.Geometry.Instances.size();
@@ -463,7 +613,7 @@ namespace Lumina
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
 
-        if (GRenderContext->GetShaderCompiler()->HasPendingRequests())
+        if (GShaderCompiler->HasPendingRequests())
         {
             SlotProducedCount[Slot] = NextProduce;
             ExtractFrame = nullptr;
@@ -522,14 +672,27 @@ namespace Lumina
         ExtractFrame = nullptr;
     }
 
-    void FForwardRenderScene::RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex)
+    void FForwardRenderScene::RenderView_NewRHI(uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
         LUMINA_MEMORY_SCOPE("Render Scene");
 
-        const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
+        const uint8 Slot = (uint8)(FrameIndex % RHI::kFramesInFlight);
         RenderFrame = &FrameRing[Slot];
         FFrameData& Frame = FrameRing[Slot];
+
+        // This slot's previous GPU work completed (RHI::Core::BeginFrame waited the frame
+        // timeline), so its deferred frees and pinned asset buffers can retire now.
+        for (RHI::GPUPtr Ptr : DeferredBufferFrees[Slot])
+        {
+            RHI::Free(Ptr);
+        }
+        DeferredBufferFrees[Slot].clear();
+        for (FSceneImage& Image : DeferredImageReleases[Slot])
+        {
+            ReleaseSceneImage(Image);
+        }
+        DeferredImageReleases[Slot].clear();
 
         // SyncMSAAState reads Frame.CachedWorldSettings, so RenderFrame must be set first.
         SyncMSAAState();
@@ -541,391 +704,396 @@ namespace Lumina
             return;
         }
 
-        CurrentFrameSlot        = Slot;
-        
+        CurrentFrameSlot = Slot;
+
         SyncIBLResolution(Frame.Volumetrics.IBLResolution);
 
         PointAtView(SceneViews[0]);
         CurrentCameraEarlyView = 0u;                                // primary's early/frustum cull view
         CurrentCameraLateView  = Frame.Views.CameraLateViewIndex;   // primary's late/occlusion cull view
 
-        Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
-        Frame.SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
-        Frame.SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
+        Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid).GetSizeX();
+        Frame.SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid).GetSizeY();
+        Frame.SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid).GetResourceID();
 
         // Publish this frame's stats for the editor-side GetRenderStats() reader.
         RenderStats = Frame.FrameStats;
 
-        GPU_PROFILE_SCOPE_COLOR(&CmdList, "RenderView", FColor(0.30f, 0.65f, 1.00f));
-
-        for (const FRHIBufferRef& Buf : Frame.Geometry.PinnedMeshBuffersThisFrame)
-        {
-            CmdList.KeepAlive(Buf.GetReference());
-        }
-
-        // Widget RTs sampled by the widget/picker passes: hold them until this frame's GPU work
-        // finishes so a mid-frame widget deletion can't free an RT the GPU is still reading.
-        for (const FRHIImageRef& RT : Frame.Primitives.PinnedWidgetRTs)
-        {
-            CmdList.KeepAlive(RT.GetReference());
-        }
-
-        // Font atlases sampled by the text pass: same hazard as widget RTs above.
-        for (const FRHIImageRef& Atlas : Frame.Primitives.PinnedFontAtlases)
-        {
-            CmdList.KeepAlive(Atlas.GetReference());
-        }
-
-        ResetPass_RenderThread(CmdList);
-        CompileDrawCommands_RenderThread(CmdList);
+        RHI::FCmdListH CL = RHI::OpenCommandList();
+        RHI::CmdSetTextureHeap(CL, RHI::Core::GetGlobalHeap());
+        // Projection bakes the Vulkan Y-flip, so CCW-wound geometry lands clockwise in framebuffer space.
+        RHI::CmdSetFrontFace(CL, RHI::EFrontFace::CW);
 
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Texture Paint", FColor(0.80f, 0.10f, 0.10f));
-            TexturePaintPass(CmdList);
-        }
+            SCENE_GPU_SCOPE(CL, "RenderView");
 
-        {
-            LUMINA_PROFILE_SECTION("RenderPasses");
+            // Order against last frame's reads of our targets (editor viewport sampling the
+            // primary Output) before this frame's writes.
+            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::AllCommands);
 
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
-                CullPassEarly(CmdList);
+                // World-space widget RTs rasterize before the scene's widget pass samples them.
+                SCENE_GPU_SCOPE(CL, "RmlUi Widgets");
+                RmlUi::RenderWorldWidgets(World, CL);
             }
 
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Skinning", FColor(0.40f, 0.85f, 1.00f));
-                SkinningPass(CmdList);
-            }
+            ResetPass_RenderThread(CL);
+            CompileDrawCommands_RenderThread(CL);
 
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Early", FColor(1.00f, 0.55f, 0.20f));
-                DepthPrePassEarly(CmdList);
+                SCENE_GPU_SCOPE(CL, "Texture Paint");
+                TexturePaintPass(CL);
             }
 
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (Mid)", FColor(1.00f, 0.75f, 0.30f));
-                DepthPyramidPass(CmdList);
-            }
+                LUMINA_PROFILE_SECTION("RenderPasses");
 
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Late", FColor(1.00f, 0.30f, 0.55f));
-                CullPassLate(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Late", FColor(1.00f, 0.65f, 0.30f));
-                DepthPrePassLate(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f));
-                ClusterBuildPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f));
-                LightCullPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
-                PointShadowPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f));
-                SpotShadowPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f));
-                CascadedShowPass(CmdList);
-            }
-
-            {
-                // Sky cube capture here keeps the IBL cube in lockstep with the rendered background.
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Cube Capture", FColor(0.55f, 0.85f, 0.95f));
-                SkyCubeCapturePass(CmdList);
-            }
-
-            {
-                // Convolves IBL diffuse + GGX specular cubemaps from the cube SkyCubeCapturePass wrote.
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Irradiance", FColor(0.55f, 0.75f, 0.95f));
-                IrradianceConvolutionPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Prefilter", FColor(0.55f, 0.75f, 0.85f));
-                PrefilterEnvMapPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f));
-                EnvironmentPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f));
-                TerrainUpdatePass(CmdList);
-            }
-
-            {
-                // DBuffer decals: project onto opaque depth before the base pass composites them.
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Decals", FColor(0.90f, 0.55f, 0.20f));
-                DecalPass(CmdList);
-            }
-
-            // After the depth prepass (full opaque depth available), before the base pass that samples it.
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "SSAO", FColor(0.10f, 0.70f, 0.25f));
-                SSAOPass(CmdList);
-                SSAOBlurPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Base Pass", FColor(0.95f, 0.20f, 0.20f));
-                BasePass(CmdList);
-            }
-
-            // Terrain cull uses the post-base-pass Hi-Z (freshest occlusion).
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
-                TerrainCullPass(CmdList);
-            }
-
-            // VS-only early-Z so the heavy terrain PS shades each visible pixel once.
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Depth", FColor(0.20f, 0.60f, 0.45f));
-                TerrainDepthPrePass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f));
-                TerrainRenderPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (End)", FColor(1.00f, 0.55f, 0.20f));
-                DepthPyramidPass(CmdList);
-            }
-            
-            // After the opaque scene (so HDR holds the lit scene to refract/SSR), before translucency.
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Water", FColor(0.20f, 0.70f, 0.90f));
-                WaterPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f));
-                TransparentPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f));
-                OITResolvePass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Inject", FColor(0.55f, 0.60f, 0.65f));
-                FroxelInjectPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Integrate", FColor(0.65f, 0.55f, 0.75f));
-                FroxelIntegratePass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Apply", FColor(0.85f, 0.65f, 0.30f));
-                FroxelApplyPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Solid Tris", FColor(0.30f, 0.85f, 0.45f));
-                BatchedTriangleDraw(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f));
-                BatchedLineDraw(CmdList);
-            }
-            
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f));
-                ParticleSimulatePass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f));
-                ParticleRenderPass(CmdList);
-            }
-        
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f));
-                BillboardPass(CmdList);
-            }
-
-            // World-space text, pre-tone-map into HDR + Picker (one MRT pass), like billboards.
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Text", FColor(0.95f, 0.85f, 0.20f));
-                TextPass(CmdList);
-            }
-
-            #if USING(WITH_EDITOR)
-            {
-                // World-space widgets stamp their entity id into the Picker buffer here (their
-                // color is drawn later, post-tone-map), so they stay click-selectable.
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widget Picker", FColor(0.80f, 0.20f, 0.95f));
-                WidgetPickerPass(CmdList);
-            }
-            {
-                // After the last picker RT write; readback happens lazily in GetEntityAtPixel.
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Picker Readback", FColor(0.50f, 0.50f, 0.50f));
-                IssuePickerReadback(CmdList);
-            }
-            #endif
-        
-            // Underwater absorption/distortion over the fully-composited HDR (per-ray path length, so the
-            // half-submerged waterline falls out and above-water pixels are untouched). Before bloom/exposure.
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Underwater", FColor(0.15f, 0.45f, 0.70f));
-                UnderwaterPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Bloom", FColor(0.95f, 0.75f, 0.30f));
-                BloomPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Auto Exposure", FColor(0.95f, 0.55f, 0.20f));
-                AutoExposurePass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f));
-                ToneMappingPass(CmdList);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Post Process Materials", FColor(0.85f, 0.30f, 0.85f));
-                PostProcessMaterialPass(CmdList);
-            }
-
-            if (Frame.CachedWorldSettings.SMAAQuality != ESMAAQuality::Off)
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Edge Detection");
-                    SMAAEdgeDetectionPass(CmdList);
+                    SCENE_GPU_SCOPE(CL, "Cull Early");
+                    CullPassEarly(CL);
                 }
 
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Blend Weight");
-                    SMAABlendWeightPass(CmdList);
+                    SCENE_GPU_SCOPE(CL, "Skinning");
+                    SkinningPass(CL);
                 }
 
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");
-                    SMAANeighborhoodBlendPass(CmdList);
+                    SCENE_GPU_SCOPE(CL, "Depth PrePass Early");
+                    DepthPrePassEarly(CL);
                 }
-            }
-            
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widgets", FColor(0.80f, 0.20f, 0.95f));
-                WidgetPass(CmdList);
-            }
 
-            #if !defined(LE_SHIPPING)
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Debug Text", FColor(0.95f, 0.85f, 0.20f));
-                DebugTextPass(CmdList);
-            }
-            #endif
-            
-            for (const FFrameData::FCaptureViewData& Capture : Frame.Views.CaptureViews)
-            {
-                if (Capture.SceneViewIndex <= 0 || Capture.SceneViewIndex >= (int32)SceneViews.size())
                 {
-                    continue;
+                    SCENE_GPU_SCOPE(CL, "Depth Pyramid (Mid)");
+                    DepthPyramidPass(CL);
                 }
 
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Capture View", FColor(0.30f, 0.85f, 0.65f));
+                {
+                    SCENE_GPU_SCOPE(CL, "Cull Late");
+                    CullPassLate(CL);
+                }
 
-                FSceneView& View = SceneViews[Capture.SceneViewIndex];
-                PointAtView(View);
+                {
+                    SCENE_GPU_SCOPE(CL, "Depth PrePass Late");
+                    DepthPrePassLate(CL);
+                }
 
-                View.Viewport->SetViewVolume(Capture.ViewVolume);
-                CurrentCameraEarlyView = Capture.CameraViewIndex;
-                CurrentCameraLateView  = ~0u;
-                
-                CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, View, CmdList.CopyTransient(Capture.SceneGlobalData).Gpu);
+                {
+                    SCENE_GPU_SCOPE(CL, "Cluster Build");
+                    ClusterBuildPass(CL);
+                }
 
-                RenderCaptureView(CmdList);
+                {
+                    SCENE_GPU_SCOPE(CL, "Light Cull");
+                    LightCullPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Point Shadows");
+                    PointShadowPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Spot Shadows");
+                    SpotShadowPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Cascaded Shadows");
+                    CascadedShowPass(CL);
+                }
+
+                {
+                    // Sky cube capture here keeps the IBL cube in lockstep with the rendered background.
+                    SCENE_GPU_SCOPE(CL, "Sky Cube Capture");
+                    SkyCubeCapturePass(CL);
+                }
+
+                {
+                    // Convolves IBL diffuse + GGX specular cubemaps from the cube SkyCubeCapturePass wrote.
+                    SCENE_GPU_SCOPE(CL, "Sky Irradiance");
+                    IrradianceConvolutionPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Sky Prefilter");
+                    PrefilterEnvMapPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Environment");
+                    EnvironmentPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Terrain Update");
+                    TerrainUpdatePass(CL);
+                }
+
+                {
+                    // DBuffer decals: project onto opaque depth before the base pass composites them.
+                    SCENE_GPU_SCOPE(CL, "Decals");
+                    DecalPass(CL);
+                }
+
+                // After the depth prepass (full opaque depth available), before the base pass that samples it.
+                {
+                    SCENE_GPU_SCOPE(CL, "SSAO");
+                    SSAOPass(CL);
+                    SSAOBlurPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Base Pass");
+                    BasePass(CL);
+                }
+
+                // Terrain cull uses the post-base-pass Hi-Z (freshest occlusion).
+                {
+                    SCENE_GPU_SCOPE(CL, "Terrain Cull");
+                    TerrainCullPass(CL);
+                }
+
+                // VS-only early-Z so the heavy terrain PS shades each visible pixel once.
+                {
+                    SCENE_GPU_SCOPE(CL, "Terrain Depth");
+                    TerrainDepthPrePass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Terrain Render");
+                    TerrainRenderPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Depth Pyramid (End)");
+                    DepthPyramidPass(CL);
+                }
+
+                // After the opaque scene (so HDR holds the lit scene to refract/SSR), before translucency.
+                {
+                    SCENE_GPU_SCOPE(CL, "Water");
+                    WaterPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Transparent");
+                    TransparentPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "OIT Resolve");
+                    OITResolvePass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Froxel Fog Inject");
+                    FroxelInjectPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Froxel Fog Integrate");
+                    FroxelIntegratePass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Froxel Fog Apply");
+                    FroxelApplyPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Batched Solid Tris");
+                    BatchedTriangleDraw(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Batched Lines");
+                    BatchedLineDraw(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Particles Simulate");
+                    ParticleSimulatePass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Particles Render");
+                    ParticleRenderPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Billboards");
+                    BillboardPass(CL);
+                }
+
+                // World-space text, pre-tone-map into HDR + Picker (one MRT pass), like billboards.
+                {
+                    SCENE_GPU_SCOPE(CL, "Text");
+                    TextPass(CL);
+                }
+
+                #if USING(WITH_EDITOR)
+                {
+                    // World-space widgets stamp their entity id into the Picker buffer here (their
+                    // color is drawn later, post-tone-map), so they stay click-selectable.
+                    SCENE_GPU_SCOPE(CL, "Widget Picker");
+                    WidgetPickerPass(CL);
+                }
+                {
+                    // After the last picker RT write; readback happens lazily in GetEntityAtPixel.
+                    SCENE_GPU_SCOPE(CL, "Picker Readback");
+                    IssuePickerReadback(CL);
+                }
+                #endif
+
+                // Underwater absorption/distortion over the fully-composited HDR (per-ray path length, so the
+                // half-submerged waterline falls out and above-water pixels are untouched). Before bloom/exposure.
+                {
+                    SCENE_GPU_SCOPE(CL, "Underwater");
+                    UnderwaterPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Bloom");
+                    BloomPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Auto Exposure");
+                    AutoExposurePass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Tone Mapping");
+                    ToneMappingPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Post Process Materials");
+                    PostProcessMaterialPass(CL);
+                }
+
+                if (Frame.CachedWorldSettings.SMAAQuality != ESMAAQuality::Off)
+                {
+                    SCENE_GPU_SCOPE(CL, "SMAA");
+                    SMAAEdgeDetectionPass(CL);
+                    SMAABlendWeightPass(CL);
+                    SMAANeighborhoodBlendPass(CL);
+                }
+
+                {
+                    SCENE_GPU_SCOPE(CL, "Widgets");
+                    WidgetPass(CL);
+                }
+
+                #if !defined(LE_SHIPPING)
+                {
+                    SCENE_GPU_SCOPE(CL, "Debug Text");
+                    DebugTextPass(CL);
+                }
+                #endif
+
+                for (const FFrameData::FCaptureViewData& Capture : Frame.Views.CaptureViews)
+                {
+                    if (Capture.SceneViewIndex <= 0 || Capture.SceneViewIndex >= (int32)SceneViews.size())
+                    {
+                        continue;
+                    }
+
+                    SCENE_GPU_SCOPE(CL, "Capture View");
+
+                    FSceneView& View = SceneViews[Capture.SceneViewIndex];
+                    PointAtView(View);
+
+                    CurrentCameraEarlyView = Capture.CameraViewIndex;
+                    CurrentCameraLateView  = ~0u;
+
+                    CurrentSceneRootAddr = BuildViewSceneRoot(View, RHI::Core::CopyTransient(Capture.SceneGlobalData));
+
+                    RenderCaptureView(CL);
+                }
             }
+
+            {
+                // Screen-space world UI composites onto the primary display-referred output.
+                SCENE_GPU_SCOPE(CL, "RmlUi World UI");
+                RmlUi::RenderWorldUI(World, CL);
+            }
+
+            // Make the final Output writes visible to ImGui's later same-queue submit, which
+            // samples them (by ResourceID) in the editor viewport / capture preview panels.
+            Barriers::RasterToRead(CL);
         }
-        
+
+        RHI::Core::Submit(CL);
+
         RenderFrame = nullptr;
     }
 
-    void FForwardRenderScene::RenderCaptureView(ICommandList& CmdList)
+    void FForwardRenderScene::RenderCaptureView(RHI::FCmdListH CL)
     {
         if (RenderFrame->Geometry.OpaqueOccluderDrawList.empty())
         {
-            CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
+            Barriers::AllToTransfer(CL);
+            const float DepthClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::DepthAttachment).Texture, DepthClear);
+            Barriers::TransferToAll(CL);
         }
-        
-        DepthPrePassEarly(CmdList);
-        ClusterBuildPass(CmdList);
-        LightCullPass(CmdList);
-        EnvironmentPass(CmdList);
-        DecalPass(CmdList);
-        BasePass(CmdList);
-        TerrainCullPass(CmdList);
-        TerrainDepthPrePass(CmdList);
-        TerrainRenderPass(CmdList);
-        WaterPass(CmdList);
-        TransparentPass(CmdList);
-        OITResolvePass(CmdList);
-        FroxelInjectPass(CmdList);
-        FroxelIntegratePass(CmdList);
-        FroxelApplyPass(CmdList);
-        BloomPass(CmdList);
-        AutoExposurePass(CmdList);
-        ToneMappingPass(CmdList);
-        PostProcessMaterialPass(CmdList);
+
+        DepthPrePassEarly(CL);
+        ClusterBuildPass(CL);
+        LightCullPass(CL);
+        EnvironmentPass(CL);
+        DecalPass(CL);
+        BasePass(CL);
+        TerrainCullPass(CL);
+        TerrainDepthPrePass(CL);
+        TerrainRenderPass(CL);
+        WaterPass(CL);
+        TransparentPass(CL);
+        OITResolvePass(CL);
+        FroxelInjectPass(CL);
+        FroxelIntegratePass(CL);
+        FroxelApplyPass(CL);
+        BloomPass(CL);
+        AutoExposurePass(CL);
+        ToneMappingPass(CL);
+        PostProcessMaterialPass(CL);
 
         if (RenderFrame->CachedWorldSettings.SMAAQuality != ESMAAQuality::Off)
         {
-            SMAAEdgeDetectionPass(CmdList);
-            SMAABlendWeightPass(CmdList);
-            SMAANeighborhoodBlendPass(CmdList);
+            SMAAEdgeDetectionPass(CL);
+            SMAABlendWeightPass(CL);
+            SMAANeighborhoodBlendPass(CL);
         }
     }
 
     void FForwardRenderScene::SignalFrameConsumed(uint8 FrameIndex)
     {
-        SignalSlotConsumed((uint8)(FrameIndex % FRAMES_IN_FLIGHT));
+        SignalSlotConsumed((uint8)(FrameIndex % RHI::kFramesInFlight));
     }
-    
+
     void FForwardRenderScene::SwapchainResized(FVector2 NewSize)
     {
-        // BindingCache is per-scene; safe to clear. GRenderContext->Clear* are NOT --
-        // they'd wipe pipelines shared across scenes/RmlUi/ImGui -> device lost.
-        BindingCache.ReleaseResources();
+        // Rare, editor-driven: drain the GPU so the per-view images can be released and
+        // recreated at the new size without racing in-flight frames.
+        RHI::WaitDeviceIdle();
 
         // Only the primary view tracks the swapchain; capture views keep their own size.
         FSceneView& Primary = SceneViews[0];
-        Primary.Viewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
-        Primary.Size     = FUIntVector2((uint32)NewSize.x, (uint32)NewSize.y);
+        Primary.Size = FUIntVector2(Math::Max((uint32)NewSize.x, 1u), Math::Max((uint32)NewSize.y, 1u));
 
         InitFrameResources();
 
         #if USING(WITH_EDITOR)
-        // Drop old staging slots; sized to previous extent so pixel grid no longer matches clicks.
+        // Drop old readback slots; sized to previous extent so pixel grid no longer matches clicks.
         for (FPickerReadbackSlot& Slot : PickerReadbackRing)
         {
-            Slot.Staging.SafeRelease();
+            if (Slot.Readback != 0)
+            {
+                RHI::Free(Slot.Readback);
+                Slot.Readback = 0;
+            }
             Slot.Width = 0;
             Slot.Height = 0;
             Slot.bPending = false;
@@ -959,7 +1127,6 @@ namespace Lumina
         auto& OpaqueDrawList         = Frame.Geometry.OpaqueDrawList;
         auto& OpaqueOccluderDrawList = Frame.Geometry.OpaqueOccluderDrawList;
         auto& TranslucentDrawList    = Frame.Geometry.TranslucentDrawList;
-        auto& PinnedMeshBuffersThisFrame = Frame.Geometry.PinnedMeshBuffersThisFrame;
         auto& SceneCullContext       = Frame.Geometry.SceneCullContext;
         auto& CullViews              = Frame.Views.CullViews;
         auto& IndirectArgs           = Frame.Views.IndirectArgs;
@@ -968,16 +1135,13 @@ namespace Lumina
         auto& LightData              = Frame.Lighting.LightData;
         auto& PackedShadows          = Frame.Lighting.PackedShadows;
         auto& EnvironmentParams      = Frame.Volumetrics.EnvironmentParams;
-        auto& EnvironmentMapImage    = Frame.Volumetrics.EnvironmentMapImage;
         auto& SceneGlobalData        = Frame.SceneGlobalData;
         auto& SimpleVertices         = Frame.Primitives.SimpleVertices;
         auto& LineBatches            = Frame.Primitives.LineBatches;
         auto& BillboardInstances     = Frame.Primitives.BillboardInstances;
         auto& WidgetInstances        = Frame.Primitives.WidgetInstances;
-        auto& PinnedWidgetRTs        = Frame.Primitives.PinnedWidgetRTs;
         auto& GlyphInstances         = Frame.Primitives.GlyphInstances;
         auto& TextBatches            = Frame.Primitives.TextBatches;
-        auto& PinnedFontAtlases      = Frame.Primitives.PinnedFontAtlases;
         auto& FrameStats             = Frame.FrameStats;
 
         {
@@ -1061,7 +1225,7 @@ namespace Lumina
             // its pixels unready; doing it here matches the asset-load upload path that already works.
             if (CFont* DefaultFont = CFontManager::Get().GetDefaultFont())
             {
-                DefaultFont->GetAtlasImage();
+                DefaultFont->GetAtlasResourceID();
             }
 
             // Screen-space debug text (World::DrawDebugText): drain the queued lines and lay them out top-left
@@ -1074,8 +1238,8 @@ namespace Lumina
                 World->DrainDebugTextLines(DebugLines);
 
                 CFont* DebugFont = CFontManager::Get().GetDefaultFont();
-                FRHIImage* DebugAtlas = DebugFont ? DebugFont->GetAtlasImage() : nullptr;
-                if (!DebugLines.empty() && DebugFont && DebugFont->HasAtlas() && DebugAtlas && DebugAtlas->GetResourceID() >= 0)
+                const int32 DebugAtlasID = DebugFont ? DebugFont->GetAtlasResourceID() : -1;
+                if (!DebugLines.empty() && DebugFont && DebugFont->HasAtlas() && DebugAtlasID >= 0)
                 {
                     // Fixed pixel size in the (fixed-resolution) world RT, so the text is a consistent size
                     // regardless of viewport aspect/size.
@@ -1112,13 +1276,12 @@ namespace Lumina
                     if (!Frame.Primitives.DebugTextGlyphs.empty())
                     {
                         FFrameData::FTextBatch& Batch = Frame.Primitives.DebugTextBatch;
-                        Batch.AtlasIndex    = (uint32)DebugAtlas->GetResourceID();
+                        Batch.AtlasIndex    = (uint32)DebugAtlasID;
                         Batch.AtlasWidth    = DebugFont->GetAtlasWidth();
                         Batch.AtlasHeight   = DebugFont->GetAtlasHeight();
                         Batch.DistanceRange = DebugFont->GetDistanceRange();
                         Batch.FirstInstance = 0;
                         Batch.Count         = (uint32)Frame.Primitives.DebugTextGlyphs.size();
-                        Frame.Primitives.PinnedFontAtlases.push_back(DebugFont->GetAtlasImageRef());
                     }
                 }
             }
@@ -1210,57 +1373,28 @@ namespace Lumina
                 {
                     FWidgetRuntime& Runtime = WidgetComponent.Runtime;
 
-                    // Frustum cull against the authoritative view (same one meshes use). Transform+size only,
-                    // so it works pre-build; drives whether TickWorldWidgets lays out + rasterizes the RT.
                     const FMatrix4 World = TransformStorage.get(Entity).GetWorldMatrix();
                     const FVector3 Center = FVector3(World[3]);
                     const float ScaleXY = Math::Max(Math::Length(FVector3(World[0])), Math::Length(FVector3(World[1])));
                     const float Radius  = 0.5f * Math::Length(WidgetComponent.WorldSize) * Math::Max(1.0f, ScaleXY);
 
-                    const bool bVisible = !bCullWidgets || WidgetFrustum.IntersectsSphere(Center, Radius);
-                    Runtime.bVisible = bVisible;
+                    Runtime.bVisible = !bCullWidgets || WidgetFrustum.IntersectsSphere(Center, Radius);
 
-                    if (!bVisible)
+                    if (!Runtime.bVisible || Runtime.ResourceID < 0)
                     {
                         return;
                     }
 
-                    // Runtime state is filled by RmlUi::TickWorldWidgets earlier this frame (same
-                    // game thread). No document / id means the RT isn't ready (first frame, empty path).
-                    if (Runtime.Document == nullptr || Runtime.ResourceID < 0)
-                    {
-                        return;
-                    }
-
-                    FWidgetInstance& Widget = WidgetInstances.emplace_back();
-                    Widget.Transform        = World;
-                    Widget.WorldSize        = WidgetComponent.WorldSize;
-                    Widget.TextureIndex     = (uint32)Runtime.ResourceID;
-                    Widget.Flags            = WidgetComponent.bBillboard ? WIDGET_FLAG_BILLBOARD : 0u;
-                    Widget.ColorPack        = PackColor(WidgetComponent.Tint);
-                    Widget.EntityID         = entt::to_integral(Entity);
-
-                    // Keep the RT alive for this frame's GPU work: the widget/picker passes sample it
-                    // bindlessly, and deleting the entity frees Runtime.Target. KeepAlive'd in RenderView.
-                    if (Runtime.Target)
-                    {
-                        PinnedWidgetRTs.push_back(Runtime.Target);
-                    }
+                    FWidgetInstance& Inst = WidgetInstances.emplace_back();
+                    Inst.Transform    = World;
+                    Inst.WorldSize    = WidgetComponent.WorldSize;
+                    Inst.TextureIndex = (uint32)Runtime.ResourceID;
+                    Inst.Flags        = WidgetComponent.bBillboard ? WIDGET_FLAG_BILLBOARD : 0u;
+                    Inst.ColorPack    = PackColor(WidgetComponent.Tint);
+                    Inst.EntityID     = entt::to_integral(Entity);
+                    Inst.Pad0         = 0u;
+                    Inst.Pad1         = 0u;
                 });
-
-                // World-space UI blends with alpha and writes no depth, so overlapping widgets need
-                // painter's order. Sort farthest-first by distance to the camera.
-                if (WidgetInstances.size() > 1)
-                {
-                    const FVector3 CameraPos = FVector3(SceneGlobalData.CameraData.Location);
-                    eastl::sort(WidgetInstances.begin(), WidgetInstances.end(),
-                        [CameraPos](const FWidgetInstance& A, const FWidgetInstance& B)
-                        {
-                            const FVector3 DA = FVector3(A.Transform[3]) - CameraPos;
-                            const FVector3 DB = FVector3(B.Transform[3]) - CameraPos;
-                            return Math::Dot(DA, DA) > Math::Dot(DB, DB);
-                        });
-                }
             }, ETaskPriority::High);
 
             Graph.Add([&]
@@ -1290,8 +1424,8 @@ namespace Lumina
                         return;
                     }
 
-                    FRHIImage* Atlas = Font->GetAtlasImage();
-                    if (Atlas == nullptr || Atlas->GetResourceID() < 0)
+                    const int32 AtlasID = Font->GetAtlasResourceID();
+                    if (AtlasID < 0)
                     {
                         return;
                     }
@@ -1396,15 +1530,13 @@ namespace Lumina
                     }
 
                     FFrameData::FTextBatch& Batch = TextBatches.emplace_back();
-                    Batch.AtlasIndex    = (uint32)Atlas->GetResourceID();
+                    Batch.AtlasIndex    = (uint32)AtlasID;
                     Batch.AtlasWidth    = Font->GetAtlasWidth();
                     Batch.AtlasHeight   = Font->GetAtlasHeight();
                     Batch.DistanceRange = Font->GetDistanceRange();
                     Batch.FirstInstance = First;
                     Batch.Count         = (uint32)GlyphInstances.size() - First;
                     Batch.bDepthTest    = TextComponent.bDepthTest;
-
-                    PinnedFontAtlases.push_back(Font->GetAtlasImageRef());
                 });
             }, ETaskPriority::High);
 
@@ -1414,13 +1546,13 @@ namespace Lumina
 
                 BillboardView.each([this, &BillboardInstances, &TransformStorage](entt::entity Entity, const SBillboardComponent& BillboardComponent)
                 {
-                    if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
+                    if (!BillboardComponent.Texture.IsValid() || BillboardComponent.Texture->GetResourceID() < 0)
                     {
                         return;
                     }
 
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetResourceID();
+                    Billboard.TextureIndex          = BillboardComponent.Texture->GetResourceID();
                     Billboard.Position              = TransformStorage.get(Entity).WorldTransform.Location;
                     Billboard.Size                  = BillboardComponent.Scale;
                     Billboard.EntityID              = entt::to_integral(Entity);
@@ -1433,7 +1565,7 @@ namespace Lumina
                     auto EmplaceVisualizer = [this, &BillboardInstances](entt::entity Entity, const FVector3& Position, ENamedImage Icon, const FVector4& Color, float Size = 0.20f)
                     {
                         FBillboardInstance& Billboard = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex        = GetNamedImage(Icon)->GetResourceID();
+                        Billboard.TextureIndex        = (uint32)GetNamedImage(Icon).GetResourceID();
                         Billboard.ColorPack           = PackColor(Color);
                         Billboard.Position            = Position;
                         Billboard.Size                = Size;
@@ -1597,9 +1729,8 @@ namespace Lumina
                         }
                         if (CTexture* Tex = PS->Texture.Get())
                         {
-                            if (FRHIImage* Image = Tex->GetRHIRef())
                             {
-                                const int32 CacheIdx = Image->GetResourceID();
+                                const int32 CacheIdx = Tex->GetResourceID();
                                 if (CacheIdx > 0)
                                 {
                                     Item.TextureIndex = (uint32)CacheIdx;
@@ -1711,9 +1842,9 @@ namespace Lumina
 
                 auto ResolveTexture = [](const TObjectPtr<CTexture>& Tex) -> uint32
                 {
-                    CTexture*  T     = Tex.Get();
-                    FRHIImage* Image = T ? T->GetRHIRef() : nullptr;
-                    return (Image && Image->GetResourceID() >= 0) ? (uint32)Image->GetResourceID() : ~0u;
+                    const CTexture* T = Tex.Get();
+                    const int32 ID = T ? T->GetResourceID() : -1;
+                    return ID >= 0 ? (uint32)ID : ~0u;
                 };
 
                 WaterView.each([&](entt::entity Entity, const SWaterComponent& Water)
@@ -1809,30 +1940,35 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Environment Processing");
 
-                RenderSettings.bHasEnvironment = false;
+                // Local, assigned once below: the render thread reads RenderSettings.bHasEnvironment live,
+                // and a transient false (reset-then-set) makes SkyCubeCapturePass clear the IBL cubes.
+                bool bHasEnvironment           = false;
                 RenderSettings.bSSAO           = false;
                 EnvironmentParams              = FEnvironmentParams{};
-                EnvironmentMapImage            = nullptr;
+                Frame.Volumetrics.EnvironmentMapID    = -1;
+                Frame.Volumetrics.EnvironmentMapWidth = 0;
                 // Set true below if any IBL input differs from the last bake snapshot.
                 Frame.Volumetrics.bIBLDirty                = false;
                 Frame.Volumetrics.bIBLConvolutionDirty     = false;
 
-                EnvironmentView.each([this, &EnvironmentParams, &EnvironmentMapImage, &ActiveEnv] (const SEnvironmentComponent& Env)
+                EnvironmentView.each([&bHasEnvironment, &Frame, &EnvironmentParams, &ActiveEnv] (const SEnvironmentComponent& Env)
                 {
                     ActiveEnv = &Env;
 
                     // bRenderSky gates the sky pass; ambient/skylight still flow when off (indoor scenes).
-                    RenderSettings.bHasEnvironment = Env.bRenderSky;
+                    bHasEnvironment = Env.bRenderSky;
 
                     // Only honor HDRI assignment when SkyMode == HDRI; otherwise IBL would convolve
-                    // from HDRI even though visible sky is procedural. Non-Environment textures rejected.
+                    // from HDRI even though visible sky is procedural.
                     if (Env.SkyMode == ESkyMode::HDRI)
                     {
                         if (CTexture* EnvMap = Env.EnvironmentMap.Get())
                         {
-                            if (EnvMap->ColorSpace == ETextureColorSpace::Environment && EnvMap->GetRHIRef())
+                            const int32 EnvMapID = EnvMap->GetResourceID();
+                            if (EnvMapID >= 0)
                             {
-                                EnvironmentMapImage = EnvMap->GetRHIRef();
+                                Frame.Volumetrics.EnvironmentMapID    = EnvMapID;
+                                Frame.Volumetrics.EnvironmentMapWidth = EnvMap->GetTextureResource().ImageDescription.Extent.x;
                             }
                         }
                     }
@@ -1867,6 +2003,8 @@ namespace Lumina
                     EnvironmentParams.MoonDirection = FVector4(Env.MoonDirection, 0.0f);
                     EnvironmentParams.GalaxyParams  = FVector4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
                 });
+
+                RenderSettings.bHasEnvironment = bHasEnvironment;
 
                 // Resolve the IBL bake resolution; the render thread rebuilds the cubes when it changes
                 // (handled alongside the dirty-flag bookkeeping below). Keep the last tier if no env.
@@ -1982,7 +2120,7 @@ namespace Lumina
         BuildCullViews(ExtractFrame->ViewVolume);
     }
 
-    void FForwardRenderScene::CompileDrawCommands_RenderThread(ICommandList& CmdList)
+    void FForwardRenderScene::CompileDrawCommands_RenderThread(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SCOPE();
         LUMINA_MEMORY_SCOPE("Render Scene");
@@ -1996,7 +2134,7 @@ namespace Lumina
         const auto& InstanceMeshletPrefix= Frame.Geometry.InstanceMeshletPrefix;
         const auto& LightData            = Frame.Lighting.LightData;
         const auto& EnvironmentParams    = Frame.Volumetrics.EnvironmentParams;
-        FRHIImage* EnvironmentMapImage   = Frame.Volumetrics.EnvironmentMapImage;
+        const int32 EnvironmentMapID     = Frame.Volumetrics.EnvironmentMapID;
         const auto& BillboardInstances   = Frame.Primitives.BillboardInstances;
         const uint32 TotalMeshletBound   = Frame.Views.TotalMeshletBound;
         const uint32 NumDrawsPerView     = Frame.Views.NumDrawsPerView;
@@ -2020,22 +2158,22 @@ namespace Lumina
 
         // Shared indirect args: NumViews * NumDraws FDrawIndirectArguments.
         const SIZE_T IndirectArgsSize = Math::Max<SIZE_T>(
-            sizeof(FDrawIndirectArguments),
-            IndirectArgs.size() * sizeof(FDrawIndirectArguments));
+            sizeof(RHI::FDrawIndirectArguments),
+            IndirectArgs.size() * sizeof(RHI::FDrawIndirectArguments));
 
         // Worst case: every meshlet HZB-occluded in phase 0 (first frame). Stride matches FMeshletDeferred.
         const SIZE_T DeferListSize = Math::Max<SIZE_T>(
             sizeof(uint32) * 4,
             (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
 
-        // These buffers are reached by device address (PreSkinned) or bound directly (indirect),
-        // not through any persistent descriptor set, so a resize needs no binding-set rebuild.
-        RenderUtils::ResizeBufferIfNeeded(PreSkinnedVerticesBuffer, (uint32)PreSkinnedSize,   1.2f, PreSkinnedVerticesLowUsage);
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
+        // Buffers are reached only by device address; a resize swaps the allocation (old one
+        // retires on this slot's deferred-free list) with no descriptor work.
+        ResizeBufferIfNeeded(PreSkinnedVerticesBuffer, PreSkinnedSize, 1.2f, PreSkinnedVerticesLowUsage);
+        for (uint32 Slot = 0; Slot < RHI::kFramesInFlight; ++Slot)
         {
-            RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
-            RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
-            RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
+            ResizeBufferIfNeeded(IndirectArgsRing[Slot], IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
+            ResizeBufferIfNeeded(MeshletDrawListRing[Slot], MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
+            ResizeBufferIfNeeded(MeshletDeferListRing[Slot], DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
         }
 
         {
@@ -2044,15 +2182,11 @@ namespace Lumina
             // The only CPU upload left to a persistent buffer: indirect args (GPU-consumed). Debug
             // line/triangle geometry is ring-allocated at its draw site; everything else dynamic goes
             // through the transient ring below.
-            CmdList.SetBufferState(GetIndirectArgs(), EResourceStates::CopyDest);
-            CmdList.CommitBarriers();
-
-            CmdList.DisableAutomaticBarriers();
-
             // FirstInstance pre-seeded so each atomic append in CullMeshlets lands in its own slice.
             if (!IndirectArgs.empty())
             {
-                CmdList.WriteBuffer(GetIndirectArgs(), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
+                WriteBuffer(CL, GetIndirectArgs().Ptr, IndirectArgs.data(), IndirectArgs.size() * sizeof(RHI::FDrawIndirectArguments));
+                Barriers::TransferToAll(CL);
             }
 
             // Env/fog params are uploaded to the transient ring at their pass sites (Environment /
@@ -2065,11 +2199,11 @@ namespace Lumina
             }
 
             const bool bSunChanged = LastIBLSunDirection != LightData.SunDirection || bLastIBLHasSun != (LightData.bHasSun != 0);
-            const bool bMapChanged = LastIBLEnvironmentMap != EnvironmentMapImage;
-            
+            const bool bMapChanged = LastIBLEnvironmentMapID != EnvironmentMapID;
+
             // Quality-tier change forces a full re-bake into the freshly-sized cubes (recreated on
             // the render thread by SyncIBLResolution before SkyCubeCapturePass runs).
-            const bool bResChanged = Frame.Volumetrics.IBLResolution != LastExtractedIBLResolution; 
+            const bool bResChanged = Frame.Volumetrics.IBLResolution != LastExtractedIBLResolution;
             LastExtractedIBLResolution = Frame.Volumetrics.IBLResolution;
 
             if (RenderSettings.bHasEnvironment &&
@@ -2077,7 +2211,7 @@ namespace Lumina
             {
                 bIBLDirty                  = true;
                 LastIBLEnvironmentParams   = EnvironmentParams;
-                LastIBLEnvironmentMap      = EnvironmentMapImage;
+                LastIBLEnvironmentMapID    = EnvironmentMapID;
                 LastIBLSunDirection        = LightData.SunDirection;
                 bLastIBLHasSun             = (LightData.bHasSun != 0);
                 bIBLValid                  = true;
@@ -2095,72 +2229,78 @@ namespace Lumina
             const bool bConvSunChanged = bConvHasSunChanged || (SunCos < SunCosThreshold);
             const bool bConvParamsChanged = std::memcmp(&LastConvolvedEnvironmentParams, &EnvironmentParams, sizeof(FEnvironmentParams)) != 0;
             const bool bConvMapChanged =
-                LastConvolvedEnvironmentMap != EnvironmentMapImage;
+                LastConvolvedEnvironmentMapID != EnvironmentMapID;
 
             if (RenderSettings.bHasEnvironment &&
                 (!bIBLConvolutionValid || bConvParamsChanged || bConvSunChanged || bConvMapChanged || bResChanged))
             {
                 bIBLConvolutionDirty           = true;
                 LastConvolvedEnvironmentParams = EnvironmentParams;
-                LastConvolvedEnvironmentMap    = EnvironmentMapImage;
+                LastConvolvedEnvironmentMapID  = EnvironmentMapID;
                 LastConvolvedSunDirection      = LightData.SunDirection;
                 bLastConvolvedHasSun           = (LightData.bHasSun != 0);
                 bIBLConvolutionValid           = true;
             }
+
+            // No environment this frame: the render thread clears the IBL cubes to black, so drop the
+            // bake snapshot or a later re-enable with identical inputs would never set the dirty bits.
+            if (!RenderSettings.bHasEnvironment)
+            {
+                bIBLValid            = false;
+                bIBLConvolutionValid = false;
+            }
             // --- Bindless scene root: transient-upload the per-frame dynamic buffers and capture their
-            // device addresses; GPU-written + CPU-static buffers use their stable GetAddress(). SceneData,
+            // device addresses; GPU-written + CPU-static buffers use their stable addresses. SceneData,
             // Clusters and the IBL indices are per-view (added by BuildViewSceneRoot). ---
             SceneRootShared = FSceneRoot{};
-            SceneRootShared.Lights = CmdList.CopyTransient(LightData).Gpu;
+            SceneRootShared.Lights = RHI::Core::CopyTransient(LightData);
             if (!Instances.empty())
             {
-                SceneRootShared.Instances = CmdList.CopyTransientArray(Instances.data(), Instances.size()).Gpu;
+                SceneRootShared.Instances = RHI::Core::CopyTransientArray(Instances.data(), Instances.size());
             }
             if (!BonesData.empty())
             {
-                SceneRootShared.Bones = CmdList.CopyTransientArray(BonesData.data(), BonesData.size()).Gpu;
+                SceneRootShared.Bones = RHI::Core::CopyTransientArray(BonesData.data(), BonesData.size());
             }
             if (!BillboardInstances.empty())
             {
-                SceneRootShared.Billboards = CmdList.CopyTransientArray(BillboardInstances.data(), BillboardInstances.size()).Gpu;
+                SceneRootShared.Billboards = RHI::Core::CopyTransientArray(BillboardInstances.data(), BillboardInstances.size());
             }
             if (!CullViews.empty())
             {
-                SceneRootShared.CullViews = CmdList.CopyTransientArray(CullViews.data(), CullViews.size()).Gpu;
+                SceneRootShared.CullViews = RHI::Core::CopyTransientArray(CullViews.data(), CullViews.size());
             }
             if (!Frame.Geometry.SkinDescriptors.empty())
             {
-                SceneRootShared.SkinDescriptors = CmdList.CopyTransientArray(Frame.Geometry.SkinDescriptors.data(), Frame.Geometry.SkinDescriptors.size()).Gpu;
+                SceneRootShared.SkinDescriptors = RHI::Core::CopyTransientArray(Frame.Geometry.SkinDescriptors.data(), Frame.Geometry.SkinDescriptors.size());
             }
             if (!Frame.Primitives.WidgetInstances.empty())
             {
-                SceneRootShared.Widgets = CmdList.CopyTransientArray(Frame.Primitives.WidgetInstances.data(), Frame.Primitives.WidgetInstances.size()).Gpu;
+                SceneRootShared.Widgets = RHI::Core::CopyTransientArray(Frame.Primitives.WidgetInstances.data(), Frame.Primitives.WidgetInstances.size());
             }
             if (!InstanceMeshletPrefix.empty())
             {
-                SceneRootShared.InstanceMeshletPrefix = CmdList.CopyTransientArray(InstanceMeshletPrefix.data(), InstanceMeshletPrefix.size()).Gpu;
+                SceneRootShared.InstanceMeshletPrefix = RHI::Core::CopyTransientArray(InstanceMeshletPrefix.data(), InstanceMeshletPrefix.size());
             }
-            
-            SceneRootShared.Materials          = GRenderManager->GetMaterialManager().GetMaterialBuffer()->GetAddress();
-            SceneRootShared.MeshletDrawList    = GetMeshletDrawList()->GetAddress();
-            SceneRootShared.PreSkinnedVertices = GetPreSkinnedVerticesBuffer()->GetAddress();
+
+            SceneRootShared.Materials          = GRenderManager->GetMaterialManager().GetMaterialBuffer();
+            SceneRootShared.MeshletDrawList    = GetMeshletDrawList().GetAddress();
+            SceneRootShared.PreSkinnedVertices = GetPreSkinnedVerticesBuffer().GetAddress();
             if (Frame.CachedWorldSettings.bEnableSSAO)
             {
-                SceneGlobalData.SSAOSettings.AOTextureIndex = (uint32)CurrentView->Images[(int)ENamedImage::SSAOBlur]->GetResourceID();
+                SceneGlobalData.SSAOSettings.AOTextureIndex = (uint32)CurrentView->Images[(int)ENamedImage::SSAOBlur].GetResourceID();
             }
-            CurrentSceneRootAddr = BuildViewSceneRoot(CmdList, *CurrentView, CmdList.CopyTransient(SceneGlobalData).Gpu);
-
-            CmdList.EnableAutomaticBarriers();
+            CurrentSceneRootAddr = BuildViewSceneRoot(*CurrentView, RHI::Core::CopyTransient(SceneGlobalData));
         }
     }
 
     struct FResolvedSlot
     {
-        FRHIVertexShader*   VertexShader;
-        FRHIPixelShader*    PixelShader;
+        const FShaderEntry*   VertexShader;
+        const FShaderEntry*    PixelShader;
         // Populated only when material drives WorldPositionOffset; null = global library shader.
-        FRHIVertexShader*   DepthVertexShader  = nullptr;
-        FRHIVertexShader*   ShadowVertexShader = nullptr;
+        const FShaderEntry*   DepthVertexShader  = nullptr;
+        const FShaderEntry*   ShadowVertexShader = nullptr;
         uint64              MaterialID;
         EInstanceFlags      ExtraFlags;
         uint16              MaterialIdx;
@@ -2398,24 +2538,8 @@ namespace Lumina
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
-        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer
-            ? MB.MeshletHeaderBuffer->GetAddress()
-            : 0ull;
-
-        // Skip the hash entirely for consecutive same-mesh entities; instanced
-        // scenes hit long runs of one mesh. Only consult the dedupe map on change.
-        if (MeshletHeaderAddress && Mesh != Local.LastPinnedMesh && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
-        {
-            Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
-        }
-        if (MeshletHeaderAddress)
-        {
-            Local.LastPinnedMesh = Mesh;
-        }
+        // GPUPtr is the BDA; dead-mesh safety comes from Core::DeferredFree, no pinning needed.
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
 
         // Angular size proxy (2r/d, squared to skip sqrt). Tiny props skip depth pre-pass.
         const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
@@ -2592,24 +2716,7 @@ namespace Lumina
         }
 
         const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
-        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer
-            ? MB.MeshletHeaderBuffer->GetAddress()
-            : 0ull;
-
-        // Skip the hash entirely for consecutive same-mesh entities; instanced
-        // scenes hit long runs of one mesh. Only consult the dedupe map on change.
-        if (MeshletHeaderAddress && Mesh != Local.LastPinnedMesh && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
-        {
-            Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
-            Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
-        }
-        if (MeshletHeaderAddress)
-        {
-            Local.LastPinnedMesh = Mesh;
-        }
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
 
         const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
         FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
@@ -2713,7 +2820,6 @@ namespace Lumina
         auto& OpaqueDrawList            = Frame.Geometry.OpaqueDrawList;
         auto& OpaqueOccluderDrawList    = Frame.Geometry.OpaqueOccluderDrawList;
         auto& TranslucentDrawList       = Frame.Geometry.TranslucentDrawList;
-        auto& PinnedMeshBuffersThisFrame = Frame.Geometry.PinnedMeshBuffersThisFrame;
         auto& DrawMeshletStartOffsets   = Frame.Geometry.DrawMeshletStartOffsets;
         auto& InstanceMeshletPrefix     = Frame.Geometry.InstanceMeshletPrefix;
         auto& FrameStats             = Frame.FrameStats;
@@ -2764,18 +2870,6 @@ namespace Lumina
 
             TotalInstances += (uint32)Local.Items.size();
             TotalInstancesCulled += Local.Stats.NumInstancesCulled;
-
-            // Move the refs out (heap-backed, arena-independent); the source is
-            // cleared next frame by ResetForFrame, so transfer ownership now.
-            if (!Local.PinnedMeshBuffers.empty())
-            {
-                PinnedMeshBuffersThisFrame.reserve(PinnedMeshBuffersThisFrame.size() + Local.PinnedMeshBuffers.size());
-                for (FRHIBufferRef& Ref : Local.PinnedMeshBuffers)
-                {
-                    PinnedMeshBuffersThisFrame.push_back(eastl::move(Ref));
-                }
-                Local.PinnedMeshBuffers.clear();
-            }
         }
         FrameStats.NumInstancesCulled += TotalInstancesCulled;
 
@@ -3603,11 +3697,11 @@ namespace Lumina
             const uint32 ViewDrawListBase = ViewIndex * TotalMeshletBound;
             for (uint32 d = 0; d < NumDraws; ++d)
             {
-                FDrawIndirectArguments Arg;
-                Arg.VertexCount           = MESHLET_VERTICES_PER_DRAW;
-                Arg.InstanceCount         = 0u;
-                Arg.StartVertexLocation   = 0u;
-                Arg.StartInstanceLocation = ViewDrawListBase + DrawMeshletStartOffsets[d];
+                RHI::FDrawIndirectArguments Arg;
+                Arg.VertexCount   = MESHLET_VERTICES_PER_DRAW;
+                Arg.InstanceCount = 0u;
+                Arg.FirstVertex   = 0u;
+                Arg.FirstInstance = ViewDrawListBase + DrawMeshletStartOffsets[d];
                 IndirectArgs.push_back(Arg);
             }
             return ViewIndex;
@@ -3974,12 +4068,6 @@ namespace Lumina
     {
         using FLineInstance = FLineBatcherComponent::FLineInstance;
         constexpr uint32 kMaxBuckets = FLineBatchScratch::kMaxBuckets;
-
-        // Gather the input as fixed-size chunks over the persistent carry-over list + each per-worker
-        // produce buffer. No drain/copy: each chunk points straight into its source. Chunking (rather than
-        // one task per buffer) keeps the parallel batch balanced even when one producer slot emitted far
-        // more lines than the others. Runs inline before graph Dispatch, so the batch node's chunks are
-        // ready and enqueued up front (no runtime bubble).
         constexpr uint32 kChunkLines = 4096;
 
         LineChunkScratch.clear();
@@ -4028,11 +4116,7 @@ namespace Lumina
 
         return (uint32)LineChunkScratch.size();
     }
-
-    // Parallel cull + per-worker bucketing over the prepared chunks. Each worker writes only its own scratch
-    // slot (FParallelRange::Thread is a dense worker slot, and a worker runs one chunk at a time), so there
-    // is no contention. A copy of the line is taken so the lifetime decrement is local; surviving persistent
-    // lines are collected and rebuilt into Lines by FinalizeBatchedLines.
+    
     void FForwardRenderScene::BatchLineChunks(const Task::FParallelRange& Range)
     {
         LUMINA_PROFILE_SECTION("Batch Lines");
@@ -4297,15 +4381,15 @@ namespace Lumina
         LOG_WARN("[Rendering] - Maximum Lights Hit! {}", MAX_LIGHTS);
     }
 
-    void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)
+    void FForwardRenderScene::DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale)
     {
-        if (Image->GetResourceID() == -1 || ExtractFrame == nullptr)
+        if (ResourceID < 0 || ExtractFrame == nullptr)
         {
             return;
         }
 
         FBillboardInstance& Billboard   = ExtractFrame->Primitives.BillboardInstances.emplace_back();
-        Billboard.TextureIndex          = Image->GetResourceID();
+        Billboard.TextureIndex          = (uint32)ResourceID;
         Billboard.Position              = Location;
         Billboard.Size                  = Scale;
         Billboard.EntityID              = entt::null;
@@ -4342,11 +4426,8 @@ namespace Lumina
         Frame.Geometry.TotalPreSkinnedVertices = 0;
         Frame.Primitives.BillboardInstances.clear();
         Frame.Primitives.WidgetInstances.clear();
-        Frame.Geometry.PinnedMeshBuffersThisFrame.clear();
-        Frame.Primitives.PinnedWidgetRTs.clear();
         Frame.Primitives.GlyphInstances.clear();
         Frame.Primitives.TextBatches.clear();
-        Frame.Primitives.PinnedFontAtlases.clear();
         Frame.FrameStats = {};
 
         for (int i = 0; i < (int)ELightType::Num; ++i)
@@ -4355,19 +4436,23 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::ResetPass_RenderThread(ICommandList& CmdList)
+    void FForwardRenderScene::ResetPass_RenderThread(RHI::FCmdListH CL)
     {
         // DepthPrePassEarly clears the depth target when it runs (occluders non-empty).
         // Only clear here as the no-occluder fallback to avoid a redundant re-clear.
         if (RenderFrame->Geometry.OpaqueOccluderDrawList.empty())
         {
-            CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
+            const float DepthClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::DepthAttachment).Texture, DepthClear);
         }
 
         // Atlas/cascade clears stay unconditional: shadow passes only clear their own
         // tiles, so regions no light renders into still need clearing here.
-        CmdList.ClearImageUInt(ShadowAtlas.GetImage(), AllSubresources, 1);
-        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::Cascade), AllSubresources, 1);
+        const float ShadowClear[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        RHI::CmdClearTexture(CL, ShadowAtlas.GetImage().Texture, ShadowClear);
+        RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::Cascade).Texture, ShadowClear);
+
+        Barriers::TransferToAll(CL);
     }
 
 
@@ -4378,13 +4463,13 @@ namespace Lumina
         uint32 CameraLateViewIndex;
         uint32 Pad;
         // Device addresses of the cull-private scratch buffers (matches the
-        // pointer fields in CullMeshlets.slang's FPushConstants, 8-byte aligned).
+        // pointer fields in CullMeshlets.slang's pass block, 8-byte aligned).
         uint64 IndirectArgsAddr;
         uint64 DeferListAddr;
         uint64 DeferCountAddr;
     };
 
-    void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
+    void FForwardRenderScene::CullPassEarly(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands     = Frame.Geometry.DrawCommands;
@@ -4399,47 +4484,37 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Early)", tracy::Color::Pink2);
 
-        FRHIBuffer* DifferCount = GetDeferCount();
-        CmdList.FillBuffer(DifferCount, 0u, DifferCount->GetSize(), 0);
+        static const FShaderEntry* const CullShader = FShaderLibrary::Get("CullMeshlets.slang");
+        if (!CullShader)
+        {
+            return;
+        }
 
-        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
+        RHI::CmdMemset(CL, GetDeferCount().Ptr, GetDeferCount().Size, 0u);
+        Barriers::TransferToAll(CL);
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(CullShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-        
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Reads(GetNamedImage(ENamedImage::DepthPyramid));
-        // Cull-private scratch is bound by device address, not a descriptor set; declaring
-        // the accesses drives the tracker's barriers and keeps the buffers alive.
-        State.Writes(GetIndirectArgs());
-        State.Writes(GetMeshletDeferList());
-        State.Writes(GetDeferCount());
-        State.Writes(GetMeshletDrawList());
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CullShader));
 
         FCullMeshletPushConstants PC = {};
         PC.NumViews            = (uint32)CullViews.size();
         PC.Phase               = (uint32)ECullPhase::Early;
         PC.CameraLateViewIndex = CameraLateViewIndex;
-        PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
-        PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
-        PC.DeferCountAddr      = GetDeferCount()->GetAddress();
-        PushRootConstants(CmdList, PC);
+        PC.IndirectArgsAddr    = GetIndirectArgs().GetAddress();
+        PC.DeferListAddr       = GetMeshletDeferList().GetAddress();
+        PC.DeferCountAddr      = GetDeferCount().GetAddress();
 
         // Flat thread-per-meshlet; workgroups beyond the 65535 X cap fold into Y.
         const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
         constexpr uint32 MaxDispatchAxis = 65535u;
         const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
         const uint32 DispatchY = (NumWorkgroups + MaxDispatchAxis - 1u) / MaxDispatchAxis;
-        CmdList.Dispatch(DispatchX, DispatchY, 1u);
+        RHI::CmdDispatch(CL, MakeArgs(PC), DispatchX, DispatchY, 1u);
+
+        // Draw list + indirect args feed the depth prepass / draws.
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::CullPassLate(ICommandList& CmdList)
+    void FForwardRenderScene::CullPassLate(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands     = Frame.Geometry.DrawCommands;
@@ -4461,34 +4536,21 @@ namespace Lumina
 
         // Worst-case dispatch (every camera meshlet deferred); threads past uDeferCount
         // early-out. No indirect-dispatch readback: the round-trip outweighs the tiny dispatch.
-        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
+        static const FShaderEntry* const CullShader = FShaderLibrary::Get("CullMeshlets.slang");
+        if (!CullShader)
+        {
+            return;
+        }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(CullShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(GetNamedImage(ENamedImage::DepthPyramid));
-        // Phase 1 reads the defer list/count phase 0 wrote and appends to indirect
-        // args; declared as writes so the UAV barrier orders phase 0 before this.
-        State.Writes(GetIndirectArgs());
-        State.Writes(GetMeshletDeferList());
-        State.Writes(GetDeferCount());
-        State.Writes(GetMeshletDrawList());
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CullShader));
 
         FCullMeshletPushConstants PC = {};
         PC.NumViews            = (uint32)CullViews.size();
         PC.Phase               = (uint32)ECullPhase::Late;
         PC.CameraLateViewIndex = CameraLateViewIndex;
-        PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
-        PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
-        PC.DeferCountAddr      = GetDeferCount()->GetAddress();
-        PushRootConstants(CmdList, PC);
+        PC.IndirectArgsAddr    = GetIndirectArgs().GetAddress();
+        PC.DeferListAddr       = GetMeshletDeferList().GetAddress();
+        PC.DeferCountAddr      = GetDeferCount().GetAddress();
 
         // Same X/Y fold as CullPassEarly so Vulkan's 65535 per-axis workgroup
         // limit doesn't cap us on very large scenes.
@@ -4496,11 +4558,13 @@ namespace Lumina
         constexpr uint32 MaxDispatchAxis = 65535u;
         const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
         const uint32 DispatchY = (NumWorkgroups + MaxDispatchAxis - 1u) / MaxDispatchAxis;
-        CmdList.Dispatch(DispatchX, DispatchY, 1u);
+        RHI::CmdDispatch(CL, MakeArgs(PC), DispatchX, DispatchY, 1u);
+
+        Barriers::ComputeToAll(CL);
     }
 
 
-    void FForwardRenderScene::SkinningPass(ICommandList& CmdList)
+    void FForwardRenderScene::SkinningPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const uint32 DescriptorCount = (uint32)Frame.Geometry.SkinDescriptors.size();
@@ -4511,36 +4575,27 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Skinning Pass", tracy::Color::SkyBlue);
 
-        FRHIComputeShaderRef SkinShader = FShaderLibrary::GetComputeShader("Skinning.slang");
+        static const FShaderEntry* const SkinShader = FShaderLibrary::Get("Skinning.slang");
         if (!SkinShader)
         {
             return;
         }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(SkinShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.DebugName = "Skinning";
-
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(GetPreSkinnedVerticesBuffer());
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(SkinShader));
 
         struct FSkinningPushConstants { uint32 DescriptorCount; } PC{ DescriptorCount };
-        PushRootConstants(CmdList, PC);
 
         // One workgroup per skinned entity; fold across X/Y past the 65535 per-axis cap.
         constexpr uint32 MaxDispatchAxis = 65535u;
         const uint32 DispatchX = DescriptorCount < MaxDispatchAxis ? DescriptorCount : MaxDispatchAxis;
         const uint32 DispatchY = (DescriptorCount + MaxDispatchAxis - 1u) / MaxDispatchAxis;
-        CmdList.Dispatch(DispatchX, DispatchY, 1u);
+        RHI::CmdDispatch(CL, MakeArgs(PC), DispatchX, DispatchY, 1u);
+
+        // Pre-skinned vertices feed every draw VS.
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::TexturePaintPass(ICommandList& CmdList)
+    void FForwardRenderScene::TexturePaintPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (Frame.Extracts.PaintOps.empty())
@@ -4550,17 +4605,13 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Texture Paint Pass", tracy::Color::Red);
 
-        FRHIComputeShaderRef PaintShader = FShaderLibrary::GetComputeShader("TexturePaint.slang");
+        static const FShaderEntry* const PaintShader = FShaderLibrary::Get("TexturePaint.slang");
         if (!PaintShader)
         {
             return;
         }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(PaintShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.DebugName = "TexturePaint";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+        RHI::FPipelineH Pipeline = GetOrCreateComputePipeline(PaintShader);
 
         // Push-constant block mirroring TexturePaint.slang; fields aligned so offsets match under scalar
         // and std430. Color is four scalars (not a vec4) to keep it that way.
@@ -4581,29 +4632,30 @@ namespace Lumina
             float       ColorA;
         };
 
+        bool bBoundPipeline = false;
+
         for (const FTexturePaintOp& Op : Frame.Extracts.PaintOps)
         {
-            FRHIImage* Target = Op.Target.GetReference();
-            if (Target == nullptr)
+            if (!RHI::IsValid(Op.Target))
             {
                 continue;
             }
 
             if (Op.Mode == FTexturePaintOp::EMode::Clear)
             {
-                CmdList.ClearImageFloat(Target, AllSubresources,
-                    FColor(Op.Color.r, Op.Color.g, Op.Color.b, Op.Color.a));
+                Barriers::AllToTransfer(CL);
+                const float Clear[4] = { Op.Color.r, Op.Color.g, Op.Color.b, Op.Color.a };
+                RHI::CmdClearTexture(CL, Op.Target, Clear);
                 continue;
             }
 
-            const int32 UAVIndex = Target->GetMipUAVIndex(0);
-            if (UAVIndex < 0)
+            if (Op.TargetUAV == RHI::kInvalidHeapSlot)
             {
                 continue;
             }
 
-            const uint32 W = Target->GetSizeX();
-            const uint32 H = Target->GetSizeY();
+            const uint32 W = Op.TargetExtent.x;
+            const uint32 H = Op.TargetExtent.y;
             const float  CenterX = Op.CenterUV.x * (float)W;
             const float  CenterY = Op.CenterUV.y * (float)H;
             // Radius is relative to the longer side so the brush stays circular in pixels.
@@ -4618,14 +4670,17 @@ namespace Lumina
                 continue;
             }
 
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.Writes(Target);   // -> UnorderedAccess (and a UAV barrier between same-target ops)
-            CmdList.SetComputeState(State);
+            if (!bBoundPipeline)
+            {
+                RHI::CmdSetPipeline(CL, Pipeline);
+                bBoundPipeline = true;
+            }
+
+            // Order against any prior clear/paint of the same target.
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer | RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
 
             FPaintPC PC = {};
-            PC.TargetIndex   = (uint32)UAVIndex;
+            PC.TargetIndex   = Op.TargetUAV;
             PC.BrushIndex    = Op.BrushIndex;
             PC.TargetSize[0] = W;             PC.TargetSize[1] = H;
             PC.RectMin[0]    = (uint32)MinX;  PC.RectMin[1]    = (uint32)MinY;
@@ -4638,137 +4693,29 @@ namespace Lumina
             PC.ColorG        = Op.Color.g;
             PC.ColorB        = Op.Color.b;
             PC.ColorA        = Op.Color.a;
-            PushRootConstants(CmdList, PC);
 
             const uint32 DispatchX = RenderUtils::GetGroupCount((uint32)(MaxX - MinX), 8u);
             const uint32 DispatchY = RenderUtils::GetGroupCount((uint32)(MaxY - MinY), 8u);
-            CmdList.Dispatch(DispatchX, DispatchY, 1u);
+            RHI::CmdDispatch(CL, MakeArgs(PC), DispatchX, DispatchY, 1u);
         }
 
-        // Restore every painted target to ShaderResource + emit barriers now: geometry passes sample these
-        // via the bindless table without declaring Reads, so nothing else transitions them out of UAV/transfer-dst.
-        for (const FTexturePaintOp& Op : Frame.Extracts.PaintOps)
-        {
-            if (FRHIImage* Target = Op.Target.GetReference())
-            {
-                CmdList.SetImageState(Target, AllSubresources, EResourceStates::ShaderResource);
-            }
-        }
-        CmdList.CommitBarriers();
+        // Make the painted texels visible to every later sampler.
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer | RHI::EStageFlags::Compute, RHI::EStageFlags::AllCommands);
     }
 
-    static void RecordDepthPrePassSlice(
-        ICommandList& CmdList,
-        const TVector<FMeshDrawCommand>& DrawCommands,
-        const TVector<uint32>& OpaqueOccluderDrawList,
-        FRHIImage* DepthImage,
-        FRHIImage* SizedToImage,
-        const FViewportState& SceneViewportState,
-        FRHIBuffer* IndirectArgsBuffer,
-        uint32 ViewIndex,
-        uint32 NumDrawsPerView,
-        bool bClearDepth,
-        uint64 SceneRootAddr,
-        FRHIBuffer* MeshletDrawListBuf,
-        FRHIBuffer* PreSkinnedBuf,
-        FRHIImage* DepthResolveImage = nullptr)
+    void FForwardRenderScene::DepthPrePassEarly(RHI::FCmdListH CL)
     {
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(DepthImage)
-            .SetResolveImage(DepthResolveImage)
-            .SetLoadOp(bClearDepth ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
-            .SetDepthClearValue(0.0f);
-
-        FRenderPassDesc RenderPass; RenderPass
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(SizedToImage->GetExtent());
-
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(FDepthStencilState().SetDepthFunc(EComparisonFunc::Greater))
-            .SetRasterState(FRasterState().EnableDepthClip());
-
-        FRHIVertexShaderRef DepthOnlyVertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
-
-        const uint32 ViewBase = ViewIndex * NumDrawsPerView;
-
-        for (uint32 Idx : OpaqueOccluderDrawList)
-        {
-            const FMeshDrawCommand& Batch = DrawCommands[Idx];
-
-            FGraphicsPipelineDesc Desc; Desc
-                .SetRenderState(RenderState)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            if (Batch.bMasked)
-            {
-                // Masked materials need their pixel shader to discard; if WPO, prefer the
-                // per-material depth VS so displaced+masked geometry matches.
-                Desc.SetVertexShader(Batch.DepthVertexShader ? Batch.DepthVertexShader : Batch.VertexShader);
-                Desc.SetPixelShader(Batch.PixelShader);
-            }
-            else
-            {
-                // WPO materials get their own depth VS (writes displaced
-                // depth so [earlydepthstencil] in the base pass matches).
-                FRHIVertexShader* DepthVS = Batch.DepthVertexShader ? Batch.DepthVertexShader.GetReference() : DepthOnlyVertexShader.GetReference();
-                Desc.SetVertexShader(DepthVS);
-            }
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(SceneViewportState);
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.SetIndirectParams(IndirectArgsBuffer);
-            GraphicsState.Reads(MeshletDrawListBuf);
-            GraphicsState.Reads(PreSkinnedBuf);
-
-            CmdList.SetGraphicsState(GraphicsState);
-            FRootConstants RC; RC.RootAddr = SceneRootAddr; RC.PassAddr = 0;
-            CmdList.SetPushConstants(&RC, sizeof(RC));
-            CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
-        }
-    }
-
-    void FForwardRenderScene::DepthPrePassEarly(ICommandList& CmdList)
-    {
-        const FFrameData& Frame = *RenderFrame;
-        const auto& DrawCommands           = Frame.Geometry.DrawCommands;
-        const auto& OpaqueOccluderDrawList = Frame.Geometry.OpaqueOccluderDrawList;
-        const uint32 NumDrawsPerView       = Frame.Views.NumDrawsPerView;
-
-        if (OpaqueOccluderDrawList.empty())
-        {
-            return;
-        }
-
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Early)", tracy::Color::Orange);
 
-        RecordDepthPrePassSlice(
-            CmdList,
-            DrawCommands,
-            OpaqueOccluderDrawList,
-            GetSceneDepthRT(),
-            GetNamedImage(ENamedImage::HDR),
-            SceneViewportState,
-            GetIndirectArgs(),
-            CurrentCameraEarlyView,
-            NumDrawsPerView,
-            true,
-            CurrentSceneRootAddr,
-            GetMeshletDrawList(),
-            GetPreSkinnedVerticesBuffer(),
-            GetSceneDepthResolve());
+        // Runs even with no occluders: this is the frame's depth clear, and later depth
+        // consumers (debug lines, billboards) load the attachment unconditionally.
+        RecordDepthPrePassSlice(CL, CurrentCameraEarlyView, /*bClearDepth*/ true);
     }
 
-    void FForwardRenderScene::DepthPrePassLate(ICommandList& CmdList)
+    void FForwardRenderScene::DepthPrePassLate(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
-        const auto& DrawCommands           = Frame.Geometry.DrawCommands;
         const auto& OpaqueOccluderDrawList = Frame.Geometry.OpaqueOccluderDrawList;
-        const uint32 NumDrawsPerView       = Frame.Views.NumDrawsPerView;
         const uint32 CameraLateViewIndex   = Frame.Views.CameraLateViewIndex;
 
         if (OpaqueOccluderDrawList.empty() || CameraLateViewIndex == ~0u)
@@ -4778,24 +4725,77 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Late)", tracy::Color::Orange2);
 
-        RecordDepthPrePassSlice(
-            CmdList,
-            DrawCommands,
-            OpaqueOccluderDrawList,
-            GetSceneDepthRT(),
-            GetNamedImage(ENamedImage::HDR),
-            SceneViewportState,
-            GetIndirectArgs(),
-            CameraLateViewIndex,
-            NumDrawsPerView,
-            false,
-            CurrentSceneRootAddr,
-            GetMeshletDrawList(),
-            GetPreSkinnedVerticesBuffer(),
-            GetSceneDepthResolve());
+        RecordDepthPrePassSlice(CL, CameraLateViewIndex, /*bClearDepth*/ false);
     }
 
-    void FForwardRenderScene::DepthPyramidPass(ICommandList& CmdList)
+    void FForwardRenderScene::RecordDepthPrePassSlice(RHI::FCmdListH CL, uint32 ViewIndex, bool bClearDepth)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands           = Frame.Geometry.DrawCommands;
+        const auto& OpaqueOccluderDrawList = Frame.Geometry.OpaqueOccluderDrawList;
+        const uint32 NumDrawsPerView       = Frame.Views.NumDrawsPerView;
+
+        const FSceneImage& DepthRT = GetSceneDepthRT();
+        const FUIntVector2 Extent  = GetNamedImage(ENamedImage::HDR).GetExtent();
+
+        // Cull output (draw list + indirect args) and skinning output feed this pass; the
+        // depth target may also have been transfer-cleared.
+        Barriers::ComputeToAll(CL);
+
+        RHI::FRenderPassDesc Pass;
+        Pass.DepthAttachment.Texture        = DepthRT.Texture;
+        Pass.DepthAttachment.ResolveTexture = GetSceneDepthResolve();
+        Pass.DepthAttachment.LoadOp         = bClearDepth ? RHI::ELoadOp::Clear : RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp        = RHI::EStoreOp::Store;
+        Pass.DepthAttachment.Color[0]       = 0.0f;   // reverse-Z clear
+        Pass.RenderArea                     = Extent;
+
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Extent);
+
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthDesc.DepthTest = RHI::EOp::Greater;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
+
+        static const FShaderEntry* const DepthOnlyVertexShader = FShaderLibrary::Get("DepthPrePass.slang");
+
+        const uint32 ViewBase = ViewIndex * NumDrawsPerView;
+
+        for (uint32 Idx : OpaqueOccluderDrawList)
+        {
+            const FMeshDrawCommand& Batch = DrawCommands[Idx];
+
+            FGraphicsPipelineKey Key;
+            Key.DepthFormat = EFormat::D32;
+            Key.SampleCount = MSAASampleCount;
+
+            if (Batch.bMasked)
+            {
+                // Masked materials need their pixel shader to discard; if WPO, prefer the
+                // per-material depth VS so displaced+masked geometry matches.
+                Key.VS = Batch.DepthVertexShader ? Batch.DepthVertexShader : Batch.VertexShader;
+                Key.PS = Batch.PixelShader;
+            }
+            else
+            {
+                // WPO materials get their own depth VS (writes displaced
+                // depth so [earlydepthstencil] in the base pass matches).
+                Key.VS = Batch.DepthVertexShader ? Batch.DepthVertexShader : DepthOnlyVertexShader;
+            }
+
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
+            RHI::CmdDrawIndirect(CL, MakeArgs(),
+                GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
+        }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
+    }
+
+    void FForwardRenderScene::DepthPyramidPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
@@ -4807,33 +4807,30 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass (SPD)", tracy::Color::Orange);
 
-        FRHIImage* DepthPyramid = GetNamedImage(ENamedImage::DepthPyramid);
-        FRHIImage* DepthSource  = GetNamedImage(ENamedImage::DepthAttachment);
-        FRHIBuffer* SpdCounter  = GetSpdCounter();
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("DepthPyramidSPD.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
 
-        const uint32 PyramidW = DepthPyramid->GetSizeX();
-        const uint32 PyramidH = DepthPyramid->GetSizeY();
-        const uint32 MipCount = (uint32)DepthPyramid->GetDescription().NumMips;
+        const FSceneImage& DepthPyramid = GetNamedImage(ENamedImage::DepthPyramid);
+        const FSceneImage& DepthSource  = GetNamedImage(ENamedImage::DepthAttachment);
+        const FSceneBuffer SpdCounter   = GetSpdCounter();
+
+        const uint32 PyramidW = DepthPyramid.GetSizeX();
+        const uint32 PyramidH = DepthPyramid.GetSizeY();
+        const uint32 MipCount = DepthPyramid.GetNumMips();
 
         constexpr uint32 SpdMaxMips = 12;
         const uint32 NumMips = std::min(MipCount, SpdMaxMips);
 
-        CmdList.FillBuffer(SpdCounter, 0u, SpdCounter->GetSize(), 0);
+        RHI::CmdMemset(CL, SpdCounter.Ptr, SpdCounter.Size, 0u);
+        // Counter fill + the depth writes this pass reduces.
+        RHI::CmdBarrier(CL,
+            RHI::EStageFlags::Transfer | RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests,
+            RHI::EStageFlags::Compute);
 
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "Depth Pyramid SPD";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Reads(DepthSource);
-        State.Writes(DepthPyramid);
-        State.Writes(SpdCounter);
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
         struct FSpdPushConstants
         {
@@ -4858,19 +4855,20 @@ namespace Lumina
         PC.NumWorkGroups      = TotalGroups;
         PC.InvPyramidSize[0]  = 1.0f / (float)PyramidW;
         PC.InvPyramidSize[1]  = 1.0f / (float)PyramidH;
-        PC.SrcDepthIndex      = (uint32)DepthSource->GetResourceID();
-        PC.AtomicCounter      = SpdCounter->GetAddress();
+        PC.SrcDepthIndex      = (uint32)DepthSource.GetResourceID();
+        PC.AtomicCounter      = SpdCounter.GetAddress();
         for (uint32 i = 0; i < SpdMaxMips; ++i)
         {
             const uint32 SrcMip = (i < MipCount) ? i : 0u;
-            PC.MipUAV[i] = (uint32)DepthPyramid->GetMipUAVIndex(SrcMip);
+            PC.MipUAV[i] = (uint32)DepthPyramid.GetMipUAVIndex(SrcMip);
         }
-        PushRootConstants(CmdList, PC);
 
-        CmdList.Dispatch(DispatchX, DispatchY, 1);
+        RHI::CmdDispatch(CL, MakeArgs(PC), DispatchX, DispatchY, 1);
+
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::ClusterBuildPass(ICommandList& CmdList)
+    void FForwardRenderScene::ClusterBuildPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
@@ -4883,34 +4881,26 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cluster Build Pass", tracy::Color::Pink2);
 
-        // Grid params live in the per-view scene snapshot (uSceneData) the shader reads via gPC.Root,
-        // matching LightCull and the base pass. AABBs are rebuilt every frame so they always track the
-        // snapshot frustum -- sourcing them from live render-thread projection/RT size (which lead the
-        // snapshot by the extract->render latency) bins lights into a frustum the base pass never looks
-        // up, lighting whole tiles with the wrong lights.
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("ClusterBuild.slang");
+        // Grid params live in the per-view scene snapshot the shader reads via the scene root,
+        // matching LightCull and the base pass. AABBs are rebuilt every frame so they always track
+        // the snapshot frustum.
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("ClusterBuild.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(ComputeShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(CurrentView->ClusterBuffer);
-        CmdList.SetComputeState(State);
-
-        PushRootConstants(CmdList);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
         constexpr uint32 ClusterBuildGroupSize = 64;
         constexpr uint32 ClusterDispatchGroups = (NumClusters + ClusterBuildGroupSize - 1) / ClusterBuildGroupSize;
-        CmdList.Dispatch(ClusterDispatchGroups, 1, 1);
-            
+        RHI::CmdDispatch(CL, MakeArgs(), ClusterDispatchGroups, 1, 1);
+
+        // LightCull consumes the cluster AABBs next.
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
     }
 
-    void FForwardRenderScene::LightCullPass(ICommandList& CmdList)
+    void FForwardRenderScene::LightCullPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
@@ -4922,32 +4912,24 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Light Cull Pass", tracy::Color::Pink2);
-            
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("LightCull.slang");
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(ComputeShader);
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-                
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-            
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(CurrentView->ClusterBuffer);   // per-cluster light lists
-        CmdList.SetComputeState(State);
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("LightCull.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
 
-        FMatrix4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
-        PushRootConstants(CmdList, ViewProj);
-        
         constexpr uint32 LightCullGroupSize = 128;
         constexpr uint32 LightCullGroups    = (NumClusters + LightCullGroupSize - 1) / LightCullGroupSize;
-        CmdList.Dispatch(LightCullGroups, 1, 1);
-            
+        RHI::CmdDispatch(CL, MakeArgs(), LightCullGroups, 1, 1);
+
+        // Cluster light lists feed the lit pixel shaders.
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::PointShadowPass(ICommandList& CmdList)
+    void FForwardRenderScene::PointShadowPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands             = Frame.Geometry.DrawCommands;
@@ -4965,35 +4947,30 @@ namespace Lumina
             return;
         }
 
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
-        
-        FRenderState RenderState; RenderState
-                .SetDepthStencilState(FDepthStencilState()
-                .SetDepthFunc(EComparisonFunc::Less))
-                .SetRasterState(FRasterState()
-                    .SetSlopeScaleDepthBias(1.5f)
-                    .SetDepthBias(1)
-                    .SetCullBack());
-        
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("ShadowMappingVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("ShadowMappingPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
 
         const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
 
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetLoadOp(ERenderLoadOp::Clear)
-            .SetDepthClearValue(1.0)
-            .SetImage(ShadowAtlas.GetImage());
+        RHI::FRenderPassDesc Pass;
+        Pass.DepthAttachment.Texture  = ShadowAtlas.GetImage().Texture;
+        Pass.DepthAttachment.LoadOp   = RHI::ELoadOp::Load;   // ResetPass cleared the whole atlas to 1.0
+        Pass.DepthAttachment.StoreOp  = RHI::EStoreOp::Store;
+        Pass.RenderArea               = FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution);
 
-        FRenderPassDesc RenderPass; RenderPass
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution));
-        
-        FGraphicsPipelineDesc DescTemplate; DescTemplate
-            .SetDebugName("Point Light Shadow Pass")
-            .SetRenderState(RenderState)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader);
+        RHI::CmdBeginRenderPass(CL, Pass);
+
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode            = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthDesc.DepthTest            = RHI::EOp::Less;
+        DepthDesc.DepthBias            = 1.0f;
+        DepthDesc.DepthBiasSlopeFactor = 1.5f;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
 
         for (uint32 LightIdx = 0; LightIdx < PointShadows.size(); ++LightIdx)
         {
@@ -5012,29 +4989,15 @@ namespace Lumina
 
                 const FLightShadow& FaceShadow = ShadowData.Shadow[Face];
                 const FShadowTile& Tile = AtlasTiles[FaceShadow.ShadowMapIndex];
-                uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
-                uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
-                uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
+                const int32 TilePixelX = (int32)(Tile.UVOffset.x * GShadowAtlasResolution);
+                const int32 TilePixelY = (int32)(Tile.UVOffset.y * GShadowAtlasResolution);
+                const int32 TileSize   = (int32)(Tile.UVScale.x * GShadowAtlasResolution);
 
-                FViewport Viewport
-                (
-                    (float)TilePixelX,
-                    (float)TilePixelX + TileSize,
-                    (float)TilePixelY,
-                    (float)TilePixelY + TileSize,
-                    0.0f,
-                    1.0f
-                );
+                const RHI::FRect TileRect{ TilePixelX, TilePixelX + TileSize, TilePixelY, TilePixelY + TileSize };
+                RHI::CmdSetViewport(CL, TileRect);
+                RHI::CmdSetScissor(CL, TileRect);
 
-                FRect Scissor
-                (
-                    (int)TilePixelX,
-                    (int)TilePixelX + TileSize,
-                    (int)TilePixelY,
-                    (int)TilePixelY + TileSize
-                );
-
-                // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
+                // ShadowMappingVert pass block = { int ShadowDataIndex; int ViewIndex; }.
                 // ViewIndex indexes ShadowData.ViewProjection[]; here the cube face.
                 struct { int32 ShadowDataIndex; int32 ViewIndex; } PointPush;
                 PointPush.ShadowDataIndex = LightShadow.ShadowDataIndex;
@@ -5049,31 +5012,24 @@ namespace Lumina
 
                     // Per-material shadow VS for WPO materials so the shadow tracks
                     // displaced geometry, not the rest pose.
-                    FGraphicsPipelineDesc Desc = DescTemplate;
-                    if (Batch.ShadowVertexShader)
-                    {
-                        Desc.SetVertexShader(Batch.ShadowVertexShader);
-                    }
-                    FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+                    FGraphicsPipelineKey Key;
+                    Key.VS          = Batch.ShadowVertexShader ? Batch.ShadowVertexShader : VertexShader;
+                    Key.PS          = PixelShader;
+                    Key.DepthFormat = EFormat::D32;
+                    RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                    FGraphicsState GraphicsState; GraphicsState
-                        .SetRenderPass(RenderPass)
-                        .SetViewportState(FViewportState(Viewport, Scissor))
-                        .SetPipeline(Pipeline)
-                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                        .SetIndirectParams(GetIndirectArgs());
-
-                    GraphicsState.Reads(GetMeshletDrawList());
-                    GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
-                    CmdList.SetGraphicsState(GraphicsState);
-                    PushRootConstants(CmdList, PointPush);
-                    CmdList.DrawIndirect(Batch.DrawCount, (FaceBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                    RHI::CmdDrawIndirect(CL, MakeArgs(PointPush),
+                        GetIndirectArgs().Ptr, (FaceBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                        Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
                 }
             }
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::SpotShadowPass(ICommandList& CmdList)
+    void FForwardRenderScene::SpotShadowPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands             = Frame.Geometry.DrawCommands;
@@ -5087,43 +5043,36 @@ namespace Lumina
         {
             return;
         }
-        
+
         LUMINA_PROFILE_SECTION_COLORED("Spot Shadow Pass", tracy::Color::DeepPink4);
-        
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("ShadowMappingVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("ShadowMappingPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        // Load to preserve the point-shadow tiles PointShadowPass already wrote into this same atlas.
+        RHI::FRenderPassDesc Pass;
+        Pass.DepthAttachment.Texture = ShadowAtlas.GetImage().Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution);
+
+        RHI::CmdBeginRenderPass(CL, Pass);
 
         // See PointShadowPass for why these bias values are lower than the CSM pass.
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(FDepthStencilState()
-                .SetDepthFunc(EComparisonFunc::Less))
-                .SetRasterState(FRasterState()
-                    .SetSlopeScaleDepthBias(1.5f)
-                    .SetDepthBias(1)
-                    .SetCullBack());
-
-
-        // Load (not Clear) to preserve the point-shadow tiles PointShadowPass
-        // already wrote into this same 2D atlas.
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetLoadOp(ERenderLoadOp::Load)
-            .SetImage(ShadowAtlas.GetImage());
-
-        FRenderPassDesc RenderPass; RenderPass
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution));
-        
-        // Pipeline desc reused across batches; per-batch loop swaps in a WPO
-        // VS variant when the material has WorldPositionOffset connected.
-        FGraphicsPipelineDesc PipelineDescTemplate; PipelineDescTemplate
-            .SetDebugName("Spot Shadow Pass")
-            .SetRenderState(RenderState)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader);
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode            = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthDesc.DepthTest            = RHI::EOp::Less;
+        DepthDesc.DepthBias            = 1.0f;
+        DepthDesc.DepthBiasSlopeFactor = 1.5f;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
 
         const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
-        
+
         for (uint32 SpotIdx = 0; SpotIdx < SpotShadows.size(); ++SpotIdx)
         {
             const FLightShadow& Shadow  = SpotShadows[SpotIdx];
@@ -5136,29 +5085,15 @@ namespace Lumina
             LUMINA_PROFILE_SECTION_COLORED("Process Spot Light", tracy::Color::DeepPink);
 
             const FShadowTile& Tile = AtlasTiles[Shadow.ShadowMapIndex];
-            uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
-            uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
-            uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
+            const int32 TilePixelX = (int32)(Tile.UVOffset.x * GShadowAtlasResolution);
+            const int32 TilePixelY = (int32)(Tile.UVOffset.y * GShadowAtlasResolution);
+            const int32 TileSize   = (int32)(Tile.UVScale.x * GShadowAtlasResolution);
 
-            FViewport Viewport
-            (
-                (float)TilePixelX,
-                (float)TilePixelX + TileSize,
-                (float)TilePixelY,
-                (float)TilePixelY + TileSize,
-                0.0f,
-                1.0f
-            );
+            const RHI::FRect TileRect{ TilePixelX, TilePixelX + TileSize, TilePixelY, TilePixelY + TileSize };
+            RHI::CmdSetViewport(CL, TileRect);
+            RHI::CmdSetScissor(CL, TileRect);
 
-            FRect Scissor
-            (
-                (int)TilePixelX,
-                (int)TilePixelX + TileSize,
-                (int)TilePixelY,
-                (int)TilePixelY + TileSize
-            );
-
-            // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
+            // ShadowMappingVert pass block = { int ShadowDataIndex; int ViewIndex; }.
             // Spotlights only use ViewProjection[0], so ViewIndex is 0.
             struct { int32 ShadowDataIndex; int32 ViewIndex; } SpotPush;
             SpotPush.ShadowDataIndex = Shadow.ShadowDataIndex;
@@ -5169,30 +5104,23 @@ namespace Lumina
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
-                FGraphicsPipelineDesc Desc = PipelineDescTemplate;
-                if (Batch.ShadowVertexShader)
-                {
-                    Desc.SetVertexShader(Batch.ShadowVertexShader);
-                }
-                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+                FGraphicsPipelineKey Key;
+                Key.VS          = Batch.ShadowVertexShader ? Batch.ShadowVertexShader : VertexShader;
+                Key.PS          = PixelShader;
+                Key.DepthFormat = EFormat::D32;
+                RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                FGraphicsState GraphicsState; GraphicsState
-                    .SetRenderPass(RenderPass)
-                    .SetViewportState(FViewportState(Viewport, Scissor))
-                    .SetPipeline(Pipeline)
-                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetIndirectArgs());
-
-                GraphicsState.Reads(GetMeshletDrawList());
-                GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
-                CmdList.SetGraphicsState(GraphicsState);
-                PushRootConstants(CmdList, SpotPush);
-                CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                RHI::CmdDrawIndirect(CL, MakeArgs(SpotPush),
+                    GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::CascadedShowPass(ICommandList& CmdList)
+    void FForwardRenderScene::CascadedShowPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands     = Frame.Geometry.DrawCommands;
@@ -5212,25 +5140,6 @@ namespace Lumina
             return;
         }
 
-        LUMINA_PROFILE_SECTION_COLORED("Cascaded Shadow Map Pass", tracy::Color::DeepPink2);
-
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(FDepthStencilState()
-                .SetDepthFunc(EComparisonFunc::Less))
-                .SetRasterState(FRasterState()
-                    .SetCullBack()
-                    .SetDepthBias(25)
-                    .SetSlopeScaleDepthBias(0.75f));
-
-        FString CSMDefine = "SHADOW_CSM";
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang", TSpan<FString>(&CSMDefine, 1));
-
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Cascaded Shadow Maps")
-            .SetRenderState(RenderState)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-            .SetVertexShader(VertexShader);
-
         // Each cascade maps to its own cull view; BuildCullViews recorded the base.
         // Bail if the sun got no shadow slot (MaxShadows exceeded).
         if (CascadeViewBase == ~0u)
@@ -5238,27 +5147,44 @@ namespace Lumina
             return;
         }
 
+        LUMINA_PROFILE_SECTION_COLORED("Cascaded Shadow Map Pass", tracy::Color::DeepPink2);
+
+        static const FString CSMDefine = "SHADOW_CSM";
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("ShadowMappingVert.slang", TSpan<const FString>(&CSMDefine, 1));
+        if (!VertexShader->IsValid())
+        {
+            return;
+        }
+
+        // ResetPass cleared the whole cascade atlas to 1.0; every cascade loads and
+        // rasterizes only its own viewport tile.
+        RHI::FRenderPassDesc Pass;
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::Cascade).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = FUIntVector2(GCSMAtlasWidth, GCSMAtlasHeight);
+
+        RHI::CmdBeginRenderPass(CL, Pass);
+
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode            = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthDesc.DepthTest            = RHI::EOp::Less;
+        DepthDesc.DepthBias            = 25.0f;
+        DepthDesc.DepthBiasSlopeFactor = 0.75f;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
+
         for (uint32 c = 0; c < (uint32)NumCascades; ++c)
         {
-            // Cascade 0 clears the whole atlas (depth=1.0); outer cascades load so each
-            // viewport overwrites only its own tile, leaving other tiles untouched.
-            FRenderPassDesc::FAttachment Depth; Depth
-                .SetLoadOp(c == 0u ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
-                .SetDepthClearValue(1.0f)
-                .SetImage(GetNamedImage(ENamedImage::Cascade));
-
-            FRenderPassDesc RenderPass; RenderPass
-                .SetDepthAttachment(Depth)
-                .SetRenderArea(FUIntVector2(GCSMAtlasWidth, GCSMAtlasHeight));
-
             // Per-cascade viewport: only this tile rasterizes; coords from the
             // GCSMCascadeOrigin/Sizes packing table.
-            const float TileX = (float)GCSMCascadeOriginX[c];
-            const float TileY = (float)GCSMCascadeOriginY[c];
-            const float TileW = (float)GCSMCascadeSizes[c];
+            const int32 TileX = GCSMCascadeOriginX[c];
+            const int32 TileY = GCSMCascadeOriginY[c];
+            const int32 TileW = GCSMCascadeSizes[c];
 
-            FViewport Viewport(TileX, TileX + TileW, TileY, TileY + TileW, 0.0f, 1.0f);
-            FRect     Scissor((int)TileX, (int)(TileX + TileW), (int)TileY, (int)(TileY + TileW));
+            const RHI::FRect TileRect{ TileX, TileX + TileW, TileY, TileY + TileW };
+            RHI::CmdSetViewport(CL, TileRect);
+            RHI::CmdSetScissor(CL, TileRect);
 
             struct { int32 ShadowDataIndex; int32 CascadeIndex; } CascadePush;
             CascadePush.ShadowDataIndex = LightData.Lights[0].ShadowDataIndex;
@@ -5271,109 +5197,79 @@ namespace Lumina
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
-                FGraphicsPipelineDesc PerBatchDesc = Desc;
-                if (Batch.ShadowVertexShader)
-                {
-                    PerBatchDesc.SetVertexShader(Batch.ShadowVertexShader);
-                }
-                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PerBatchDesc, RenderPass);
+                FGraphicsPipelineKey Key;
+                Key.VS          = Batch.ShadowVertexShader ? Batch.ShadowVertexShader : VertexShader;
+                Key.DepthFormat = EFormat::D32;
+                RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                FGraphicsState GraphicsState; GraphicsState
-                    .SetRenderPass(RenderPass)
-                    .SetViewportState(FViewportState(Viewport, Scissor))
-                    .SetPipeline(Pipeline)
-                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetIndirectArgs());
-
-                GraphicsState.Reads(GetMeshletDrawList());
-                GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
-                CmdList.SetGraphicsState(GraphicsState);
-                PushRootConstants(CmdList, CascadePush);
-                CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                RHI::CmdDrawIndirect(CL, MakeArgs(CascadePush),
+                    GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::DecalPass(ICommandList& CmdList)
+    void FForwardRenderScene::DecalPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const TVector<FGPUDecal>& Decals = Frame.Primitives.DecalExtracts;
 
-        FRHIImage* DBufferA = GetNamedImage(ENamedImage::DBufferA);
-        FRHIImage* DBufferB = GetNamedImage(ENamedImage::DBufferB);
-        FRHIImage* DBufferC = GetNamedImage(ENamedImage::DBufferC);
+        const FSceneImage& DBufferA = GetNamedImage(ENamedImage::DBufferA);
+        const FSceneImage& DBufferB = GetNamedImage(ENamedImage::DBufferB);
+        const FSceneImage& DBufferC = GetNamedImage(ENamedImage::DBufferC);
 
         // Cleared to transmittance = 1 (alpha) / zero color, so the base pass reads a no-op where no decal lands.
-        const FVector4 ClearVal(0.0f, 0.0f, 0.0f, 1.0f);
+        RHI::FRenderAttachment Colors[3];
+        const RHI::FTextureH Targets[3] = { DBufferA.Texture, DBufferB.Texture, DBufferC.Texture };
+        for (int i = 0; i < 3; ++i)
+        {
+            Colors[i].Texture  = Targets[i];
+            Colors[i].LoadOp   = RHI::ELoadOp::Clear;
+            Colors[i].StoreOp  = RHI::EStoreOp::Store;
+            Colors[i].Color[0] = Colors[i].Color[1] = Colors[i].Color[2] = 0.0f;
+            Colors[i].Color[3] = 1.0f;
+        }
 
-        // No decals: still clear so the base pass DBuffer sample is a guaranteed no-op. Clear via a
-        // LoadOp::Clear render pass rather than ClearImageFloat (vkCmdClearColorImage): the latter forces
-        // the targets through CopyDst (RT->CopyDst->SRV = 6 barriers + 3 transfer clears), whereas a
-        // clear-only pass leaves them in RenderTarget so the base pass needs only one RT->SRV each.
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(Colors, 3);
+        Pass.RenderArea       = DBufferA.GetExtent();
+
+        // No decals: still run the clear-only pass so the base pass DBuffer sample is a guaranteed no-op.
         if (Decals.empty())
         {
-            FRenderPassDesc::FAttachment C0; C0.SetImage(DBufferA).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-            FRenderPassDesc::FAttachment C1; C1.SetImage(DBufferB).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-            FRenderPassDesc::FAttachment C2; C2.SetImage(DBufferC).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-
-            FRenderPassDesc ClearPass;
-            ClearPass.AddColorAttachment(C0)
-                     .AddColorAttachment(C1)
-                     .AddColorAttachment(C2)
-                     .SetRenderArea(DBufferA->GetExtent());
-
-            CmdList.BeginRenderPass(ClearPass);
-            CmdList.EndRenderPass();
+            RHI::CmdBeginRenderPass(CL, Pass);
+            RHI::CmdEndRenderPass(CL);
+            Barriers::RasterToRead(CL);
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Decal Pass", tracy::Color::Orange);
 
-        FRenderPassDesc::FAttachment RT0; RT0.SetImage(DBufferA).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-        FRenderPassDesc::FAttachment RT1; RT1.SetImage(DBufferB).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-        FRenderPassDesc::FAttachment RT2; RT2.SetImage(DBufferC).SetLoadOp(ERenderLoadOp::Clear).SetClearColor(ClearVal);
-
-        FRenderPassDesc RenderPass;
-        RenderPass.AddColorAttachment(RT0)
-                  .AddColorAttachment(RT1)
-                  .AddColorAttachment(RT2)
-                  .SetRenderArea(DBufferA->GetExtent());
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, DBufferA.GetExtent());
 
         // Render back faces (robust when the camera is inside the box -- its far faces still fill the
         // screen); no depth test -- the pixel shader reconstructs the surface from depth and rejects
         // out-of-box pixels itself.
-        FRasterState RasterState;
-        RasterState.SetCullFront().EnableDepthClip();
-
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::Front);
 
         // Transmittance compositing: RGB = SrcAlpha "over", A *= (1 - coverage) so alpha accumulates transmittance.
-        FBlendState::RenderTarget DecalBlend;
-        DecalBlend.SetBlendEnable(true)
-                  .SetSrcBlend(EBlendFactor::SrcAlpha)
-                  .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                  .SetBlendOp(EBlendOp::Add)
-                  .SetSrcBlendAlpha(EBlendFactor::Zero)
-                  .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                  .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc DecalBlend;
+        DecalBlend.bBlendEnable   = true;
+        DecalBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        DecalBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        DecalBlend.ColorOp        = RHI::EBlend::Add;
+        DecalBlend.SrcAlphaFactor = RHI::EFactor::Zero;
+        DecalBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
+        DecalBlend.AlphaOp        = RHI::EBlend::Add;
 
-        FBlendState BlendState;
-        BlendState.SetRenderTarget(0, DecalBlend);
-        BlendState.SetRenderTarget(1, DecalBlend);
-        BlendState.SetRenderTarget(2, DecalBlend);
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState)
-                   .SetDepthStencilState(DepthState)
-                   .SetBlendState(BlendState);
-
-        // No private descriptor set: the decal array is read by device address and the scene depth by
-        // bindless index, both carried in the push constant (matches FDecalPushConstants in DecalCommon.slang).
-        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
-
-        auto DecalAlloc = CmdList.CopyTransientArray(Decals.data(), Decals.size());
+        // The decal array is read by device address and the scene depth by bindless index,
+        // both carried in the pass block (matches FDecalPushConstants in DecalCommon.slang).
+        const FSceneImage& SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
 
         struct FDecalPushConstants
         {
@@ -5381,48 +5277,38 @@ namespace Lumina
             uint32 DepthIndex;
             uint32 Pad;
         };
-        static_assert(sizeof(FDecalPushConstants) == 16, "FDecalPushConstants must match the slang push block.");
+        static_assert(sizeof(FDecalPushConstants) == 16, "FDecalPushConstants must match the slang pass block.");
 
         FDecalPushConstants PC = {};
-        PC.DecalsAddr = DecalAlloc.Gpu;
-        PC.DepthIndex = (uint32)SceneDepth->GetResourceID();
+        PC.DecalsAddr = RHI::Core::CopyTransientArray(Decals.data(), Decals.size());
+        PC.DepthIndex = (uint32)SceneDepth.GetResourceID();
 
         // One instanced draw per shader batch.
         for (const FFrameData::FDecalBatch& Batch : Frame.Primitives.DecalBatches)
         {
-            FRHIVertexShader* VS = Batch.Shaders.VertexShader;
-            FRHIPixelShader*  PS = Batch.Shaders.PixelShader;
+            const FShaderEntry* VS = Batch.Shaders.VertexShader;
+            const FShaderEntry*  PS = Batch.Shaders.PixelShader;
             if (VS == nullptr || PS == nullptr)
             {
                 continue;
             }
 
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Decal Pass");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.SetVertexShader(VS);
-            Desc.SetPixelShader(PS);
+            FGraphicsPipelineKey Key;
+            Key.VS = VS;
+            Key.PS = PS;
+            Key.ColorTargets.push_back({ DBufferA.Desc.Format, DecalBlend });
+            Key.ColorTargets.push_back({ DBufferB.Desc.Format, DecalBlend });
+            Key.ColorTargets.push_back({ DBufferC.Desc.Format, DecalBlend });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Scene depth is read by bindless index, not a descriptor; declare the access so the tracker
-            // transitions it to shader-read. (The transient decal buffer manages its own ring lifetime.)
-            GraphicsState.Reads(SceneDepth);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(DBufferA));
-
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, PC);
-
-            CmdList.Draw(36, Batch.Count, 0, Batch.FirstInstance);
+            RHI::CmdDraw(CL, MakeArgs(PC), 36, Batch.Count, 0, Batch.FirstInstance);
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::BasePass(ICommandList& CmdList)
+    void FForwardRenderScene::BasePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands         = Frame.Geometry.DrawCommands;
@@ -5438,48 +5324,41 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Forward Base Pass", tracy::Color::Red);
-        
-        FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetSceneColorRT()).SetResolveImage(GetSceneColorResolve());
-        if (RenderSettings.bHasEnvironment)
-        {
-            RenderTarget.SetLoadOp(ERenderLoadOp::Load);
-        }
 
-        FRenderPassDesc::FAttachment PickerImageAttachment; PickerImageAttachment
-            .SetImage(GetPickerRT())
-            .SetResolveImage(GetPickerResolve());
+        const FSceneImage& ColorRT  = GetSceneColorRT();
+        const FSceneImage& PickerRT = GetPickerRT();
+        const FSceneImage& DepthRT  = GetSceneDepthRT();
+        const FUIntVector2 Extent   = GetNamedImage(ENamedImage::HDR).GetExtent();
 
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetSceneDepthRT())
-            .SetResolveImage(GetSceneDepthResolve())
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Colors[2];
+        Colors[0].Texture        = ColorRT.Texture;
+        Colors[0].ResolveTexture = GetSceneColorResolve();
+        Colors[0].LoadOp         = RenderSettings.bHasEnvironment ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Colors[0].StoreOp        = RHI::EStoreOp::Store;
+        Colors[1].Texture        = PickerRT.Texture;
+        Colors[1].ResolveTexture = GetPickerResolve();
+        Colors[1].LoadOp         = RHI::ELoadOp::Clear;
+        Colors[1].StoreOp        = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .AddColorAttachment(PickerImageAttachment)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments               = TSpan<const RHI::FRenderAttachment>(Colors, 2);
+        Pass.DepthAttachment.Texture        = DepthRT.Texture;
+        Pass.DepthAttachment.ResolveTexture = GetSceneDepthResolve();
+        Pass.DepthAttachment.LoadOp         = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp        = RHI::EStoreOp::Store;
+        Pass.RenderArea                     = Extent;
 
-        FRasterState RasterState; RasterState
-            .EnableDepthClip()
-            .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid);
-    
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Extent);
+
         // GREATER_EQUAL: occluders re-write their pre-pass depth; non-occluders fill the rest.
-        FDepthStencilState DepthState; DepthState
-            .SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-            .EnableDepthWrite();
-        
-        FRenderState RenderState; RenderState
-            .SetRasterState(RasterState)
-            .SetDepthStencilState(DepthState);
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
 
         // DBuffer decal targets (opaque only), written by DecalPass earlier this frame; read here
-        // bindlessly via push-constant indices.
-        FRHIImage* DBufferA = GetNamedImage(ENamedImage::DBufferA);
-        FRHIImage* DBufferB = GetNamedImage(ENamedImage::DBufferB);
-        FRHIImage* DBufferC = GetNamedImage(ENamedImage::DBufferC);
-
+        // bindlessly via pass-block indices.
         struct FDBufferPushConstants
         {
             uint32 DBufferAIndex;
@@ -5487,7 +5366,7 @@ namespace Lumina
             uint32 DBufferCIndex;
             uint32 _Pad;
         };
-        static_assert(sizeof(FDBufferPushConstants) == 16, "FDBufferPushConstants must match the slang push block.");
+        static_assert(sizeof(FDBufferPushConstants) == 16, "FDBufferPushConstants must match the slang pass block.");
 
         // No decals this frame -> sentinel index so the base pass PS skips the three DBuffer samples
         // (they would composite a guaranteed no-op), removing 3 tex loads from every opaque pixel.
@@ -5500,64 +5379,57 @@ namespace Lumina
         }
         else
         {
-            DBufferPC.DBufferAIndex = (uint32)DBufferA->GetResourceID();
-            DBufferPC.DBufferBIndex = (uint32)DBufferB->GetResourceID();
-            DBufferPC.DBufferCIndex = (uint32)DBufferC->GetResourceID();
+            DBufferPC.DBufferAIndex = (uint32)GetNamedImage(ENamedImage::DBufferA).GetResourceID();
+            DBufferPC.DBufferBIndex = (uint32)GetNamedImage(ENamedImage::DBufferB).GetResourceID();
+            DBufferPC.DBufferCIndex = (uint32)GetNamedImage(ENamedImage::DBufferC).GetResourceID();
         }
+
+        const RHI::GPUPtr Args = MakeArgs(DBufferPC);
 
         for (uint32 Idx : OpaqueDrawList)
         {
             const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
-            FGraphicsPipelineDesc Desc; Desc
-                .SetDebugName("Forward Base Pass")
-                .SetRenderState(RenderState)
-                .SetVertexShader(Batch.VertexShader)
-                .SetPixelShader(Batch.PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
+            FGraphicsPipelineKey Key;
+            Key.VS          = Batch.VertexShader;
+            Key.PS          = Batch.PixelShader;
+            Key.bWireframe  = RenderSettings.bWireframe;
+            Key.SampleCount = MSAASampleCount;
+            Key.DepthFormat = EFormat::D32;
+            Key.ColorTargets.push_back({ ColorRT.Desc.Format, {} });
+            Key.ColorTargets.push_back({ PickerRT.Desc.Format, {} });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(SceneViewportState)
-                .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                .SetIndirectParams(GetIndirectArgs())
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            
-            GraphicsState.Reads(DBufferA);
-            GraphicsState.Reads(DBufferB);
-            GraphicsState.Reads(DBufferC);
-            GraphicsState.Reads(GetMeshletDrawList());
-            GraphicsState.Reads(CurrentView->ClusterBuffer);
-            GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
-            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
-            GraphicsState.Reads(ShadowAtlas.GetImage());
-            GraphicsState.Reads(GetNamedImage(ENamedImage::SSAOBlur));
-
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, DBufferPC);
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
 
             const uint32 EarlyBase = CameraEarlyViewIndex * NumDrawsPerView;
-            CmdList.DrawIndirect(Batch.DrawCount, (EarlyBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+            RHI::CmdDrawIndirect(CL, Args,
+                GetIndirectArgs().Ptr, (EarlyBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
 
             if (CameraLateViewIndex != ~0u)
             {
                 const uint32 LateBase = CameraLateViewIndex * NumDrawsPerView;
-                CmdList.DrawIndirect(Batch.DrawCount, (LateBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                RHI::CmdDrawIndirect(CL, Args,
+                    GetIndirectArgs().Ptr, (LateBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
     
 
-    void FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
+    void FForwardRenderScene::ParticleSimulatePass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Simulate", tracy::Color::Orange);
 
         const FFrameData& Frame = *RenderFrame;
         const float DeltaTime   = Frame.CachedWorldDeltaTime;
-        
+
         // Reclaim GPU/sim state for destroyed emitters (disabled ones stay in LiveParticleEntities).
-        // KeepAlive each resource on this frame's cmd list before dropping the ref so in-flight work finishes.
+        // Frees are slot-deferred so in-flight frames reading the buffers finish first.
         if (!ParticleGPUStates.empty())
         {
             const TVector<entt::entity>& Live = Frame.Extracts.LiveParticleEntities;
@@ -5571,15 +5443,8 @@ namespace Lumina
                 if (!IsLive(It->first))
                 {
                     FParticleGPUState& Dead = It->second;
-                    auto Keep = [&](const auto& Ref) { if (Ref)
-                        {
-                            CmdList.KeepAlive(Ref.GetReference());
-                        }
-                    };
-                    Keep(Dead.ParticleBuffer);
-                    Keep(Dead.SimParamsBuffer);
-                    Keep(Dead.RenderParamsBuffer);
-                    Keep(Dead.SpawnCounterBuffer);
+                    if (Dead.ParticleBuffer)     { DeferFree(Dead.ParticleBuffer); }
+                    if (Dead.SpawnCounterBuffer) { DeferFree(Dead.SpawnCounterBuffer); }
                     It = ParticleGPUStates.erase(It);
                 }
                 else
@@ -5588,6 +5453,8 @@ namespace Lumina
                 }
             }
         }
+
+        bool bAnySimulated = false;
 
         for (const FFrameData::FParticleExtract& Item : Frame.Extracts.ParticleExtracts)
         {
@@ -5608,53 +5475,18 @@ namespace Lumina
             // game-thread snapshot in Item, never from the live component or its asset.
             FParticleGPUState& State = ParticleGPUStates[Item.Entity];
 
-            const bool bNeedsAlloc = (!State.ParticleBuffer) || (State.AllocatedMax != MaxParticles);
+            const bool bNeedsAlloc = (State.ParticleBuffer == 0) || (State.AllocatedMax != MaxParticles);
             if (bNeedsAlloc)
             {
-                const FString AssetName = FString("Particles_") + std::to_string((uint32)Item.Entity).c_str();
+                if (State.ParticleBuffer)     { DeferFree(State.ParticleBuffer); }
+                if (State.SpawnCounterBuffer) { DeferFree(State.SpawnCounterBuffer); }
 
-                // Particle SSBOs cross queues: written on async compute, read on graphics.
-                // Concurrent sharing avoids ownership-transfer barriers.
-                FRHIBufferDesc ParticleDesc;
-                ParticleDesc.Size       = (uint64)MaxParticles * 64ull;
-                ParticleDesc.Stride     = 64u;
-                ParticleDesc.DebugName  = AssetName + "_Particles";
-                ParticleDesc.bKeepInitialState = true;
-                ParticleDesc.bConcurrentSharing = true;
-                ParticleDesc.InitialState = EResourceStates::UnorderedAccess;
-                ParticleDesc.Usage.SetFlag(BUF_StorageBuffer);
-                State.ParticleBuffer = GRenderContext->CreateBuffer(ParticleDesc);
-
-                FRHIBufferDesc SimParamsDesc;
-                SimParamsDesc.Size      = sizeof(FParticleSimParamsGPU);
-                SimParamsDesc.DebugName = AssetName + "_SimParams";
-                SimParamsDesc.bKeepInitialState = true;
-                SimParamsDesc.bConcurrentSharing = true;
-                SimParamsDesc.InitialState = EResourceStates::UnorderedAccess;
-                SimParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
-                State.SimParamsBuffer = GRenderContext->CreateBuffer(SimParamsDesc);
-
-                FRHIBufferDesc RenderParamsDesc;
-                RenderParamsDesc.Size       = sizeof(FParticleRenderParamsGPU);
-                RenderParamsDesc.DebugName  = AssetName + "_RenderParams";
-                RenderParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
-                RenderParamsDesc.bKeepInitialState = true;
-                RenderParamsDesc.bConcurrentSharing = true;
-                RenderParamsDesc.InitialState = EResourceStates::UnorderedAccess;
-                State.RenderParamsBuffer = GRenderContext->CreateBuffer(RenderParamsDesc);
-
-                FRHIBufferDesc SpawnCounterDesc;
-                SpawnCounterDesc.Size       = sizeof(uint32);
-                SpawnCounterDesc.Stride     = sizeof(uint32);
-                SpawnCounterDesc.DebugName  = AssetName + "_SpawnCounter";
-                SpawnCounterDesc.Usage.SetFlag(BUF_StorageBuffer);
-                SpawnCounterDesc.bKeepInitialState = true;
-                SpawnCounterDesc.bConcurrentSharing = true;
-                SpawnCounterDesc.InitialState = EResourceStates::UnorderedAccess;
-                State.SpawnCounterBuffer = GRenderContext->CreateBuffer(SpawnCounterDesc);
+                State.ParticleBufferSize = (uint64)MaxParticles * 64ull;
+                State.ParticleBuffer     = RHI::Malloc(State.ParticleBufferSize, RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly);
+                State.SpawnCounterBuffer = RHI::Malloc(sizeof(uint32), RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly);
 
                 // Zero-fill the particle buffer so all entries start dead.
-                CmdList.FillBuffer(State.ParticleBuffer, 0u, State.ParticleBuffer->GetSize(), 0);
+                RHI::CmdMemset(CL, State.ParticleBuffer, State.ParticleBufferSize, 0u);
 
                 State.AllocatedMax      = MaxParticles;
                 State.SpawnAccumulator  = 0.0f;
@@ -5665,7 +5497,7 @@ namespace Lumina
             // Apply the game-thread Activate()/Deactivate() intents to the render-owned sim state.
             if (Item.bForceReset)
             {
-                CmdList.FillBuffer(State.ParticleBuffer, 0u, State.ParticleBuffer->GetSize(), 0);
+                RHI::CmdMemset(CL, State.ParticleBuffer, State.ParticleBufferSize, 0u);
                 State.AliveTimeRemaining = 0.0f;
                 State.SpawnAccumulator   = 0.0f;
                 State.SystemAge          = 0.0f;
@@ -5732,7 +5564,7 @@ namespace Lumina
 
             // Zero the spawn counter only when we are actually going to
             // dispatch. Idle systems no longer pay for it.
-            CmdList.FillBuffer(State.SpawnCounterBuffer, 0u, State.SpawnCounterBuffer->GetSize(), 0);
+            RHI::CmdMemset(CL, State.SpawnCounterBuffer, sizeof(uint32), 0u);
 
             const FMatrix4 WorldMat = Item.WorldMatrix;
             const FVector3 EmitterWorld = FVector3(WorldMat * FVector4(Item.EmitterOffset, 1.0f));
@@ -5784,142 +5616,129 @@ namespace Lumina
             SimParams.NoiseParams       = FVector4(Resolved.NoiseSpeed, InheritFactor, 0.0f, 0.0f);
             SimParams.Timing            = FVector4(ScaledDelta, State.TotalTime, State.SystemAge, 0.0f);
 
-            CmdList.WriteBuffer(State.SimParamsBuffer, &SimParams, sizeof(SimParams));
+            static const FShaderEntry* const DefaultSimShader = FShaderLibrary::Get("ParticleSimulate.slang");
+            const FShaderEntry* ComputeShader = Item.bUsesCustomShader ? Item.CustomComputeShader : DefaultSimShader;
 
-            FRHIComputeShaderRef ComputeShader;
-            if (Item.bUsesCustomShader)
-            {
-                ComputeShader = Item.CustomComputeShader;
-            }
-            else
-            {
-                ComputeShader = FShaderLibrary::GetComputeShader("ParticleSimulate.slang");
-            }
-
-            if (!ComputeShader)
+            if (ComputeShader == nullptr || !ComputeShader->IsValid())
             {
                 continue;
             }
 
-            FBindingLayoutDesc LayoutDesc;
-            LayoutDesc.SetBindingIndex(0)
-                .SetVisibility(ERHIShaderType::Compute)
-                .AddItem(FBindingLayoutItem::Buffer_UAV(0))
-                .AddItem(FBindingLayoutItem::Buffer_CBV(1))
-                .AddItem(FBindingLayoutItem::Buffer_UAV(2));
-            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+            // Buffer fills (zero/reset/counter) must land before the sim reads them.
+            Barriers::TransferToAll(CL);
 
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::BufferUAV(0, State.ParticleBuffer))
-                   .AddItem(FBindingSetItem::BufferCBV(1, State.SimParamsBuffer))
-                   .AddItem(FBindingSetItem::BufferUAV(2, State.SpawnCounterBuffer));
-            FRHIBindingSetRef BindingSet = GRenderContext->CreateBindingSet(SetDesc, Layout);
+            RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.SetComputeShader(ComputeShader)
-                        .AddBindingLayout(Layout);
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+            // Mirrors FParticleSimArgs in ParticleSimulate(.Template).slang: everything by device address.
+            struct FParticleSimArgs
+            {
+                uint64 ParamsAddr;
+                uint64 ParticlesAddr;
+                uint64 SpawnCounterAddr;
+            };
 
-            FComputeState ComputeState;
-            ComputeState.SetPipeline(Pipeline)
-                        .AddBindingSet(BindingSet);
+            FParticleSimArgs SimArgs;
+            SimArgs.ParamsAddr       = RHI::Core::CopyTransient(SimParams);
+            SimArgs.ParticlesAddr    = State.ParticleBuffer;
+            SimArgs.SpawnCounterAddr = State.SpawnCounterBuffer;
 
-            CmdList.SetComputeState(ComputeState);
-            CmdList.Dispatch((MaxParticles + 63u) / 64u, 1, 1);
+            RHI::CmdDispatch(CL, MakeArgs(SimArgs), (MaxParticles + 63u) / 64u, 1, 1);
+            bAnySimulated = true;
+        }
+
+        if (bAnySimulated)
+        {
+            // Simulated particles feed the render pass VS.
+            Barriers::ComputeToAll(CL);
         }
     }
 
-    static FBlendState::RenderTarget MakeParticleBlendTarget(EParticleBlendMode Mode)
+    static RHI::FBlendDesc MakeParticleBlend(EParticleBlendMode Mode)
     {
-        FBlendState::RenderTarget RT;
-        RT.SetBlendEnable(true);
+        RHI::FBlendDesc Blend;
+        Blend.bBlendEnable = true;
+        Blend.ColorOp      = RHI::EBlend::Add;
+        Blend.AlphaOp      = RHI::EBlend::Add;
 
         switch (Mode)
         {
         case EParticleBlendMode::Additive:
-            RT.SetSrcBlend(EBlendFactor::SrcAlpha)
-              .SetDestBlend(EBlendFactor::One)
-              .SetBlendOp(EBlendOp::Add)
-              .SetSrcBlendAlpha(EBlendFactor::One)
-              .SetDestBlendAlpha(EBlendFactor::One)
-              .SetBlendOpAlpha(EBlendOp::Add);
+            Blend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+            Blend.DstColorFactor = RHI::EFactor::One;
+            Blend.SrcAlphaFactor = RHI::EFactor::One;
+            Blend.DstAlphaFactor = RHI::EFactor::One;
             break;
 
         case EParticleBlendMode::PreMultiplied:
-            RT.SetSrcBlend(EBlendFactor::One)
-              .SetDestBlend(EBlendFactor::InvSrcAlpha)
-              .SetBlendOp(EBlendOp::Add)
-              .SetSrcBlendAlpha(EBlendFactor::One)
-              .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
-              .SetBlendOpAlpha(EBlendOp::Add);
+            Blend.SrcColorFactor = RHI::EFactor::One;
+            Blend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+            Blend.SrcAlphaFactor = RHI::EFactor::One;
+            Blend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
             break;
 
         case EParticleBlendMode::Multiply:
-            RT.SetSrcBlend(EBlendFactor::DstColor)
-              .SetDestBlend(EBlendFactor::Zero)
-              .SetBlendOp(EBlendOp::Add)
-              .SetSrcBlendAlpha(EBlendFactor::One)
-              .SetDestBlendAlpha(EBlendFactor::Zero)
-              .SetBlendOpAlpha(EBlendOp::Add);
+            Blend.SrcColorFactor = RHI::EFactor::DstColor;
+            Blend.DstColorFactor = RHI::EFactor::Zero;
+            Blend.SrcAlphaFactor = RHI::EFactor::One;
+            Blend.DstAlphaFactor = RHI::EFactor::Zero;
             break;
 
         case EParticleBlendMode::Alpha:
         default:
-            RT.SetSrcBlend(EBlendFactor::SrcAlpha)
-              .SetDestBlend(EBlendFactor::InvSrcAlpha)
-              .SetBlendOp(EBlendOp::Add)
-              .SetSrcBlendAlpha(EBlendFactor::One)
-              .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
-              .SetBlendOpAlpha(EBlendOp::Add);
+            Blend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+            Blend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+            Blend.SrcAlphaFactor = RHI::EFactor::One;
+            Blend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
             break;
         }
-        return RT;
+        return Blend;
     }
 
-    void FForwardRenderScene::ParticleRenderPass(ICommandList& CmdList)
+    void FForwardRenderScene::ParticleRenderPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Render", tracy::Color::OrangeRed);
 
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ParticleVertex.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("ParticlePixel.slang");
+        if (Frame.Extracts.ParticleExtracts.empty())
+        {
+            return;
+        }
+
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("ParticleVertex.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("ParticlePixel.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
+        const FSceneImage& HDR   = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Depth = GetNamedImage(ENamedImage::DepthAttachment);
+
         // Only Load when an earlier pass wrote these targets; in the particle preview world
         // BasePass/DepthPrePass early-return, so the first pass must clear them itself.
         const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
-        FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
-        if (bHDRWasWritten)
-        {
-            RenderTarget.SetLoadOp(ERenderLoadOp::Load);
-        }
+        RHI::FRenderAttachment Color;
+        Color.Texture  = HDR.Texture;
+        Color.LoadOp   = bHDRWasWritten ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Color.StoreOp  = RHI::EStoreOp::Store;
 
-        FRenderPassDesc::FAttachment Depth;
-        Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetDepthClearValue(0.0f);
-        if (!DrawCommands.empty())
-        {
-            Depth.SetLoadOp(ERenderLoadOp::Load);
-        }
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments         = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.DepthAttachment.Texture  = Depth.Texture;
+        Pass.DepthAttachment.LoadOp   = DrawCommands.empty() ? RHI::ELoadOp::Clear : RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp  = RHI::EStoreOp::Store;
+        Pass.DepthAttachment.Color[0] = 0.0f;
+        Pass.RenderArea               = HDR.GetExtent();
 
-        FRenderPassDesc RenderPass;
-        RenderPass.AddColorAttachment(RenderTarget)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FRasterState RasterState;
-        RasterState.EnableDepthClip()
-                   .SetCullMode(ERasterCullMode::None);
-
-        // Particle array read by device address; per-emitter render params inlined into the push
-        // constant (matches FParticlePushConstants in ParticleVertex.slang). No pass-local set.
+        // Particle array read by device address; per-emitter render params inlined into the pass
+        // block (matches FParticlePushConstants in ParticleVertex.slang).
         struct FParticlePushConstants
         {
             uint64   ParticlesAddr;
@@ -5927,7 +5746,7 @@ namespace Lumina
             uint32   BillboardToCamera;
             FVector4 Tint;
         };
-        static_assert(sizeof(FParticlePushConstants) == 32, "FParticlePushConstants must match the slang push block.");
+        static_assert(sizeof(FParticlePushConstants) == 32, "FParticlePushConstants must match the slang pass block.");
 
         for (const FFrameData::FParticleExtract& Item : Frame.Extracts.ParticleExtracts)
         {
@@ -5943,61 +5762,38 @@ namespace Lumina
                 continue;
             }
             FParticleGPUState& State = ParticleStateIt->second;
-            if (!State.ParticleBuffer || !State.RenderParamsBuffer)
+            if (!State.ParticleBuffer)
             {
                 continue;
             }
 
             const FResolvedParticleParams& Resolved = Item.Resolved;
 
-            FBlendState BlendState;
-            BlendState.SetRenderTarget(0, MakeParticleBlendTarget(Resolved.BlendMode));
+            RHI::FDepthStencilDesc DepthDesc;
+            DepthDesc.DepthMode = Resolved.bWriteDepth
+                ? (RHI::EDepthFlags::Read | RHI::EDepthFlags::Write)
+                : RHI::EDepthFlags::Read;
+            DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+            RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
 
-            FDepthStencilState DepthState;
-            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual);
-            if (Resolved.bWriteDepth)
-            {
-                DepthState.EnableDepthWrite();
-            }
-            else
-            {
-                DepthState.DisableDepthWrite();
-            }
-
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState)
-                       .SetDepthStencilState(DepthState)
-                       .SetBlendState(BlendState);
-
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Particle Render")
-                .SetRenderState(RenderState)
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Particle array read by device address, not a descriptor; declare it for the tracker.
-            GraphicsState.Reads(State.ParticleBuffer);
+            FGraphicsPipelineKey Key;
+            Key.VS          = VertexShader;
+            Key.PS          = PixelShader;
+            Key.DepthFormat = EFormat::D32;
+            Key.ColorTargets.push_back({ HDR.Desc.Format, MakeParticleBlend(Resolved.BlendMode) });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
             FParticlePushConstants PC = {};
-            PC.ParticlesAddr     = State.ParticleBuffer->GetAddress();
+            PC.ParticlesAddr     = State.ParticleBuffer;
             PC.TextureIndex      = Item.TextureIndex;
             PC.BillboardToCamera = Resolved.bBillboardToCamera ? 1u : 0u;
             PC.Tint              = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
 
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, PC);
-            CmdList.Draw(6u * State.AllocatedMax, 1u, 0u, 0u);
+            RHI::CmdDraw(CL, MakeArgs(PC), 6u * State.AllocatedMax, 1u, 0u, 0u);
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
     namespace
@@ -6251,37 +6047,33 @@ namespace Lumina
             CPU.PreparedLayerCount      = Out.LayerCount;
         }
 
-        static FRHIImageRef CreateTerrainImage(const FString& DebugName, uint32 Size, uint16 ArraySize, EFormat Format, bool bUav, bool bArrayView = false)
+        static FSceneImage CreateTerrainImage(uint32 Size, uint16 ArraySize, EFormat Format, bool bUav, bool bArrayView = false)
         {
-            FRHIImageDesc Desc;
-            Desc.Extent       = FUIntVector2(Size, Size);
-            Desc.ArraySize    = ArraySize;
-            // Shader samples weight maps as Sampler2DArray; Texture2D collapses array slices
-            // in FTextureSubresourceSet::Resolve, breaking per-slice state tracking.
-            Desc.Dimension    = (bArrayView || ArraySize > 1) ? EImageDimension::Texture2DArray : EImageDimension::Texture2D;
-            Desc.Format       = Format;
-            Desc.DebugName    = DebugName;
-            Desc.bKeepInitialState = true;
-            Desc.InitialState = EResourceStates::ShaderResource;
-            Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
+            RHI::FTextureDesc Desc;
+            // Shader samples weight maps as Sampler2DArray, so array textures get an array view.
+            Desc.Type       = (bArrayView || ArraySize > 1) ? RHI::ETextureType::Tex2DArray : RHI::ETextureType::Tex2D;
+            Desc.Dimension  = FUIntVector3(Size, Size, 1);
+            Desc.LayerCount = ArraySize;
+            Desc.Format     = Format;
+            Desc.Usage      = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
             if (bUav)
             {
-                Desc.Flags.SetFlag(EImageCreateFlags::Storage);
+                Desc.Usage = Desc.Usage | RHI::EImageUsageFlags::Storage;
             }
-            return GRenderContext->CreateImage(Desc);
+            return CreateSceneImage(Desc, /*bSampled*/ true, /*bMipUAVs*/ bUav);
         }
     }
 
-    void FForwardRenderScene::TerrainUpdatePass(ICommandList& CmdList)
+    void FForwardRenderScene::TerrainUpdatePass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Terrain Update", tracy::Color::SeaGreen);
 
-        FRHIComputeShaderRef NormalShader = FShaderLibrary::GetComputeShader("TerrainNormalCompute.slang");
+        static const FShaderEntry* const NormalShader = FShaderLibrary::Get("TerrainNormalCompute.slang");
 
         const FFrameData& Frame = *RenderFrame;
 
         // Reclaim GPU state for destroyed terrains (disabled ones stay in LiveTerrainEntities).
-        // KeepAlive each resource on this frame's cmd list before dropping the ref so in-flight work finishes.
+        // Releases are slot-deferred so in-flight frames reading the resources finish first.
         if (!TerrainGPUStates.empty())
         {
             const TVector<entt::entity>& Live = Frame.Extracts.LiveTerrainEntities;
@@ -6295,14 +6087,13 @@ namespace Lumina
                 if (!IsLive(It->first))
                 {
                     FTerrainGPUState& Dead = It->second;
-                    auto Keep = [&](const auto& Ref) { if (Ref) CmdList.KeepAlive(Ref.GetReference()); };
-                    Keep(Dead.HeightmapTexture);
-                    Keep(Dead.NormalTexture);
-                    Keep(Dead.LayerWeightTexture);
-                    Keep(Dead.ChunkInfoBuffer);
-                    Keep(Dead.MeshletInfoBuffer);
-                    Keep(Dead.VisibleMeshletBuffer);
-                    Keep(Dead.IndirectDrawBuffer);
+                    DeferRelease(Dead.HeightmapTexture);
+                    DeferRelease(Dead.NormalTexture);
+                    DeferRelease(Dead.LayerWeightTexture);
+                    if (Dead.ChunkInfoBuffer)      { DeferFree(Dead.ChunkInfoBuffer.Ptr); }
+                    if (Dead.MeshletInfoBuffer)    { DeferFree(Dead.MeshletInfoBuffer.Ptr); }
+                    if (Dead.VisibleMeshletBuffer) { DeferFree(Dead.VisibleMeshletBuffer.Ptr); }
+                    if (Dead.IndirectDrawBuffer)   { DeferFree(Dead.IndirectDrawBuffer.Ptr); }
                     It = TerrainGPUStates.erase(It);
                 }
                 else
@@ -6312,9 +6103,12 @@ namespace Lumina
             }
         }
 
+        bool bAnyUpload = false;
+
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.Extracts.TerrainExtracts)
         {
             const entt::entity Entity = TerrainItem.Entity;
+            (void)Entity;
             if (TerrainItem.Resolution < 2 || TerrainItem.ChunkResolution < 2)
             {
                 continue;
@@ -6332,10 +6126,13 @@ namespace Lumina
             const bool bRealloc = State.AllocatedResolution != Res || State.AllocatedLayerCount != LayerCount;
             if (bRealloc)
             {
-                const FString Name = FString("Terrain_") + std::to_string((uint32)Entity).c_str();
-                State.HeightmapTexture   = CreateTerrainImage(Name + "_Height",  Res, 1u,          EFormat::R32_FLOAT, false);
-                State.NormalTexture      = CreateTerrainImage(Name + "_Normal",  Res, 1u,          EFormat::RGBA8_UNORM, true);
-                State.LayerWeightTexture = CreateTerrainImage(Name + "_Weights", Res, (uint16)std::max(LayerCount, 1u), EFormat::R8_UNORM, false, true);
+                DeferRelease(State.HeightmapTexture);
+                DeferRelease(State.NormalTexture);
+                DeferRelease(State.LayerWeightTexture);
+
+                State.HeightmapTexture   = CreateTerrainImage(Res, 1u,          EFormat::R32_FLOAT, false);
+                State.NormalTexture      = CreateTerrainImage(Res, 1u,          EFormat::RGBA8_UNORM, true);
+                State.LayerWeightTexture = CreateTerrainImage(Res, (uint16)std::max(LayerCount, 1u), EFormat::R8_UNORM, false, true);
                 State.AllocatedResolution = Res;
                 State.AllocatedLayerCount = LayerCount;
 
@@ -6343,10 +6140,9 @@ namespace Lumina
                 // slice so a sampler can't read garbage (otherwise the weight upload below seeds them).
                 if (TerrainItem.WeightUpload == 0)
                 {
-                    CmdList.ClearImageFloat(
-                        State.LayerWeightTexture,
-                        FTextureSubresourceSet(0u, 1u, 0u, (uint16)std::max(LayerCount, 1u)),
-                        FColor(0.0f, 0.0f, 0.0f, 0.0f));
+                    const float Zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                    RHI::CmdClearTexture(CL, State.LayerWeightTexture.Texture, Zero);
+                    bAnyUpload = true;
                 }
             }
 
@@ -6358,7 +6154,9 @@ namespace Lumina
 
             if (TerrainItem.HeightUpload == 1 && TerrainItem.HeightBytes.size() == SlicePixels)
             {
-                CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, TerrainItem.HeightBytes.data(), Res * (uint32)sizeof(float), 0u);
+                const RHI::GPUPtr Src = RHI::Core::CopyTransientArray(TerrainItem.HeightBytes.data(), TerrainItem.HeightBytes.size());
+                RHI::CmdCopyMemoryToTexture(CL, Src, Res, State.HeightmapTexture.Texture);
+                bAnyUpload = true;
             }
             else if (TerrainItem.HeightUpload == 2)
             {
@@ -6367,9 +6165,13 @@ namespace Lumina
                 const uint32 RegionW = uint32(RectMax.x - RectMin.x + 1);
                 const uint32 RegionH = uint32(RectMax.y - RectMin.y + 1);
                 // Snapshot rect is tightly packed, so the source row pitch is RegionW, not Res.
-                CmdList.WriteImageRegion(State.HeightmapTexture, 0u, 0u,
-                                         (uint32)RectMin.x, (uint32)RectMin.y, RegionW, RegionH,
-                                         TerrainItem.HeightBytes.data(), RegionW * (uint32)sizeof(float));
+                const RHI::GPUPtr Src = RHI::Core::CopyTransientArray(TerrainItem.HeightBytes.data(), TerrainItem.HeightBytes.size());
+
+                RHI::FTextureSlice Slice;
+                Slice.Offset = FUIntVector3((uint32)RectMin.x, (uint32)RectMin.y, 0);
+                Slice.Extent = FUIntVector3(RegionW, RegionH, 1);
+                RHI::CmdCopyMemoryToTexture(CL, Src, RegionW, State.HeightmapTexture.Texture, Slice);
+                bAnyUpload = true;
             }
 
             // Weight upload: whole slices, packed ascending in the snapshot.
@@ -6387,13 +6189,21 @@ namespace Lumina
                     {
                         break;
                     }
-                    CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Cursor, Res, 0u);
+                    const RHI::GPUPtr Src = RHI::Core::CopyTransientArray(Cursor, SlicePixels);
+
+                    RHI::FTextureSlice Slice;
+                    Slice.Layer = L;
+                    RHI::CmdCopyMemoryToTexture(CL, Src, Res, State.LayerWeightTexture.Texture, Slice);
                     Cursor += SlicePixels;
+                    bAnyUpload = true;
                 }
             }
 
             if (bHeightDirty && NormalShader)
             {
+                // Heightmap upload must land before the normal recompute samples it.
+                Barriers::TransferToAll(CL);
+
                 // Central-difference normals read one neighbor each side, so dilate the
                 // recompute region by a texel and clamp to the map.
                 const int32 NMinX = std::max(RectMin.x - 1, 0);
@@ -6403,43 +6213,33 @@ namespace Lumina
                 const int32 NW    = NMaxX - NMinX + 1;
                 const int32 NH    = NMaxY - NMinY + 1;
 
-                FTerrainNormalParams NormalParams{};
-                NormalParams.Resolution    = ResI;
-                NormalParams.RegionMinX    = NMinX;
-                NormalParams.RegionMinY    = NMinY;
-                NormalParams.RegionSizeX   = NW;
-                NormalParams.RegionSizeY   = NH;
-                NormalParams.TileWorldSize = TerrainItem.TileWorldSize;
-                NormalParams.MaxHeight     = TerrainItem.MaxHeight;
+                // Mirrors FTerrainNormalArgs in TerrainNormalCompute.slang: scalar params plus
+                // the heightmap SRV / normal UAV heap indices.
+                struct FTerrainNormalArgs
+                {
+                    FTerrainNormalParams Params;
+                    uint32 HeightmapIndex;
+                    uint32 NormalUAV;
+                    uint32 _Pad0;
+                    uint32 _Pad1;
+                };
 
-                auto NormalParamsAlloc = CmdList.CopyTransient(NormalParams);
+                FTerrainNormalArgs NormalArgs{};
+                NormalArgs.Params.Resolution    = ResI;
+                NormalArgs.Params.RegionMinX    = NMinX;
+                NormalArgs.Params.RegionMinY    = NMinY;
+                NormalArgs.Params.RegionSizeX   = NW;
+                NormalArgs.Params.RegionSizeY   = NH;
+                NormalArgs.Params.TileWorldSize = TerrainItem.TileWorldSize;
+                NormalArgs.Params.MaxHeight     = TerrainItem.MaxHeight;
+                NormalArgs.HeightmapIndex       = (uint32)State.HeightmapTexture.GetResourceID();
+                NormalArgs.NormalUAV            = (uint32)State.NormalTexture.GetMipUAVIndex(0);
 
-                FRHISamplerRef ClampSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+                RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(NormalShader));
+                RHI::CmdDispatch(CL, MakeArgs(NormalArgs), (uint32(NW) + 7u) / 8u, (uint32(NH) + 7u) / 8u, 1u);
 
-                FBindingLayoutDesc NormalLayoutDesc;
-                NormalLayoutDesc.SetBindingIndex(0)
-                    .SetVisibility(ERHIShaderType::Compute)
-                    .AddItem(FBindingLayoutItem::Texture_SRV(0))
-                    .AddItem(FBindingLayoutItem::Texture_UAV(1));
-                FRHIBindingLayout* NormalLayout = BindingCache.GetOrCreateBindingLayout(NormalLayoutDesc);
-
-                FBindingSetDesc NormalSetDesc;
-                NormalSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, ClampSampler))
-                             .AddItem(FBindingSetItem::TextureUAV(1, State.NormalTexture));
-                FRHIBindingSetRef NormalSet = GRenderContext->CreateBindingSet(NormalSetDesc, NormalLayout);
-
-                FComputePipelineDesc NormalPipelineDesc;
-                NormalPipelineDesc.SetComputeShader(NormalShader)
-                                  .AddBindingLayout(NormalLayout);
-                FRHIComputePipelineRef NormalPipeline = GRenderContext->CreateComputePipeline(NormalPipelineDesc);
-
-                FComputeState NormalComputeState;
-                NormalComputeState.SetPipeline(NormalPipeline)
-                                  .AddBindingSet(NormalSet);
-
-                CmdList.SetComputeState(NormalComputeState);
-                CmdList.SetPushConstants(&NormalParamsAlloc.Gpu, sizeof(uint64));
-                CmdList.Dispatch((uint32(NW) + 7u) / 8u, (uint32(NH) + 7u) / 8u, 1u);
+                // Normals are sampled by the terrain VS/PS.
+                Barriers::ComputeToAll(CL);
             }
 
             // Upload chunk + meshlet metadata the game thread rebuilt this frame; the
@@ -6451,45 +6251,40 @@ namespace Lumina
 
                 if (ChunkCount > 0 && MeshletCount > 0)
                 {
-                    const FString DebugBase = FString("Terrain_") + std::to_string((uint32)Entity).c_str();
-
-                    auto AllocSSBO = [&](FRHIBufferRef& Buffer, uint64 SizeBytes, const FString& Name, bool bIndirect)
+                    auto AllocSSBO = [&](FSceneBuffer& Buffer, uint64 SizeBytes)
                     {
-                        if (!Buffer || Buffer->GetDescription().Size < SizeBytes)
+                        if (!Buffer || Buffer.Size < SizeBytes)
                         {
-                            FRHIBufferDesc Desc;
-                            Desc.Size      = std::max<uint64>(SizeBytes, 16ull);
-                            Desc.DebugName = Name;
-                            Desc.Stride    = 0u;
-                            Desc.Usage.SetFlag(BUF_StorageBuffer);
-                            if (bIndirect)
+                            if (Buffer)
                             {
-                                Desc.Usage.SetFlag(BUF_Indirect);
+                                DeferFree(Buffer.Ptr);
                             }
-                            // bKeepInitialState pins Common so the tracker can move the
-                            // buffer freely between SRV/UAV/Indirect at use sites.
-                            Desc.bKeepInitialState = true;
-                            Desc.InitialState      = EResourceStates::Common;
-                            Buffer = GRenderContext->CreateBuffer(Desc);
+                            Buffer = CreateSceneBuffer(std::max<uint64>(SizeBytes, 16ull));
                         }
                     };
 
-                    AllocSSBO(State.ChunkInfoBuffer,      uint64(ChunkCount)   * sizeof(FTerrainChunkInfo),      DebugBase + "_Chunks",   false);
-                    AllocSSBO(State.MeshletInfoBuffer,    uint64(MeshletCount) * sizeof(FTerrainMeshletInfo),    DebugBase + "_Meshlets", false);
-                    AllocSSBO(State.VisibleMeshletBuffer, uint64(MeshletCount) * sizeof(FTerrainVisibleMeshlet), DebugBase + "_Visible",  false);
-                    AllocSSBO(State.IndirectDrawBuffer,   sizeof(FDrawIndirectArguments),                        DebugBase + "_Indirect", true);
+                    AllocSSBO(State.ChunkInfoBuffer,      uint64(ChunkCount)   * sizeof(FTerrainChunkInfo));
+                    AllocSSBO(State.MeshletInfoBuffer,    uint64(MeshletCount) * sizeof(FTerrainMeshletInfo));
+                    AllocSSBO(State.VisibleMeshletBuffer, uint64(MeshletCount) * sizeof(FTerrainVisibleMeshlet));
+                    AllocSSBO(State.IndirectDrawBuffer,   sizeof(RHI::FDrawIndirectArguments));
 
-                    CmdList.WriteBuffer(State.ChunkInfoBuffer,   TerrainItem.Chunks.data(),   ChunkCount * sizeof(FTerrainChunkInfo));
-                    CmdList.WriteBuffer(State.MeshletInfoBuffer, TerrainItem.Meshlets.data(), MeshletCount * sizeof(FTerrainMeshletInfo));
+                    WriteBuffer(CL, State.ChunkInfoBuffer.Ptr,   TerrainItem.Chunks.data(),   ChunkCount * sizeof(FTerrainChunkInfo));
+                    WriteBuffer(CL, State.MeshletInfoBuffer.Ptr, TerrainItem.Meshlets.data(), MeshletCount * sizeof(FTerrainMeshletInfo));
+                    bAnyUpload = true;
 
                     State.AllocatedChunkCount   = ChunkCount;
                     State.AllocatedMeshletCount = MeshletCount;
                 }
             }
         }
+
+        if (bAnyUpload)
+        {
+            Barriers::TransferToAll(CL);
+        }
     }
 
-    void FForwardRenderScene::TerrainCullPass(ICommandList& CmdList)
+    void FForwardRenderScene::TerrainCullPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (Frame.Extracts.TerrainExtracts.empty())
@@ -6499,16 +6294,13 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Terrain Cull", tracy::Color::SeaGreen);
 
-        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("TerrainCull.slang");
+        static const FShaderEntry* const CullShader = FShaderLibrary::Get("TerrainCull.slang");
         if (!CullShader)
         {
             return;
         }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.SetComputeShader(CullShader)
-                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        FRHIComputePipelineRef CullPipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+        bool bAnyDispatched = false;
 
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.Extracts.TerrainExtracts)
         {
@@ -6529,41 +6321,42 @@ namespace Lumina
 
             // Seed the indirect args slot. Six verts per quad * meshletQuads^2
             // is the per-meshlet vertex count the terrain VS expects.
-            FDrawIndirectArguments InitialArgs{};
-            InitialArgs.VertexCount           = (uint32)(GTerrainMeshletMaxQuads * 6);
-            InitialArgs.InstanceCount         = 0u;
-            InitialArgs.StartVertexLocation   = 0u;
-            InitialArgs.StartInstanceLocation = 0u;
-            CmdList.WriteBuffer(State.IndirectDrawBuffer, &InitialArgs, sizeof(InitialArgs));
+            RHI::FDrawIndirectArguments InitialArgs{};
+            InitialArgs.VertexCount   = (uint32)(GTerrainMeshletMaxQuads * 6);
+            InitialArgs.InstanceCount = 0u;
+            InitialArgs.FirstVertex   = 0u;
+            InitialArgs.FirstInstance = 0u;
+            WriteBuffer(CL, State.IndirectDrawBuffer.Ptr, &InitialArgs, sizeof(InitialArgs));
+            Barriers::TransferToAll(CL);
 
-            FComputeState ComputeState;
-            ComputeState.SetPipeline(CullPipeline)
-                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Buffers read/written by device address, not descriptors; declare for the tracker.
-            ComputeState.Reads(State.ChunkInfoBuffer);
-            ComputeState.Reads(State.MeshletInfoBuffer);
-            ComputeState.Writes(State.VisibleMeshletBuffer);
-            ComputeState.Writes(State.IndirectDrawBuffer);
-            CmdList.SetComputeState(ComputeState);
+            if (!bAnyDispatched)
+            {
+                RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CullShader));
+            }
 
             FTerrainCullPushConstants Push{};
-            Push.ChunksAddr          = State.ChunkInfoBuffer->GetAddress();
-            Push.MeshletsAddr        = State.MeshletInfoBuffer->GetAddress();
-            Push.VisibleMeshletsAddr = State.VisibleMeshletBuffer->GetAddress();
-            Push.TerrainIndirectAddr = State.IndirectDrawBuffer->GetAddress();
+            Push.ChunksAddr          = State.ChunkInfoBuffer.GetAddress();
+            Push.MeshletsAddr        = State.MeshletInfoBuffer.GetAddress();
+            Push.VisibleMeshletsAddr = State.VisibleMeshletBuffer.GetAddress();
+            Push.TerrainIndirectAddr = State.IndirectDrawBuffer.GetAddress();
             Push.ChunkCount   = State.AllocatedChunkCount;
             Push.MeshletCount = State.AllocatedMeshletCount;
-            PushRootConstants(CmdList, Push);
 
             // One workgroup per chunk, one thread per meshlet; the chunk-level test on
             // thread 0 gates the rest via groupshared.
-            CmdList.Dispatch(State.AllocatedChunkCount, 1u, 1u);
+            RHI::CmdDispatch(CL, MakeArgs(Push), State.AllocatedChunkCount, 1u, 1u);
+            bAnyDispatched = true;
+        }
+
+        if (bAnyDispatched)
+        {
+            Barriers::ComputeToAll(CL);
         }
     }
 
     // Depth-only pre-pass over culled terrain meshlets (reverse-Z, DepthWrite on) so the heavy shaded pass
     // early-Z rejects overdraw and runs its ~80-tap PBR once per pixel. Shares the material VS; no PS bound.
-    void FForwardRenderScene::TerrainDepthPrePass(ICommandList& CmdList)
+    void FForwardRenderScene::TerrainDepthPrePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
@@ -6602,7 +6395,7 @@ namespace Lumina
             }
 
             // Shaders were resolved + ref-held at extract (Extract Terrain); null VS => skip.
-            FRHIVertexShader* VertexShader = TerrainItem.Shaders.VertexShader;
+            const FShaderEntry* VertexShader = TerrainItem.Shaders.VertexShader;
             if (!VertexShader)
             {
                 continue;
@@ -6633,73 +6426,50 @@ namespace Lumina
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
             RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
 
-            auto RenderParamsAlloc = CmdList.CopyTransient(RenderParams);
+            const FUIntVector2 Extent = GetNamedImage(ENamedImage::HDR).GetExtent();
 
             // First depth writer when there are no meshes; otherwise the mesh
             // depth pre-pass / base pass already populated this view's depth.
-            FRenderPassDesc::FAttachment Depth;
-            Depth.SetImage(GetSceneDepthRT())
-                 .SetDepthClearValue(0.0f);
-            if (!DrawCommands.empty())
-            {
-                Depth.SetLoadOp(ERenderLoadOp::Load);
-            }
+            RHI::FRenderPassDesc Pass;
+            Pass.DepthAttachment.Texture  = GetSceneDepthRT().Texture;
+            Pass.DepthAttachment.LoadOp   = DrawCommands.empty() ? RHI::ELoadOp::Clear : RHI::ELoadOp::Load;
+            Pass.DepthAttachment.StoreOp  = RHI::EStoreOp::Store;
+            Pass.DepthAttachment.Color[0] = 0.0f;
+            Pass.RenderArea               = Extent;
 
-            FRenderPassDesc RenderPass;
-            RenderPass.SetDepthAttachment(Depth)
-                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+            RHI::CmdBeginRenderPass(CL, Pass);
+            SetViewportScissor(CL, Extent);
 
-            FRasterState RasterState;
-            RasterState.EnableDepthClip()
-                       .SetCullMode(ERasterCullMode::None);
+            RHI::FDepthStencilDesc DepthDesc;
+            DepthDesc.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+            DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+            RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-            FDepthStencilState DepthState;
-            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-                      .EnableDepthWrite();
-
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState)
-                       .SetDepthStencilState(DepthState);
-
-            // No pass-local set: heightmap/normal read bindlessly, cull buffers by device address.
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("TerrainDepth")
-                .SetRenderState(RenderState)
-                .SetVertexShader(VertexShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(State.IndirectDrawBuffer);
-            // Bindless/BDA reads (the depth VS samples height+normal and walks the cull buffers).
-            GraphicsState.Reads(State.HeightmapTexture);
-            GraphicsState.Reads(State.NormalTexture);
-            GraphicsState.Reads(State.ChunkInfoBuffer);
-            GraphicsState.Reads(State.MeshletInfoBuffer);
-            GraphicsState.Reads(State.VisibleMeshletBuffer);
+            FGraphicsPipelineKey Key;
+            Key.VS          = VertexShader;
+            Key.SampleCount = MSAASampleCount;
+            Key.DepthFormat = EFormat::D32;
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
             FTerrainPushConstants Push{};
-            Push.ParamsAddr        = RenderParamsAlloc.Gpu;
-            Push.ChunksAddr        = State.ChunkInfoBuffer->GetAddress();
-            Push.MeshletsAddr      = State.MeshletInfoBuffer->GetAddress();
-            Push.VisibleAddr       = State.VisibleMeshletBuffer->GetAddress();
-            Push.HeightmapIndex    = (uint32)State.HeightmapTexture->GetResourceID();
-            Push.NormalIndex       = (uint32)State.NormalTexture->GetResourceID();
-            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture->GetResourceID();
+            Push.ParamsAddr        = RHI::Core::CopyTransient(RenderParams);
+            Push.ChunksAddr        = State.ChunkInfoBuffer.GetAddress();
+            Push.MeshletsAddr      = State.MeshletInfoBuffer.GetAddress();
+            Push.VisibleAddr       = State.VisibleMeshletBuffer.GetAddress();
+            Push.HeightmapIndex    = (uint32)State.HeightmapTexture.GetResourceID();
+            Push.NormalIndex       = (uint32)State.NormalTexture.GetResourceID();
+            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture.GetResourceID();
 
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, Push);
+            RHI::CmdDrawIndirect(CL, MakeArgs(Push), State.IndirectDrawBuffer.Ptr, 0u, 1u, sizeof(RHI::FDrawIndirectArguments));
 
-            CmdList.DrawIndirect(1u, 0u);
+            RHI::CmdEndRenderPass(CL);
         }
+
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::TerrainRenderPass(ICommandList& CmdList)
+    void FForwardRenderScene::TerrainRenderPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.Geometry.DrawCommands;
@@ -6743,8 +6513,8 @@ namespace Lumina
 
             // The extract enforced the terrain domain + default fallback and ref-held the shaders on the
             // game thread, so the render thread never touches the CMaterial. Null VS/PS => skip.
-            FRHIVertexShader* VertexShader = TerrainItem.Shaders.VertexShader;
-            FRHIPixelShader*  PixelShader  = TerrainItem.Shaders.PixelShader;
+            const FShaderEntry* VertexShader = TerrainItem.Shaders.VertexShader;
+            const FShaderEntry*  PixelShader  = TerrainItem.Shaders.PixelShader;
             if (!VertexShader || !PixelShader)
             {
                 continue;
@@ -6774,98 +6544,69 @@ namespace Lumina
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
             RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
 
-            // Transient ring upload; shader pulls via buffer-device-address
-            // through the push constant set further down.
-            auto RenderParamsAlloc = CmdList.CopyTransient(RenderParams);
-
             const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
+            const FSceneImage& ColorRT  = GetSceneColorRT();
+            const FSceneImage& PickerRT = GetPickerRT();
+            const FUIntVector2 Extent   = GetNamedImage(ENamedImage::HDR).GetExtent();
 
-            FRenderPassDesc::FAttachment RenderTarget;
-            RenderTarget.SetImage(GetSceneColorRT()).SetResolveImage(GetSceneColorResolve());
-            if (bHDRWasWritten)
-            {
-                RenderTarget.SetLoadOp(ERenderLoadOp::Load);
-            }
-
-            FRenderPassDesc::FAttachment PickerAttachment;
-            PickerAttachment.SetImage(GetPickerRT()).SetResolveImage(GetPickerResolve());
-            if (!DrawCommands.empty())
-            {
-                PickerAttachment.SetLoadOp(ERenderLoadOp::Load);
-            }
+            RHI::FRenderAttachment Colors[2];
+            Colors[0].Texture        = ColorRT.Texture;
+            Colors[0].ResolveTexture = GetSceneColorResolve();
+            Colors[0].LoadOp         = bHDRWasWritten ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+            Colors[0].StoreOp        = RHI::EStoreOp::Store;
+            Colors[1].Texture        = PickerRT.Texture;
+            Colors[1].ResolveTexture = GetPickerResolve();
+            Colors[1].LoadOp         = DrawCommands.empty() ? RHI::ELoadOp::Clear : RHI::ELoadOp::Load;
+            Colors[1].StoreOp        = RHI::EStoreOp::Store;
 
             // TerrainDepthPrePass laid down terrain depth (and cleared when there
             // were no meshes), so always load and let early-Z drop the overdraw.
-            FRenderPassDesc::FAttachment Depth;
-            Depth.SetImage(GetSceneDepthRT())
-                 .SetResolveImage(GetSceneDepthResolve())
-                 .SetDepthClearValue(0.0f)
-                 .SetLoadOp(ERenderLoadOp::Load);
+            RHI::FRenderPassDesc Pass;
+            Pass.ColorAttachments               = TSpan<const RHI::FRenderAttachment>(Colors, 2);
+            Pass.DepthAttachment.Texture        = GetSceneDepthRT().Texture;
+            Pass.DepthAttachment.ResolveTexture = GetSceneDepthResolve();
+            Pass.DepthAttachment.LoadOp         = RHI::ELoadOp::Load;
+            Pass.DepthAttachment.StoreOp        = RHI::EStoreOp::Store;
+            Pass.RenderArea                     = Extent;
 
-            FRenderPassDesc RenderPass;
-            RenderPass.AddColorAttachment(RenderTarget)
-                .AddColorAttachment(PickerAttachment)
-                .SetDepthAttachment(Depth)
-                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+            RHI::CmdBeginRenderPass(CL, Pass);
+            SetViewportScissor(CL, Extent);
 
-            FRasterState RasterState;
-            RasterState.EnableDepthClip()
-                       .SetCullMode(ERasterCullMode::None);
+            RHI::FDepthStencilDesc DepthDesc;
+            DepthDesc.DepthMode = RHI::EDepthFlags::Read;
+            DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+            RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-            FDepthStencilState DepthState;
-            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-                      .DisableDepthWrite();
-
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState)
-                       .SetDepthStencilState(DepthState);
-
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Terrain")
-                .SetRenderState(RenderState)
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(State.IndirectDrawBuffer);
-            // VS samples height+normal and walks the cull buffers; PS samples layer weights, the
-            // cluster light lists and the shadow atlases -- all by index, so declare them for barriers.
-            GraphicsState.Reads(State.HeightmapTexture);
-            GraphicsState.Reads(State.NormalTexture);
-            GraphicsState.Reads(State.LayerWeightTexture);
-            GraphicsState.Reads(State.ChunkInfoBuffer);
-            GraphicsState.Reads(State.MeshletInfoBuffer);
-            GraphicsState.Reads(State.VisibleMeshletBuffer);
-            GraphicsState.Reads(CurrentView->ClusterBuffer);
-            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
-            GraphicsState.Reads(ShadowAtlas.GetImage());
+            FGraphicsPipelineKey Key;
+            Key.VS          = VertexShader;
+            Key.PS          = PixelShader;
+            Key.SampleCount = MSAASampleCount;
+            Key.DepthFormat = EFormat::D32;
+            Key.ColorTargets.push_back({ ColorRT.Desc.Format, {} });
+            Key.ColorTargets.push_back({ PickerRT.Desc.Format, {} });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
             FTerrainPushConstants Push{};
-            Push.ParamsAddr        = RenderParamsAlloc.Gpu;
-            Push.ChunksAddr        = State.ChunkInfoBuffer->GetAddress();
-            Push.MeshletsAddr      = State.MeshletInfoBuffer->GetAddress();
-            Push.VisibleAddr       = State.VisibleMeshletBuffer->GetAddress();
-            Push.HeightmapIndex    = (uint32)State.HeightmapTexture->GetResourceID();
-            Push.NormalIndex       = (uint32)State.NormalTexture->GetResourceID();
-            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture->GetResourceID();
-
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, Push);
+            Push.ParamsAddr        = RHI::Core::CopyTransient(RenderParams);
+            Push.ChunksAddr        = State.ChunkInfoBuffer.GetAddress();
+            Push.MeshletsAddr      = State.MeshletInfoBuffer.GetAddress();
+            Push.VisibleAddr       = State.VisibleMeshletBuffer.GetAddress();
+            Push.HeightmapIndex    = (uint32)State.HeightmapTexture.GetResourceID();
+            Push.NormalIndex       = (uint32)State.NormalTexture.GetResourceID();
+            Push.LayerWeightsIndex = (uint32)State.LayerWeightTexture.GetResourceID();
 
             // Cull populated the single indirect args slot (VertexCount = MeshletQuads^2*6,
             // InstanceCount = surviving meshlets). One GPU-driven draw.
-            CmdList.DrawIndirect(1u, 0u);
+            RHI::CmdDrawIndirect(CL, MakeArgs(Push), State.IndirectDrawBuffer.Ptr, 0u, 1u, sizeof(RHI::FDrawIndirectArguments));
+
+            RHI::CmdEndRenderPass(CL);
         }
+
+        Barriers::RasterToRead(CL);
     }
     
-    void FForwardRenderScene::SSAOPass(ICommandList& CmdList)
+    void FForwardRenderScene::SSAOPass(RHI::FCmdListH CL)
     {
         FFrameData& Frame = *RenderFrame;
         if (Frame.Geometry.DrawCommands.empty() || !Frame.CachedWorldSettings.bEnableSSAO)
@@ -6875,51 +6616,35 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("SSAO Pass", tracy::Color::Red);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("SSAOPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SSAOPixel.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage     = GetNamedImage(ENamedImage::SSAO);
-        FRHIImage* DepthAttachment = GetNamedImage(ENamedImage::DepthAttachment);
+        const FSceneImage& Output = GetNamedImage(ENamedImage::SSAO);
+        const FSceneImage& Depth  = GetNamedImage(ENamedImage::DepthAttachment);
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage);
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Undefined;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
-
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("SSAO Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.Reads(DepthAttachment);
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
-
-        CmdList.SetGraphicsState(GraphicsState);
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FData
         {
@@ -6927,15 +6652,15 @@ namespace Lumina
             uint32 NoiseIndex;
         } PC;
 
-        PC.DepthIndex = (uint32)DepthAttachment->GetResourceID();
-        PC.NoiseIndex = (uint32)SSAONoiseTexture->GetResourceID();
+        PC.DepthIndex = (uint32)Depth.GetResourceID();
+        PC.NoiseIndex = SSAONoiseTexture.ResourceID();
 
-        PushRootConstants(CmdList, PC);
-
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::SSAOBlurPass(ICommandList& CmdList)
+    void FForwardRenderScene::SSAOBlurPass(RHI::FCmdListH CL)
     {
         FFrameData& Frame = *RenderFrame;
         if (Frame.Geometry.DrawCommands.empty() || !Frame.CachedWorldSettings.bEnableSSAO)
@@ -6945,70 +6670,50 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("SSAO Blur", tracy::Color::Red);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("SSAOBlurPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SSAOBlurPixel.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SSAOBlur);
-        FRHIImage* InputImage  = GetNamedImage(ENamedImage::SSAO);
+        const FSceneImage& Output = GetNamedImage(ENamedImage::SSAOBlur);
+        const FSceneImage& Input  = GetNamedImage(ENamedImage::SSAO);
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage);
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Undefined;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
-
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("SSAO Blur Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.Reads(InputImage);
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
-
-        CmdList.SetGraphicsState(GraphicsState);
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FData
         {
             uint32 AOIndex;
         } PC;
 
-        PC.AOIndex = (uint32)InputImage->GetResourceID();
+        PC.AOIndex = (uint32)Input.GetResourceID();
 
-        PushRootConstants(CmdList, PC);
-
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
+    void FForwardRenderScene::BillboardPass(RHI::FCmdListH CL)
     {
-        //@TODO BROKEN, GPU CRASH ACCESSING TEXTURE
-        
-        return;
-        
         const FFrameData& Frame = *RenderFrame;
         const auto& BillboardInstances = Frame.Primitives.BillboardInstances;
         const auto& DrawCommands       = Frame.Geometry.DrawCommands;
@@ -7017,70 +6722,60 @@ namespace Lumina
         {
             return;
         }
-        
+
         LUMINA_PROFILE_SECTION_COLORED("Billboard Pass", tracy::Color::Red);
-        
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("BillboardVert.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("BillboardPixel.slang");
-        
-        FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
-        if (RenderSettings.bHasEnvironment || !DrawCommands.empty())
+
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("BillboardVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("BillboardPixel.slang");
+        if (!VertexShader || !PixelShader)
         {
-            RenderTarget.SetLoadOp(ERenderLoadOp::Load);
+            return;
         }
-        
-        FRenderPassDesc::FAttachment PickerImageAttachment; PickerImageAttachment
-            .SetImage(GetNamedImage(ENamedImage::Picker))
-            .SetLoadOp(ERenderLoadOp::Load);
-        
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetLoadOp(ERenderLoadOp::Load);
-        
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .AddColorAttachment(PickerImageAttachment)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-    
-        FDepthStencilState DepthState; DepthState
-            .DisableDepthWrite()
-            .DisableDepthTest();
 
-        FBlendState BlendState; BlendState
-            .Targets[0]
-                .SetBlendEnable(true)
-                .SetSrcBlend(EBlendFactor::SrcAlpha)
-                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOp(EBlendOp::Add)
-                .SetSrcBlendAlpha(EBlendFactor::One)
-                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOpAlpha(EBlendOp::Add);
+        const FSceneImage& HDR    = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Picker = GetNamedImage(ENamedImage::Picker);
 
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(DepthState)
-            .SetBlendState(BlendState);
+        RHI::FRenderAttachment Colors[2];
+        Colors[0].Texture = HDR.Texture;
+        Colors[0].LoadOp  = (RenderSettings.bHasEnvironment || !DrawCommands.empty()) ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Colors[0].StoreOp = RHI::EStoreOp::Store;
+        Colors[1].Texture = Picker.Texture;
+        Colors[1].LoadOp  = RHI::ELoadOp::Load;
+        Colors[1].StoreOp = RHI::EStoreOp::Store;
 
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Billboard Pass")
-            .SetRenderState(RenderState)
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(RenderPass)
-            .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
-            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList);
-        CmdList.Draw(6, BillboardInstances.size(), 0, 0);   
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(Colors, 2);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = HDR.GetExtent();
+
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
+
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
+
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, AlphaBlend });
+        Key.ColorTargets.push_back({ Picker.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
+
+        RHI::CmdDraw(CL, MakeArgs(), 6, (uint32)BillboardInstances.size(), 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
-    
-    void FForwardRenderScene::WidgetPickerPass(ICommandList& CmdList)
+
+    void FForwardRenderScene::WidgetPickerPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& WidgetInstances = Frame.Primitives.WidgetInstances;
@@ -7092,133 +6787,116 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Widget Picker Pass", tracy::Color::Magenta);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("WidgetVert.slang");
-        FRHIPixelShaderRef PixelShader   = FShaderLibrary::GetPixelShader("WidgetPickerPixel.slang");
-
-        // Before the picker readback: stamp the widget's entity id into the Picker buffer where it's opaque.
-        // Depth-tested (no write) to match WidgetPass, so a widget picks only where it's visible.
-        FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
-
-        FRenderPassDesc::FAttachment PickerAttachment; PickerAttachment
-            .SetImage(PickerImage)
-            .SetLoadOp(ERenderLoadOp::Load);
-
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetLoadOp(ERenderLoadOp::Load);
-
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(PickerAttachment)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(PickerImage->GetExtent());
-
-        FDepthStencilState DepthState; DepthState
-            .DisableDepthWrite()
-            .SetDepthTestEnable(true)
-            .SetDepthFunc(EComparisonFunc::GreaterOrEqual);
-
-        FRasterState RasterState; RasterState.SetCullNone();
-
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(DepthState)
-            .SetRasterState(RasterState);
-
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Widget Picker Pass")
-            .SetRenderState(RenderState)
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(RenderPass)
-            .SetViewportState(MakeViewportStateFromImage(PickerImage))
-            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList);
-        CmdList.Draw(6, WidgetInstances.size(), 0, 0);
-    }
-
-    void FForwardRenderScene::WidgetPass(ICommandList& CmdList)
-    {
-        const FFrameData& Frame = *RenderFrame;
-        const auto& WidgetInstances = Frame.Primitives.WidgetInstances;
-
-        if (WidgetInstances.empty())
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("WidgetVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("WidgetPickerPixel.slang");
+        if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage = GetViewOutputTarget();
-        if (OutputImage == nullptr)
+        // Before the picker readback: stamp the widget's entity id into the Picker buffer where it's opaque.
+        // Depth-tested (no write) to match WidgetPass, so a widget picks only where it's visible.
+        const FSceneImage& Picker = GetNamedImage(ENamedImage::Picker);
+
+        RHI::FRenderAttachment Color;
+        Color.Texture = Picker.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
+
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = Picker.GetExtent();
+
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Picker.GetExtent());
+
+        // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth.
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode = RHI::EDepthFlags::Read;
+        DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
+
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ Picker.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
+
+        RHI::CmdDraw(CL, MakeArgs(), 6, (uint32)WidgetInstances.size(), 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
+    }
+
+    void FForwardRenderScene::WidgetPass(RHI::FCmdListH CL)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& WidgetInstances = Frame.Primitives.WidgetInstances;
+
+        if (WidgetInstances.empty() || !CurrentView->Output.IsValid())
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Widget Pass", tracy::Color::Magenta);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("WidgetVert.slang");
-        FRHIPixelShaderRef PixelShader   = FShaderLibrary::GetPixelShader("WidgetPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("WidgetVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("WidgetPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        const FSceneImage& Output = CurrentView->Output;
 
         // Drawn AFTER tone mapping onto the display-referred target so widget colors match the screen UI.
         // RT/HDR/depth share one extent, so we still depth-test against scene depth (occluded). No depth write.
-        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
-            .SetImage(OutputImage)
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = Output.GetExtent();
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
 
         // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth, discards occluded.
-        FDepthStencilState DepthState; DepthState
-            .DisableDepthWrite()
-            .SetDepthTestEnable(true)
-            .SetDepthFunc(EComparisonFunc::GreaterOrEqual);
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode = RHI::EDepthFlags::Read;
+        DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FRasterState RasterState; RasterState.SetCullNone();
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        FBlendState BlendState; BlendState
-            .Targets[0]
-                .SetBlendEnable(true)
-                .SetSrcBlend(EBlendFactor::SrcAlpha)
-                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOp(EBlendOp::Add)
-                .SetSrcBlendAlpha(EBlendFactor::One)
-                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOpAlpha(EBlendOp::Add);
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ Output.Desc.Format, AlphaBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(DepthState)
-            .SetRasterState(RasterState)
-            .SetBlendState(BlendState);
-
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Widget Pass")
-            .SetRenderState(RenderState)
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(RenderPass)
-            .SetViewportState(MakeViewportStateFromImage(OutputImage))
-            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList);
-        CmdList.Draw(6, WidgetInstances.size(), 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(), 6, (uint32)WidgetInstances.size(), 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::TextPass(ICommandList& CmdList)
+    void FForwardRenderScene::TextPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame   = *RenderFrame;
         const auto&       Glyphs  = Frame.Primitives.GlyphInstances;
@@ -7229,86 +6907,65 @@ namespace Lumina
             return;
         }
 
-        FRHIImage* HDRImage = GetNamedImage(ENamedImage::HDR);
-        if (HDRImage == nullptr)
+        LUMINA_PROFILE_SECTION_COLORED("Text Pass", tracy::Color::Yellow);
+
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("TextVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("TextPixel.slang");
+        if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        LUMINA_PROFILE_SECTION_COLORED("Text Pass", tracy::Color::Yellow);
-
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("TextVert.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("TextPixel.slang");
+        const FSceneImage& HDR    = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Picker = GetNamedImage(ENamedImage::Picker);
 
         // Drawn pre-tone-map into HDR like billboards: one MRT pass writes color (SV_Target0) and stamps the
         // glyph's entity id into the Picker buffer (SV_Target1), so text stays click-selectable without a
-        // second pass. Per-component bDepthTest selects between depth-tested+written (occluded by the scene)
-        // and always-on-top; the scene depth is bound either way so both pipelines share one render pass.
-        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
-            .SetImage(HDRImage)
-            .SetLoadOp(ERenderLoadOp::Load);
+        // second pass. Per-component bDepthTest selects depth-tested+written vs always-on-top; depth state
+        // is dynamic so both share one render pass and one pipeline.
+        RHI::FRenderAttachment Colors[2];
+        Colors[0].Texture = HDR.Texture;
+        Colors[0].LoadOp  = RHI::ELoadOp::Load;
+        Colors[0].StoreOp = RHI::EStoreOp::Store;
+        Colors[1].Texture = Picker.Texture;
+        Colors[1].LoadOp  = RHI::ELoadOp::Load;
+        Colors[1].StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc::FAttachment PickerAttachment; PickerAttachment
-            .SetImage(GetNamedImage(ENamedImage::Picker))
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(Colors, 2);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = HDR.GetExtent();
 
-        FRenderPassDesc::FAttachment DepthAttachment; DepthAttachment
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetLoadOp(ERenderLoadOp::Load);
-
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .AddColorAttachment(PickerAttachment)
-            .SetDepthAttachment(DepthAttachment)
-            .SetRenderArea(HDRImage->GetExtent());
-
-        FRasterState RasterState; RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
         // Blend only the color target; the Picker (uint id) must not blend.
-        FBlendState BlendState; BlendState
-            .Targets[0]
-                .SetBlendEnable(true)
-                .SetSrcBlend(EBlendFactor::SrcAlpha)
-                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOp(EBlendOp::Add)
-                .SetSrcBlendAlpha(EBlendFactor::One)
-                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        auto MakePipeline = [&](bool bDepth) -> FRHIGraphicsPipelineRef
-        {
-            FDepthStencilState DepthState;
-            if (bDepth)
-            {
-                // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth, and writes depth so
-                // the text occludes things behind it.
-                DepthState.SetDepthTestEnable(true).SetDepthFunc(EComparisonFunc::GreaterOrEqual).EnableDepthWrite();
-            }
-            else
-            {
-                DepthState.DisableDepthTest().DisableDepthWrite();
-            }
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, AlphaBlend });
+        Key.ColorTargets.push_back({ Picker.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            FRenderState RenderState; RenderState
-                .SetDepthStencilState(DepthState)
-                .SetRasterState(RasterState)
-                .SetBlendState(BlendState);
-
-            FGraphicsPipelineDesc Desc; Desc
-                .SetDebugName("Text Pass")
-                .SetRenderState(RenderState)
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            return GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        };
-
-        FRHIGraphicsPipelineRef PipelineDepth = MakePipeline(true);
-        FRHIGraphicsPipelineRef PipelineOnTop = MakePipeline(false);
+        // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth, and writes depth so
+        // the text occludes things behind it.
+        RHI::FDepthStencilDesc DepthTested;
+        DepthTested.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthTested.DepthTest = RHI::EOp::GreaterEqual;
 
         // All glyphs across every batch share one transient array; batches index it via FirstInstance.
-        auto GlyphAlloc = CmdList.CopyTransientArray(Glyphs.data(), Glyphs.size());
+        const RHI::GPUPtr GlyphsAddr = RHI::Core::CopyTransientArray(Glyphs.data(), Glyphs.size());
 
         struct FTextPushConstants
         {
@@ -7322,33 +6979,20 @@ namespace Lumina
         };
         static_assert(sizeof(FTextPushConstants) == 32, "FTextPushConstants must match TextCommon.slang.");
 
-        auto MakeState = [&](const FRHIGraphicsPipelineRef& Pipeline)
-        {
-            FGraphicsState State; State
-                .SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(HDRImage))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            return State;
-        };
-        const FGraphicsState StateDepth = MakeState(PipelineDepth);
-        const FGraphicsState StateOnTop = MakeState(PipelineOnTop);
-
         auto DrawBatch = [&](const FFrameData::FTextBatch& Batch)
         {
             FTextPushConstants PC = {};
-            PC.GlyphsAddr    = GlyphAlloc.Gpu;
+            PC.GlyphsAddr    = GlyphsAddr;
             PC.AtlasIndex    = Batch.AtlasIndex;
             PC.AtlasWidth    = Batch.AtlasWidth;
             PC.AtlasHeight   = Batch.AtlasHeight;
             PC.DistanceRange = Batch.DistanceRange;
 
-            PushRootConstants(CmdList, PC);
-            CmdList.Draw(6, Batch.Count, 0, Batch.FirstInstance);
+            RHI::CmdDraw(CL, MakeArgs(PC), 6, Batch.Count, 0, Batch.FirstInstance);
         };
 
         // Depth-tested text first (sorts against the scene), then always-on-top text last so it stays on top.
-        CmdList.SetGraphicsState(StateDepth);
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthTested));
         for (const FFrameData::FTextBatch& Batch : Batches)
         {
             if (Batch.bDepthTest)
@@ -7357,7 +7001,7 @@ namespace Lumina
             }
         }
 
-        CmdList.SetGraphicsState(StateOnTop);
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
         for (const FFrameData::FTextBatch& Batch : Batches)
         {
             if (!Batch.bDepthTest)
@@ -7365,66 +7009,61 @@ namespace Lumina
                 DrawBatch(Batch);
             }
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::DebugTextPass(ICommandList& CmdList)
+    void FForwardRenderScene::DebugTextPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame  = *RenderFrame;
         const auto&       Glyphs = Frame.Primitives.DebugTextGlyphs;
         const auto&       Batch  = Frame.Primitives.DebugTextBatch;
 
-        if (Glyphs.empty() || Batch.Count == 0)
-        {
-            return;
-        }
-
-        FRHIImage* OutputImage = GetViewOutputTarget();
-        if (OutputImage == nullptr)
+        if (Glyphs.empty() || Batch.Count == 0 || !CurrentView->Output.IsValid())
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Debug Text Pass", tracy::Color::Yellow);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("DebugTextVert.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("DebugTextPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("DebugTextVert.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("DebugTextPixel.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        const FSceneImage& Output = CurrentView->Output;
 
         // Screen-space overlay onto the final display-referred target (post-tone-map, like the screen UI),
         // top-left stack. No depth, alpha blend, colors written as authored.
-        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
-            .SetImage(OutputImage)
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FDepthStencilState DepthState; DepthState.DisableDepthTest().DisableDepthWrite();
-        FRasterState RasterState; RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FBlendState BlendState; BlendState
-            .Targets[0]
-                .SetBlendEnable(true)
-                .SetSrcBlend(EBlendFactor::SrcAlpha)
-                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOp(EBlendOp::Add)
-                .SetSrcBlendAlpha(EBlendFactor::One)
-                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        FRenderState RenderState; RenderState
-            .SetDepthStencilState(DepthState)
-            .SetRasterState(RasterState)
-            .SetBlendState(BlendState);
-
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Debug Text Pass")
-            .SetRenderState(RenderState)
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-        auto GlyphAlloc = CmdList.CopyTransientArray(Glyphs.data(), Glyphs.size());
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, AlphaBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FTextPushConstants
         {
@@ -7441,12 +7080,12 @@ namespace Lumina
         // Use the DISPLAY/panel size (not the RT extent) for px->NDC: the world RT is a fixed size stretched
         // to the editor panel, so converting against the RT would let that stretch distort the text. The
         // panel size cancels the RT->panel stretch, keeping glyphs square and a true pixel size on screen.
-        const FVector4 PanelSize = Frame.SceneGlobalData.ScreenSize;
-        const uint32   ScreenW   = PanelSize.x > 1.0f ? (uint32)PanelSize.x : OutputImage->GetSizeX();
-        const uint32   ScreenH   = PanelSize.y > 1.0f ? (uint32)PanelSize.y : OutputImage->GetSizeY();
+        const FUIntVector4 PanelSize = Frame.SceneGlobalData.ScreenSize;
+        const uint32   ScreenW   = PanelSize.x > 1u ? PanelSize.x : Output.GetSizeX();
+        const uint32   ScreenH   = PanelSize.y > 1u ? PanelSize.y : Output.GetSizeY();
 
         FTextPushConstants PC = {};
-        PC.GlyphsAddr    = GlyphAlloc.Gpu;
+        PC.GlyphsAddr    = RHI::Core::CopyTransientArray(Glyphs.data(), Glyphs.size());
         PC.AtlasIndex    = Batch.AtlasIndex;
         PC.AtlasWidth    = Batch.AtlasWidth;
         PC.AtlasHeight   = Batch.AtlasHeight;
@@ -7454,18 +7093,12 @@ namespace Lumina
         PC.ScreenWidth   = ScreenW;
         PC.ScreenHeight  = ScreenH;
 
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(RenderPass)
-            .SetViewportState(MakeViewportStateFromImage(OutputImage))
-            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(6, Batch.Count, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 6, Batch.Count, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::TransparentPass(ICommandList& CmdList)
+    void FForwardRenderScene::TransparentPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands        = Frame.Geometry.DrawCommands;
@@ -7480,104 +7113,81 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Transparent Pass", tracy::Color::CadetBlue);
 
-        FRenderPassDesc::FAttachment RenderTarget0;
-        RenderTarget0.SetImage(GetNamedImage(ENamedImage::Accum))
-                    .SetLoadOp(ERenderLoadOp::Clear)
-                    .SetClearColor(FVector4(0.0));
-        
-        FRenderPassDesc::FAttachment RenderTarget1;
-        RenderTarget1.SetImage(GetNamedImage(ENamedImage::Revealage))
-                    .SetLoadOp(ERenderLoadOp::Clear)
-                    .SetClearColor(FVector4(1.0));
-        
-        FRenderPassDesc::FAttachment PickerImageAttachment; 
-        PickerImageAttachment.SetImage(GetNamedImage(ENamedImage::Picker))
-            .SetLoadOp(ERenderLoadOp::Load);
+        const FSceneImage& Accum     = GetNamedImage(ENamedImage::Accum);
+        const FSceneImage& Revealage = GetNamedImage(ENamedImage::Revealage);
+        const FSceneImage& Picker    = GetNamedImage(ENamedImage::Picker);
+        const FUIntVector2 Extent    = GetNamedImage(ENamedImage::HDR).GetExtent();
 
-        FRenderPassDesc::FAttachment Depth;
-        Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-             .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Colors[3];
+        Colors[0].Texture  = Accum.Texture;
+        Colors[0].LoadOp   = RHI::ELoadOp::Clear;
+        Colors[0].StoreOp  = RHI::EStoreOp::Store;
+        Colors[0].Color[0] = Colors[0].Color[1] = Colors[0].Color[2] = Colors[0].Color[3] = 0.0f;
+        Colors[1].Texture  = Revealage.Texture;
+        Colors[1].LoadOp   = RHI::ELoadOp::Clear;
+        Colors[1].StoreOp  = RHI::EStoreOp::Store;
+        Colors[1].Color[0] = Colors[1].Color[1] = Colors[1].Color[2] = Colors[1].Color[3] = 1.0f;
+        Colors[2].Texture  = Picker.Texture;
+        Colors[2].LoadOp   = RHI::ELoadOp::Load;
+        Colors[2].StoreOp  = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass;
-        RenderPass.AddColorAttachment(RenderTarget0)
-                  .AddColorAttachment(RenderTarget1)
-                  .AddColorAttachment(PickerImageAttachment)
-                  .SetDepthAttachment(Depth)
-                  .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(Colors, 3);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = Extent;
 
-        FRasterState RasterState;
-        RasterState.EnableDepthClip()
-                   .SetCullMode(ERasterCullMode::None);
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Extent);
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FBlendState::RenderTarget Blend0;
-        Blend0.SetBlendEnable(true);
-        Blend0.SetSrcBlend(EBlendFactor::One);
-        Blend0.SetDestBlend(EBlendFactor::One);
-        Blend0.SetBlendOp(EBlendOp::Add);
+        RHI::FDepthStencilDesc DepthDesc;
+        DepthDesc.DepthMode = RHI::EDepthFlags::Read;
+        DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
 
-        FBlendState::RenderTarget Blend1;
-        Blend1.SetBlendEnable(true);
-        Blend1.SetSrcBlend(EBlendFactor::Zero);
-        Blend1.SetDestBlend(EBlendFactor::OneMinusSrcColor);
-        Blend1.SetBlendOp(EBlendOp::Add);
+        // WBOIT: accum adds, revealage multiplies in (1 - coverage).
+        RHI::FBlendDesc AccumBlend;
+        AccumBlend.bBlendEnable   = true;
+        AccumBlend.SrcColorFactor = RHI::EFactor::One;
+        AccumBlend.DstColorFactor = RHI::EFactor::One;
 
-        FBlendState TranslucentBlendState;
-        TranslucentBlendState.SetRenderTarget(0, Blend0);
-        TranslucentBlendState.SetRenderTarget(1, Blend1);
-        
+        RHI::FBlendDesc RevealBlend;
+        RevealBlend.bBlendEnable   = true;
+        RevealBlend.SrcColorFactor = RHI::EFactor::Zero;
+        RevealBlend.DstColorFactor = RHI::EFactor::OneMinusSrcColor;
 
-        FBlendState AdditiveBlendState; AdditiveBlendState
-            .Targets[0]
-                .SetBlendEnable(true)
-                .SetSrcBlend(EBlendFactor::SrcAlpha)
-                .SetDestBlend(EBlendFactor::One)
-                .SetBlendOp(EBlendOp::Add)
-                .SetSrcBlendAlpha(EBlendFactor::One)
-                .SetDestBlendAlpha(EBlendFactor::One)
-                .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc AdditiveBlend;
+        AdditiveBlend.bBlendEnable   = true;
+        AdditiveBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AdditiveBlend.DstColorFactor = RHI::EFactor::One;
+        AdditiveBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AdditiveBlend.DstAlphaFactor = RHI::EFactor::One;
 
         for (uint32 Idx : TranslucentDrawList)
         {
             const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
-            FDepthStencilState DepthState;
-            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-                      .DisableDepthWrite();
+            FGraphicsPipelineKey Key;
+            Key.VS          = Batch.VertexShader;
+            Key.PS          = Batch.PixelShader;
+            Key.DepthFormat = EFormat::D32;
+            Key.ColorTargets.push_back({ Accum.Desc.Format, Batch.bAdditive ? AdditiveBlend : AccumBlend });
+            Key.ColorTargets.push_back({ Revealage.Desc.Format, Batch.bAdditive ? RHI::FBlendDesc{} : RevealBlend });
+            Key.ColorTargets.push_back({ Picker.Desc.Format, {} });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            FRenderState RenderState;
-            RenderState.SetDepthStencilState(DepthState)
-                       .SetRasterState(RasterState)
-                       .SetBlendState(Batch.bAdditive ? AdditiveBlendState : TranslucentBlendState);
-
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Transparent Pass")
-                .SetRenderState(RenderState)
-                .SetVertexShader(Batch.VertexShader)
-                .SetPixelShader(Batch.PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetRenderPass(RenderPass)
-                         .SetViewportState(SceneViewportState)
-                         .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                         .SetIndirectParams(GetIndirectArgs())
-                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Cull/skinning outputs + shadow atlases are read by index; declare them so the
-            // tracker inserts the UAV/depth -> shader-read barriers.
-            GraphicsState.Reads(GetMeshletDrawList());
-            GraphicsState.Reads(CurrentView->ClusterBuffer);
-            GraphicsState.Reads(GetPreSkinnedVerticesBuffer());
-            GraphicsState.Reads(GetNamedImage(ENamedImage::Cascade));
-            GraphicsState.Reads(ShadowAtlas.GetImage());
-
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList);
-            CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+            RHI::CmdDrawIndirect(CL, MakeArgs(),
+                GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::OITResolvePass(ICommandList& CmdList)
+    void FForwardRenderScene::OITResolvePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& TranslucentDrawList = Frame.Geometry.TranslucentDrawList;
@@ -7588,65 +7198,44 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("OIT Resolve Pass", tracy::Color::GreenYellow);
-        
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("OITResolve.slang");
+
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("OITResolve.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
-        
-        
-        FBlendState::RenderTarget Blend0;
-        Blend0.SetBlendEnable(true);
 
-        Blend0.SetSrcBlend(EBlendFactor::SrcAlpha);
-        Blend0.SetDestBlend(EBlendFactor::OneMinusSrcAlpha);
-        Blend0.SetBlendOp(EBlendOp::Add);
+        const FSceneImage& HDR       = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Accum     = GetNamedImage(ENamedImage::Accum);
+        const FSceneImage& Revealage = GetNamedImage(ENamedImage::Revealage);
 
-        Blend0.SetSrcBlendAlpha(EBlendFactor::One);
-        Blend0.SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha);
-        Blend0.SetBlendOpAlpha(EBlendOp::Add);
-        
-        FBlendState BlendState;
-        BlendState.SetRenderTarget(0, Blend0);
-        
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(GetNamedImage(ENamedImage::HDR))
-                .SetLoadOp(ERenderLoadOp::Load);
-        
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-    
-        FRasterState RasterState;
-        RasterState.SetCullNone();
-        
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetBlendState(BlendState);
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-    
-        FRHIImage* AccumTex     = GetNamedImage(ENamedImage::Accum);
-        FRHIImage* RevealageTex = GetNamedImage(ENamedImage::Revealage);
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = HDR.GetExtent();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("OITResolve Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Accum/Revealage read by bindless index, not descriptors; declare for the barrier tracker.
-        GraphicsState.Reads(AccumTex);
-        GraphicsState.Reads(RevealageTex);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(SceneViewportState);
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, AlphaBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FOITResolvePushConstants
         {
@@ -7655,15 +7244,15 @@ namespace Lumina
             uint32 _Pad0;
             uint32 _Pad1;
         };
-        static_assert(sizeof(FOITResolvePushConstants) == 16, "FOITResolvePushConstants must match the slang push block.");
+        static_assert(sizeof(FOITResolvePushConstants) == 16, "FOITResolvePushConstants must match the slang pass block.");
 
         FOITResolvePushConstants PC = {};
-        PC.AccumIndex     = (uint32)AccumTex->GetResourceID();
-        PC.RevealageIndex = (uint32)RevealageTex->GetResourceID();
+        PC.AccumIndex     = (uint32)Accum.GetResourceID();
+        PC.RevealageIndex = (uint32)Revealage.GetResourceID();
 
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
 
@@ -7708,7 +7297,7 @@ namespace Lumina
         static_assert(sizeof(FFroxelApplyPushConstants) == 32, "Froxel apply PC must match the slang push block.");
     }
 
-    void FForwardRenderScene::FroxelInjectPass(ICommandList& CmdList)
+    void FForwardRenderScene::FroxelInjectPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (!Frame.Volumetrics.bHasFog || !CVarVolFogEnabled.GetValue())
@@ -7746,36 +7335,21 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Froxel Inject Pass", tracy::Color::SlateBlue);
 
-        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("VolumetricFogInject.slang");
+        static const FShaderEntry* const CS = FShaderLibrary::Get("VolumetricFogInject.slang");
         if (!CS)
         {
             return;
         }
 
-        FRHIImage* Scatter = GetNamedImage(ENamedImage::FroxelScatter);
+        const FSceneImage& Scatter = GetNamedImage(ENamedImage::FroxelScatter);
 
-        // Scatter volume written via bindless 3D UAV; shadow atlases sampled bindlessly.
-        auto FogAlloc = CmdList.CopyTransient(Frame.Volumetrics.FogParams);
-
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = CS;
-        PipelineDesc.DebugName = "Froxel Inject";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(Scatter);
-        State.Reads(GetNamedImage(ENamedImage::Cascade));   // shadow atlases sampled bindlessly
-        State.Reads(ShadowAtlas.GetImage());
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CS));
 
         const float FogRange = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, SceneGlobalData.FarPlane);
 
         FFroxelInjectPushConstants PC = {};
-        PC.FogAddr            = FogAlloc.Gpu;
-        PC.ScatterUAV         = (uint32)Scatter->GetMipUAVIndex(0);
+        PC.FogAddr            = RHI::Core::CopyTransient(Frame.Volumetrics.FogParams);
+        PC.ScatterUAV         = (uint32)Scatter.GetMipUAVIndex(0);
         PC.GridSize[0]        = GFroxelGridX;
         PC.GridSize[1]        = GFroxelGridY;
         PC.GridSize[2]        = GFroxelGridZ;
@@ -7788,14 +7362,17 @@ namespace Lumina
         {
             PC.LocalLightIndices[i] = LocalIndices[i];
         }
-        PushRootConstants(CmdList, PC);
 
-        CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 4),
+        RHI::CmdDispatch(CL, MakeArgs(PC),
+                         RenderUtils::GetGroupCount(GFroxelGridX, 4),
                          RenderUtils::GetGroupCount(GFroxelGridY, 4),
                          RenderUtils::GetGroupCount(GFroxelGridZ, 4));
+
+        // Integrate reads the scatter volume next.
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
     }
 
-    void FForwardRenderScene::FroxelIntegratePass(ICommandList& CmdList)
+    void FForwardRenderScene::FroxelIntegratePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (!Frame.Volumetrics.bHasFog)
@@ -7805,28 +7382,16 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Froxel Integrate Pass", tracy::Color::MediumPurple);
 
-        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("VolumetricFogIntegrate.slang");
+        static const FShaderEntry* const CS = FShaderLibrary::Get("VolumetricFogIntegrate.slang");
         if (!CS)
         {
             return;
         }
 
-        FRHIImage* Scatter    = GetNamedImage(ENamedImage::FroxelScatter);
-        FRHIImage* Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
+        const FSceneImage& Scatter    = GetNamedImage(ENamedImage::FroxelScatter);
+        const FSceneImage& Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
 
-        // Scatter read via bindless 3D SRV, integrated written via bindless 3D UAV.
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = CS;
-        PipelineDesc.DebugName = "Froxel Integrate";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Reads(Scatter);
-        State.Writes(Integrated);
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CS));
 
         const float FogRange = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
 
@@ -7836,17 +7401,19 @@ namespace Lumina
         PC.GridSize[2]    = GFroxelGridZ;
         PC.NearPlane      = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange       = FogRange;
-        PC.ScatterSRV     = (uint32)Scatter->GetResourceID();
-        PC.IntegratedUAV  = (uint32)Integrated->GetMipUAVIndex(0);
-        PushRootConstants(CmdList, PC);
+        PC.ScatterSRV     = (uint32)Scatter.GetResourceID();
+        PC.IntegratedUAV  = (uint32)Integrated.GetMipUAVIndex(0);
 
         // One thread per (x,y) column; each marches the full Z range.
-        CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 8),
+        RHI::CmdDispatch(CL, MakeArgs(PC),
+                         RenderUtils::GetGroupCount(GFroxelGridX, 8),
                          RenderUtils::GetGroupCount(GFroxelGridY, 8),
                          1u);
+
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::FroxelApplyPass(ICommandList& CmdList)
+    void FForwardRenderScene::FroxelApplyPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (!Frame.Volumetrics.bHasFog || !CVarVolFogEnabled.GetValue())
@@ -7856,87 +7423,60 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Froxel Apply Pass", tracy::Color::Orange3);
 
-        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("VolumetricFogApply.slang");
+        static const FShaderEntry* const VS = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PS = FShaderLibrary::Get("VolumetricFogApply.slang");
         if (!VS || !PS)
         {
             return;
         }
 
-        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
-        FRHIImage* Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
+        const FSceneImage& HDR        = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
+        const FSceneImage& Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = HDR.GetExtent();
+
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
         // result = inScatter + HDR * transmittance, via src=(One), dst=(InvSrcAlpha)
         // with the shader writing alpha = 1 - transmittance.
-        FBlendState::RenderTarget OverBlend;
-        OverBlend.SetBlendEnable(true);
-        OverBlend.SetSrcBlend(EBlendFactor::One);
-        OverBlend.SetDestBlend(EBlendFactor::InvSrcAlpha);
-        OverBlend.SetBlendOp(EBlendOp::Add);
-        OverBlend.SetSrcBlendAlpha(EBlendFactor::Zero);
-        OverBlend.SetDestBlendAlpha(EBlendFactor::One);
-        OverBlend.SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc OverBlend;
+        OverBlend.bBlendEnable   = true;
+        OverBlend.SrcColorFactor = RHI::EFactor::One;
+        OverBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        OverBlend.SrcAlphaFactor = RHI::EFactor::Zero;
+        OverBlend.DstAlphaFactor = RHI::EFactor::One;
 
-        FBlendState BlendState;
-        BlendState.SetRenderTarget(0, OverBlend);
-
-        auto FogAlloc = CmdList.CopyTransient(Frame.Volumetrics.FogParams);
-
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(HDR)
-            .SetLoadOp(ERenderLoadOp::Load);
-
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(HDR->GetExtent());
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetBlendState(BlendState);
-        RenderState.SetDepthStencilState(DepthState);
-
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Froxel Fog Apply");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VS);
-        Desc.SetPixelShader(PS);
-        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Depth + integrated volume read by bindless index, not descriptors; declare for the tracker.
-        GraphicsState.Reads(SceneDepth);
-        GraphicsState.Reads(Integrated);
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(SceneViewportState);
+        FGraphicsPipelineKey Key;
+        Key.VS = VS;
+        Key.PS = PS;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, OverBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         FFroxelApplyPushConstants PC = {};
-        PC.FogAddr         = FogAlloc.Gpu;
-        PC.DepthIndex      = (uint32)SceneDepth->GetResourceID();
-        PC.IntegratedIndex = (uint32)Integrated->GetResourceID();
+        PC.FogAddr         = RHI::Core::CopyTransient(Frame.Volumetrics.FogParams);
+        PC.DepthIndex      = (uint32)SceneDepth.GetResourceID();
+        PC.IntegratedIndex = (uint32)Integrated.GetResourceID();
         PC.GridZ           = GFroxelGridZ;
         PC.NearPlane       = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange        = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
 
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::WaterPass(ICommandList& CmdList)
+    void FForwardRenderScene::WaterPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const TVector<FGPUWater>& Waters = Frame.Water.Surfaces;
@@ -7947,58 +7487,53 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Water Pass", tracy::Color::CadetBlue);
 
-        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("WaterVert.slang");
-        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("WaterPixel.slang");
+        static const FShaderEntry* const VS = FShaderLibrary::Get("WaterVert.slang");
+        static const FShaderEntry* const PS = FShaderLibrary::Get("WaterPixel.slang");
         if (!VS || !PS)
         {
             return;
         }
 
-        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
-        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
-        FRHIImage* Prefilter  = GetNamedImage(ENamedImage::SkyPrefilter);
+        const FSceneImage& HDR        = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
+        const FSceneImage& SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
 
         // Copy the lit opaque scene so the shader can sample "behind the water" (refraction + SSR) without
         // reading the HDR target it also writes.
-        CmdList.CopyImage(HDR, FTextureSlice(), SceneColor, FTextureSlice());
+        Barriers::AllToTransfer(CL);
+        RHI::CmdCopyTexture(CL, HDR.Texture, RHI::FTextureSlice{}, SceneColor.Texture, RHI::FTextureSlice{});
+        Barriers::TransferToAll(CL);
 
         // No depth attachment: the PS rejects fragments behind the opaque scene by sampling SceneDepth, so we
         // can read depth freely with no sample-while-bound hazard (one transparent layer -> early-Z unneeded).
-        FRenderPassDesc::FAttachment ColorAttachment;
-        ColorAttachment.SetImage(HDR).SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass;
-        RenderPass.AddColorAttachment(ColorAttachment)
-                  .SetRenderArea(HDR->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = HDR.GetExtent();
 
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
         // Double-sided so the surface is visible from below (camera submerged) too.
-        FRasterState RasterState;
-        RasterState.SetCullNone().EnableDepthClip();
-
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
         // Standard alpha "over": the PS composites scene+water; alpha softens the shoreline edge.
-        FBlendState::RenderTarget WaterBlend;
-        WaterBlend.SetBlendEnable(true)
-                  .SetSrcBlend(EBlendFactor::SrcAlpha)
-                  .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                  .SetBlendOp(EBlendOp::Add)
-                  .SetSrcBlendAlpha(EBlendFactor::One)
-                  .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                  .SetBlendOpAlpha(EBlendOp::Add);
+        RHI::FBlendDesc WaterBlend;
+        WaterBlend.bBlendEnable   = true;
+        WaterBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        WaterBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        WaterBlend.SrcAlphaFactor = RHI::EFactor::One;
+        WaterBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
 
-        FBlendState BlendState;
-        BlendState.SetRenderTarget(0, WaterBlend);
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState)
-                   .SetDepthStencilState(DepthState)
-                   .SetBlendState(BlendState);
-
-        auto WaterAlloc = CmdList.CopyTransientArray(Waters.data(), Waters.size());
+        FGraphicsPipelineKey Key;
+        Key.VS = VS;
+        Key.PS = PS;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, WaterBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FWaterPushConstants
         {
@@ -8009,19 +7544,11 @@ namespace Lumina
         static_assert(sizeof(FWaterPushConstants) == 16, "FWaterPushConstants must match Includes/Water.slang.");
 
         FWaterPushConstants PC = {};
-        PC.WatersAddr      = WaterAlloc.Gpu;
-        PC.SceneColorIndex = (uint32)SceneColor->GetResourceID();
-        PC.SceneDepthIndex = (uint32)SceneDepth->GetResourceID();
+        PC.WatersAddr      = RHI::Core::CopyTransientArray(Waters.data(), Waters.size());
+        PC.SceneColorIndex = (uint32)SceneColor.GetResourceID();
+        PC.SceneDepthIndex = (uint32)SceneDepth.GetResourceID();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Water Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VS);
-        Desc.SetPixelShader(PS);
-        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        const RHI::GPUPtr Args = MakeArgs(PC);
 
         // One draw per water body; the body index arrives via SV_VulkanInstanceID (FirstInstance). Grid is
         // (Res-1)^2 cells, 6 verts each, generated procedurally from SV_VertexID in the VS.
@@ -8034,25 +7561,14 @@ namespace Lumina
                 continue;
             }
 
-            FGraphicsState GraphicsState;
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Scene color/depth and the sky prefilter cube are read by bindless index; declare them so the
-            // tracker inserts the shader-read transitions.
-            GraphicsState.Reads(SceneColor);
-            GraphicsState.Reads(SceneDepth);
-            GraphicsState.Reads(Prefilter);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(SceneViewportState);
-
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, PC);
-
-            CmdList.Draw(VertexCount, 1, 0, i);
+            RHI::CmdDraw(CL, Args, VertexCount, 1, 0, i);
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::UnderwaterPass(ICommandList& CmdList)
+    void FForwardRenderScene::UnderwaterPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         if (!Frame.Water.bUnderwaterActive)
@@ -8062,40 +7578,42 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Underwater Pass", tracy::Color::SteelBlue);
 
-        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("WaterUnderwater.slang");
+        static const FShaderEntry* const VS = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PS = FShaderLibrary::Get("WaterUnderwater.slang");
         if (!VS || !PS)
         {
             return;
         }
 
-        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
-        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
+        const FSceneImage& HDR        = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
+        const FSceneImage& SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
 
         // Sample the fully-composited scene from a copy; the PS recomputes every pixel (above-water pixels
         // pass through unchanged), so the half-submerged screen split falls out of the per-ray path length.
-        CmdList.CopyImage(HDR, FTextureSlice(), SceneColor, FTextureSlice());
+        Barriers::AllToTransfer(CL);
+        RHI::CmdCopyTexture(CL, HDR.Texture, RHI::FTextureSlice{}, SceneColor.Texture, RHI::FTextureSlice{});
+        Barriers::TransferToAll(CL);
 
-        FRenderPassDesc::FAttachment ColorAttachment;
-        ColorAttachment.SetImage(HDR).SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass;
-        RenderPass.AddColorAttachment(ColorAttachment)
-                  .SetRenderArea(HDR->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = HDR.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
-
-        auto ParamsAlloc = CmdList.CopyTransient(Frame.Water.Underwater);
+        FGraphicsPipelineKey Key;
+        Key.VS = VS;
+        Key.PS = PS;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FUnderwaterPushConstants
         {
@@ -8106,60 +7624,35 @@ namespace Lumina
         static_assert(sizeof(FUnderwaterPushConstants) == 16, "FUnderwaterPushConstants must match WaterUnderwater.slang.");
 
         FUnderwaterPushConstants PC = {};
-        PC.ParamsAddr      = ParamsAlloc.Gpu;
-        PC.SceneColorIndex = (uint32)SceneColor->GetResourceID();
-        PC.SceneDepthIndex = (uint32)SceneDepth->GetResourceID();
+        PC.ParamsAddr      = RHI::Core::CopyTransient(Frame.Water.Underwater);
+        PC.SceneColorIndex = (uint32)SceneColor.GetResourceID();
+        PC.SceneDepthIndex = (uint32)SceneDepth.GetResourceID();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Underwater Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VS);
-        Desc.SetPixelShader(PS);
-        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.Reads(SceneColor);
-        GraphicsState.Reads(SceneDepth);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(SceneViewportState);
-
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
     
     static constexpr uint32 GPrefilterSampleCount = 256;
 
-    void FForwardRenderScene::SkyCubeCapturePass(ICommandList& CmdList)
+    void FForwardRenderScene::SkyCubeCapturePass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Sky Cube Capture", tracy::Color::SkyBlue);
-        
+
         const FFrameData& Frame = *RenderFrame;
         const auto& LightData         = Frame.Lighting.LightData;
         const auto& SceneGlobalData   = Frame.SceneGlobalData;
-        FRHIImage* EnvironmentMapImage= Frame.Volumetrics.EnvironmentMapImage;
+        const int32 EnvironmentMapID  = Frame.Volumetrics.EnvironmentMapID;
         const bool bIBLDirty          = Frame.Volumetrics.bIBLDirty;
 
         if (!RenderSettings.bHasEnvironment)
         {
-            if (FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube))
-            {
-                CmdList.ClearImageFloat(SkyCube, AllSubresources, FColor::Black);
-            }
-            if (FRHIImage* Irradiance = GetNamedImage(ENamedImage::SkyIrradiance))
-            {
-                CmdList.ClearImageFloat(Irradiance, AllSubresources, FColor::Black);
-            }
-            if (FRHIImage* Prefilter = GetNamedImage(ENamedImage::SkyPrefilter))
-            {
-                CmdList.ClearImageFloat(Prefilter, AllSubresources, FColor::Black);
-            }
+            const float Black[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            Barriers::AllToTransfer(CL);
+            RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::SkyCube).Texture, Black);
+            RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::SkyIrradiance).Texture, Black);
+            RHI::CmdClearTexture(CL, GetNamedImage(ENamedImage::SkyPrefilter).Texture, Black);
+            Barriers::TransferToAll(CL);
             return;
         }
 
@@ -8168,69 +7661,43 @@ namespace Lumina
             return;
         }
 
-
-        FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
-        if (!SkyCube)
+        const FSceneImage& SkyCube = GetNamedImage(ENamedImage::SkyCube);
+        if (!SkyCube.IsValid())
         {
             return;
         }
 
         // HDRI path: equirect->cube replaces the procedural fill.
-        if (EnvironmentMapImage != nullptr)
+        if (EnvironmentMapID >= 0)
         {
-            FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("EquirectToCubemap.slang");
+            static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("EquirectToCubemap.slang");
             if (!ComputeShader)
             {
                 return;
             }
 
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            PipelineDesc.CS = ComputeShader;
-            PipelineDesc.DebugName = "Equirect To Cubemap";
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.Reads(EnvironmentMapImage);
-            State.Writes(SkyCube);
-            CmdList.SetComputeState(State);
+            RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
             struct FEquirectPC { uint32 EquirectSRV; uint32 SkyCubeUAV; uint32 _Pad0; uint32 _Pad1; };
             FEquirectPC PC = {};
-            PC.EquirectSRV = (uint32)EnvironmentMapImage->GetResourceID();
-            PC.SkyCubeUAV  = (uint32)SkyCube->GetMipUAVIndex(0);
-            PushRootConstants(CmdList, PC);
+            PC.EquirectSRV = (uint32)EnvironmentMapID;
+            PC.SkyCubeUAV  = (uint32)SkyCube.GetMipUAVIndex(0);
 
             constexpr uint32 EquirectTile = 8u;
-            const uint32 FaceSize = SkyCube->GetSizeX();
+            const uint32 FaceSize = SkyCube.GetSizeX();
             const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, EquirectTile);
-            CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsXY, GroupsXY, 6u);
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute | RHI::EStageFlags::PixelShader);
             return;
         }
 
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("SkyCubeCapture.slang");
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("SkyCubeCapture.slang");
         if (!ComputeShader)
         {
             return;
         }
 
-        // Cube written via bindless 2D-array UAV (6 layers); IBL passes sample it as a cube SRV.
-        // Env params via transient device address.
-        auto EnvAlloc = CmdList.CopyTransient(Frame.Volumetrics.EnvironmentParams);
-
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "Sky Cube Capture";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Writes(SkyCube);
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
         struct FSkyCapturePC
         {
@@ -8240,8 +7707,8 @@ namespace Lumina
             FVector3 SunDirection;
             float    _Pad;
         } PC = {};
-        PC.EnvAddr    = EnvAlloc.Gpu;
-        PC.SkyCubeUAV = (uint32)SkyCube->GetMipUAVIndex(0);
+        PC.EnvAddr    = RHI::Core::CopyTransient(Frame.Volumetrics.EnvironmentParams);
+        PC.SkyCubeUAV = (uint32)SkyCube.GetMipUAVIndex(0);
 
         // Same source EnvironmentPass uses (SunDirection points FROM surface TO sun);
         // falls back to a daytime direction if no sun so the cube still has IBL structure.
@@ -8256,16 +7723,18 @@ namespace Lumina
         // Star twinkle samples Time, but the cube only re-bakes on env/sun change so
         // it effectively freezes (stars blur to nothing in convolution anyway).
         PC.Time = SceneGlobalData.Time;
-        PushRootConstants(CmdList, PC);
 
         constexpr uint32 SkyCaptureTile = 8u;
-        const uint32 FaceSize = SkyCube->GetSizeX();
+        const uint32 FaceSize = SkyCube.GetSizeX();
         const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, SkyCaptureTile);
         // Z = 6 layers, one per cube face -- each thread owns one (face, x, y).
-        CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+        RHI::CmdDispatch(CL, MakeArgs(PC), GroupsXY, GroupsXY, 6u);
+
+        // Convolution + environment pass read the cube next.
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute | RHI::EStageFlags::PixelShader);
     }
 
-    void FForwardRenderScene::IrradianceConvolutionPass(ICommandList& CmdList)
+    void FForwardRenderScene::IrradianceConvolutionPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Sky Irradiance Convolution", tracy::Color::SkyBlue1);
 
@@ -8283,48 +7752,36 @@ namespace Lumina
         {
             return;
         }
-        
-        FRHIImage* SkyCube      = GetNamedImage(ENamedImage::SkyCube);
-        FRHIImage* IrradianceCube = GetNamedImage(ENamedImage::SkyIrradiance);
-        if (!SkyCube || !IrradianceCube)
+
+        const FSceneImage& SkyCube        = GetNamedImage(ENamedImage::SkyCube);
+        const FSceneImage& IrradianceCube = GetNamedImage(ENamedImage::SkyIrradiance);
+        if (!SkyCube.IsValid() || !IrradianceCube.IsValid())
         {
             return;
         }
 
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("IrradianceConvolution.slang");
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("IrradianceConvolution.slang");
         if (!ComputeShader)
         {
             return;
         }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "Sky Irradiance Convolution";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // SkyCube read as a bindless cube SRV, irradiance written as a bindless 2D-array UAV;
-        // declare both so the tracker transitions them.
-        State.Reads(SkyCube);
-        State.Writes(IrradianceCube);
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
         struct FIrradiancePC { uint32 SrcCubeSRV; uint32 OutCubeUAV; uint32 _Pad0; uint32 _Pad1; };
         FIrradiancePC PC = {};
-        PC.SrcCubeSRV = (uint32)SkyCube->GetResourceID();
-        PC.OutCubeUAV = (uint32)IrradianceCube->GetMipUAVIndex(0);
-        PushRootConstants(CmdList, PC);
+        PC.SrcCubeSRV = (uint32)SkyCube.GetResourceID();
+        PC.OutCubeUAV = (uint32)IrradianceCube.GetMipUAVIndex(0);
 
         constexpr uint32 IrradianceTile = 8u;
-        const uint32 FaceSize = IrradianceCube->GetSizeX();
+        const uint32 FaceSize = IrradianceCube.GetSizeX();
         const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, IrradianceTile);
-        CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+        RHI::CmdDispatch(CL, MakeArgs(PC), GroupsXY, GroupsXY, 6u);
+
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::PrefilterEnvMapPass(ICommandList& CmdList)
+    void FForwardRenderScene::PrefilterEnvMapPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const bool bIBLConvolutionDirty = Frame.Volumetrics.bIBLConvolutionDirty;
@@ -8343,24 +7800,20 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Sky Prefilter Convolution", tracy::Color::SkyBlue2);
 
-        FRHIImage* SkyCube       = GetNamedImage(ENamedImage::SkyCube);
-        FRHIImage* PrefilterCube = GetNamedImage(ENamedImage::SkyPrefilter);
-        if (!SkyCube || !PrefilterCube)
+        const FSceneImage& SkyCube       = GetNamedImage(ENamedImage::SkyCube);
+        const FSceneImage& PrefilterCube = GetNamedImage(ENamedImage::SkyPrefilter);
+        if (!SkyCube.IsValid() || !PrefilterCube.IsValid())
         {
             return;
         }
 
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("PrefilterEnvMap.slang");
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("PrefilterEnvMap.slang");
         if (!ComputeShader)
         {
             return;
         }
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "Sky Prefilter Convolution";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ComputeShader));
 
         struct FPrefilterPC
         {
@@ -8370,39 +7823,33 @@ namespace Lumina
             uint32 NumSamples;
         };
 
-        const uint32 NumMips     = (uint32)PrefilterCube->GetDescription().NumMips;
-        const uint32 BaseFaceSize = PrefilterCube->GetSizeX();
+        const uint32 NumMips      = PrefilterCube.GetNumMips();
+        const uint32 BaseFaceSize = PrefilterCube.GetSizeX();
 
         constexpr uint32 PrefilterTile = 8u;
 
         // One dispatch per mip, each writing a bindless 2D-array UAV view of just that mip; roughness is
-        // uniform across the dispatch, threaded in via push constant. SkyCube read as a bindless cube SRV.
+        // uniform across the dispatch, threaded in via the pass block. SkyCube read as a bindless cube SRV.
         for (uint32 Mip = 0; Mip < NumMips; ++Mip)
         {
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.Reads(SkyCube);
-            State.Writes(PrefilterCube);
-            CmdList.SetComputeState(State);
-
             FPrefilterPC PC = {};
-            PC.SrcCubeSRV = (uint32)SkyCube->GetResourceID();
-            PC.OutMipUAV  = (uint32)PrefilterCube->GetMipUAVIndex(Mip);
+            PC.SrcCubeSRV = (uint32)SkyCube.GetResourceID();
+            PC.OutMipUAV  = (uint32)PrefilterCube.GetMipUAVIndex(Mip);
             // Roughness even across mips (mip 0 mirror, last fully rough); matches
             // SamplePrefilter()'s runtime mip select.
             PC.Roughness  = (NumMips <= 1u) ? 0.0f
                                             : (float)Mip / (float)(NumMips - 1u);
             PC.NumSamples = GPrefilterSampleCount;
-            PushRootConstants(CmdList, PC);
 
             const uint32 MipFaceSize = eastl::max<uint32>(BaseFaceSize >> Mip, 1u);
             const uint32 GroupsXY    = RenderUtils::GetGroupCount(MipFaceSize, PrefilterTile);
-            CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsXY, GroupsXY, 6u);
         }
+
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::EnvironmentPass(ICommandList& CmdList)
+    void FForwardRenderScene::EnvironmentPass(RHI::FCmdListH CL)
     {
         if (!RenderSettings.bHasEnvironment)
         {
@@ -8411,53 +7858,42 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Environment Pass", tracy::Color::Green3);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("Environment.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("Environment.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(GetSceneColorRT())
-            .SetResolveImage(GetSceneColorResolve());
+        const FSceneImage& ColorRT = GetSceneColorRT();
+        const FSceneImage& SkyCube = GetNamedImage(ENamedImage::SkyCube);
+        const FUIntVector2 Extent  = GetNamedImage(ENamedImage::HDR).GetExtent();
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        const int32  EnvMapID    = RenderFrame->Volumetrics.EnvironmentMapID;
+        const uint32 EquirectIdx = EnvMapID >= 0 ? (uint32)EnvMapID : (uint32)GetNamedImage(ENamedImage::BRDFLut).GetResourceID();
+        const uint32 EquirectW   = EnvMapID >= 0 ? RenderFrame->Volumetrics.EnvironmentMapWidth : 256u;
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::FRenderAttachment Color;
+        Color.Texture        = ColorRT.Texture;
+        Color.ResolveTexture = GetSceneColorResolve();
+        Color.LoadOp         = RHI::ELoadOp::Clear;
+        Color.StoreOp        = RHI::EStoreOp::Store;
 
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Extent;
 
-        FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
-        FRHIImage* Equirect = RenderFrame->Volumetrics.EnvironmentMapImage
-            ? RenderFrame->Volumetrics.EnvironmentMapImage
-            : GetNamedImage(ENamedImage::BRDFLut);
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Extent);
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        // SkyCube is filled by SkyCubeCapturePass; the Reads() below drives its UAV->SRV barrier.
-        auto EnvAlloc = CmdList.CopyTransient(RenderFrame->Volumetrics.EnvironmentParams);
-
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Environment Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-        Desc.SetVariableRateShadingState(MakeWorldShadingRate(RenderFrame->CachedWorldSettings));
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Cube + equirect read by bindless index, not descriptors; declare for the barrier tracker.
-        GraphicsState.Reads(SkyCube);
-        GraphicsState.Reads(Equirect);
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(SceneViewportState);
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.SampleCount = MSAASampleCount;
+        Key.ColorTargets.push_back({ ColorRT.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         struct FEnvPushConstants
         {
@@ -8467,27 +7903,27 @@ namespace Lumina
             uint32 EquirectWidth;   // HDRI mode: drives the screen-derivative LOD that anti-aliases the sky.
             uint32 _Pad1;
         };
-        static_assert(sizeof(FEnvPushConstants) == 24, "FEnvPushConstants must match the slang push block.");
+        static_assert(sizeof(FEnvPushConstants) == 24, "FEnvPushConstants must match the slang pass block.");
 
         FEnvPushConstants PC = {};
-        PC.EnvAddr       = EnvAlloc.Gpu;
-        PC.SkyCubeIndex  = (uint32)SkyCube->GetResourceID();
-        PC.EquirectIndex = (uint32)Equirect->GetResourceID();
-        PC.EquirectWidth = Equirect->GetSizeX();
+        PC.EnvAddr       = RHI::Core::CopyTransient(RenderFrame->Volumetrics.EnvironmentParams);
+        PC.SkyCubeIndex  = (uint32)SkyCube.GetResourceID();
+        PC.EquirectIndex = EquirectIdx;
+        PC.EquirectWidth = EquirectW;
 
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
     namespace
     {
         // Mirrors FSimpleElementPass in SimpleElementVertex.slang: device address of the transient debug
-        // vertex array, passed through the per-pass constants block (gPC.PassAddr).
+        // vertex array, passed through the per-pass args block.
         struct FSimpleElementPassData { uint64 Vertices = 0; };
     }
 
-    void FForwardRenderScene::BatchedLineDraw(ICommandList& CmdList)
+    void FForwardRenderScene::BatchedLineDraw(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& SimpleVertices     = Frame.Primitives.SimpleVertices;
@@ -8499,110 +7935,77 @@ namespace Lumina
         {
             return;
         }
-    
+
         LUMINA_PROFILE_SECTION_COLORED("Batched Line Draw", tracy::Color::Red2);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("SimpleElementVertex.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SimpleElementPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("SimpleElementVertex.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SimpleElementPixel.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
-        if (!DrawCommands.empty() || RenderSettings.bHasEnvironment || !BillboardInstances.empty())
-        {
-            RenderTarget.SetLoadOp(ERenderLoadOp::Load);
-        }
+        const FSceneImage& HDR = GetNamedImage(ENamedImage::HDR);
 
-        FRenderPassDesc::FAttachment Depth; Depth
-        .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-        .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = (!DrawCommands.empty() || RenderSettings.bHasEnvironment || !BillboardInstances.empty())
+            ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = HDR.GetExtent();
 
-        FRasterState RasterState; RasterState
-            .EnableDepthClip();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        // Two pipelines for the per-batch bDepthTest flag: depth-tested lines occlude (reversed-Z Greater +
-        // depth write); X-ray lines draw on top, no depth write. A single pipeline ignored bDepthTest=false.
-        auto BuildLinePipeline = [&](bool bDepthTest)
-        {
-            FDepthStencilState DepthState;
-            if (bDepthTest)
-            {
-                DepthState.SetDepthFunc(EComparisonFunc::Greater).EnableDepthTest().EnableDepthWrite();
-            }
-            else
-            {
-                DepthState.DisableDepthTest().DisableDepthWrite();
-            }
+        // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.Topology    = RHI::ETopology::LineList;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            FRenderState RenderState; RenderState
-                .SetRasterState(RasterState)
-                .SetDepthStencilState(DepthState);
-
-            // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
-            FGraphicsPipelineDesc Desc; Desc
-                .SetDebugName(bDepthTest ? "Batched Line Draw (Depth)" : "Batched Line Draw (XRay)")
-                .SetPrimType(EPrimitiveType::LineList)
-                .SetRenderState(RenderState)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader);
-
-            return GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        };
-
-        auto BuildLineState = [&](const FRHIGraphicsPipelineRef& Pipeline)
-        {
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(SceneViewportState)
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            return GraphicsState;
-        };
-
-        FGraphicsState DepthTestedState = BuildLineState(BuildLinePipeline(true));
-        FGraphicsState XRayState        = BuildLineState(BuildLinePipeline(false));
+        // Depth-tested lines occlude (reversed-Z Greater + depth write); X-ray lines draw on top.
+        RHI::FDepthStencilDesc DepthTested;
+        DepthTested.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
+        DepthTested.DepthTest = RHI::EOp::Greater;
 
         // Vertices live in the transient ring for this submission; the VS reads them by device address.
         const FSimpleElementPassData VertsPass
-        { 
-            CmdList.CopyTransientArray(SimpleVertices.data(), SimpleVertices.size()).Gpu 
+        {
+            RHI::Core::CopyTransientArray(SimpleVertices.data(), SimpleVertices.size())
         };
+        const RHI::GPUPtr Args = MakeArgs(VertsPass);
 
-        // Re-bind only when the depth mode changes between consecutive batches.
+        // Re-set only when the depth mode changes between consecutive batches.
         int CurrentDepthMode = -1;
         for (const FLineBatch& Batch : LineBatches)
         {
             const int DepthMode = Batch.bDepthTest ? 1 : 0;
             if (DepthMode != CurrentDepthMode)
             {
-                CmdList.SetGraphicsState(Batch.bDepthTest ? DepthTestedState : XRayState);
+                RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(Batch.bDepthTest ? DepthTested : RHI::FDepthStencilDesc{}));
                 CurrentDepthMode = DepthMode;
             }
-            CmdList.SetLineWidth(Batch.Thickness);
-            PushRootConstants(CmdList, VertsPass);
+            RHI::CmdSetLineWidth(CL, Batch.Thickness);
 
-            // Draw args built straight into the ring; DrawIndirect reads them by VkBuffer+offset, with no
-            // persistent indirect buffer and no IndirectArgument transition. StartVertexLocation feeds
-            // SV_VertexID so the VS indexes into the full vertex array.
-            auto Args = CmdList.AllocTransient<FDrawIndirectArguments>();
-            Args.Data->VertexCount           = Batch.VertexCount;
-            Args.Data->InstanceCount          = 1;
-            Args.Data->StartVertexLocation    = Batch.StartVertex;
-            Args.Data->StartInstanceLocation  = 0;
-            CmdList.DrawIndirect(Args.Buffer, Args.Offset, 1, sizeof(FDrawIndirectArguments));
+            // FirstVertex feeds SV_VertexID so the VS indexes into the full vertex array.
+            RHI::CmdDraw(CL, Args, Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::BatchedTriangleDraw(ICommandList& CmdList)
+    void FForwardRenderScene::BatchedTriangleDraw(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& SolidVertices = Frame.Primitives.SolidVertices;
@@ -8615,83 +8018,55 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Batched Triangle Draw", tracy::Color::Green2);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("SimpleElementVertex.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SimpleElementPixel.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("SimpleElementVertex.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SimpleElementPixel.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR)).SetLoadOp(ERenderLoadOp::Load);
+        const FSceneImage& HDR = GetNamedImage(ENamedImage::HDR);
 
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
-            .SetLoadOp(ERenderLoadOp::Load);
+        RHI::FRenderAttachment Color;
+        Color.Texture = HDR.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(RenderTarget)
-            .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments        = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.DepthAttachment.Texture = GetNamedImage(ENamedImage::DepthAttachment).Texture;
+        Pass.DepthAttachment.LoadOp  = RHI::ELoadOp::Load;
+        Pass.DepthAttachment.StoreOp = RHI::EStoreOp::Store;
+        Pass.RenderArea              = HDR.GetExtent();
 
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, HDR.GetExtent());
         // Two-sided so the surface reads from any angle.
-        FRasterState RasterState; RasterState
-            .EnableDepthClip()
-            .SetCullNone();
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FBlendState::RenderTarget BlendTarget; BlendTarget
-            .EnableBlend()
-            .SetSrcBlend(EBlendFactor::SrcAlpha)
-            .SetDestBlend(EBlendFactor::InvSrcAlpha)
-            .SetSrcBlendAlpha(EBlendFactor::One)
-            .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha);
-        FBlendState BlendState; BlendState.SetRenderTarget(0, BlendTarget);
+        RHI::FBlendDesc AlphaBlend;
+        AlphaBlend.bBlendEnable   = true;
+        AlphaBlend.SrcColorFactor = RHI::EFactor::SrcAlpha;
+        AlphaBlend.DstColorFactor = RHI::EFactor::OneMinusSrcAlpha;
+        AlphaBlend.SrcAlphaFactor = RHI::EFactor::One;
+        AlphaBlend.DstAlphaFactor = RHI::EFactor::OneMinusSrcAlpha;
+
+        // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
+        FGraphicsPipelineKey Key;
+        Key.VS          = VertexShader;
+        Key.PS          = PixelShader;
+        Key.DepthFormat = EFormat::D32;
+        Key.ColorTargets.push_back({ HDR.Desc.Format, AlphaBlend });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         // Depth-tested batches read reversed-Z but never write depth, so the translucent
         // overlay is occluded by solid geometry without blocking later draws. XRay always draws on top.
-        auto BuildPipeline = [&](bool bDepthTest)
-        {
-            FDepthStencilState DepthState;
-            if (bDepthTest)
-            {
-                DepthState.SetDepthFunc(EComparisonFunc::Greater).EnableDepthTest().DisableDepthWrite();
-            }
-            else
-            {
-                DepthState.DisableDepthTest().DisableDepthWrite();
-            }
+        RHI::FDepthStencilDesc DepthTested;
+        DepthTested.DepthMode = RHI::EDepthFlags::Read;
+        DepthTested.DepthTest = RHI::EOp::Greater;
 
-            FRenderState RenderState; RenderState
-                .SetRasterState(RasterState)
-                .SetDepthStencilState(DepthState)
-                .SetBlendState(BlendState);
-
-            // No input layout: the VS pulls vertices from PassAddr by SV_VertexID.
-            FGraphicsPipelineDesc Desc; Desc
-                .SetDebugName(bDepthTest ? "Batched Triangle Draw (Depth)" : "Batched Triangle Draw (XRay)")
-                .SetPrimType(EPrimitiveType::TriangleList)
-                .SetRenderState(RenderState)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader);
-
-            return GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        };
-
-        auto BuildState = [&](const FRHIGraphicsPipelineRef& Pipeline)
-        {
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(SceneViewportState)
-                .SetPipeline(Pipeline)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            return GraphicsState;
-        };
-
-        FGraphicsState DepthTestedState = BuildState(BuildPipeline(true));
-        FGraphicsState XRayState        = BuildState(BuildPipeline(false));
-
-        const FSimpleElementPassData VertsPass{ CmdList.CopyTransientArray(SolidVertices.data(), SolidVertices.size()).Gpu };
+        const FSimpleElementPassData VertsPass{ RHI::Core::CopyTransientArray(SolidVertices.data(), SolidVertices.size()) };
+        const RHI::GPUPtr Args = MakeArgs(VertsPass);
 
         int CurrentDepthMode = -1;
         for (const FSolidBatch& Batch : SolidBatches)
@@ -8699,18 +8074,15 @@ namespace Lumina
             const int DepthMode = Batch.bDepthTest ? 1 : 0;
             if (DepthMode != CurrentDepthMode)
             {
-                CmdList.SetGraphicsState(Batch.bDepthTest ? DepthTestedState : XRayState);
+                RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(Batch.bDepthTest ? DepthTested : RHI::FDepthStencilDesc{}));
                 CurrentDepthMode = DepthMode;
             }
-            PushRootConstants(CmdList, VertsPass);
 
-            auto Args = CmdList.AllocTransient<FDrawIndirectArguments>();
-            Args.Data->VertexCount            = Batch.VertexCount;
-            Args.Data->InstanceCount          = 1;
-            Args.Data->StartVertexLocation    = Batch.StartVertex;
-            Args.Data->StartInstanceLocation  = 0;
-            CmdList.DrawIndirect(Args.Buffer, Args.Offset, 1, sizeof(FDrawIndirectArguments));
+            RHI::CmdDraw(CL, Args, Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
+
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
     namespace
@@ -8858,7 +8230,7 @@ namespace Lumina
         constexpr uint32 BloomSPDTileSize = 32;
     }
 
-    void FForwardRenderScene::BloomPass(ICommandList& CmdList)
+    void FForwardRenderScene::BloomPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const SPostProcessSettings* ActivePostProcess = Frame.PostProcess.bHasActivePostProcess ? &Frame.PostProcess.ActivePostProcessStorage : nullptr;
@@ -8870,17 +8242,17 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Bloom Pass", tracy::Color::Yellow3);
 
-        FRHIComputeShaderRef DownCS = FShaderLibrary::GetComputeShader("BloomDownsampleSPD.slang");
-        FRHIComputeShaderRef UpCS   = FShaderLibrary::GetComputeShader("BloomUpsampleCS.slang");
+        static const FShaderEntry* const DownCS = FShaderLibrary::Get("BloomDownsampleSPD.slang");
+        static const FShaderEntry* const UpCS = FShaderLibrary::Get("BloomUpsampleCS.slang");
         if (!DownCS || !UpCS)
         {
             return;
         }
 
-        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* Bloom      = BloomChain;
-        const uint32 HDRWidth = HDR->GetSizeX();
-        const uint32 HDRHght  = HDR->GetSizeY();
+        const FSceneImage& HDR   = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Bloom = CurrentView->BloomChainImage;
+        const uint32 HDRWidth = HDR.GetSizeX();
+        const uint32 HDRHght  = HDR.GetSizeY();
         const uint32 Mip0W    = eastl::max<uint32>(HDRWidth >> 1u, 1u);
         const uint32 Mip0H    = eastl::max<uint32>(HDRHght  >> 1u, 1u);
 
@@ -8890,43 +8262,27 @@ namespace Lumina
         {
             const FVector3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
 
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            PipelineDesc.CS = DownCS;
-            PipelineDesc.DebugName = "Bloom Downsample SPD";
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            State.Reads(HDR);
-            State.Writes(Bloom);
-            CmdList.SetComputeState(State);
+            RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(DownCS));
 
             FBloomDownSPDPushConstants PC = {};
             PC.PyramidSize  = FUIntVector2(Mip0W, Mip0H);
             PC.NumMips      = BLOOM_MIP_COUNT;
-            PC.HDRIndex     = (uint32)HDR->GetResourceID();
+            PC.HDRIndex     = (uint32)HDR.GetResourceID();
             PC.InvHDRSize   = FVector2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
             PC.Threshold    = Threshold;
             PC.KneeCurve    = KneeCurve;
             for (uint32 i = 0; i < BloomMaxMips; ++i)
             {
                 const uint32 SrcMip = (i < BLOOM_MIP_COUNT) ? i : 0u;
-                PC.MipUAV[i] = (uint32)Bloom->GetMipUAVIndex(SrcMip);
+                PC.MipUAV[i] = (uint32)Bloom.GetMipUAVIndex(SrcMip);
             }
-            PushRootConstants(CmdList, PC);
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(Mip0W, BloomSPDTileSize);
             const uint32 GroupsY = RenderUtils::GetGroupCount(Mip0H, BloomSPDTileSize);
-            CmdList.Dispatch(GroupsX, GroupsY, 1);
+            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsX, GroupsY, 1);
         }
 
-        FComputePipelineDesc UpPipelineDesc;
-        UpPipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        UpPipelineDesc.CS = UpCS;
-        UpPipelineDesc.DebugName = "Bloom Upsample CS";
-        FRHIComputePipelineRef UpPipeline = GRenderContext->CreateComputePipeline(UpPipelineDesc);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(UpCS));
 
         constexpr uint32 BloomUpTileSize = 8;
         for (uint32 i = BLOOM_MIP_COUNT - 1; i > 0; --i)
@@ -8937,29 +8293,25 @@ namespace Lumina
             const uint32 SrcH   = eastl::max<uint32>(Mip0H >> SrcMip, 1u);
             const uint32 DstW   = eastl::max<uint32>(Mip0W >> DstMip, 1u);
             const uint32 DstH   = eastl::max<uint32>(Mip0H >> DstMip, 1u);
+            (void)SrcW; (void)SrcH;
 
-            FComputeState State;
-            State.SetPipeline(UpPipeline);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Per-subresource: only SrcMip is sampled (ShaderResource), only DstMip
-            // is written (UnorderedAccess). Other mips' states don't matter here.
-            State.Reads(Bloom, FTextureSubresourceSet(SrcMip, 1, 0, 1));
-            State.Writes(Bloom, FTextureSubresourceSet(DstMip, 1, 0, 1));
-            CmdList.SetComputeState(State);
+            // Order against the previous mip's writes (down chain, then each up step).
+            RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
 
             FBloomUpCSPushConstants PC = {};
             PC.SrcTexelSize = FVector2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
             PC.Radius       = 1.0f;
-            PC.SrcIndex     = (uint32)Bloom->GetResourceID();
+            PC.SrcIndex     = (uint32)Bloom.GetResourceID();
             PC.DstSize      = FUIntVector2(DstW, DstH);
-            PC.DstUAV       = (uint32)Bloom->GetMipUAVIndex(DstMip);
+            PC.DstUAV       = (uint32)Bloom.GetMipUAVIndex(DstMip);
             PC.SrcMip       = (float)SrcMip;
-            PushRootConstants(CmdList, PC);
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(DstW, BloomUpTileSize);
             const uint32 GroupsY = RenderUtils::GetGroupCount(DstH, BloomUpTileSize);
-            CmdList.Dispatch(GroupsX, GroupsY, 1);
+            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsX, GroupsY, 1);
         }
+
+        Barriers::ComputeToAll(CL);
     }
 
     namespace
@@ -8976,7 +8328,7 @@ namespace Lumina
             "FAutoExposurePushConstants must match AutoExposure.slang::FPushConstants.");
     }
 
-    void FForwardRenderScene::AutoExposurePass(ICommandList& CmdList)
+    void FForwardRenderScene::AutoExposurePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const SPostProcessSettings* ActivePostProcess = Frame.PostProcess.bHasActivePostProcess ? &Frame.PostProcess.ActivePostProcessStorage : nullptr;
@@ -8988,7 +8340,7 @@ namespace Lumina
             return;
         }
 
-        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("AutoExposure.slang");
+        static const FShaderEntry* const CS = FShaderLibrary::Get("AutoExposure.slang");
         if (!CS)
         {
             return;
@@ -8996,33 +8348,23 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Auto Exposure Pass", tracy::Color::Orange3);
 
-        FRHIImage* HDR     = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* Adapted = GetNamedImage(ENamedImage::AdaptedLuminance);
+        const FSceneImage& HDR     = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& Adapted = GetNamedImage(ENamedImage::AdaptedLuminance);
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        PipelineDesc.CS = CS;
-        PipelineDesc.DebugName = "Auto Exposure";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-        FComputeState State;
-        State.SetPipeline(Pipeline);
-        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        State.Reads(HDR);
-        State.Writes(Adapted);
-        CmdList.SetComputeState(State);
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CS));
 
         FAutoExposurePushConstants PC = {};
-        PC.HDRIndex        = (uint32)HDR->GetResourceID();
-        PC.AdaptUAV        = (uint32)Adapted->GetMipUAVIndex(0);
+        PC.HDRIndex        = (uint32)HDR.GetResourceID();
+        PC.AdaptUAV        = (uint32)Adapted.GetMipUAVIndex(0);
         PC.DeltaTime       = Frame.SceneGlobalData.DeltaTime;
         PC.AdaptationSpeed = ActivePostProcess->AutoExposureSpeed;
-        PushRootConstants(CmdList, PC);
 
-        CmdList.Dispatch(1, 1, 1);
+        RHI::CmdDispatch(CL, MakeArgs(PC), 1, 1, 1);
+
+        Barriers::ComputeToAll(CL);
     }
 
-    void FForwardRenderScene::ToneMappingPass(ICommandList& CmdList)
+    void FForwardRenderScene::ToneMappingPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("Color Grading + Tone Map Pass", tracy::Color::Red2);
 
@@ -9032,63 +8374,44 @@ namespace Lumina
         const SPostProcessSettings* ActivePostProcess = Frame.PostProcess.bHasActivePostProcess ? &Frame.PostProcess.ActivePostProcessStorage : nullptr;
         const auto& SceneGlobalData            = Frame.SceneGlobalData;
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ColorGrading.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("ColorGrading.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
         // Render to an LDR intermediate when SMAA or a post-process chain is active
-        // (both need to ping-pong before the final blit); otherwise straight to RT.
+        // (both need to ping-pong before the final blit); otherwise straight to the view output.
         const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
         const bool bPPMaterials = !ActivePostProcessMaterials.empty();
-        FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetViewOutputTarget();
+        const FSceneImage& Output = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : CurrentView->Output;
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage);
+        const FSceneImage& HDRTex     = GetNamedImage(ENamedImage::HDR);
+        const FSceneImage& BloomTex   = CurrentView->BloomChainImage;
+        const FSceneImage& AdaptedTex = GetNamedImage(ENamedImage::AdaptedLuminance);
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Undefined;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
-
-        FRHIImage* HDRTex     = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* BloomTex   = BloomChain;
-        FRHIImage* AdaptedTex = GetNamedImage(ENamedImage::AdaptedLuminance);
-
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Tone Mapping Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
         FColorGradingConstants Constants = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
-        auto ConstantsAlloc = CmdList.CopyTransient(Constants);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
-        GraphicsState.Reads(HDRTex);
-        GraphicsState.Reads(BloomTex);
-        GraphicsState.Reads(AdaptedTex);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         struct FComposePushConstants
         {
@@ -9098,17 +8421,17 @@ namespace Lumina
             uint32 AdaptedLumIndex;
             uint32 _Pad;
         };
-        static_assert(sizeof(FComposePushConstants) == 24, "FComposePushConstants must match the slang push block.");
+        static_assert(sizeof(FComposePushConstants) == 24, "FComposePushConstants must match the slang pass block.");
 
         FComposePushConstants PC = {};
-        PC.ConstantsAddr   = ConstantsAlloc.Gpu;
-        PC.HDRIndex        = (uint32)HDRTex->GetResourceID();
-        PC.BloomIndex      = (uint32)BloomTex->GetResourceID();
-        PC.AdaptedLumIndex = (uint32)AdaptedTex->GetResourceID();
+        PC.ConstantsAddr   = RHI::Core::CopyTransient(Constants);
+        PC.HDRIndex        = (uint32)HDRTex.GetResourceID();
+        PC.BloomIndex      = (uint32)BloomTex.GetResourceID();
+        PC.AdaptedLumIndex = (uint32)AdaptedTex.GetResourceID();
 
-        CmdList.SetGraphicsState(GraphicsState);
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
     namespace
@@ -9126,7 +8449,7 @@ namespace Lumina
             "FPostProcessMaterialPushConstants must match the slang push block.");
     }
 
-    void FForwardRenderScene::PostProcessMaterialPass(ICommandList& CmdList)
+    void FForwardRenderScene::PostProcessMaterialPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
         const auto& CachedWorldSettings        = Frame.CachedWorldSettings;
@@ -9140,92 +8463,80 @@ namespace Lumina
         LUMINA_PROFILE_SECTION_COLORED("Post Process Material Pass", tracy::Color::Magenta);
 
         // Post-process inputs (chain source, opaque depth, pre-tonemap HDR) are read bindlessly via
-        // push-constant indices -- no pass-local set. Depth's point-clamp vs the linear-clamp others
-        // is selected by sampler index inside the shader.
-        FRHIImage* DepthTex = GetNamedImage(ENamedImage::DepthAttachment);
-        FRHIImage* HDRTex   = GetNamedImage(ENamedImage::HDR);
-
-        FRasterState RasterState;
-        RasterState.SetCullNone();
-
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
+        // pass-block indices. Depth's point-clamp vs the linear-clamp others is selected by sampler
+        // index inside the shader.
+        const FSceneImage& DepthTex = GetNamedImage(ENamedImage::DepthAttachment);
+        const FSceneImage& HDRTex   = GetNamedImage(ENamedImage::HDR);
 
         const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
 
         // Chain reads Source, writes Dest, swapping each pass. ToneMappingPass forced its
         // output into LDR when PP materials are present, so the first read is always LDR.
-        FRHIImage* Source = GetNamedImage(ENamedImage::LDR);
-        FRHIImage* Dest   = GetNamedImage(ENamedImage::PostProcessScratch);
+        const FSceneImage* Source = &GetNamedImage(ENamedImage::LDR);
+        const FSceneImage* Dest   = &GetNamedImage(ENamedImage::PostProcessScratch);
 
         for (const FFrameData::FPostProcessMaterial& PPMaterial : ActivePostProcessMaterials)
         {
             // Resolved + ref-held at extract; the render thread never touches the CMaterial.
-            FRHIVertexShader* VS = PPMaterial.Shaders.VertexShader;
-            FRHIPixelShader*  PS = PPMaterial.Shaders.PixelShader;
+            const FShaderEntry* VS = PPMaterial.Shaders.VertexShader;
+            const FShaderEntry*  PS = PPMaterial.Shaders.PixelShader;
             if (VS == nullptr || PS == nullptr)
             {
                 continue;
             }
 
-            FRenderPassDesc::FAttachment Attachment;
-            Attachment.SetImage(Dest);
+            RHI::FRenderAttachment Color;
+            Color.Texture = Dest->Texture;
+            Color.LoadOp  = RHI::ELoadOp::Undefined;
+            Color.StoreOp = RHI::EStoreOp::Store;
 
-            FRenderPassDesc RenderPass;
-            RenderPass.AddColorAttachment(Attachment).SetRenderArea(Dest->GetExtent());
+            RHI::FRenderPassDesc Pass;
+            Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+            Pass.RenderArea       = Dest->GetExtent();
 
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Post Process Material");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.SetVertexShader(VS);
-            Desc.SetPixelShader(PS);
+            RHI::CmdBeginRenderPass(CL, Pass);
+            SetViewportScissor(CL, Dest->GetExtent());
+            RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Inputs read by bindless index, not descriptors; declare them for the barrier tracker.
-            GraphicsState.Reads(Source);
-            GraphicsState.Reads(DepthTex);
-            GraphicsState.Reads(HDRTex);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(Dest));
+            FGraphicsPipelineKey Key;
+            Key.VS = VS;
+            Key.PS = PS;
+            Key.ColorTargets.push_back({ Dest->Desc.Format, {} });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
             FPostProcessMaterialPushConstants PC = {};
             // Interface's index (resolved at extract): instances own their own buffer slot where
             // parameter overrides live, so the parent's slot would ignore them.
             PC.MaterialIndex    = PPMaterial.MaterialIndex;
             PC.SceneColorIndex  = (uint32)Source->GetResourceID();
-            PC.SceneDepthIndex  = (uint32)DepthTex->GetResourceID();
-            PC.HDRIndex         = (uint32)HDRTex->GetResourceID();
+            PC.SceneDepthIndex  = (uint32)DepthTex.GetResourceID();
+            PC.HDRIndex         = (uint32)HDRTex.GetResourceID();
 
-            CmdList.SetGraphicsState(GraphicsState);
-            PushRootConstants(CmdList, PC);
-            CmdList.Draw(3, 1, 0, 0);
+            RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+            RHI::CmdEndRenderPass(CL);
+            Barriers::RasterToRead(CL);
 
             eastl::swap(Source, Dest);
         }
 
         // Source holds the latest result; copy it where each consumer expects --
-        // LDR for SMAA, the swapchain RT for the no-SMAA path.
-        FRHIImage* LDR = GetNamedImage(ENamedImage::LDR);
+        // LDR for SMAA, the view output for the no-SMAA path.
+        const FSceneImage& LDR = GetNamedImage(ENamedImage::LDR);
         if (bSMAAEnabled)
         {
-            if (Source != LDR)
+            if (Source->Texture.Handle != LDR.Texture.Handle)
             {
-                CmdList.CopyImage(Source, FTextureSlice(), LDR, FTextureSlice());
+                Barriers::AllToTransfer(CL);
+                RHI::CmdCopyTexture(CL, Source->Texture, RHI::FTextureSlice{}, LDR.Texture, RHI::FTextureSlice{});
+                Barriers::TransferToAll(CL);
             }
         }
         else
         {
-            CmdList.CopyImage(Source, FTextureSlice(), GetViewOutputTarget(), FTextureSlice());
+            Barriers::AllToTransfer(CL);
+            RHI::CmdCopyTexture(CL, Source->Texture, RHI::FTextureSlice{}, CurrentView->Output.Texture, RHI::FTextureSlice{});
+            Barriers::TransferToAll(CL);
         }
     }
 
@@ -9255,11 +8566,11 @@ namespace Lumina
         }
     }
 
-    static FSMAAPushConstants BuildSMAAPushConstants(const FRHIImage* Image, const SDefaultWorldSettings& Settings)
+    static FSMAAPushConstants BuildSMAAPushConstants(const FSceneImage& Image, const SDefaultWorldSettings& Settings)
     {
         FSMAAPushConstants PC;
-        const float W = (float)Image->GetSizeX();
-        const float H = (float)Image->GetSizeY();
+        const float W = (float)Image.GetSizeX();
+        const float H = (float)Image.GetSizeY();
         PC.RTMetrics      = FVector4(1.0f / W, 1.0f / H, W, H);
         PC.EdgeThreshold  = GetSMAAEdgeThreshold(Settings.SMAAQuality);
         PC.DebugMode      = 0.0f;
@@ -9268,285 +8579,178 @@ namespace Lumina
         return PC;
     }
 
-    void FForwardRenderScene::SMAAEdgeDetectionPass(ICommandList& CmdList)
+    void FForwardRenderScene::SMAAEdgeDetectionPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Edge Detection", tracy::Color::Red2);
 
         const FFrameData& Frame = *RenderFrame;
         const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAAEdgeDetection.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SMAAEdgeDetection.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAAEdges);
-        FRHIImage* InputColor  = GetNamedImage(ENamedImage::LDR);
+        const FSceneImage& Output     = GetNamedImage(ENamedImage::SMAAEdges);
+        const FSceneImage& InputColor = GetNamedImage(ENamedImage::LDR);
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage)
-            .SetClearColor(FVector4(0.0f));
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Clear;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
+        FSMAAPushConstants PC = BuildSMAAPushConstants(Output, CachedWorldSettings);
+        PC.TexIndex0 = (uint32)InputColor.GetResourceID();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("SMAA Edge Detection Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Input read via bindless index, not a descriptor; declare it for the barrier tracker.
-        GraphicsState.Reads(InputColor);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
-
-        CmdList.SetGraphicsState(GraphicsState);
-
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        PC.TexIndex0 = (uint32)InputColor->GetResourceID();
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::SMAABlendWeightPass(ICommandList& CmdList)
+    void FForwardRenderScene::SMAABlendWeightPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Blend Weight", tracy::Color::Red2);
 
         const FFrameData& Frame = *RenderFrame;
         const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAABlendWeight.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SMAABlendWeight.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAABlend);
-        FRHIImage* EdgesTex    = GetNamedImage(ENamedImage::SMAAEdges);
-        FRHIImage* AreaTex     = GetNamedImage(ENamedImage::SMAAArea);
-        FRHIImage* SearchTex   = GetNamedImage(ENamedImage::SMAASearch);
+        const FSceneImage& Output    = GetNamedImage(ENamedImage::SMAABlend);
+        const FSceneImage& EdgesTex  = GetNamedImage(ENamedImage::SMAAEdges);
+        const FSceneImage& AreaTex   = GetNamedImage(ENamedImage::SMAAArea);
+        const FSceneImage& SearchTex = GetNamedImage(ENamedImage::SMAASearch);
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage)
-            .SetClearColor(FVector4(0.0f));
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Clear;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
+        FSMAAPushConstants PC = BuildSMAAPushConstants(Output, CachedWorldSettings);
+        PC.TexIndex0 = (uint32)EdgesTex.GetResourceID();
+        PC.TexIndex1 = (uint32)AreaTex.GetResourceID();
+        PC.TexIndex2 = (uint32)SearchTex.GetResourceID();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("SMAA Blend Weight Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
-        // (The area/search LUTs are permanently in ShaderResource, so Reads is a no-op for them.)
-        GraphicsState.Reads(EdgesTex);
-        GraphicsState.Reads(AreaTex);
-        GraphicsState.Reads(SearchTex);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
-
-        CmdList.SetGraphicsState(GraphicsState);
-
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        PC.TexIndex0 = (uint32)EdgesTex->GetResourceID();
-        PC.TexIndex1 = (uint32)AreaTex->GetResourceID();
-        PC.TexIndex2 = (uint32)SearchTex->GetResourceID();
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::SMAANeighborhoodBlendPass(ICommandList& CmdList)
+    void FForwardRenderScene::SMAANeighborhoodBlendPass(RHI::FCmdListH CL)
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Neighborhood Blend", tracy::Color::Red2);
 
         const FFrameData& Frame = *RenderFrame;
         const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAANeighborhoodBlend.slang");
+        static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
+        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SMAANeighborhoodBlend.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
 
-        FRHIImage* OutputImage = GetViewOutputTarget();
-        FRHIImage* InputColor  = GetNamedImage(ENamedImage::LDR);
-        FRHIImage* BlendTex    = GetNamedImage(ENamedImage::SMAABlend);
+        const FSceneImage& Output     = CurrentView->Output;
+        const FSceneImage& InputColor = GetNamedImage(ENamedImage::LDR);
+        const FSceneImage& BlendTex   = GetNamedImage(ENamedImage::SMAABlend);
 
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(OutputImage);
+        RHI::FRenderAttachment Color;
+        Color.Texture = Output.Texture;
+        Color.LoadOp  = RHI::ELoadOp::Undefined;
+        Color.StoreOp = RHI::EStoreOp::Store;
 
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(OutputImage->GetExtent());
+        RHI::FRenderPassDesc Pass;
+        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+        Pass.RenderArea       = Output.GetExtent();
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
+        RHI::CmdBeginRenderPass(CL, Pass);
+        SetViewportScissor(CL, Output.GetExtent());
+        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
+        FGraphicsPipelineKey Key;
+        Key.VS = VertexShader;
+        Key.PS = PixelShader;
+        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
+        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetDepthStencilState(DepthState);
+        FSMAAPushConstants PC = BuildSMAAPushConstants(Output, CachedWorldSettings);
+        PC.TexIndex0 = (uint32)InputColor.GetResourceID();
+        PC.TexIndex1 = (uint32)BlendTex.GetResourceID();
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("SMAA Neighborhood Blend Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState;
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        // Inputs read via bindless index, not descriptors; declare them for the barrier tracker.
-        GraphicsState.Reads(InputColor);
-        GraphicsState.Reads(BlendTex);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
-
-        CmdList.SetGraphicsState(GraphicsState);
-
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
-        PC.TexIndex0 = (uint32)InputColor->GetResourceID();
-        PC.TexIndex1 = (uint32)BlendTex->GetResourceID();
-        PushRootConstants(CmdList, PC);
-        CmdList.Draw(3, 1, 0, 0);
+        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+        RHI::CmdEndRenderPass(CL);
+        Barriers::RasterToRead(CL);
     }
     
     void FForwardRenderScene::InitBuffers()
     {
         // Cluster grid is per-view (created in AddSceneView). All CPU-dynamic scene data (instances,
         // bones, lights, billboards, widgets, cull views, skin descriptors, env/fog params, meshlet
-        // prefix) is uploaded to the command-list transient ring each frame -- no persistent buffer.
-        // What remains persistent: GPU-written rings + pre-skinned vertices. Debug line/triangle geometry
-        // is ring-allocated at its draw site and pulled by device address (see BatchedLineDraw).
+        // prefix) is uploaded to the transient ring each frame -- no persistent buffer. What remains
+        // persistent: GPU-written rings + pre-skinned vertices, all plain device-local allocations
+        // reached by address. Debug line/triangle geometry is transient at its draw site.
 
-        {
-            // GPU pre-skinning output: written by Skinning.slang (UAV), read by every draw
-            // VS (SRV). Device-local (not Dynamic) -- the GPU produces it, no CPU upload.
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FPreSkinnedVertex) * 64 * 1024;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Pre-Skinned Vertices";
-            PreSkinnedVerticesBuffer = GRenderContext->CreateBuffer(BufferDesc);
-        }
+        // GPU pre-skinning output: written by Skinning.slang, read by every draw VS via BDA.
+        PreSkinnedVerticesBuffer = CreateSceneBuffer(sizeof(FPreSkinnedVertex) * 64 * 1024);
 
-        // Unified meshlet draw list (NumViews * TotalMeshletBound); CullMeshlets appends
-        // surviving meshlets into each view's slice via FCullView.DrawListOffset.
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
+        for (uint32 Slot = 0; Slot < RHI::kFramesInFlight; ++Slot)
         {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32) * 2;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = FString("Meshlet Draw List [") + eastl::to_string(Slot) + "]";
-            MeshletDrawListRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+            // Unified meshlet draw list (NumViews * TotalMeshletBound); CullMeshlets appends
+            // surviving meshlets into each view's slice via FCullView.DrawListOffset.
+            MeshletDrawListRing[Slot] = CreateSceneBuffer(sizeof(uint32) * 2);
 
-        // Unified indirect draw args (NumViews * NumDraws), manually ringed: it's both
-        // GPU-atomic-written and DrawIndirect-consumed, incompatible with BUF_Dynamic.
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FDrawIndirectArguments);
-            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
-            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
-            BufferDesc.InitialState = EResourceStates::IndirectArgument;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = FString("Indirect Args [") + eastl::to_string(Slot) + "]";
-            IndirectArgsRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+            // Unified indirect draw args (NumViews * NumDraws), manually ringed: GPU-atomic-written
+            // by the cull and consumed by DrawIndirect.
+            IndirectArgsRing[Slot] = CreateSceneBuffer(sizeof(RHI::FDrawIndirectArguments));
 
-        // Two-pass cull defer list: phase 0 appends prev-frame-HZB rejects, phase 1
-        // re-tests them. Stride matches FMeshletDeferred (4x uint32).
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32) * 4;
-            BufferDesc.Stride = sizeof(uint32) * 4;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = FString("Meshlet Defer List [") + eastl::to_string(Slot) + "]";
-            MeshletDeferListRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+            // Two-pass cull defer list: phase 0 appends prev-frame-HZB rejects, phase 1
+            // re-tests them. Stride matches FMeshletDeferred (4x uint32).
+            MeshletDeferListRing[Slot] = CreateSceneBuffer(sizeof(uint32) * 4);
 
-        // Atomic counter paired with MeshletDeferList. ResetPass zeroes it
-        // every frame via FillBuffer before phase 0 runs.
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Stride = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = FString("Meshlet Defer Count [") + eastl::to_string(Slot) + "]";
-            DeferCountRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+            // Atomic counter paired with MeshletDeferList; zeroed via CmdMemset before phase 0.
+            DeferCountRing[Slot] = CreateSceneBuffer(sizeof(uint32));
 
-        // SPD hand-off counter: phase 1 (per-tile mips 0..5) to phase 2 (last workgroup,
-        // mips 6..11). Zeroed before each dispatch; phase 2 resets it so it stays zero.
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Stride = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = FString("SPD Counter [") + eastl::to_string(Slot) + "]";
-            SpdCounterRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
+            // SPD hand-off counter: phase 1 (per-tile mips 0..5) to phase 2 (last workgroup,
+            // mips 6..11). Zeroed before each dispatch; phase 2 resets it so it stays zero.
+            SpdCounterRing[Slot] = CreateSceneBuffer(sizeof(uint32));
         }
     }
 
@@ -9569,44 +8773,23 @@ namespace Lumina
             return;
         }
 
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent;
-            ImageDesc.Format            = EFormat::RGBA16_FLOAT;
-            ImageDesc.NumSamples        = MSAASampleCount;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.InitialState      = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
-            ImageDesc.DebugName         = "HDR_MS";
-            View.Images[(int)ENamedImage::HDR_MS] = GRenderContext->CreateImage(ImageDesc);
-        }
+        // MS scratch RTs are attachment-only (resolved into the 1x images); no heap slots.
+        RHI::FTextureDesc Desc;
+        Desc.Type        = RHI::ETextureType::Tex2D;
+        Desc.Dimension   = FUIntVector3(Extent.x, Extent.y, 1);
+        Desc.SampleCount = MSAASampleCount;
 
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent;
-            ImageDesc.Flags.SetFlag(EImageCreateFlags::DepthAttachment);
-            ImageDesc.Format            = EFormat::D32;
-            ImageDesc.NumSamples        = MSAASampleCount;
-            ImageDesc.InitialState      = EResourceStates::DepthRead;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.DebugName         = "Depth_MS";
-            View.Images[(int)ENamedImage::Depth_MS] = GRenderContext->CreateImage(ImageDesc);
-        }
+        Desc.Format = EFormat::RGBA16_FLOAT;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment;
+        View.Images[(int)ENamedImage::HDR_MS] = CreateSceneImage(Desc, /*bSampled*/ false);
 
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent;
-            ImageDesc.Format            = EFormat::R32_UINT;
-            ImageDesc.NumSamples        = MSAASampleCount;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.InitialState      = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
-            ImageDesc.DebugName         = "Picker_MS";
-            View.Images[(int)ENamedImage::Picker_MS] = GRenderContext->CreateImage(ImageDesc);
-        }
+        Desc.Format = EFormat::D32;
+        Desc.Usage  = RHI::EImageUsageFlags::DepthAttachment;
+        View.Images[(int)ENamedImage::Depth_MS] = CreateSceneImage(Desc, /*bSampled*/ false);
+
+        Desc.Format = EFormat::R32_UINT;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment;
+        View.Images[(int)ENamedImage::Picker_MS] = CreateSceneImage(Desc, /*bSampled*/ false);
     }
 
     void FForwardRenderScene::SyncMSAAState()
@@ -9624,19 +8807,60 @@ namespace Lumina
 
         MSAASampleCount = Desired;
 
-        // MS scratch is per-view; reallocate (or drop) it for every view + rebuild that
-        // view's binding sets so geometry passes pick up the new sample count.
+        // MS scratch is per-view; reallocate (or drop) it for every view. Old images retire
+        // on the deferred-release list so in-flight frames finish first.
         for (FSceneView& View : SceneViews)
         {
-            View.Images[(int)ENamedImage::HDR_MS]    = nullptr;
-            View.Images[(int)ENamedImage::Depth_MS]  = nullptr;
-            View.Images[(int)ENamedImage::Picker_MS] = nullptr;
+            DeferRelease(View.Images[(int)ENamedImage::HDR_MS]);
+            DeferRelease(View.Images[(int)ENamedImage::Depth_MS]);
+            DeferRelease(View.Images[(int)ENamedImage::Picker_MS]);
 
             if (MSAASampleCount > 1)
             {
                 AllocateMSAAImages(View, View.Size);
             }
         }
+    }
+
+    // ENamedImage slots owned by each view (created in InitViewImages, released in
+    // ReleaseViewImages); the remaining slots alias scene-shared images.
+    static constexpr FForwardRenderScene::ENamedImage GPerViewImageSlots[] =
+    {
+        FForwardRenderScene::ENamedImage::HDR,
+        FForwardRenderScene::ENamedImage::LDR,
+        FForwardRenderScene::ENamedImage::PostProcessScratch,
+        FForwardRenderScene::ENamedImage::SMAAEdges,
+        FForwardRenderScene::ENamedImage::SMAABlend,
+        FForwardRenderScene::ENamedImage::SSAO,
+        FForwardRenderScene::ENamedImage::SSAOBlur,
+        FForwardRenderScene::ENamedImage::DepthAttachment,
+        FForwardRenderScene::ENamedImage::DepthPyramid,
+        FForwardRenderScene::ENamedImage::Picker,
+        FForwardRenderScene::ENamedImage::Accum,
+        FForwardRenderScene::ENamedImage::Revealage,
+        FForwardRenderScene::ENamedImage::WaterRefraction,
+        FForwardRenderScene::ENamedImage::DBufferA,
+        FForwardRenderScene::ENamedImage::DBufferB,
+        FForwardRenderScene::ENamedImage::DBufferC,
+        FForwardRenderScene::ENamedImage::AdaptedLuminance,
+        FForwardRenderScene::ENamedImage::FroxelScatter,
+        FForwardRenderScene::ENamedImage::FroxelIntegrated,
+        FForwardRenderScene::ENamedImage::HDR_MS,
+        FForwardRenderScene::ENamedImage::Depth_MS,
+        FForwardRenderScene::ENamedImage::Picker_MS,
+    };
+
+    void FForwardRenderScene::ReleaseViewImages(FSceneView& View)
+    {
+        for (ENamedImage Slot : GPerViewImageSlots)
+        {
+            ReleaseSceneImage(View.Images[(int)Slot]);
+        }
+        ReleaseSceneImage(View.Output);
+        ReleaseSceneImage(View.BloomChainImage);
+
+        // Shared aliases: just drop the copies, the owners release them.
+        View.Images.fill(FSceneImage{});
     }
 
     void FForwardRenderScene::InitViewImages(FSceneView& View)
@@ -9647,280 +8871,169 @@ namespace Lumina
         // GetNamedImage() reads them uniformly through CurrentView; the per-view slots below override.
         View.Images = NamedImages;
 
-        {
-            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
-            ImageDesc.Format = EFormat::RGBA16_FLOAT;
-            ImageDesc.DebugName = "HDR";
-            View.Images[(int)ENamedImage::HDR] = GRenderContext->CreateImage(ImageDesc);
-        }
+        RHI::FTextureDesc Desc;
+        Desc.Type      = RHI::ETextureType::Tex2D;
+        Desc.Dimension = FUIntVector3(Extent.x, Extent.y, 1);
+
+        // Final display-referred target; the editor samples Output.GetResourceID(). Copy destination
+        // (no-SMAA post-process chain blit) and copy source (thumbnail/screenshot readbacks).
+        Desc.Format = EFormat::RGBA8_UNORM;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled |
+                      RHI::EImageUsageFlags::TransferDst | RHI::EImageUsageFlags::TransferSrc;
+        View.Output = CreateSceneImage(Desc);
+
+        // HDR scene color; copy source for the water/underwater refraction snapshot.
+        Desc.Format = EFormat::RGBA16_FLOAT;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferSrc;
+        View.Images[(int)ENamedImage::HDR] = CreateSceneImage(Desc);
+
+        // LDR + post-process ping-pong scratch; both copy source/dest in the PP chain hand-off.
+        Desc.Format = EFormat::RGBA8_UNORM;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled |
+                      RHI::EImageUsageFlags::TransferSrc | RHI::EImageUsageFlags::TransferDst;
+        View.Images[(int)ENamedImage::LDR]                = CreateSceneImage(Desc);
+        View.Images[(int)ENamedImage::PostProcessScratch] = CreateSceneImage(Desc);
+
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled;
+
+        Desc.Format = EFormat::RG8_UNORM;
+        View.Images[(int)ENamedImage::SMAAEdges] = CreateSceneImage(Desc);
+
+        Desc.Format = EFormat::RGBA8_UNORM;
+        View.Images[(int)ENamedImage::SMAABlend] = CreateSceneImage(Desc);
+
+        // Single-channel AO factor at half res; SSAOPass renders into it, the base pass samples the blur.
+        Desc.Dimension = FUIntVector3(Math::Max(Extent.x / 2, 1u), Math::Max(Extent.y / 2, 1u), 1);
+        Desc.Format    = EFormat::R8_UNORM;
+        View.Images[(int)ENamedImage::SSAO]     = CreateSceneImage(Desc);
+        View.Images[(int)ENamedImage::SSAOBlur] = CreateSceneImage(Desc);
+        Desc.Dimension = FUIntVector3(Extent.x, Extent.y, 1);
+
+        // Scene depth; transfer-dst for the no-occluder clear.
+        Desc.Format = EFormat::D32;
+        Desc.Usage  = RHI::EImageUsageFlags::DepthAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
+        View.Images[(int)ENamedImage::DepthAttachment] = CreateSceneImage(Desc);
 
         {
-            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
-            ImageDesc.DebugName = "LDR";
-            View.Images[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        // Ping-pong scratch for the post-process material chain.
-        {
-            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
-            ImageDesc.DebugName = "PostProcessScratch";
-            View.Images[(int)ENamedImage::PostProcessScratch] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent;
-            ImageDesc.Format            = EFormat::RG8_UNORM;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.InitialState      = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName         = "SMAA Edges";
-            View.Images[(int)ENamedImage::SMAAEdges] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent;
-            ImageDesc.Format            = EFormat::RGBA8_UNORM;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.InitialState      = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName         = "SMAA Blend";
-            View.Images[(int)ENamedImage::SMAABlend] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        {
-            // Single-channel AO factor; SSAOPass renders into it, the base pass samples it.
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = Extent / 2;
-            ImageDesc.Format            = EFormat::R8_UNORM;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.InitialState      = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName         = "SSAO";
-            View.Images[(int)ENamedImage::SSAO] = GRenderContext->CreateImage(ImageDesc);
-
-            // Blurred AO (box blur of SSAO over the noise tile); this is what the base pass samples.
-            ImageDesc.DebugName         = "SSAO Blur";
-            View.Images[(int)ENamedImage::SSAOBlur] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent = Extent;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.Format = EFormat::D32;
-            ImageDesc.InitialState = EResourceStates::DepthRead;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.DebugName = "Depth Attachment";
-
-            View.Images[(int)ENamedImage::DepthAttachment] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        {
-            uint32 Width = PreviousPow2(Extent.x);
-            uint32 Height = PreviousPow2(Extent.y);
+            const uint32 Width  = PreviousPow2(Extent.x);
+            const uint32 Height = PreviousPow2(Extent.y);
 
             // R16_FLOAT HZB: reverse-Z [0,1], min-reduced; quantization error is conservative.
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
-            ImageDesc.Extent            = FUIntVector2(Width, Height);
-            ImageDesc.Format            = EFormat::R16_FLOAT;
-            ImageDesc.NumMips           = (uint8)RenderUtils::CalculateMipCount(Width, Height);
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.DebugName         = "Depth Pyramid";
-
-            View.Images[(int)ENamedImage::DepthPyramid] = GRenderContext->CreateImage(ImageDesc);
+            RHI::FTextureDesc PyramidDesc;
+            PyramidDesc.Type      = RHI::ETextureType::Tex2D;
+            PyramidDesc.Dimension = FUIntVector3(Width, Height, 1);
+            PyramidDesc.Format    = EFormat::R16_FLOAT;
+            PyramidDesc.MipCount  = RenderUtils::CalculateMipCount(Width, Height);
+            PyramidDesc.Usage     = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage;
+            View.Images[(int)ENamedImage::DepthPyramid] = CreateSceneImage(PyramidDesc, true, /*bMipUAVs*/ true);
         }
 
-        {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent = Extent;
-            ImageDesc.Format = EFormat::R32_UINT;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ColorAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "Picker";
-
-            View.Images[(int)ENamedImage::Picker] = GRenderContext->CreateImage(ImageDesc);
-        }
+        // Entity picker; copy source for the click readback.
+        Desc.Format = EFormat::R32_UINT;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferSrc;
+        View.Images[(int)ENamedImage::Picker] = CreateSceneImage(Desc);
 
         AllocateMSAAImages(View, Extent);
 
-        {
-            FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = Extent;
-            ImageDesc.Format = EFormat::RGBA16_FLOAT;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "Accum";
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled;
 
-            View.Images[(int)ENamedImage::Accum] = GRenderContext->CreateImage(ImageDesc);
-        }
+        Desc.Format = EFormat::RGBA16_FLOAT;
+        View.Images[(int)ENamedImage::Accum] = CreateSceneImage(Desc);
 
-        {
-            // WBOIT revealage = multiplicative product of (1-a_i); R16F is the reference format.
-            FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = Extent;
-            ImageDesc.Format = EFormat::R16_FLOAT;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::RenderTarget;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "Revealage";
+        // WBOIT revealage = multiplicative product of (1-a_i); R16F is the reference format.
+        Desc.Format = EFormat::R16_FLOAT;
+        View.Images[(int)ENamedImage::Revealage] = CreateSceneImage(Desc);
 
-            View.Images[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
-        }
-
-        // Scene-color copy for the water + underwater passes (HDR is blitted here, then sampled for
+        // Scene-color copy for the water + underwater passes (HDR is copied here, then sampled for
         // refraction / SSR / distortion so those passes never read the HDR target they also write).
-        {
-            FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = Extent;
-            ImageDesc.Format = EFormat::RGBA16_FLOAT;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "Water Refraction";
-
-            View.Images[(int)ENamedImage::WaterRefraction] = GRenderContext->CreateImage(ImageDesc);
-        }
+        Desc.Format = EFormat::RGBA16_FLOAT;
+        Desc.Usage  = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
+        View.Images[(int)ENamedImage::WaterRefraction] = CreateSceneImage(Desc);
 
         // DBuffer decal targets: BaseColor / WorldNormal / Roughness-Metallic-AO, each with transmittance
         // in alpha. RGBA8_UNORM; written by DecalPass, sampled by the base pass.
-        {
-            const ENamedImage DBufferSlots[3] = { ENamedImage::DBufferA, ENamedImage::DBufferB, ENamedImage::DBufferC };
-            const char* DBufferNames[3]       = { "DBufferA", "DBufferB", "DBufferC" };
-            for (int i = 0; i < 3; ++i)
-            {
-                FRHIImageDesc ImageDesc = {};
-                ImageDesc.Extent = Extent;
-                ImageDesc.Format = EFormat::RGBA8_UNORM;
-                ImageDesc.Dimension = EImageDimension::Texture2D;
-                ImageDesc.InitialState = EResourceStates::RenderTarget;
-                ImageDesc.bKeepInitialState = true;
-                ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-                ImageDesc.DebugName = DBufferNames[i];
-                View.Images[(int)DBufferSlots[i]] = GRenderContext->CreateImage(ImageDesc);
-            }
-        }
+        Desc.Format = EFormat::RGBA8_UNORM;
+        Desc.Usage  = RHI::EImageUsageFlags::ColorAttachment | RHI::EImageUsageFlags::Sampled;
+        View.Images[(int)ENamedImage::DBufferA] = CreateSceneImage(Desc);
+        View.Images[(int)ENamedImage::DBufferB] = CreateSceneImage(Desc);
+        View.Images[(int)ENamedImage::DBufferC] = CreateSceneImage(Desc);
 
         {
             // Froxel fog volumes: fixed 3D grid (swapchain-independent). RGBA16F = (in-scatter, a) where a is
-            // extinction (Scatter) or transmittance (Integrated). Storage for the UAVs, ShaderResource to sample.
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(GFroxelGridX, GFroxelGridY);
-            ImageDesc.Depth             = (uint16)GFroxelGridZ;
-            ImageDesc.Format            = EFormat::RGBA16_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::Texture3D;
-            ImageDesc.NumMips           = 1;
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::Storage, EImageCreateFlags::ShaderResource);
-
-            ImageDesc.DebugName = "Froxel Scatter";
-            View.Images[(int)ENamedImage::FroxelScatter] = GRenderContext->CreateImage(ImageDesc);
-
-            ImageDesc.DebugName = "Froxel Integrated";
-            View.Images[(int)ENamedImage::FroxelIntegrated] = GRenderContext->CreateImage(ImageDesc);
+            // extinction (Scatter) or transmittance (Integrated). Storage for the UAVs, sampled to apply.
+            RHI::FTextureDesc FroxelDesc;
+            FroxelDesc.Type      = RHI::ETextureType::Tex3D;
+            FroxelDesc.Dimension = FUIntVector3(GFroxelGridX, GFroxelGridY, GFroxelGridZ);
+            FroxelDesc.Format    = EFormat::RGBA16_FLOAT;
+            FroxelDesc.Usage     = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage;
+            View.Images[(int)ENamedImage::FroxelScatter]    = CreateSceneImage(FroxelDesc, true, true);
+            View.Images[(int)ENamedImage::FroxelIntegrated] = CreateSceneImage(FroxelDesc, true, true);
         }
 
         {
             // Bloom mip chain (half-res, R11G11B10_FLOAT). SPD writes mips 0..N-1 from
             // HDR in one dispatch, then per-mip upsamples accumulate into mip[i-1].
-            const uint32 BloomW = eastl::max<uint32>(Extent.x / 2u, 1u);
-            const uint32 BloomH = eastl::max<uint32>(Extent.y / 2u, 1u);
-
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(BloomW, BloomH);
-            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.NumMips           = (uint8)BLOOM_MIP_COUNT;
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
-            ImageDesc.DebugName         = "Bloom Chain";
-
-            View.BloomChainImage = GRenderContext->CreateImage(ImageDesc);
+            RHI::FTextureDesc BloomDesc;
+            BloomDesc.Type      = RHI::ETextureType::Tex2D;
+            BloomDesc.Dimension = FUIntVector3(eastl::max<uint32>(Extent.x / 2u, 1u), eastl::max<uint32>(Extent.y / 2u, 1u), 1);
+            BloomDesc.Format    = EFormat::R11G11B10_FLOAT;
+            BloomDesc.MipCount  = BLOOM_MIP_COUNT;
+            BloomDesc.Usage     = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage;
+            View.BloomChainImage = CreateSceneImage(BloomDesc, true, true);
         }
 
         {
             // Auto-exposure adapted luminance: 1x1 persistent R32F carrying eye-adaptation across frames.
-            // Kept ShaderResource so ColorGrading can read it even when auto-exposure is disabled.
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(1, 1);
-            ImageDesc.Format            = EFormat::R32_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
-            ImageDesc.NumMips           = 1;
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
-            ImageDesc.DebugName         = "Adapted Luminance";
-
-            View.Images[(int)ENamedImage::AdaptedLuminance] = GRenderContext->CreateImage(ImageDesc);
+            RHI::FTextureDesc AdaptedDesc;
+            AdaptedDesc.Type      = RHI::ETextureType::Tex2D;
+            AdaptedDesc.Dimension = FUIntVector3(1, 1, 1);
+            AdaptedDesc.Format    = EFormat::R32_FLOAT;
+            AdaptedDesc.Usage     = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage;
+            View.Images[(int)ENamedImage::AdaptedLuminance] = CreateSceneImage(AdaptedDesc, true, true);
         }
     }
 
-    FRHIImageRef FForwardRenderScene::BakeBRDFLUT()
+    void FForwardRenderScene::BakeBRDFLUT()
     {
         constexpr uint32 BRDFLutSize = 256u;
 
-        FRHIImageDesc ImageDesc;
-        ImageDesc.Extent            = FUIntVector2(BRDFLutSize, BRDFLutSize);
-        ImageDesc.Format            = EFormat::RG16_FLOAT;
-        ImageDesc.Dimension         = EImageDimension::Texture2D;
-        ImageDesc.NumMips           = 1;
-        ImageDesc.InitialState      = EResourceStates::ShaderResource;
-        ImageDesc.bKeepInitialState = true;
-        ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
-        ImageDesc.DebugName         = "BRDF LUT";
+        FSharedRenderResources& Shared = GRenderManager->GetSharedRenderResources();
 
-        FRHIImageRef BRDFLut = GRenderContext->CreateImage(ImageDesc);
+        Shared.BRDFLut = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width    = BRDFLutSize,
+            .Height   = BRDFLutSize,
+            .Format   = EFormat::RG16_FLOAT,
+            .bStorage = true
+        });
+        Shared.BRDFLutUAV = RHI::Textures::StorageSlot(Shared.BRDFLut, 0);
 
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
-        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+        static const FShaderEntry* const ComputeShader = FShaderLibrary::Get("BRDFIntegration.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
 
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("BRDFIntegration.slang");
+        RHI::FPipelineH Pipeline = RHI::CreateComputePipeline(ComputeShader->Source());
 
-        FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
-        PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "BRDF Integration";
-        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+        RHI::FCmdListH CL = RHI::OpenCommandList();
+        RHI::CmdSetTextureHeap(CL, RHI::Core::GetGlobalHeap());
+        RHI::CmdSetPipeline(CL, Pipeline);
 
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureUAV(0, BRDFLut, BRDFLut->GetFormat()));
-        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
-        FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CmdList->Open();
-
-        FComputeState State;
-        State.AddBindingSet(Set);
-        State.SetPipeline(Pipeline);
-        CmdList->SetComputeState(State);
+        // Mirrors FBRDFArgs in BRDFIntegration.slang: just the output UAV heap index.
+        struct FBRDFArgs { uint32 OutUAV; uint32 _Pad0; uint32 _Pad1; uint32 _Pad2; };
+        const FBRDFArgs Args{ Shared.BRDFLutUAV, 0, 0, 0 };
+        const RHI::GPUPtr ArgsPtr = RHI::Core::CopyTransient(FRootConstants{ 0, RHI::Core::CopyTransient(Args) });
 
         constexpr uint32 BRDFLutTile = 8u;
-        const uint32 GroupsX = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
-        const uint32 GroupsY = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
-        CmdList->Dispatch(GroupsX, GroupsY, 1);
+        const uint32 Groups = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
+        RHI::CmdDispatch(CL, ArgsPtr, Groups, Groups, 1);
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::AllCommands);
 
-        CmdList->Close();
-        GRenderContext->ExecuteCommandList(CmdList);
-
-        return BRDFLut;
+        RHI::Submit(CL);
+        RHI::WaitDeviceIdle();
+        RHI::ResetCommandList(CL);
+        RHI::FreeH(Pipeline);
     }
 
     void FForwardRenderScene::InitSkyCube(uint32 FaceSize)
@@ -9928,52 +9041,41 @@ namespace Lumina
         // Face size drives the IBL source resolution and (in HDRI mode) the angular detail the
         // visible sky reflects. Bilinear filtering still supplies per-pixel sky detail, so the cube
         // need not match screen size. Set by the active environment's IBLQuality tier.
-        FRHIImageDesc ImageDesc;
-        ImageDesc.Extent            = FUIntVector2(FaceSize, FaceSize);
-        ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-        ImageDesc.Dimension         = EImageDimension::TextureCube;
-        ImageDesc.ArraySize         = 6;
-        ImageDesc.NumMips           = 1;
-        ImageDesc.InitialState      = EResourceStates::ShaderResource;
-        ImageDesc.bKeepInitialState = true;
-        ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
-        ImageDesc.DebugName         = "Sky Cube";
+        RHI::FTextureDesc Desc;
+        Desc.Type       = RHI::ETextureType::TexCube;
+        Desc.Dimension  = FUIntVector3(FaceSize, FaceSize, 1);
+        Desc.LayerCount = 6;
+        Desc.Format     = EFormat::R11G11B10_FLOAT;
+        Desc.Usage      = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage | RHI::EImageUsageFlags::TransferDst;
 
-        NamedImages[(int)ENamedImage::SkyCube] = GRenderContext->CreateImage(ImageDesc);
+        NamedImages[(int)ENamedImage::SkyCube] = CreateSceneImage(Desc, true, /*bMipUAVs*/ true);
     }
 
     void FForwardRenderScene::InitIBLConvolutionTargets(const FIBLBakeResolution& Resolution)
     {
         {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(Resolution.Irradiance, Resolution.Irradiance);
-            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::TextureCube;
-            ImageDesc.ArraySize         = 6;
-            ImageDesc.NumMips           = 1;
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
-            ImageDesc.DebugName         = "Sky Irradiance";
+            RHI::FTextureDesc Desc;
+            Desc.Type       = RHI::ETextureType::TexCube;
+            Desc.Dimension  = FUIntVector3(Resolution.Irradiance, Resolution.Irradiance, 1);
+            Desc.LayerCount = 6;
+            Desc.Format     = EFormat::R11G11B10_FLOAT;
+            Desc.Usage      = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage | RHI::EImageUsageFlags::TransferDst;
 
-            NamedImages[(int)ENamedImage::SkyIrradiance] = GRenderContext->CreateImage(ImageDesc);
+            NamedImages[(int)ENamedImage::SkyIrradiance] = CreateSceneImage(Desc, true, true);
         }
 
         // Pre-filtered specular: roughness spread evenly across mips. Smallest mip = fully rough;
         // the roughness=1 GGX lobe is wide enough that a tiny face suffices.
         {
-            FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = FUIntVector2(Resolution.Prefilter, Resolution.Prefilter);
-            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::TextureCube;
-            ImageDesc.ArraySize         = 6;
-            ImageDesc.NumMips           = (uint8)Resolution.Mips;
-            ImageDesc.InitialState      = EResourceStates::ShaderResource;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
-            ImageDesc.DebugName         = "Sky Prefilter";
+            RHI::FTextureDesc Desc;
+            Desc.Type       = RHI::ETextureType::TexCube;
+            Desc.Dimension  = FUIntVector3(Resolution.Prefilter, Resolution.Prefilter, 1);
+            Desc.LayerCount = 6;
+            Desc.MipCount   = Resolution.Mips;
+            Desc.Format     = EFormat::R11G11B10_FLOAT;
+            Desc.Usage      = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage | RHI::EImageUsageFlags::TransferDst;
 
-            NamedImages[(int)ENamedImage::SkyPrefilter] = GRenderContext->CreateImage(ImageDesc);
+            NamedImages[(int)ENamedImage::SkyPrefilter] = CreateSceneImage(Desc, true, true);
         }
     }
 
@@ -9985,9 +9087,13 @@ namespace Lumina
         }
 
         // Rare (editor-driven quality change). Drain the GPU so no in-flight frame still reads the old
-        // cubes through their bindless slots, then recreate them. The bake passes read sizes dynamically
-        // (GetSizeX / NumMips), so they adapt with no further changes.
-        GRenderContext->WaitIdle();
+        // cubes through their heap slots, then recreate them. The bake passes read sizes dynamically
+        // (GetSizeX / GetNumMips), so they adapt with no further changes.
+        RHI::WaitDeviceIdle();
+
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyCube]);
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyIrradiance]);
+        ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyPrefilter]);
 
         InitSkyCube(Resolution.SkyCube);
         InitIBLConvolutionTargets(Resolution);
@@ -10009,81 +9115,211 @@ namespace Lumina
 
     void FForwardRenderScene::InitFrameResources()
     {
-        // Swapchain resize: rebuild the primary view's images + viewport state + binding sets.
-        // The per-view Scene/Cluster buffers are size-independent and persist across resize.
+        // Resize: rebuild the primary view's image chain at the new size. The per-view
+        // cluster buffer is size-independent and persists across resize.
         FSceneView& Primary = SceneViews[0];
-        Primary.Size = Primary.Viewport->GetRenderTarget()->GetExtent();
+        ReleaseViewImages(Primary);
         InitViewImages(Primary);
-        Primary.ViewportState = MakeViewportStateFromImage(Primary.Images[(int)ENamedImage::HDR]);
-        CreateViewBindingSets(Primary);
     }
 
-    template<typename T>
-    void FForwardRenderScene::PushRootConstants(ICommandList& CmdList, const T& PassData)
+    uint64 FForwardRenderScene::BuildViewSceneRoot(FSceneView& View, uint64 SceneDataAddr)
     {
-        FRootConstants RC;
-        RC.RootAddr = CurrentSceneRootAddr;
-        RC.PassAddr = CmdList.CopyTransient(PassData).Gpu;
-        CmdList.SetPushConstants(&RC, sizeof(RC));
-    }
+        RHI::FTransientAlloc Alloc = RHI::Core::AllocTransient(sizeof(FSceneRoot), alignof(FSceneRoot));
+        FSceneRoot* Root = static_cast<FSceneRoot*>(Alloc.Cpu);
 
-    void FForwardRenderScene::PushRootConstants(ICommandList& CmdList)
-    {
-        FRootConstants RC;
-        RC.RootAddr = CurrentSceneRootAddr;
-        RC.PassAddr = 0;
-        CmdList.SetPushConstants(&RC, sizeof(RC));
-    }
-
-    uint64 FForwardRenderScene::BuildViewSceneRoot(ICommandList& CmdList, FSceneView& View, uint64 SceneDataAddr)
-    {
-        auto Root = CmdList.AllocTransient<FSceneRoot>();
         *Root = SceneRootShared;
         Root->SceneData          = SceneDataAddr;
-        Root->Clusters           = View.ClusterBuffer->GetAddress();
-        Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut]->GetResourceID();
-        Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance]->GetResourceID();
+        Root->Clusters           = View.ClusterBuffer.GetAddress();
+        Root->BRDFLutIndex       = (uint32)View.Images[(int)ENamedImage::BRDFLut].GetResourceID();
+        Root->SkyIrradianceIndex = (uint32)View.Images[(int)ENamedImage::SkyIrradiance].GetResourceID();
         {
-            FRHIImage* Prefilter = View.Images[(int)ENamedImage::SkyPrefilter];
-            uint32 PrefilterID   = (uint32)Prefilter->GetResourceID();
-            Root->SkyPrefilterIndex = (PrefilterID & 0x00FFFFFFu) | ((uint32)Prefilter->GetNumMips() << 24);
+            const FSceneImage& Prefilter = View.Images[(int)ENamedImage::SkyPrefilter];
+            const uint32 PrefilterID     = (uint32)Prefilter.GetResourceID();
+            Root->SkyPrefilterIndex = (PrefilterID & 0x00FFFFFFu) | (Prefilter.GetNumMips() << 24);
         }
-        Root->SkyCubeIndex       = (uint32)View.Images[(int)ENamedImage::SkyCube]->GetResourceID();
-        Root->ShadowCascadeIndex = (uint32)GetNamedImage(ENamedImage::Cascade)->GetResourceID();
-        Root->ShadowAtlasIndex   = (uint32)ShadowAtlas.GetImage()->GetResourceID();
-        return Root.Gpu;
+        Root->SkyCubeIndex       = (uint32)View.Images[(int)ENamedImage::SkyCube].GetResourceID();
+        Root->ShadowCascadeIndex = (uint32)GetNamedImage(ENamedImage::Cascade).GetResourceID();
+        Root->ShadowAtlasIndex   = (uint32)ShadowAtlas.GetImage().GetResourceID();
+        return Alloc.Gpu;
     }
 
-    void FForwardRenderScene::CreateViewBindingSets(FSceneView& View)
+    //~ Begin new-RHI helpers
+
+    RHI::FPipelineH FForwardRenderScene::GetOrCreatePipeline(const FGraphicsPipelineKey& Key)
     {
-        // Scene data reaches shaders by device address (FSceneRoot) + the bindless texture table, so a
-        // view owns no descriptor sets. Only refresh the live per-view render aliases here.
-        BloomChain         = View.BloomChainImage;
-        SceneViewportState = View.ViewportState;
-        SceneViewport      = View.Viewport.GetReference();
-    }
-
-    FViewportState FForwardRenderScene::MakeViewportStateFromImage(const FRHIImage* Image)
-    {
-        float SizeY = (float)Image->GetSizeY();
-        float SizeX = (float)Image->GetSizeX();
-
-        FViewportState ViewportState;
-        ViewportState.Viewports.emplace_back(FViewport(SizeX, SizeY));
-        ViewportState.Scissors.emplace_back(FRect(SizeX, SizeY));
-
-        return ViewportState;
-    }
-
-    FRHIImage* FForwardRenderScene::GetRenderTarget() const
-    {
-        // Editor-facing: always the primary view's RT, independent of the live SceneViewport
-        // (which tracks CurrentView during RenderView and would otherwise leak a capture's RT).
-        if (SceneViews.empty() || !SceneViews[0].Viewport)
+        // (ID, Generation) per shader: a recompile changes the hash, so stale pipelines
+        // simply stop being found and the new bytecode gets a fresh pipeline.
+        size_t Seed = 0;
+        Hash::HashCombine(Seed, Key.VS->PipelineHash());
+        Hash::HashCombine(Seed, Key.PS ? Key.PS->PipelineHash() : 0ull);
+        Hash::HashCombine(Seed, ((uint64)Key.Topology) | ((uint64)Key.bWireframe << 8) |
+                                ((uint64)Key.bAlphaToCoverage << 9) | ((uint64)Key.SampleCount << 16) |
+                                ((uint64)Key.DepthFormat << 24));
+        for (const RHI::FColorTarget& Target : Key.ColorTargets)
         {
-            return nullptr;
+            const RHI::FBlendDesc& B = Target.Blend;
+            uint64 Bits = (uint64)Target.Format;
+            Bits = (Bits << 1)  | (uint64)B.bBlendEnable;
+            Bits = (Bits << 3)  | (uint64)B.ColorOp;
+            Bits = (Bits << 4)  | (uint64)B.SrcColorFactor;
+            Bits = (Bits << 4)  | (uint64)B.DstColorFactor;
+            Bits = (Bits << 3)  | (uint64)B.AlphaOp;
+            Bits = (Bits << 4)  | (uint64)B.SrcAlphaFactor;
+            Bits = (Bits << 4)  | (uint64)B.DstAlphaFactor;
+            Bits = (Bits << 4)  | (uint64)B.ColorWriteMask;
+            Hash::HashCombine(Seed, Bits);
         }
-        return SceneViews[0].Viewport->GetRenderTarget();
+
+        auto It = PipelineCache.find(Seed);
+        if (It != PipelineCache.end())
+        {
+            return It->second;
+        }
+
+        RHI::FRasterDesc Desc;
+        Desc.Topology         = Key.Topology;
+        Desc.bWireframe       = Key.bWireframe;
+        Desc.bAlphaToCoverage = Key.bAlphaToCoverage;
+        Desc.SampleCount      = Key.SampleCount;
+        Desc.DepthFormat      = Key.DepthFormat;
+        Desc.ColorTargets     = TSpan<const RHI::FColorTarget>(Key.ColorTargets.data(), Key.ColorTargets.size());
+
+        const RHI::FShaderSource PSSource = Key.PS ? Key.PS->Source() : RHI::FShaderSource{};
+        RHI::FPipelineH Pipeline = RHI::CreateGraphicsPipeline(Key.VS->Source(), PSSource, Desc);
+        PipelineCache.emplace(Seed, Pipeline);
+        return Pipeline;
+    }
+
+    RHI::FPipelineH FForwardRenderScene::GetOrCreateComputePipeline(const FShaderEntry* CS)
+    {
+        size_t Seed = 0;
+        Hash::HashCombine(Seed, CS->PipelineHash());
+        Hash::HashCombine(Seed, 0xC0C0C0C0ull);   // disambiguate from graphics keys
+
+        auto It = PipelineCache.find(Seed);
+        if (It != PipelineCache.end())
+        {
+            return It->second;
+        }
+
+        RHI::FPipelineH Pipeline = RHI::CreateComputePipeline(CS->Source());
+        PipelineCache.emplace(Seed, Pipeline);
+        return Pipeline;
+    }
+
+    RHI::FDepthStencilH FForwardRenderScene::GetOrCreateDepthState(const RHI::FDepthStencilDesc& Desc)
+    {
+        auto HashStencil = [](size_t& Seed, const RHI::FStencil& S)
+        {
+            Hash::HashCombine(Seed, ((uint64)S.Test) | ((uint64)S.FailOp << 8) |
+                                    ((uint64)S.PassOp << 16) | ((uint64)S.DepthFailOp << 24) |
+                                    ((uint64)S.Reference << 32));
+        };
+
+        auto FloatBits = [](float V)
+        {
+            uint32 U;
+            std::memcpy(&U, &V, sizeof(U));
+            return (uint64)U;
+        };
+
+        size_t Seed = 0;
+        Hash::HashCombine(Seed, ((uint64)Desc.DepthMode) | ((uint64)Desc.DepthTest << 8) |
+                                ((uint64)Desc.StencilReadMask << 16) | ((uint64)Desc.StencilWriteMask << 24));
+        Hash::HashCombine(Seed, FloatBits(Desc.DepthBias));
+        Hash::HashCombine(Seed, FloatBits(Desc.DepthBiasSlopeFactor));
+        Hash::HashCombine(Seed, FloatBits(Desc.DepthBiasClamp));
+        HashStencil(Seed, Desc.StencilFront);
+        HashStencil(Seed, Desc.StencilBack);
+
+        auto It = DepthStateCache.find(Seed);
+        if (It != DepthStateCache.end())
+        {
+            return It->second;
+        }
+
+        RHI::FDepthStencilH State = RHI::CreateDepthStencil(Desc);
+        DepthStateCache.emplace(Seed, State);
+        return State;
+    }
+
+    void FForwardRenderScene::SetViewportScissor(RHI::FCmdListH CL, const FUIntVector2& Extent)
+    {
+        const RHI::FRect Rect{ 0, (int)Extent.x, 0, (int)Extent.y };
+        RHI::CmdSetViewport(CL, Rect);
+        RHI::CmdSetScissor(CL, Rect);
+    }
+
+    void FForwardRenderScene::WriteBuffer(RHI::FCmdListH CL, RHI::GPUPtr Dst, const void* Data, uint64 Size)
+    {
+        RHI::FTransientAlloc Staging = RHI::Core::AllocTransient(Size);
+        Memory::Memcpy(Staging.Cpu, Data, Size);
+        RHI::CmdMemcpy(CL, Dst, Staging.Gpu, Size);
+    }
+
+    void FForwardRenderScene::ResizeBufferIfNeeded(FSceneBuffer& Buffer, uint64 NeededSize, float SlackFactor, uint32& LowUsageCounter)
+    {
+        NeededSize = Math::Max<uint64>(NeededSize, 16ull);
+
+        if (NeededSize > Buffer.Size)
+        {
+            if (Buffer)
+            {
+                DeferFree(Buffer.Ptr);
+            }
+            Buffer = CreateSceneBuffer((uint64)((double)NeededSize * SlackFactor));
+            LowUsageCounter = 0;
+            return;
+        }
+
+        // Shrink after sustained low usage (<25% of capacity).
+        if (NeededSize * 4ull < Buffer.Size)
+        {
+            if (++LowUsageCounter >= 120u)
+            {
+                DeferFree(Buffer.Ptr);
+                Buffer = CreateSceneBuffer((uint64)((double)NeededSize * SlackFactor));
+                LowUsageCounter = 0;
+            }
+        }
+        else
+        {
+            LowUsageCounter = 0;
+        }
+    }
+
+    void FForwardRenderScene::DeferFree(RHI::GPUPtr Ptr)
+    {
+        if (Ptr != 0)
+        {
+            DeferredBufferFrees[CurrentFrameSlot].push_back(Ptr);
+        }
+    }
+
+    void FForwardRenderScene::DeferRelease(FSceneImage& Image)
+    {
+        if (Image.IsValid())
+        {
+            DeferredImageReleases[CurrentFrameSlot].push_back(Image);
+        }
+        Image = {};
+    }
+
+    //~ End new-RHI helpers
+
+    uint32 FForwardRenderScene::GetDisplayResourceID() const
+    {
+        if (SceneViews.empty())
+        {
+            return ~0u;
+        }
+        const int32 ID = SceneViews[0].Output.GetResourceID();
+        return ID < 0 ? ~0u : (uint32)ID;
+    }
+
+    FUIntVector2 FForwardRenderScene::GetRenderExtent() const
+    {
+        return SceneViews.empty() ? FUIntVector2(0) : SceneViews[0].Size;
     }
 
     const FSceneRenderStats& FForwardRenderScene::GetRenderStats() const
@@ -10100,17 +9336,17 @@ namespace Lumina
     {
     #if USING(WITH_EDITOR)
         // Pick the newest complete slot whose window covers (X,Y). A slot is safe to map
-        // without a semaphore once it's >= FRAMES_IN_FLIGHT older than the latest issue.
+        // without a semaphore once it's >= RHI::kFramesInFlight older than the latest issue.
         int32 BestSlotIdx = -1;
         uint64 BestFrame = 0;
         for (uint32 i = 0; i < PickerReadbackRingSize; ++i)
         {
             const FPickerReadbackSlot& Slot = PickerReadbackRing[i];
-            if (!Slot.bPending || !Slot.Staging)
+            if (!Slot.bPending || Slot.Readback == 0)
             {
                 continue;
             }
-            if (PickerReadbackFrame - Slot.SubmittedFrame <= FRAMES_IN_FLIGHT)
+            if (PickerReadbackFrame - Slot.SubmittedFrame <= RHI::kFramesInFlight)
             {
                 continue;
             }
@@ -10137,18 +9373,14 @@ namespace Lumina
         const uint32 LocalX = X - Slot.OriginX;
         const uint32 LocalY = Y - Slot.OriginY;
 
-        size_t RowPitch = 0;
-        void* MappedMemory = GRenderContext->MapStagingTexture(Slot.Staging, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
-        if (!MappedMemory)
+        // CPURead allocations are persistently mapped; the readback is tightly packed (RowLength = Width).
+        const uint32* Pixels = static_cast<const uint32*>(RHI::ToHost(Slot.Readback));
+        if (Pixels == nullptr)
         {
             return entt::null;
         }
 
-        uint8* RowStart = static_cast<uint8*>(MappedMemory) + LocalY * RowPitch;
-        uint32* PixelPtr = reinterpret_cast<uint32*>(RowStart) + LocalX;
-        uint32 PixelValue = *PixelPtr;
-
-        GRenderContext->UnMapStagingTexture(Slot.Staging);
+        const uint32 PixelValue = Pixels[LocalY * Slot.Width + LocalX];
 
         if (PixelValue == 0)
         {
@@ -10172,25 +9404,24 @@ namespace Lumina
         PickerCursorPacked.store(Packed, std::memory_order_relaxed);
     }
 
-    void FForwardRenderScene::IssuePickerReadback(ICommandList& CmdList)
+    void FForwardRenderScene::IssuePickerReadback(RHI::FCmdListH CL)
     {
         const uint64 Packed = PickerCursorPacked.load(std::memory_order_relaxed);
         const bool bOverViewport = (Packed & 1ull) != 0;
         if (!bOverViewport)
         {
-            // Cursor isn't over the viewport: no pick can happen this frame, so skip
-            // the copy (and its layout transition) entirely.
+            // Cursor isn't over the viewport: no pick can happen this frame, so skip the copy entirely.
             return;
         }
 
-        FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
-        if (!PickerImage)
+        const FSceneImage& PickerImage = GetNamedImage(ENamedImage::Picker);
+        if (!PickerImage.IsValid())
         {
             return;
         }
 
-        const uint32 ImgW = PickerImage->GetDescription().Extent.x;
-        const uint32 ImgH = PickerImage->GetDescription().Extent.y;
+        const uint32 ImgW = PickerImage.GetSizeX();
+        const uint32 ImgH = PickerImage.GetSizeY();
         if (ImgW == 0 || ImgH == 0)
         {
             return;
@@ -10208,25 +9439,27 @@ namespace Lumina
 
         FPickerReadbackSlot& Slot = PickerReadbackRing[PickerReadbackWriteIndex];
 
-        if (!Slot.Staging || Slot.Width != RegionW || Slot.Height != RegionH)
+        if (Slot.Readback == 0 || Slot.Width != RegionW || Slot.Height != RegionH)
         {
-            // First use of this slot, or region size changed (post-resize). Allocate a
-            // staging image sized to the region; bPending stays false until the copy below.
-            FRHIImageDesc StagingDesc = PickerImage->GetDescription();
-            StagingDesc.Extent = FUIntVector2(RegionW, RegionH);
-            Slot.Staging = GRenderContext->CreateStagingImage(StagingDesc, ERHIAccess::HostRead);
+            // First use of this slot, or region size changed (post-resize). Allocate a host-readable
+            // buffer sized to the region; bPending stays false until the copy below.
+            if (Slot.Readback != 0)
+            {
+                DeferFree(Slot.Readback);
+            }
+            Slot.Readback = RHI::Malloc((uint64)RegionW * RegionH * sizeof(uint32), RHI::kDefaultAlign, RHI::EMemoryType::CPURead);
             Slot.Width = RegionW;
             Slot.Height = RegionH;
         }
 
-        FTextureSlice SrcSlice;
-        SrcSlice.X = OriginX;
-        SrcSlice.Y = OriginY;
-        SrcSlice.Width = RegionW;
-        SrcSlice.Height = RegionH;
-        SrcSlice.Depth = 1;
+        RHI::FTextureSlice SrcSlice;
+        SrcSlice.Offset = FUIntVector3(OriginX, OriginY, 0);
+        SrcSlice.Extent = FUIntVector3(RegionW, RegionH, 1);
 
-        CmdList.CopyImage(PickerImage, SrcSlice, Slot.Staging, FTextureSlice());
+        // Picker writes -> transfer read, then host read of the packed region.
+        Barriers::AllToTransfer(CL);
+        RHI::CmdCopyTextureToMemory(CL, PickerImage.Texture, SrcSlice, Slot.Readback, RegionW);
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::Host);
 
         Slot.OriginX = OriginX;
         Slot.OriginY = OriginY;

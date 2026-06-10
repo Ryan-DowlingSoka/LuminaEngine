@@ -9,6 +9,13 @@
 
 namespace Lumina
 {
+    class FShaderLibrary;
+    class IShaderCompiler;
+
+    // Global shader compiler + library, owned by FRenderManager.
+    extern RUNTIME_API IShaderCompiler* GShaderCompiler;
+    extern RUNTIME_API FShaderLibrary*  GShaderLibrary;
+
     struct FShaderCompileOptions
     {
         bool bGenerateReflectionData = true;

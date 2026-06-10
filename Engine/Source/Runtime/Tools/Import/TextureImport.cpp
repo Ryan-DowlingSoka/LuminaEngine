@@ -2,8 +2,7 @@
 
 #include "ImportHelpers.h"
 #include "Paths/Paths.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHITexture.h"
 
 #define STBI_MALLOC(Sz) Lumina::Memory::Malloc(Sz)
 #define STBI_REALLOC(p, newsz) Lumina::Memory::Realloc(p, newsz)
@@ -14,7 +13,6 @@
 #include "stb_image.h"
 #include "stb_image_resize2.h"
 #include "FileSystem/FileSystem.h"
-#include "Renderer/RHIGlobals.h"
 
 namespace Lumina::Import::Textures
 {
@@ -337,38 +335,26 @@ namespace Lumina::Import::Textures
         return Result;
     }
 
-    FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad, FUIntVector2 Size)
+    RHI::FManagedTexture CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad, FUIntVector2 Size)
     {
         LUMINA_PROFILE_SCOPE();
 
         TOptional<FTextureImportResult> MaybeResult = ImportTexture(RawFilePath, bFlipVerticalOnLoad, Size);
         if (!MaybeResult.has_value())
         {
-            return nullptr;
+            return {};
         }
 
         const FTextureImportResult& Result = MaybeResult.value();
-        
-        FRHIImageDesc ImageDescription;
-        ImageDescription.Format = Result.Format;
-        ImageDescription.Extent = Result.Dimensions;
-        ImageDescription.Flags.SetFlag(EImageCreateFlags::ShaderResource);
-        ImageDescription.NumMips = 1;
-        ImageDescription.DebugName = VFS::FileName(RawFilePath, true);
-        ImageDescription.InitialState = EResourceStates::ShaderResource;
-        ImageDescription.bKeepInitialState = true;
-        
-        FRHIImageRef ReturnImage = GRenderContext->CreateImage(ImageDescription);
 
-        const uint32 Width = ImageDescription.Extent.x;
-        const uint32 RowPitch = Width * RHI::Format::BytesPerBlock(Result.Format);
+        RHI::FManagedTexture Texture = RHI::Textures::Create(RHI::FTexture2DDesc
+        {
+            .Width  = Result.Dimensions.x,
+            .Height = Result.Dimensions.y,
+            .Format = Result.Format,
+        });
+        RHI::Textures::Upload(Texture, 0, Result.Pixels.data(), Result.Pixels.size(), Result.Dimensions.x);
 
-        FRHICommandListRef TransferCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Transfer());
-        TransferCommandList->Open();
-        TransferCommandList->WriteImage(ReturnImage, 0, 0, Result.Pixels.data(), RowPitch, 0);
-        TransferCommandList->Close();
-        GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Transfer);
-
-        return ReturnImage;
+        return Texture;
     }
 }

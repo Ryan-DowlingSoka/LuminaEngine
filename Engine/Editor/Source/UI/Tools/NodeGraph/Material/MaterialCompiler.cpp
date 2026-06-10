@@ -780,7 +780,7 @@ namespace Lumina
 
 	void FMaterialCompiler::TextureSample(const FString& ID, CTexture* Texture, CMaterialInput* Input)
 	{
-		if (Texture == nullptr || Texture->TextureResource == nullptr || !Texture->TextureResource->RHIImage.IsValid())
+		if (Texture == nullptr || Texture->GetResourceID() < 0)
 		{
 			return;
 		}
@@ -811,7 +811,7 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = SampleTexture2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
 	}
 
 	void FMaterialCompiler::TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input)
@@ -842,7 +842,7 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = SampleTexture2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
 	}
 
 	namespace
@@ -1231,7 +1231,7 @@ namespace Lumina
 		}
 		else
 		{
-			GetActiveChunk().append("float2 " + ID + " = Input.Position.xy / max(float2(uSceneData.ScreenSize.xy), float2(1.0, 1.0));\n");
+			GetActiveChunk().append("float2 " + ID + " = Input.Position.xy / max(float2(GetScreenSize()), float2(1.0, 1.0));\n");
 		}
 	}
 
@@ -1274,12 +1274,12 @@ namespace Lumina
 
 	void FMaterialCompiler::ViewportSize(const FString& ID)
 	{
-		GetActiveChunk().append("float2 " + ID + " = float2(uSceneData.ScreenSize.xy);\n");
+		GetActiveChunk().append("float2 " + ID + " = float2(GetScreenSize());\n");
 	}
 
 	void FMaterialCompiler::AspectRatio(const FString& ID)
 	{
-		GetActiveChunk().append("float " + ID + " = float(uSceneData.ScreenSize.x) / max(float(uSceneData.ScreenSize.y), 1.0);\n");
+		GetActiveChunk().append("float " + ID + " = float(GetScreenSize().x) / max(float(GetScreenSize().y), 1.0);\n");
 	}
 
 	// SceneColor is only valid in PostProcess materials (samples the pass-input RT at set 2, binding 0);

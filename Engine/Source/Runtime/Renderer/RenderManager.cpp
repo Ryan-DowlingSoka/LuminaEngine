@@ -1,18 +1,18 @@
 #include "pch.h"
 #include "RenderManager.h"
 
-#include "API/Vulkan/VulkanRenderContext.h"
 #include "Tools/UI/ImGui/Vulkan/VulkanImGuiRender.h"
 
-#include "RHIGlobals.h"
-#include "CommandList.h"
 #include "RenderThread.h"
+#include "ShaderCompiler.h"
+#include "ShaderLibrary.h"
 #include "RHI.h"
+#include "RHICore.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Windows/Window.h"
 #include "Core/Profiler/Profile.h"
-#include "GPUProfiler/GPUProfiler.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "UI/RmlUiBridge.h"
 #include "World/World.h"
@@ -24,11 +24,21 @@ namespace Lumina
     TMulticastDelegate<void, FVector2> FRenderManager::OnSwapchainResized;
     RUNTIME_API FRenderManager* GRenderManager = nullptr;
 
-    static TConsoleVar CVarMaxFrameRate("Core.VSync", true, "Toggles v-sync", [](const CVarValueType& Value)
+    static TConsoleVar CVarVSync("Core.VSync", true, "Toggles v-sync", [](const CVarValueType& Value)
     {
-        if (GRenderContext)
+        // Render thread recreates the swapchain with the new present mode.
+        const bool bEnabled = eastl::get<bool>(Value);
+        if (GRenderManager != nullptr)
         {
-            GRenderContext->SetVSyncEnabled(eastl::get<bool>(Value));
+            ENQUEUE_RENDER_COMMAND(SetVSync)([bEnabled]
+            {
+                RHI::SetVSync(bEnabled);
+                GRenderManager->RecreatePrimarySwapchain();
+            });
+        }
+        else
+        {
+            RHI::SetVSync(bEnabled);
         }
     });
 
@@ -53,54 +63,82 @@ namespace Lumina
         #endif
 
         MaterialManager = nullptr;
-        TextureManager = nullptr;
 
-        // Drop the shared LUT / icon refs while the device is still alive; member
-        // teardown would otherwise run after GRenderContext is deleted below.
+        // Release the shared LUT / icon heap slots while the device is still alive; member
+        // teardown would otherwise run after the device is freed below.
+        if (SharedRenderResources.bInitialized)
+        {
+            if (SharedRenderResources.BRDFLutUAV != RHI::kInvalidHeapSlot)
+            {
+                RHI::HeapFreeRWTexture(RHI::Core::GetGlobalHeap(), SharedRenderResources.BRDFLutUAV);
+            }
+            RHI::Textures::Release(SharedRenderResources.BRDFLut);
+            RHI::Textures::Release(SharedRenderResources.SMAAArea);
+            RHI::Textures::Release(SharedRenderResources.SMAASearch);
+            #if WITH_EDITOR
+            for (RHI::FManagedTexture& Icon : SharedRenderResources.EditorIcons)
+            {
+                RHI::Textures::Release(Icon);
+            }
+            #endif
+        }
         SharedRenderResources.Reset();
 
-        // Same: release the reused frame command list (and its upload chunks) before
-        // GRenderContext->Deinitialize() force-releases every tracked RHI resource.
-        FrameCommandList.SafeRelease();
+        GShaderCompiler = nullptr;
+        if (ShaderCompiler != nullptr)
+        {
+            ShaderCompiler->Shutdown();
+            Memory::Delete(ShaderCompiler);
+            ShaderCompiler = nullptr;
+        }
+        GShaderLibrary = nullptr;
+        if (ShaderLibrary != nullptr)
+        {
+            Memory::Delete(ShaderLibrary);
+            ShaderLibrary = nullptr;
+        }
 
-        FGPUProfiler::Get().Shutdown();
-
+        RHI::FreeH(Swapchain);
+        RHI::Core::Shutdown();
         RHI::FreeDevice();
-        GRenderContext->Deinitialize();
-        Memory::Delete(GRenderContext);
-        GRenderContext = nullptr;
     }
 
     void FRenderManager::Initialize()
     {
-        #if defined(LUMINA_WITH_VALIDATION)
+#if defined(LUMINA_WITH_VALIDATION)
         constexpr bool bValidation = true;
-        #else
+#else
         constexpr bool bValidation = false;
-        #endif
+#endif
 
-        #if LUMINA_SHIPPING
+#if LUMINA_SHIPPING
         constexpr bool bDebugUtils = false;
-        #else
+#else
         constexpr bool bDebugUtils = true;
-        #endif
+#endif
 
-        GRenderContext = Memory::New<FVulkanRenderContext>();
-        GRenderContext->Initialize(FRenderContextDesc{ bValidation, bDebugUtils });
+        RHI::CreateDevice(RHI::FDeviceDesc{ bValidation, bDebugUtils });
+        RHI::Core::Initialize();
+
+        ShaderLibrary = Memory::New<FShaderLibrary>();
+        GShaderLibrary = ShaderLibrary;
+        ShaderCompiler = Memory::New<FSpirVShaderCompiler>();
+        GShaderCompiler = ShaderCompiler;
+        ShaderCompiler->Initialize();
+
+        FWindow* Window = Windowing::GetPrimaryWindowHandle();
+        Swapchain = RHI::CreateSwapchain(Window->GetWindow(), Window->GetExtent());
 
         GRenderThread = Memory::New<FRenderThread>();
         GRenderThread->Start();
 
         MaterialManager = MakeUnique<RHI::FMaterialManager>();
-        TextureManager = MakeUnique<RHI::FTextureManager>();
 
-        #if WITH_EDITOR
+#if WITH_EDITOR
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();
         ImGuiRenderer->Initialize();
-        #endif
+#endif
         
-        // @TODO Actual impl, for now just bind to existing.
-        RHI::CreateDevice();
     }
     
     void FRenderManager::FrameStart(const FUpdateContext& UpdateContext)
@@ -118,7 +156,7 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         const uint8 ThisFrameIndex = CurrentFrameIndex;
-        CurrentFrameIndex = (CurrentFrameIndex + 1) % FRAMES_IN_FLIGHT;
+        CurrentFrameIndex = (CurrentFrameIndex + 1) % RHI::kFramesInFlight;
 
         [[maybe_unused]] FImDrawDataSnapshot* ImGuiSnapshot = nullptr;
         #if WITH_EDITOR
@@ -127,73 +165,55 @@ namespace Lumina
 
         ENQUEUE_RENDER_COMMAND(RenderFrame)([this, ThisFrameIndex, Snapshot = ImGuiSnapshot]() mutable
         {
-            GRenderContext->WaitForGPU();
-            GRenderContext->FlushPendingDeletes();
-
-            // GPU is idle here: safe to retire bindless slots whose parked-frame window elapsed.
-            if (TextureManager)
-            {
-                TextureManager->Tick();
-            }
-
-            FGPUProfiler::Get().BeginFrame();
-            GRenderContext->FrameStart(ThisFrameIndex);
+            RHI::Core::BeginFrame(ThisFrameIndex);
             
-            if (!FrameCommandList)
-            {
-                FrameCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-            }
-            FrameCommandList->Open();
-            ICommandList& CL = *FrameCommandList;
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CL, "World Render", FColor(0.20f, 0.55f, 0.90f));
-                GWorldManager->RenderWorlds(CL, ThisFrameIndex);
-            }
-
-            {
-                GPU_PROFILE_SCOPE_COLOR(&CL, "RmlUi", FColor(0.95f, 0.55f, 0.20f));
-                // Per-world UI rendered inside RenderWorlds (CWorld::Render); only editor contexts remain here.
-                RmlUi::RenderEditorContexts(CL);
-            }
-
-            {
-                GPU_PROFILE_SCOPE(&CL, "Frame Composite");
-                #if USING(WITH_EDITOR)
-                if (Snapshot)
-                {
-                    ImGuiRenderer->RecordFrame_RenderThread(CL, *Snapshot, ThisFrameIndex);
-                    ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
-                }
-                #else
-                if (FWorldContext* Ctx = GWorldManager->GetPrimaryGameContext())
-                {
-                    if (CWorld* World = Ctx->World.Get())
-                    {
-                        if (IRenderScene* Scene = World->GetRenderer())
-                        {
-                            if (FRHIImage* WorldRT = Scene->GetRenderTarget())
-                            {
-                                if (FRHIImage* ViewportRT = FEngine::GetEngineViewport()->GetRenderTarget())
-                                {
-                                    CL.CopyImage(WorldRT, FTextureSlice(), ViewportRT, FTextureSlice());
-                                }
-                            }
-                        }
-                    }
-                }
-                #endif
-            }
+            GWorldManager->RenderWorlds_NewRHI(ThisFrameIndex);
 
             GWorldManager->SignalFrameConsumed(ThisFrameIndex);
 
-            GRenderContext->FrameEnd(CL);
-            FGPUProfiler::Get().EndFrame();
+            RHI::FTextureH SwapImage = RHI::AcquireNextImage(Swapchain);
+            if (!RHI::IsValid(SwapImage))
+            {
+                RHI::RecreateSwapchain(Swapchain, Windowing::GetPrimaryWindowHandle()->GetExtent());
+                #if WITH_EDITOR
+                if (Snapshot)
+                {
+                    ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
+                }
+                #endif
+                return;
+            }
+
+            const FUIntVector2 Extent = RHI::GetSwapchainExtent(Swapchain);
+
+            RHI::FCmdListH CL = RHI::OpenCommandList();
+            RHI::CmdSetTextureHeap(CL, RHI::Core::GetGlobalHeap());
+            RHI::CmdSwapchainBarrierToRender(CL, Swapchain);
+
+            #if WITH_EDITOR
+            // Editor RmlUi previews rasterize before ImGui samples their RTs below.
+            RmlUi::RenderEditorContexts(CL);
+            #endif
+
+            #if WITH_EDITOR
+            if (Snapshot)
+            {
+                ImGuiRenderer->OnEndFrame_NewRHI(CL, SwapImage, Extent, *Snapshot);
+                ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
+            }
+            #endif
+
+            RHI::Core::Present(Swapchain, CL);
         });
     }
 
     void FRenderManager::SwapchainResized(FVector2 NewSize)
     {
         OnSwapchainResized.Broadcast(NewSize);
+    }
+
+    void FRenderManager::RecreatePrimarySwapchain()
+    {
+        RHI::RecreateSwapchain(Swapchain, Windowing::GetPrimaryWindowHandle()->GetExtent());
     }
 }

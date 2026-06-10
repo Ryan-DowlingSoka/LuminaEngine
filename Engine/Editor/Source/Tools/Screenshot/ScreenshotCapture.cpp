@@ -8,10 +8,9 @@
 #include "stb_image_write.h"
 
 #include "Paths/Paths.h"
-#include "Renderer/CommandList.h"
 #include "Renderer/Format.h"
-#include "Renderer/RenderContext.h"
-#include "Renderer/RenderResource.h"
+#include "Renderer/RHI.h"
+#include "Renderer/RHICore.h"
 #include "World/World.h"
 #include "World/WorldManager.h"
 #include "World/Scene/RenderScene/RenderScene.h"
@@ -85,21 +84,23 @@ namespace Lumina::Screenshot
             return Out;
         }
 
-        FRHIImage* PickSourceImage(IRenderScene* Scene, ECaptureSource Source)
+        FSceneImage PickSourceImage(IRenderScene* Scene, ECaptureSource Source)
         {
             if (Scene == nullptr)
             {
-                return nullptr;
+                return {};
             }
+
+            // Forward is currently the only IRenderScene implementation.
+            auto* Forward = static_cast<FForwardRenderScene*>(Scene);
 
             if (Source == ECaptureSource::SceneHDR)
             {
-                // Forward is currently the only IRenderScene implementation.
-                auto* Forward = static_cast<FForwardRenderScene*>(Scene);
-                return Forward->GetNamedImage(FForwardRenderScene::ENamedImage::HDR);
+                return Forward->GetPrimaryNamedImage(FForwardRenderScene::ENamedImage::HDR);
             }
 
-            return Scene->GetRenderTarget();
+            // Final display-referred output (what the editor viewport shows).
+            return Forward->GetDisplayImage();
         }
 
         bool WritePNG(const FString& OutPath, uint32 Width, uint32 Height, EFormat Format,
@@ -186,16 +187,15 @@ namespace Lumina::Screenshot
     {
         FCaptureResult Out;
 
-        FRHIImage* SrcImage = PickSourceImage(Scene, Source);
-        if (SrcImage == nullptr)
+        const FSceneImage SrcImage = PickSourceImage(Scene, Source);
+        if (!SrcImage.IsValid())
         {
             Out.ErrorMessage = "No source image available for capture.";
             return Out;
         }
 
-        const FRHIImageDesc& Desc = SrcImage->GetDescription();
-        Out.ResolutionX = Desc.Extent.x;
-        Out.ResolutionY = Desc.Extent.y;
+        Out.ResolutionX = SrcImage.GetSizeX();
+        Out.ResolutionY = SrcImage.GetSizeY();
 
         // Resolve output path.
         FString ResolvedPath = OutputPath.empty() ? GenerateDefaultPath(Source) : OutputPath;
@@ -209,43 +209,44 @@ namespace Lumina::Screenshot
             }
         }
 
-        FRHIStagingImageRef Staging = GRenderContext->CreateStagingImage(Desc, ERHIAccess::HostRead);
-        if (!Staging)
+        // Tightly-packed host readback of the whole image.
+        const uint64 TexelBytes = RHI::Format::BytesPerBlock(SrcImage.Desc.Format);
+        const uint64 ReadbackSize = (uint64)Out.ResolutionX * Out.ResolutionY * TexelBytes;
+        const RHI::GPUPtr Readback = RHI::Malloc(ReadbackSize, RHI::kDefaultAlign, RHI::EMemoryType::CPURead);
+        if (Readback == 0)
         {
-            Out.ErrorMessage = "Failed to create staging image.";
+            Out.ErrorMessage = "Failed to allocate readback buffer.";
             return Out;
         }
 
-        FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CmdList->Open();
-        CmdList->CopyImage(SrcImage, FTextureSlice(), Staging, FTextureSlice());
-        CmdList->Close();
-        GRenderContext->ExecuteCommandList(CmdList);
+        RHI::FCmdListH CL = RHI::OpenCommandList();
+        RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+        RHI::CmdCopyTextureToMemory(CL, SrcImage.Texture, RHI::FTextureSlice{}, Readback, Out.ResolutionX);
+        RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::Host);
+        RHI::Submit(CL);
+        RHI::WaitDeviceIdle();
+        RHI::ResetCommandList(CL);
 
-        // Wait for the copy to land in the host-visible staging buffer.
-        GRenderContext->WaitIdle();
-
-        size_t RowPitch = 0;
-        void* Mapped = GRenderContext->MapStagingTexture(Staging, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
-        if (Mapped == nullptr)
-        {
-            Out.ErrorMessage = "Failed to map staging image.";
-            return Out;
-        }
+        const size_t RowPitch = (size_t)Out.ResolutionX * TexelBytes;
+        const uint8* Mapped = static_cast<const uint8*>(RHI::ToHost(Readback));
 
         bool bWriteOK = false;
-        if (Source == ECaptureSource::SceneHDR)
+        if (Mapped == nullptr)
         {
-            bWriteOK = WriteHDR(ResolvedPath, Out.ResolutionX, Out.ResolutionY, Desc.Format,
-                                static_cast<const uint8*>(Mapped), RowPitch, Out.ErrorMessage);
+            Out.ErrorMessage = "Failed to map readback buffer.";
+        }
+        else if (Source == ECaptureSource::SceneHDR)
+        {
+            bWriteOK = WriteHDR(ResolvedPath, Out.ResolutionX, Out.ResolutionY, SrcImage.Desc.Format,
+                                Mapped, RowPitch, Out.ErrorMessage);
         }
         else
         {
-            bWriteOK = WritePNG(ResolvedPath, Out.ResolutionX, Out.ResolutionY, Desc.Format,
-                                static_cast<const uint8*>(Mapped), RowPitch, Out.ErrorMessage);
+            bWriteOK = WritePNG(ResolvedPath, Out.ResolutionX, Out.ResolutionY, SrcImage.Desc.Format,
+                                Mapped, RowPitch, Out.ErrorMessage);
         }
 
-        GRenderContext->UnMapStagingTexture(Staging);
+        RHI::Free(Readback);
 
         if (bWriteOK)
         {

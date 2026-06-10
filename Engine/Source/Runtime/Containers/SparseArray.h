@@ -393,7 +393,7 @@ namespace Lumina
         };
     
         TVector<FSparseArrayStorage> Data;
-        TBitVector Occupied;
+        FBitVector Occupied;
         TVector<Index> FreeList;
     };
 }

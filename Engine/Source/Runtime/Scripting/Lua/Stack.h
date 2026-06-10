@@ -564,9 +564,7 @@ namespace Lumina::Lua
 
         static RawT* Get(lua_State* State, int Index)
         {
-            // @TODO Fix tags.
-            // auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
-            auto* Header = static_cast<StorageT*>(lua_touserdata(State, Index));
+            auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
             if (Header == nullptr)
             {
                 return nullptr;

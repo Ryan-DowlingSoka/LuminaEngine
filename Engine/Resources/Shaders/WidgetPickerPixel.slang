@@ -15,7 +15,7 @@ struct FragmentInput
 [shader("fragment")]
 uint FragmentMain(FragmentInput Input) : SV_Target0
 {
-    const float Alpha = SampleBindless2D(Input.TextureIndex, SAMPLER_LINEAR_CLAMP, Input.UV).a;
+    const float Alpha = SampleTexture2D(Input.TextureIndex, SAMPLER_LINEAR_CLAMP, Input.UV).a;
     if (Alpha < 0.01)
     {
         discard;

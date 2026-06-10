@@ -18,9 +18,9 @@ struct FPushConstants
     uint   _Pad2;
 };
 
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
-#define SMAA_RT_METRICS (PC.RTMetrics)
+#define SMAA_RT_METRICS (Pass().RTMetrics)
 #include "Includes/SMAA.slang"
 
 struct VSOutput
@@ -34,11 +34,11 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
 {
     // Edges/area/search all want bilinear filtering (the search LUT is integer-coded but the
     // technique relies on the filter); single linear-clamp sampler for all three.
-    SamplerState LinearClamp = uBindlessSamplers[SAMPLER_LINEAR_CLAMP];
+    SamplerState LinearClamp = gSamplers[SAMPLER_LINEAR_CLAMP];
 
-    SMAATex edgesTex;  edgesTex.Tex  = uBindlessTex2D[PC.TexIndex0]; edgesTex.Smp  = LinearClamp;
-    SMAATex areaTex;   areaTex.Tex   = uBindlessTex2D[PC.TexIndex1]; areaTex.Smp   = LinearClamp;
-    SMAATex searchTex; searchTex.Tex = uBindlessTex2D[PC.TexIndex2]; searchTex.Smp = LinearClamp;
+    SMAATex edgesTex;  edgesTex.Tex  = gTextures2D[Pass().TexIndex0]; edgesTex.Smp  = LinearClamp;
+    SMAATex areaTex;   areaTex.Tex   = gTextures2D[Pass().TexIndex1]; areaTex.Smp   = LinearClamp;
+    SMAATex searchTex; searchTex.Tex = gTextures2D[Pass().TexIndex2]; searchTex.Smp = LinearClamp;
 
     float2 pixcoord;
     float4 offset[3];

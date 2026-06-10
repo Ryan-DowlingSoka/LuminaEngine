@@ -13,7 +13,7 @@ struct FPushConstants
     float3 SunDirection;
     float  _Pad;
 };
-#define PC (*(FPushConstants*)gPC.PassAddr)
+FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
 #define SKYCAP_TILE 8
 
@@ -21,8 +21,8 @@ struct FPushConstants
 [numthreads(SKYCAP_TILE, SKYCAP_TILE, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    FEnvironmentParams uEnvironment = PC.Env.get();
-    RWTexture2DArray<float4> uSkyCube = uBindlessRWTex2DArray[PC.SkyCubeUAV];
+    FEnvironmentParams uEnvironment = Pass().Env.get();
+    RWTexture2DArray<float4> uSkyCube = gRWTextures2DArray[Pass().SkyCubeUAV];
 
     uint Width, Height, Layers;
     uSkyCube.GetDimensions(Width, Height, Layers);
@@ -37,7 +37,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float2 UV = (float2(DTid.xy) + 0.5) / float2(Width, Height);
 
     float3 RayDir = CubeFaceDirection(DTid.z, UV);
-    float3 Color  = EvaluateSky(uEnvironment, PC.SunDirection, RayDir, PC.Time);
+    float3 Color  = EvaluateSky(uEnvironment, Pass().SunDirection, RayDir, Pass().Time);
 
     uSkyCube[DTid] = float4(Color, 1.0);
 }

@@ -1,5 +1,7 @@
 // Skeleton compiled by FParticleCompiler for module-stack particle systems.
 
+#include "Includes/SceneGlobals.slang"
+
 struct FGPUParticle
 {
     float3  Position;
@@ -46,9 +48,19 @@ struct FParticleSimParams
     float4  Timing;              // x=DeltaTime, y=TotalTime, z=SystemAge
 };
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<FGPUParticle>    Particles;
-[[vk::binding(1, 0)]] ConstantBuffer<FParticleSimParams>  SimParams;
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint>            SpawnCounter;
+// Everything by device address; matches FParticleSimArgs in ForwardRenderScene.cpp
+// (same args block as the default ParticleSimulate.slang).
+struct FParticleSimArgs
+{
+    FParticleSimParams* Params;
+    FGPUParticle*       Particles;
+    uint*               SpawnCounter;
+};
+
+FParticleSimArgs*   SimArgs()      { return GetPassArgs<FParticleSimArgs>(); }
+FParticleSimParams* SimParams()    { return SimArgs().Params; }
+FGPUParticle*       Particles()    { return SimArgs().Particles; }
+uint*               SpawnCounter() { return SimArgs().SpawnCounter; }
 
 uint PCGHash(uint state)
 {
@@ -198,22 +210,22 @@ $PARTICLE_UPDATE_FUNC
 void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
 {
     uint Index = DispatchThreadID.x;
-    if (Index >= SimParams.Counts.x) return;
+    if (Index >= SimParams().Counts.x) return;
 
-    FGPUParticle P = Particles[Index];
+    FGPUParticle P = Particles()[Index];
 
     bool bAlive = (P.Lifetime > 0.0) && (P.Age < P.Lifetime);
 
     if (!bAlive)
     {
         uint myAlloc;
-        InterlockedAdd(SpawnCounter[0], 1u, myAlloc);
-        if (myAlloc < SimParams.Counts.y)
+        InterlockedAdd(SpawnCounter()[0], 1u, myAlloc);
+        if (myAlloc < SimParams().Counts.y)
         {
             // Seed defaults; spawn modules overwrite what they care about.
-            uint Seed = PCGHash(Index ^ SimParams.Counts.z);
+            uint Seed = PCGHash(Index ^ SimParams().Counts.z);
 
-            P.Position      = SimParams.EmitterPosition.xyz;
+            P.Position      = SimParams().EmitterPosition.xyz;
             P.Velocity      = float3(0.0, 0.0, 0.0);
             P.Lifetime      = 1.0;
             P.Color         = float4(1.0, 1.0, 1.0, 1.0);
@@ -223,15 +235,15 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
             P.RotationSpeed = 0.0;
             P.Seed          = RandUnit(Seed);
 
-            SpawnParticleGraph(P, Seed, SimParams.Timing.y, Index);
+            SpawnParticleGraph(P, Seed, SimParams().Timing.y, Index);
 
             P.Lifetime = max(P.Lifetime, 0.01);
 
             // Inherit a fraction of the emitter's own motion.
-            float3 EmitterVelocity = float3(SimParams.EmitterForward.w,
-                                            SimParams.EmitterRight.w,
-                                            SimParams.EmitterUp.w);
-            P.Velocity += EmitterVelocity * SimParams.NoiseParams.y;
+            float3 EmitterVelocity = float3(SimParams().EmitterForward.w,
+                                            SimParams().EmitterRight.w,
+                                            SimParams().EmitterUp.w);
+            P.Velocity += EmitterVelocity * SimParams().NoiseParams.y;
         }
         else
         {
@@ -243,7 +255,7 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
     }
     else
     {
-        P.Age += SimParams.Timing.x;
+        P.Age += SimParams().Timing.x;
         if (P.Age >= P.Lifetime)
         {
             P.Lifetime = 0.0;
@@ -253,9 +265,9 @@ void ComputeMain(uint3 DispatchThreadID : SV_DispatchThreadID)
         }
         else
         {
-            UpdateParticleGraph(P, SimParams.Timing.x, SimParams.Timing.y);
+            UpdateParticleGraph(P, SimParams().Timing.x, SimParams().Timing.y);
         }
     }
 
-    Particles[Index] = P;
+    Particles()[Index] = P;
 }

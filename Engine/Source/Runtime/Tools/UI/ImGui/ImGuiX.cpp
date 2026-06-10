@@ -13,6 +13,7 @@
 #include "Core/Windows/Window.h"
 #include "Paths/Paths.h"
 #include "Renderer/RenderManager.h"
+#include "Renderer/RHITexture.h"
 
 namespace Lumina::ImGuiX
 {
@@ -649,13 +650,9 @@ namespace Lumina::ImGuiX
         return false;
     }
 
-    ImTextureRef ToImTextureRef(FRHIImage* Image)
+    ImTextureRef ToImTextureRef(const RHI::FManagedTexture& Texture)
     {
-		#if WITH_EDITOR
-        return GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(Image);
-		#else 
-    	return {};
-		#endif
+        return ToImTextureRef(Texture.IsValid() ? Texture.SampledSlot : ~0u);
     }
 
     ImTextureRef ToImTextureRef(FStringView Path)
@@ -665,6 +662,15 @@ namespace Lumina::ImGuiX
 		#else
     	return {};
 		#endif
+    }
+
+    ImTextureRef ToImTextureRef(uint32 ResourceID)
+    {
+        if (ResourceID == ~0u)
+        {
+            ResourceID = RHI::Textures::DefaultResourceID();
+        }
+        return ImTextureRef((ImTextureID)ResourceID);
     }
 
     FString FormatSize(size_t Bytes)

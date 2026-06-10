@@ -33,12 +33,8 @@
 #include "Physics/Physics.h"
 #include "Physics/PhysicsThread.h"
 #include "Platform/Filesystem/FileHelper.h"
-#include "Renderer/GPUProfiler/GPUProfiler.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RenderResource.h"
 #include "Renderer/RenderThread.h"
-#include "Renderer/RHIGlobals.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "TaskSystem/ThreadedCallback.h"
@@ -64,7 +60,7 @@ namespace Lumina
 
     RUNTIME_API bool GIsHeadless = false;
 
-    static FRHIViewportRef EngineViewport;
+    static FUIntVector2 EngineViewportSize = FUIntVector2(0, 0);
 
     static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
 
@@ -203,7 +199,7 @@ namespace Lumina
         {
             GRenderManager = Memory::New<FRenderManager>();
             GRenderManager->Initialize();
-            EngineViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Engine Viewport");
+            EngineViewportSize = Windowing::GetPrimaryWindowHandle()->GetExtent();
         }
 
         Lua::Initialize();
@@ -277,7 +273,7 @@ namespace Lumina
         if (!GIsHeadless)
         {
             FlushRenderingCommands();
-            GRenderContext->WaitIdle();
+            RHI::WaitDeviceIdle();
 
             // UI before renderer: RmlUi's shutdown releases resources through our render interface.
             RmlUi::Shutdown();
@@ -295,8 +291,6 @@ namespace Lumina
 
         ShutdownCObjectSystem();
 
-        EngineViewport.SafeRelease();
-        
         Lua::Shutdown();
 
         if (GRenderManager)
@@ -531,14 +525,14 @@ namespace Lumina
         }
     }
 
-    FRHIViewport* FEngine::GetEngineViewport()
+    FUIntVector2 FEngine::GetEngineViewportSize()
     {
-        return EngineViewport;
+        return EngineViewportSize;
     }
 
     void FEngine::SetEngineViewportSize(const FUIntVector2& InSize)
     {
-        EngineViewport = GRenderContext->CreateViewport(InSize, "Engine Viewport");
+        EngineViewportSize = InSize;
     }
 
     TVector<FCookRoot> FEngine::GetCookRoots() const

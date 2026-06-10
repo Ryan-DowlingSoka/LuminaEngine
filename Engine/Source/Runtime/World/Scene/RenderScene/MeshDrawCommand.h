@@ -3,22 +3,18 @@
 #include "Platform/GenericPlatform.h"
 #include <Core/Math/Hash/Hash.h>
 #include <Renderer/RHIFwd.h>
-#include <Renderer/RenderResource.h>
-
 
 namespace Lumina
 {
-	class FRHIInputLayout;
-	class FRHIBuffer;
 	class CMaterialInterface;
 
-	// RHI shaders resolved from a material on the GAME thread and held by ref. The render thread
-	// uses these instead of dereferencing a (possibly deleted) CMaterial: the refcount keeps the
-	// shaders alive for the frame even after the owning material asset is destroyed.
+	// Shader entries resolved from a material on the GAME thread. Entries live in the shader
+	// library for the process lifetime, so these stay valid even after the owning material
+	// asset is destroyed mid-frame.
 	struct FRenderMaterialShaders
 	{
-		FRHIVertexShaderRef VertexShader;
-		FRHIPixelShaderRef  PixelShader;
+		const FShaderEntry* VertexShader = nullptr;
+		const FShaderEntry* PixelShader  = nullptr;
 	};
 
 
@@ -26,7 +22,7 @@ namespace Lumina
 	{
 		uint32 StartIndex;
 		uint32 IndexCount;
-			
+
 		bool operator == (const FDrawKey& Key) const
 		{
 			return StartIndex == Key.StartIndex && IndexCount == Key.IndexCount;
@@ -72,16 +68,16 @@ namespace Lumina
 		return Seed;
 	}
 
-	// All data needed for one mesh draw call; cached in the scene. Shaders are ref-held (resolved
-	// on the game thread) so a deleted material asset can't dangle the render thread's pointers.
+	// All data needed for one mesh draw call; cached in the scene. Shader entries are
+	// library-owned (immortal), so a deleted material asset can't dangle the render thread.
 	struct FMeshDrawCommand
 	{
-		FRHIVertexShaderRef					VertexShader;
-		FRHIPixelShaderRef					PixelShader;
+		const FShaderEntry*					VertexShader = nullptr;
+		const FShaderEntry*					PixelShader  = nullptr;
 		// Per-material depth-prepass / shadow VS, populated only for WPO materials so prepass
 		// depth matches the base pass. Null means fall back to the global library shader.
-		FRHIVertexShaderRef					DepthVertexShader;
-		FRHIVertexShaderRef					ShadowVertexShader;
+		const FShaderEntry*					DepthVertexShader  = nullptr;
+		const FShaderEntry*					ShadowVertexShader = nullptr;
 		uint32                      		IndirectDrawOffset = 0;
 		uint32                      		DrawCount = 0;
 		uint32                      		bDrawInDepthPass : 1;
