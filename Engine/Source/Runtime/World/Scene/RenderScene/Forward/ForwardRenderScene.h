@@ -39,7 +39,7 @@ namespace Lumina
     class CMaterialInterface;
     class CMaterial;
 
-    /** Scene rendering via Clustered Forward Rendering, recorded entirely through the new RHI. */
+    /** Scene rendering via Clustered Forward Rendering. */
     class FForwardRenderScene : public IRenderScene
     {
     public:
@@ -66,9 +66,7 @@ namespace Lumina
             uint32                  SkinSliceSize;
             uint32                  GlobalSkinnedBase;
         };
-
-        // Per-(entity, surface) item. Composed into an FGPUInstance during the
-        // parallel write phase by reading the shared FEntityRecord.
+        
         struct FProcessedDrawItem
         {
             uint32              EntityRecordIndex;
@@ -83,23 +81,17 @@ namespace Lumina
             uint16              _Pad;
         };
 
-        // Per-thread local batch table; worker linear-searches it to dedup draws.
-        // Merge walks these, making it O(unique batches x threads), not O(instances).
-        // Shader entries are library-owned (immortal) and resolved on the game thread; the
-        // render thread builds pipelines from their SPIR-V via the scene pipeline cache.
         struct alignas(64) FLocalBatchEntry
         {
             FDrawBatchKey                       Key;
             const FShaderEntry*                 VertexShader = nullptr;
             const FShaderEntry*                 PixelShader  = nullptr;
             // Per-material depth-prepass / shadow VS. Null for non-WPO materials
-            // -- renderer falls back to the global.
             const FShaderEntry*                 DepthVertexShader  = nullptr;
             const FShaderEntry*                 ShadowVertexShader = nullptr;
             TFrameVector<FDrawKey>              LocalDraws;
             TFrameVector<uint32>                LocalDrawCounts;
             TFrameVector<uint32>                LocalMeshletCounts;
-            // O(1) lookup into LocalDraws.
             TFrameHashMap<FDrawKey, uint16>     DrawIndexByKey;
             uint32                              GlobalBatchIndex = ~0u;
             TFrameVector<uint32>                LocalToGlobalDraw;
@@ -540,32 +532,23 @@ namespace Lumina
 
         uint32 GetDisplayResourceID() const override;
         RHI::FTextureH GetDisplayTexture() const override { return SceneViews[0].Output.Texture; }
-        // Primary view's final display image / named image (screenshot readback sources;
-        // GetNamedImage routes through CurrentView, which may point at a capture).
         const FSceneImage& GetDisplayImage() const { return SceneViews[0].Output; }
         const FSceneImage& GetPrimaryNamedImage(ENamedImage Image) const { return SceneViews[0].Images[(int)Image]; }
         FUIntVector2 GetRenderExtent() const override;
         const FSceneRenderStats& GetRenderStats() const override;
         FSceneRenderSettings& GetSceneRenderSettings() override;
         entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const override;
-    #if USING(WITH_EDITOR)
+        #if USING(WITH_EDITOR)
         void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) override;
-    #endif
+        #endif
         const FShadowAtlas* GetShadowAtlas() const override { return &ShadowAtlas; }
 
 
     private:
-
-        // Shared (view-independent) per-frame buffers: instances, bones, lights, cull
-        // views, the cull-scratch rings, etc. Per-view Scene/Cluster buffers live on FSceneView.
+        
         void InitBuffers();
-        // Per-view image chain (HDR/LDR/Depth/Pyramid/Picker/post scratch/SMAA/bloom/...)
-        // sized to View.Size. Shared images are aliased into View.Images.
         void InitViewImages(FSceneView& View);
-        // Releases the per-view-owned images (Output, bloom, MS, and the per-view ENamedImage
-        // slots); shared aliases are just cleared. Caller guarantees the GPU is idle.
         void ReleaseViewImages(FSceneView& View);
-        // (Re)builds the primary view's images at the current size. Called on init and resize.
         void InitFrameResources();
 
         // Allocates + wires a new FSceneView (per-view images, cluster buffer) at Size,
@@ -599,10 +582,10 @@ namespace Lumina
         void SyncIBLResolution(const FIBLBakeResolution& Resolution);
 
         //~ Begin Render Passes
-        // Game thread: clear per-frame CPU scene state before the parallel gather repopulates.
+        // Clear per-frame CPU scene state before the parallel gather repopulates.
         void ResetPass_GameThread();
 
-        // Render thread: depth + shadow atlas clears recorded onto the cmd list.
+        // depth + shadow atlas clears recorded onto the cmd list.
         void ResetPass_RenderThread(RHI::FCmdListH CL);
 
         void CullPassEarly(RHI::FCmdListH CL);
@@ -618,7 +601,6 @@ namespace Lumina
 
         void DepthPrePassEarly(RHI::FCmdListH CL);
         void DepthPrePassLate(RHI::FCmdListH CL);
-        // Shared body of the early/late depth prepass: one cull-view's slice of the indirect args.
         void RecordDepthPrePassSlice(RHI::FCmdListH CL, uint32 ViewIndex, bool bClearDepth);
         void DepthPyramidPass(RHI::FCmdListH CL);
         void ClusterBuildPass(RHI::FCmdListH CL);
@@ -730,10 +712,12 @@ namespace Lumina
         template<typename T>
         RHI::GPUPtr MakeArgs(const T& PassData)
         {
+            DEBUG_ASSERT(CurrentSceneRootAddr != 0);   // null root = GPU page fault at first scene-buffer read
             return RHI::Core::CopyTransient(FRootConstants{ CurrentSceneRootAddr, RHI::Core::CopyTransient(PassData) });
         }
         RHI::GPUPtr MakeArgs()
         {
+            DEBUG_ASSERT(CurrentSceneRootAddr != 0);
             return RHI::Core::CopyTransient(FRootConstants{ CurrentSceneRootAddr, 0 });
         }
 
@@ -899,11 +883,7 @@ namespace Lumina
         // Per-worker draw-gather scratch, persisted so outer storage keeps capacity;
         // arena-backed members are reset each frame (ResetForFrame) to avoid aliasing.
         TVector<FThreadLocalDrawData>           ThreadLocalStorage;
-
-        // Per-worker scratch for parallel debug-line batching; persisted across frames
-        // (vectors keep capacity, cleared each frame). Each worker buckets its culled
-        // lines by (thickness, depth-test) locally; a serial merge lays the per-bucket
-        // ranges out contiguously, then a parallel pass copies them into SimpleVertices.
+        
         struct alignas(64) FLineBatchScratch
         {
             static constexpr uint32 kMaxBuckets = 16;
@@ -916,7 +896,6 @@ namespace Lumina
             TVector<FLineBatcherComponent::FLineInstance>  Survivors;
         };
         TVector<FLineBatchScratch>              LineBatchScratch;
-        // Reused as the compacted persistent-line buffer so survivor rebuilds don't churn the heap.
         TVector<FLineBatcherComponent::FLineInstance> LineCompactScratch;
 
         // Fixed-size views over the batcher's per-worker buffers + persistent list, built each frame as the

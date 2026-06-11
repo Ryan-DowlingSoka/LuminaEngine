@@ -165,13 +165,22 @@ namespace Lumina
 
         ENQUEUE_RENDER_COMMAND(RenderFrame)([this, ThisFrameIndex, Snapshot = ImGuiSnapshot]() mutable
         {
-            RHI::Core::BeginFrame(ThisFrameIndex);
-            
+            // Everything up to each scene's slot release (inside RenderWorlds) is what the game
+            // thread's WaitForSlotConsumed actually waits on; keep these stages attributed.
+            {
+                LUMINA_PROFILE_SECTION_COLORED("RT Frame Fence (GPU)", tracy::Color::Crimson);
+                RHI::Core::BeginFrame(ThisFrameIndex);
+            }
+
+            // RenderWorlds signals each scene's slot exactly once (after its recording); a second
+            // blanket signal here would race a freshly started Extract and corrupt frame data.
             GWorldManager->RenderWorlds_NewRHI(ThisFrameIndex);
 
-            GWorldManager->SignalFrameConsumed(ThisFrameIndex);
-
-            RHI::FTextureH SwapImage = RHI::AcquireNextImage(Swapchain);
+            RHI::FTextureH SwapImage;
+            {
+                LUMINA_PROFILE_SECTION_COLORED("RT Acquire Swapchain", tracy::Color::Orange3);
+                SwapImage = RHI::AcquireNextImage(Swapchain);
+            }
             if (!RHI::IsValid(SwapImage))
             {
                 RHI::RecreateSwapchain(Swapchain, Windowing::GetPrimaryWindowHandle()->GetExtent());
@@ -192,18 +201,25 @@ namespace Lumina
 
             #if WITH_EDITOR
             // Editor RmlUi previews rasterize before ImGui samples their RTs below.
-            RmlUi::RenderEditorContexts(CL);
+            {
+                LUMINA_PROFILE_SECTION_COLORED("RT Editor UI", tracy::Color::SlateBlue1);
+                RmlUi::RenderEditorContexts(CL);
+            }
             #endif
 
             #if WITH_EDITOR
             if (Snapshot)
             {
+                LUMINA_PROFILE_SECTION_COLORED("RT ImGui Record", tracy::Color::SlateBlue3);
                 ImGuiRenderer->OnEndFrame_NewRHI(CL, SwapImage, Extent, *Snapshot);
                 ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
             }
             #endif
 
-            RHI::Core::Present(Swapchain, CL);
+            {
+                LUMINA_PROFILE_SECTION_COLORED("RT Present", tracy::Color::Orange4);
+                RHI::Core::Present(Swapchain, CL);
+            }
         });
     }
 

@@ -505,6 +505,14 @@ namespace Lumina::RHI
     RUNTIME_API void        HeapFreeRWTexture(FTextureHeapH Heap, uint32 Slot);
     RUNTIME_API void        HeapFreeSampler(FTextureHeapH Heap, uint32 Slot);
 
+    // Debug introspection: every occupied sampled slot in the heap.
+    struct FHeapTextureInfo
+    {
+        uint32       Slot;
+        FTextureDesc Desc;
+    };
+    RUNTIME_API void        GetTextureHeapTextures(FTextureHeapH Heap, TVector<FHeapTextureInfo>& OutTextures);
+
     RUNTIME_API FCmdListH   OpenCommandList(EQueueType Type = EQueueType::Default);
     RUNTIME_API void        ResetCommandList(FCmdListH CommandList);
     RUNTIME_API void        Submit(EQueueType Queue, TSpan<const FCmdListH> CommandLists, TSpan<const FSemaphoreInfo> Waits = {}, TSpan<const FSemaphoreInfo> Signals = {});

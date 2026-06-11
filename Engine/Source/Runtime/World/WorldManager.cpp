@@ -130,29 +130,26 @@ namespace Lumina
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
-            if (World == nullptr || World->IsSuspended() || World->GetRenderer() == nullptr)
-            {
-                continue;
-            }
-
-            World->GetRenderer()->RenderView_NewRHI(FrameIndex);
-        }
-    }
-
-    void FWorldManager::SignalFrameConsumed(uint8 FrameIndex)
-    {
-        for (const TUniquePtr<FWorldContext>& Context : Contexts)
-        {
-            CWorld* World = Context->World.Get();
             if (World == nullptr)
             {
                 continue;
             }
 
-            if (IRenderScene* Scene = World->GetRenderer())
+            IRenderScene* Renderer = World->GetRenderer();
+            if (Renderer == nullptr)
             {
-                Scene->SignalFrameConsumed(FrameIndex);
+                continue;
             }
+
+            if (!World->IsSuspended())
+            {
+                Renderer->RenderView_NewRHI(FrameIndex);
+            }
+
+            // Exactly ONE signal per scene per frame, immediately after its recording (or its
+            // skip). A second signal later would race: it can consume a produce the game thread
+            // started in between, letting Extract overwrite frame data mid-record.
+            Renderer->SignalFrameConsumed(FrameIndex);
         }
     }
 

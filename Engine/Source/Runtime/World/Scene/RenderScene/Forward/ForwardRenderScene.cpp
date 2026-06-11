@@ -81,12 +81,9 @@ namespace Lumina
     #define SCENE_MARKER_CONCAT_INNER(A, B) A##B
     #define SCENE_MARKER_CONCAT(A, B) SCENE_MARKER_CONCAT_INNER(A, B)
     #define SCENE_GPU_SCOPE(InCL, Name) FScopedGPUMarker SCENE_MARKER_CONCAT(GpuMarker_, __LINE__)(InCL, Name)
-
-    // Coarse stage-level memory barriers between passes (the new RHI has no resource tracking;
-    // images stay GENERAL, so synchronization is stage masks + a full-memory dependency).
+    
     namespace Barriers
     {
-        // Compute writes -> any consumer (draws, indirect fetch, later compute, transfer fills/copies).
         static void ComputeToAll(RHI::FCmdListH CL)
         {
             RHI::CmdBarrier(CL,
@@ -95,7 +92,6 @@ namespace Lumina
                 RHI::EStageFlags::IndirectArguments | RHI::EStageFlags::FragmentTests | RHI::EStageFlags::Transfer);
         }
 
-        // Raster outputs (color + depth) -> sampled / compute reads + further attachment use.
         static void RasterToRead(RHI::FCmdListH CL)
         {
             RHI::CmdBarrier(CL,
@@ -104,7 +100,6 @@ namespace Lumina
                 RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
         }
 
-        // Raster outputs -> raster outputs (attachment reuse across passes).
         static void RasterToRaster(RHI::FCmdListH CL)
         {
             RHI::CmdBarrier(CL,
@@ -112,20 +107,17 @@ namespace Lumina
                 RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
         }
 
-        // Transfer (clears/copies/fills) -> everything.
         static void TransferToAll(RHI::FCmdListH CL)
         {
             RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
         }
 
-        // Everything -> transfer (copy sources must be written).
         static void AllToTransfer(RHI::FCmdListH CL)
         {
             RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
         }
     }
 
-    // Synchronous pixel upload into a freshly created scene image (init-time LUT path).
     static void UploadSceneImagePixels(const FSceneImage& Image, const void* Bytes, uint64 Size, uint32 RowPitchTexels)
     {
         const RHI::GPUPtr Staging = RHI::Malloc(Size, RHI::kDefaultAlign, RHI::EMemoryType::CPUWrite);
@@ -139,10 +131,7 @@ namespace Lumina
         RHI::ResetCommandList(CL);
         RHI::Free(Staging);
     }
-
-    // Hemisphere SSAO kernel: SSAO_KERNEL_SIZE directions in the +Z (tangent-space) hemisphere, scaled so
-    // samples bunch near the origin (more local detail) via an accelerating lerp. Deterministic seed so the
-    // pattern is stable frame-to-frame (no shimmer). The shader rotates this per-pixel by the noise texture.
+    
     static void GenerateSSAOKernel(FSSAOSettings& Settings)
     {
         std::mt19937 Rng(1337u);
@@ -2241,19 +2230,15 @@ namespace Lumina
                 bLastConvolvedHasSun           = (LightData.bHasSun != 0);
                 bIBLConvolutionValid           = true;
             }
-
-            // No environment this frame: the render thread clears the IBL cubes to black, so drop the
-            // bake snapshot or a later re-enable with identical inputs would never set the dirty bits.
+            
             if (!RenderSettings.bHasEnvironment)
             {
                 bIBLValid            = false;
                 bIBLConvolutionValid = false;
             }
-            // --- Bindless scene root: transient-upload the per-frame dynamic buffers and capture their
-            // device addresses; GPU-written + CPU-static buffers use their stable addresses. SceneData,
-            // Clusters and the IBL indices are per-view (added by BuildViewSceneRoot). ---
             SceneRootShared = FSceneRoot{};
             SceneRootShared.Lights = RHI::Core::CopyTransient(LightData);
+            DEBUG_ASSERT(Frame.Geometry.DrawCommands.empty() || !Instances.empty());
             if (!Instances.empty())
             {
                 SceneRootShared.Instances = RHI::Core::CopyTransientArray(Instances.data(), Instances.size());
@@ -2629,12 +2614,8 @@ namespace Lumina
         {
             return;
         }
-
-        // CachedMatrix is authoritative (ResolveAllDirtyTransforms ran serially before this gather). Read it
-        // directly -- GetWorldMatrix() would re-walk the parent chain and mutate the registry from a worker.
+        
         const FMatrix4& TransformMatrix = TransformComponent.CachedMatrix;
-
-        // Reject before uploading bones (biggest per-entity skeletal cost).
         const float     CullScale   = Math::Max(MeshComponent.BoundsScale, 1.0f);
         const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
         const FVector3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
@@ -2653,8 +2634,7 @@ namespace Lumina
             return;
         }
 
-        // Shadow-only casters intentionally excluded: a pose feeding only an off-screen shadow
-        // doesn't need per-frame eval.
+        // Shadow-only casters intentionally excluded.
         if (SceneCullContext.IsCameraVisible(
                 Center,
                 Radius,
@@ -2665,9 +2645,7 @@ namespace Lumina
         }
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
-
-        // Every skeletal draw needs a valid bone slice (LoadSkinnedVertex path); fall back to bind pose
-        // when no animation is playing -- otherwise stale matrices from the previous frame leak through.
+        
         const CSkeletalMesh*     SkelMesh = MeshComponent.SkeletalMesh.Get();
         const FSkeletonResource* SkelRes  = (SkelMesh && SkelMesh->Skeleton.IsValid())
             ? SkelMesh->Skeleton->GetSkeletonResource()
@@ -2690,7 +2668,7 @@ namespace Lumina
             else
             {
                 // No active animation: BoneWorld * InvBindMatrix collapses to identity for every bone.
-                static const FBoneTransform IdentityBone{ FVector4(1,0,0,0), FVector4(0,1,0,0), FVector4(0,0,1,0) };
+                static constexpr FBoneTransform IdentityBone{ FVector4(1,0,0,0), FVector4(0,1,0,0), FVector4(0,0,1,0) };
                 Local.BonesData.resize(Local.BonesData.size() + SkeletonBoneCount, IdentityBone);
             }
         }
@@ -5351,14 +5329,12 @@ namespace Lumina
         RHI::CmdBeginRenderPass(CL, Pass);
         SetViewportScissor(CL, Extent);
 
-        // GREATER_EQUAL: occluders re-write their pre-pass depth; non-occluders fill the rest.
         RHI::FDepthStencilDesc DepthDesc;
         DepthDesc.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
         DepthDesc.DepthTest = RHI::EOp::GreaterEqual;
         RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
 
-        // DBuffer decal targets (opaque only), written by DecalPass earlier this frame; read here
-        // bindlessly via pass-block indices.
+
         struct FDBufferPushConstants
         {
             uint32 DBufferAIndex;
@@ -5367,9 +5343,7 @@ namespace Lumina
             uint32 _Pad;
         };
         static_assert(sizeof(FDBufferPushConstants) == 16, "FDBufferPushConstants must match the slang pass block.");
-
-        // No decals this frame -> sentinel index so the base pass PS skips the three DBuffer samples
-        // (they would composite a guaranteed no-op), removing 3 tex loads from every opaque pixel.
+        
         FDBufferPushConstants DBufferPC = {};
         if (Frame.Primitives.DecalExtracts.empty())
         {
@@ -5427,9 +5401,7 @@ namespace Lumina
 
         const FFrameData& Frame = *RenderFrame;
         const float DeltaTime   = Frame.CachedWorldDeltaTime;
-
-        // Reclaim GPU/sim state for destroyed emitters (disabled ones stay in LiveParticleEntities).
-        // Frees are slot-deferred so in-flight frames reading the buffers finish first.
+        
         if (!ParticleGPUStates.empty())
         {
             const TVector<entt::entity>& Live = Frame.Extracts.LiveParticleEntities;
@@ -5470,9 +5442,7 @@ namespace Lumina
             {
                 continue;
             }
-
-            // GPUState is render-thread-owned (this map); everything else comes from the
-            // game-thread snapshot in Item, never from the live component or its asset.
+            
             FParticleGPUState& State = ParticleGPUStates[Item.Entity];
 
             const bool bNeedsAlloc = (State.ParticleBuffer == 0) || (State.AllocatedMax != MaxParticles);
@@ -7497,15 +7467,11 @@ namespace Lumina
         const FSceneImage& HDR        = GetNamedImage(ENamedImage::HDR);
         const FSceneImage& SceneColor = GetNamedImage(ENamedImage::WaterRefraction);
         const FSceneImage& SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
-
-        // Copy the lit opaque scene so the shader can sample "behind the water" (refraction + SSR) without
-        // reading the HDR target it also writes.
+        
         Barriers::AllToTransfer(CL);
         RHI::CmdCopyTexture(CL, HDR.Texture, RHI::FTextureSlice{}, SceneColor.Texture, RHI::FTextureSlice{});
         Barriers::TransferToAll(CL);
-
-        // No depth attachment: the PS rejects fragments behind the opaque scene by sampling SceneDepth, so we
-        // can read depth freely with no sample-while-bound hazard (one transparent layer -> early-Z unneeded).
+        
         RHI::FRenderAttachment Color;
         Color.Texture = HDR.Texture;
         Color.LoadOp  = RHI::ELoadOp::Load;

@@ -102,6 +102,7 @@
 #include "Tools/Debug/AssetRegistryEditorTool.h"
 #include "Tools/Debug/ConsoleVariableEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
+#include "Tools/Debug/TextureHeapEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
 #include "Tools/Debug/SettingsEditorTool.h"
@@ -2198,6 +2199,7 @@ namespace Lumina
         DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
         DrawToolMenuItem<FNetworkEditorTool>(LE_ICON_LAN " Network", this);
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
+        DrawToolMenuItem<FTextureHeapEditorTool>(LE_ICON_IMAGE_ALBUM " Texture Heap", this);
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);

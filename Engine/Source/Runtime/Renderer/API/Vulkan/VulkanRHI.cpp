@@ -429,6 +429,8 @@ namespace Lumina::RHI
         TVector<VkSampler>   Samplers;
         TVector<VkImageView> ImageViews;
         TVector<VkImageView> RWImageViews;
+        // Which texture occupies each sampled slot; debug introspection only.
+        TVector<FTextureH>   SampledOwners;
     };
     
     struct FSemaphore
@@ -2088,7 +2090,8 @@ namespace Lumina::RHI
             .RWImagesBitset         = FBitVector{RWTextureCount, false},
             .Samplers               = TVector<VkSampler>{SamplerCount, nullptr},
             .ImageViews             = TVector<VkImageView>{TextureCount, nullptr},
-            .RWImageViews           = TVector<VkImageView>{RWTextureCount, nullptr}
+            .RWImageViews           = TVector<VkImageView>{RWTextureCount, nullptr},
+            .SampledOwners          = TVector<FTextureH>{TextureCount, FTextureH{}}
         });
     }
 
@@ -2137,6 +2140,7 @@ namespace Lumina::RHI
         }
 
         HeapData.ImageViews[Slot] = TextureData.DefaultImageView;
+        HeapData.SampledOwners[Slot] = Texture;
 
         const VkDescriptorImageInfo ImageInfo
         {
@@ -2269,6 +2273,26 @@ namespace Lumina::RHI
         FScopeLock Lock(GDevice->HeapMutex);
         HeapData.SampledImagesBitset[Slot] = false;
         HeapData.ImageViews[Slot] = VK_NULL_HANDLE;
+        HeapData.SampledOwners[Slot] = {};
+    }
+
+    void GetTextureHeapTextures(FTextureHeapH Heap, TVector<FHeapTextureInfo>& OutTextures)
+    {
+        FTextureHeap& HeapData = GDevice->TextureHeaps[Heap];
+
+        FScopeLock Lock(GDevice->HeapMutex);
+        for (size_t Slot = 0; Slot < HeapData.SampledImagesBitset.size(); ++Slot)
+        {
+            if (!HeapData.SampledImagesBitset[Slot] || HeapData.ImageViews[Slot] == VK_NULL_HANDLE)
+            {
+                continue;
+            }
+            OutTextures.push_back(FHeapTextureInfo
+            {
+                .Slot = (uint32)Slot,
+                .Desc = GDevice->Textures[HeapData.SampledOwners[Slot]].Desc
+            });
+        }
     }
 
     void HeapFreeRWTexture(FTextureHeapH Heap, uint32 Slot)
@@ -2681,6 +2705,8 @@ namespace Lumina::RHI
 
     void Submit(EQueueType Queue, TSpan<const FCmdListH> CommandLists, TSpan<const FSemaphoreInfo> Waits, TSpan<const FSemaphoreInfo> Signals)
     {
+        LUMINA_PROFILE_SCOPE();
+        
         FMemMark Scratch;
 
         auto* SignalInfos = Scratch.AllocArray<VkSemaphoreSubmitInfo>(Signals.size());

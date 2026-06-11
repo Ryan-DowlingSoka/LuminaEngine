@@ -53,7 +53,7 @@ namespace Lumina::RHI
         // frame timeline (paces BeginFrame) + recycles the list with the slot.
         bool Present(FSwapchainH Swapchain, FCmdListH FinalCommandList);
 
-        FTextureHeapH GetGlobalHeap();
+        RUNTIME_API FTextureHeapH GetGlobalHeap();
 
         // Transient per-frame GPU memory (CPU-write, device-addressable). Valid
         // until the slot is reused. Thread-safe (atomic bump).

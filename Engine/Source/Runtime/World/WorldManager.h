@@ -17,8 +17,7 @@ namespace Lumina
 
         void UpdateWorlds(const FUpdateContext& UpdateContext);
 
-        // Game thread: free the render scene of any world hidden past Editor.RenderScene.IdleReclaimSeconds.
-        // At most one world per call to bound the per-frame GPU stall.
+        // Game thread
         void ReclaimIdleRenderers(double NowSeconds);
 
         // Kick every world's physics step onto GPhysicsThread.
@@ -27,20 +26,16 @@ namespace Lumina
         // Block until KickPhysics work completes.
         void WaitForPhysics();
 
-        // Game thread: drain queued physics events for every world. Call after WaitForPhysics.
+        // Game thread
         void DispatchPhysicsEvents();
 
-        // Game thread: snapshot world state for the render thread. Pair with the prior frame's RenderWorlds.
+        // Game thread
         void ExtractWorlds();
 
-        // Render thread: each scene records + submits its frame through RHI:: itself.
+        // Render thread
         void RenderWorlds_NewRHI(uint8 FrameIndex);
 
-        // Render thread: release the slot after the last per-frame CPU read.
-        void SignalFrameConsumed(uint8 FrameIndex);
-
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.
-        // Returns the owning context (stable pointer until DestroyWorldContext).
         FWorldContext* CreateWorldContext(CWorld* World, EWorldType Type, ENetMode NetMode = ENetMode::Standalone);
 
         // Tears the world down and removes its context. Safe to call with a world that has no context.
