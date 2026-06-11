@@ -22,7 +22,6 @@ namespace Lumina::RHI
     constexpr auto kMaxNumTextureHeaps          = 1024;
     constexpr auto kDedicatedMemoryThreshold    = 32u * 1024 * 1024;
     constexpr auto kInvalidHeapSlot             = ~0u;
-    // vkCmdUpdateBuffer's hard limit; CmdWriteMemory's max inline size.
     constexpr auto kMaxInlineWrite              = 65536u;
     
     struct FTexture;
@@ -551,9 +550,7 @@ namespace Lumina::RHI
     RUNTIME_API void        CmdDrawIndexed(FCmdListH CL, GPUPtr IndexBuffer, uint32 IndexOffset, GPUPtr DrawArgs, uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance, EIndexType IndexType = EIndexType::Uint32);
     RUNTIME_API void        CmdDrawIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
     RUNTIME_API void        CmdDrawIndexedIndirect(FCmdListH CL, GPUPtr DrawArgs, uint32 Offset, uint32 DrawCount, uint32 Stride);
-
-    // Explicit-args variants: Args is what the shader sees as gRHI.Args (0 = leave bound),
-    // IndirectBuffer holds the GPU-written draw/dispatch arguments.
+    
     RUNTIME_API void        CmdDrawIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset, uint32 DrawCount, uint32 Stride);
     RUNTIME_API void        CmdDispatchIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset);
 
@@ -570,7 +567,6 @@ namespace Lumina::RHI
         return {Host, GPU};
     }
 
-    // Move-only owner of an RHI handle, calls FreeH on destruction.
     template<typename T>
     class TUniqueH
     {
@@ -633,7 +629,6 @@ namespace Lumina::RHI
     using FSemaphoreUH      = TUniqueH<FSemaphore>;
     using FDepthStencilUH   = TUniqueH<FDepthStencilState>;
 
-    // Move-only owner of a GPU allocation, calls Free on destruction.
     class FUniqueGPUPtr
     {
     public:
