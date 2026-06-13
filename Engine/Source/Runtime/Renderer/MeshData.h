@@ -346,14 +346,27 @@ namespace Lumina
         FName Name;
         TVector<FBoneInfo> Bones;
         THashMap<FName, int32> BoneNameToIndex;
+        
+        TVector<FVector3> BindLocalTranslations;
+        TVector<FQuat>    BindLocalRotations;
+        TVector<FVector3> BindLocalScales;
+        uint32 BindPoseGeneration = 0;
 
         // Transient import-dialog flag; not serialized.
         bool bShouldImport = true;
         
-        FORCEINLINE int32 GetNumBones() const 
-        { 
-            return (int32)Bones.size(); 
+        FORCEINLINE int32 GetNumBones() const
+        {
+            return (int32)Bones.size();
         }
+
+        FORCEINLINE bool HasBindPoseCache() const
+        {
+            return !Bones.empty() && BindLocalRotations.size() == Bones.size();
+        }
+
+        // Decomposes every bone's LocalTransform into the SoA bind cache. Defined in Pose.cpp.
+        void BuildBindPoseCache();
     
         FORCEINLINE int32 FindBoneIndex(const FName& BoneName) const
         {
@@ -423,7 +436,9 @@ namespace Lumina
             Ar << Data.Name;
             Ar << Data.Bones;
             Ar << Data.BoneNameToIndex;
-            
+
+            Data.BuildBindPoseCache();
+
             return Ar;
         }
     };

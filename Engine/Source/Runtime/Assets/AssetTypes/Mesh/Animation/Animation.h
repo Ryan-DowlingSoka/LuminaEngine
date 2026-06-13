@@ -3,8 +3,10 @@
 #include "Core/Math/AABB.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectHandleTyped.h"
+#include "Core/Threading/Thread.h"
 #include "Core/Versioning/CoreVersion.h"
 #include "Memory/SmartPtr.h"
+#include <atomic>
 #include "Animation.generated.h"
 
 namespace Lumina
@@ -91,6 +93,19 @@ namespace Lumina
         // save/reload. A notify references its lane by name (NotifyTrack).
         TVector<FName> NotifyTracks;
 
+        // Channel -> skeleton bone indices resolved once per (skeleton, bind generation) instead of a
+        // per-channel FName hash lookup every sample. Sets are immutable once published so readers can
+        // hold one without locking; sampling runs inside ParallelFor.
+        struct FResolvedChannelSet
+        {
+            const FSkeletonResource* Skeleton = nullptr;
+            uint32 Generation = 0;
+            TVector<int32> BoneIndices;
+        };
+
+        const FResolvedChannelSet* GetResolvedChannelSet(const FSkeletonResource* Skeleton);
+
+        void InvalidateResolvedChannelSets();
 
         friend FArchive& operator << (FArchive& Ar, FAnimationResource& Data)
         {
@@ -101,8 +116,16 @@ namespace Lumina
             Ar << Data.NotifyStates;
             Ar << Data.NotifyTracks;
 
+            Data.InvalidateResolvedChannelSets();
+
             return Ar;
         }
+
+    private:
+
+        std::atomic<const FResolvedChannelSet*> ActiveChannelSet{ nullptr };
+        FMutex ChannelSetMutex;
+        TVector<TUniquePtr<FResolvedChannelSet>> ChannelSets;
     };
     
     

@@ -107,6 +107,12 @@ namespace Lumina
 			++Processed;
 		}
 
+		FPendingDataPlay DataPlay;
+		while (PendingDataPlays.try_dequeue(DataPlay))
+		{
+			ProcessPendingDataPlay(DataPlay);
+		}
+
 		FPendingProceduralStart Start;
 		while (PendingProceduralStarts.try_dequeue(Start))
 		{
@@ -142,6 +148,43 @@ namespace Lumina
 		return Handle;
 	}
 
+	FAudioHandle FMiniaudioContext::PlayAudio2D(const TSharedPtr<FAudioData>& Data, float Volume, float Pitch, bool bLooping, uint64 StartFrame)
+	{
+		return PlayAudioInternal(Data, false, FVector3(0.0f), Volume, Pitch, 1.0f, 50.0f, bLooping, StartFrame);
+	}
+
+	FAudioHandle FMiniaudioContext::PlayAudioAtLocation(const TSharedPtr<FAudioData>& Data, FVector3 Location,
+		float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping, uint64 StartFrame)
+	{
+		return PlayAudioInternal(Data, true, Location, Volume, Pitch, MinDistance, MaxDistance, bLooping, StartFrame);
+	}
+
+	FAudioHandle FMiniaudioContext::PlayAudioInternal(const TSharedPtr<FAudioData>& Data, bool bSpatialized,
+		FVector3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping, uint64 StartFrame)
+	{
+		if (!Data || Data->Bytes.empty())
+		{
+			return FAudioHandle::Invalid();
+		}
+
+		FAudioHandle Handle = AllocateHandle();
+
+		FPendingDataPlay Play;
+		Play.Handle       = Handle;
+		Play.Data         = Data;
+		Play.bSpatialized = bSpatialized;
+		Play.Position     = Position;
+		Play.Volume       = Volume;
+		Play.Pitch        = Pitch;
+		Play.MinDistance  = MinDistance;
+		Play.MaxDistance  = MaxDistance;
+		Play.bLooping     = bLooping;
+		Play.StartFrame   = StartFrame;
+
+		PendingDataPlays.enqueue(eastl::move(Play));
+		return Handle;
+	}
+
 	void FMiniaudioContext::StopSound(FAudioHandle Handle, EAudioStopMode Mode)
 	{
 		CommandQueue.enqueue(FAudioCommand::MakeStop(Handle, Mode));
@@ -170,6 +213,11 @@ namespace Lumina
 	void FMiniaudioContext::SetMinMaxDistance(FAudioHandle Handle, float MinDistance, float MaxDistance)
 	{
 		CommandQueue.enqueue(FAudioCommand::MakeSetMinMaxDistance(Handle, MinDistance, MaxDistance));
+	}
+
+	void FMiniaudioContext::SeekToFrame(FAudioHandle Handle, uint64 Frame)
+	{
+		CommandQueue.enqueue(FAudioCommand::MakeSeekToFrame(Handle, Frame));
 	}
 
 	void FMiniaudioContext::UpdateListenerPosition(FVector3 Location, FQuat Rotation)
@@ -341,6 +389,16 @@ namespace Lumina
 			break;
 		}
 
+		case EAudioCommandType::SeekToFrame:
+		{
+			FActiveSound* Sound = FindSound(Cmd.Handle);
+			if (Sound && !Sound->Procedural)
+			{
+				ma_sound_seek_to_pcm_frame(&Sound->Sound, Cmd.Seek.Frame);
+			}
+			break;
+		}
+
 		case EAudioCommandType::UpdateListener:
 		{
 			FVector3 Forward = Math::Normalize(Math::Rotate(Cmd.Listener.Rotation, FVector3(0.0f, 0.0f, 1.0f)));
@@ -353,6 +411,53 @@ namespace Lumina
 			break;
 		}
 		}
+	}
+
+	void FMiniaudioContext::ProcessPendingDataPlay(FPendingDataPlay& Play)
+	{
+		// Heap-allocate; ma_decoder/ma_sound store pointers in the engine node graph and must not move.
+		TUniquePtr<FActiveSound> NewSound = MakeUnique<FActiveSound>();
+		NewSound->Handle = Play.Handle;
+		NewSound->Source = eastl::move(Play.Data);
+
+		if (ma_decoder_init_memory(NewSound->Source->Bytes.data(), NewSound->Source->Bytes.size(), nullptr, &NewSound->Decoder) != MA_SUCCESS)
+		{
+			LOG_WARN("Audio: Failed to decode audio asset data");
+			return;
+		}
+
+		if (ma_sound_init_from_data_source(&Engine, &NewSound->Decoder, 0, nullptr, &NewSound->Sound) != MA_SUCCESS)
+		{
+			ma_decoder_uninit(&NewSound->Decoder);
+			LOG_WARN("Audio: Failed to init sound from audio asset data");
+			return;
+		}
+
+		NewSound->bInitialized = true;
+
+		if (Play.StartFrame != 0)
+		{
+			ma_sound_seek_to_pcm_frame(&NewSound->Sound, Play.StartFrame);
+		}
+
+		ma_sound_set_volume(&NewSound->Sound, Play.Volume);
+		ma_sound_set_pitch(&NewSound->Sound, Play.Pitch);
+		ma_sound_set_looping(&NewSound->Sound, Play.bLooping ? MA_TRUE : MA_FALSE);
+
+		if (Play.bSpatialized)
+		{
+			ma_sound_set_spatialization_enabled(&NewSound->Sound, MA_TRUE);
+			ma_sound_set_position(&NewSound->Sound, Play.Position.x, Play.Position.y, Play.Position.z);
+			ma_sound_set_min_distance(&NewSound->Sound, Play.MinDistance);
+			ma_sound_set_max_distance(&NewSound->Sound, Play.MaxDistance);
+		}
+		else
+		{
+			ma_sound_set_spatialization_enabled(&NewSound->Sound, MA_FALSE);
+		}
+
+		ma_sound_start(&NewSound->Sound);
+		ActiveSounds.push_back(eastl::move(NewSound));
 	}
 
 	void FMiniaudioContext::ProcessPendingProceduralStart(const FPendingProceduralStart& Start)

@@ -14,6 +14,8 @@ namespace Lumina
         Ar << NumScalarRegisters;
         Ar << NumPoseRegisters;
         Ar << NumStateSlots;
+
+        ResolveTransitionParameters();
     }
 
     int32 CAnimationGraph::FindParameterIndex(const FName& Name) const
@@ -26,5 +28,16 @@ namespace Lumina
             }
         }
         return INDEX_NONE;
+    }
+
+    void CAnimationGraph::ResolveTransitionParameters()
+    {
+        for (FAnimGraphStateMachine& SM : StateMachines)
+        {
+            for (FAnimGraphTransition& Transition : SM.Transitions)
+            {
+                Transition.CachedParamIndex = FindParameterIndex(Transition.ConditionParameter);
+            }
+        }
     }
 }

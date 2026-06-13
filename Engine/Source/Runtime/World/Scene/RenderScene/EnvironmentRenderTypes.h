@@ -63,18 +63,19 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FEnvironmentParams);
 
-    // CPU mirror of the per-frame exponential-height-fog CB; layout must match Includes/Fog.slang. Read by
-    // the froxel passes (inject builds density + scattering; apply reads FogMaxOpacity).
+    // CPU mirror of the per-frame exponential-height-fog CB; layout must match Includes/Fog.slang.
+    // Read by the froxel inject (near-range shadowed scattering) and the fog apply pass (froxel
+    // composite + analytic far fog/sky).
     struct alignas(16) FExponentialHeightFogParams
     {
-        // rgb = fog inscattering color, w = fog density at base height
+        // rgb = fog albedo, w = fog density at base height
         FVector4   InscatteringColor = FVector4(0.5f, 0.6f, 0.7f, 0.02f);
         // x = height falloff, y = base height (world Y), z = start distance, w = max opacity
         FVector4   HeightParams      = FVector4(0.2f, 0.0f, 0.0f, 1.0f);
-        // rgb = directional (sun) inscatter color, w = directional exponent
+        // rgb = directional (sun) inscatter tint, w = directional exponent
         FVector4   DirectionalColor  = FVector4(1.0f, 0.9f, 0.7f, 4.0f);
         // x = volumetric scattering intensity, y = volumetric anisotropy,
-        // z = volumetric max distance, w = directional inscatter start distance
+        // z = froxel volume far plane, w = directional inscatter start distance
         FVector4   VolumetricParams  = FVector4(1.0f, 0.6f, 200.0f, 0.0f);
     };
     VERIFY_SSBO_ALIGNMENT(FExponentialHeightFogParams);

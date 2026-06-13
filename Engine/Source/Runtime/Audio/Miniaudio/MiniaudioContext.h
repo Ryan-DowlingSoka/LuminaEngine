@@ -28,12 +28,17 @@ namespace Lumina
 		FAudioHandle PlaySoundAtLocation(FStringView File, FVector3 Location,
 			float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping) override;
 
+		FAudioHandle PlayAudio2D(const TSharedPtr<FAudioData>& Data, float Volume, float Pitch, bool bLooping, uint64 StartFrame) override;
+		FAudioHandle PlayAudioAtLocation(const TSharedPtr<FAudioData>& Data, FVector3 Location,
+			float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping, uint64 StartFrame) override;
+
 		void StopSound(FAudioHandle Handle, EAudioStopMode Mode) override;
 		void SetVolume(FAudioHandle Handle, float Volume) override;
 		void SetPitch(FAudioHandle Handle, float Pitch) override;
 		void SetLooping(FAudioHandle Handle, bool bLooping) override;
 		void SetPosition(FAudioHandle Handle, FVector3 Position) override;
 		void SetMinMaxDistance(FAudioHandle Handle, float MinDistance, float MaxDistance) override;
+		void SeekToFrame(FAudioHandle Handle, uint64 Frame) override;
 		void UpdateListenerPosition(FVector3 Location, FQuat Rotation) override;
 		void StopAllSounds() override;
 
@@ -44,6 +49,8 @@ namespace Lumina
 	private:
 
 		FAudioHandle AllocateHandle();
+		FAudioHandle PlayAudioInternal(const TSharedPtr<FAudioData>& Data, bool bSpatialized,
+			FVector3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping, uint64 StartFrame);
 		void PumpOnce();                         // one drain pass: commands + procedural + cleanup
 		static void PumpEntry(void* Arg, uint32 WorkerIndex);
 		void ProcessCommand(const FAudioCommand& Cmd);
@@ -56,6 +63,10 @@ namespace Lumina
 			ma_decoder Decoder;
 			ma_sound Sound;
 			bool bInitialized = false;
+
+			// When non-null, the decoder reads from this shared asset data instead of Bytes; the ref
+			// keeps the bytes alive even if the owning asset is unloaded mid-playback.
+			TSharedPtr<FAudioData> Source;
 
 			// When non-null, this is a procedural sound; ma_sound is attached to Procedural's ring buffer
 			// instead of Decoder. Procedural sounds are never auto-cleaned by CleanupFinishedSounds.
@@ -76,6 +87,23 @@ namespace Lumina
 		};
 		TConcurrentQueue<FPendingProceduralStart> PendingProceduralStarts;
 		void ProcessPendingProceduralStart(const FPendingProceduralStart& Start);
+
+		// Side queue for asset-backed Play commands; the unioned FAudioCommand can't carry a TSharedPtr.
+		struct FPendingDataPlay
+		{
+			FAudioHandle Handle;
+			TSharedPtr<FAudioData> Data;
+			bool bSpatialized;
+			FVector3 Position;
+			float Volume;
+			float Pitch;
+			float MinDistance;
+			float MaxDistance;
+			bool bLooping;
+			uint64 StartFrame;
+		};
+		TConcurrentQueue<FPendingDataPlay> PendingDataPlays;
+		void ProcessPendingDataPlay(FPendingDataPlay& Play);
 
 		FActiveSound* FindSound(FAudioHandle Handle);
 		void UninitSound(FActiveSound& Sound);

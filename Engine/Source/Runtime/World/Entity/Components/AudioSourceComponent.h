@@ -2,18 +2,21 @@
 
 #include "Audio/AudioTypes.h"
 #include "Core/Object/ObjectMacros.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "AudioSourceComponent.generated.h"
 
 namespace Lumina
 {
+	class CAudioStream;
+
 	REFLECT(Component, Category = "Audio")
 	struct RUNTIME_API SAudioSourceComponent
 	{
 		GENERATED_BODY()
 
-		/** Path to the audio file asset to play. */
+		/** Audio asset to play. */
 		PROPERTY(Script, Editable)
-		FString SoundFile;
+		TObjectPtr<CAudioStream> Sound;
 
 		/** Playback volume multiplier (1.0 = full volume). */
 		PROPERTY(Script, Editable)

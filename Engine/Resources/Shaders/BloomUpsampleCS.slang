@@ -17,6 +17,11 @@ struct FPushConstants
     uint2  DstSize;
     uint   DstUAV;          // bindless RW: destination mip
     float  SrcMip;          // mip level to sample on the source SRV
+
+    float  Scatter;         // weight on the accumulated coarser mips; <1 = geometric halo falloff
+    uint   _Pad0;
+    uint   _Pad1;
+    uint   _Pad2;
 };
 
 FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
@@ -58,8 +63,9 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     Tent       += (a + c + g + i);
     Tent       *= (1.0 / 16.0);
 
-    // Additive: dest already has the downsample contribution from SPD plus any
-    // accumulated upsample from a deeper-mip step.
+    // Progressive accumulation: dest holds its own downsample plus everything already gathered
+    // from deeper mips; Scatter < 1 makes each coarser octave contribute geometrically less, which
+    // controls how far the wide halo reaches without re-tuning intensity.
     float3 Prev = gRWTextures2D[Pass().DstUAV][DstP].rgb;
-    gRWTextures2D[Pass().DstUAV][DstP] = float4(Prev + Tent, 0);
+    gRWTextures2D[Pass().DstUAV][DstP] = float4(Prev + Tent * Pass().Scatter, 0);
 }

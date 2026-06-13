@@ -123,6 +123,11 @@ namespace Lumina
         PROPERTY(Editable, Category = "Post Process|Bloom", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
         float BloomSoftKnee = 0.5f;
 
+        /** How far the wide halo spreads: each coarser bloom octave contributes Scatter x the
+        previous one. ~0.85 cinematic, 1 = flat sum of all octaves, low = tight glow only. */
+        PROPERTY(Editable, Category = "Post Process|Bloom", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
+        float BloomScatter = 0.85f;
+
         /** Bloom tint. */
         PROPERTY(Editable, Color, Category = "Post Process|Bloom")
         FVector3 BloomTint = FVector3(1.0f);
@@ -177,6 +182,7 @@ namespace Lumina
         InOut.BloomIntensity       = LerpF (InOut.BloomIntensity,       In.BloomIntensity);
         InOut.BloomThreshold       = LerpF (InOut.BloomThreshold,       In.BloomThreshold);
         InOut.BloomSoftKnee        = LerpF (InOut.BloomSoftKnee,        In.BloomSoftKnee);
+        InOut.BloomScatter         = LerpF (InOut.BloomScatter,         In.BloomScatter);
         InOut.BloomTint            = LerpV3(InOut.BloomTint,            In.BloomTint);
         InOut.ChromaticAberration  = LerpF (InOut.ChromaticAberration,  In.ChromaticAberration);
         InOut.FilmGrainIntensity   = LerpF (InOut.FilmGrainIntensity,   In.FilmGrainIntensity);

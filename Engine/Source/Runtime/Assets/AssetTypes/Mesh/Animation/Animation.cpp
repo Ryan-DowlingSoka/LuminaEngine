@@ -76,29 +76,18 @@ namespace Lumina
             return Math::Slerp(Q0, Q1, t);
         }
 
-        // Cheap TRS extract for rigid + per-axis-scale matrices; Math::Decompose's polar iteration is overkill here.
-        static FORCEINLINE void FastDecomposeTRS(const FMatrix4& M,
-                                                  FVector3& OutT,
-                                                  FQuat& OutR,
-                                                  FVector3& OutS)
+        static FORCEINLINE void GetBindTRS(const FSkeletonResource* Skeleton, int32 BoneIndex, FVector3& OutT, FQuat& OutR, FVector3& OutS)
         {
-            OutT = FVector3(M[3]);
-
-            const FVector3 C0(M[0]);
-            const FVector3 C1(M[1]);
-            const FVector3 C2(M[2]);
-
-            OutS = FVector3(Math::Length(C0), Math::Length(C1), Math::Length(C2));
-
-            const float InvSx = OutS.x > 1e-8f ? 1.0f / OutS.x : 0.0f;
-            const float InvSy = OutS.y > 1e-8f ? 1.0f / OutS.y : 0.0f;
-            const float InvSz = OutS.z > 1e-8f ? 1.0f / OutS.z : 0.0f;
-
-            FMatrix3 Rot;
-            Rot[0] = C0 * InvSx;
-            Rot[1] = C1 * InvSy;
-            Rot[2] = C2 * InvSz;
-            OutR = Math::ToQuat(Rot);
+            if (Skeleton->HasBindPoseCache())
+            {
+                OutT = Skeleton->BindLocalTranslations[BoneIndex];
+                OutR = Skeleton->BindLocalRotations[BoneIndex];
+                OutS = Skeleton->BindLocalScales[BoneIndex];
+            }
+            else
+            {
+                AnimPose::DecomposeTRS(Skeleton->GetBone(BoneIndex).LocalTransform, OutT, OutR, OutS);
+            }
         }
 
         static constexpr uint8 TouchedT = 1u << 0;
@@ -107,6 +96,46 @@ namespace Lumina
         static constexpr uint8 TouchedAll = TouchedT | TouchedR | TouchedS;
     }
 
+    const FAnimationResource::FResolvedChannelSet* FAnimationResource::GetResolvedChannelSet(const FSkeletonResource* Skeleton)
+    {
+        const FResolvedChannelSet* Active = ActiveChannelSet.load(std::memory_order_acquire);
+        if (Active && Active->Skeleton == Skeleton && Active->Generation == Skeleton->BindPoseGeneration)
+        {
+            return Active;
+        }
+
+        FScopeLock Lock(ChannelSetMutex);
+
+        for (const TUniquePtr<FResolvedChannelSet>& Set : ChannelSets)
+        {
+            if (Set->Skeleton == Skeleton && Set->Generation == Skeleton->BindPoseGeneration)
+            {
+                ActiveChannelSet.store(Set.get(), std::memory_order_release);
+                return Set.get();
+            }
+        }
+
+        TUniquePtr<FResolvedChannelSet> NewSet = MakeUnique<FResolvedChannelSet>();
+        NewSet->Skeleton   = Skeleton;
+        NewSet->Generation = Skeleton->BindPoseGeneration;
+        NewSet->BoneIndices.reserve(Channels.size());
+        for (const FAnimationChannel& Channel : Channels)
+        {
+            NewSet->BoneIndices.push_back(Skeleton->FindBoneIndex(Channel.TargetBone));
+        }
+
+        const FResolvedChannelSet* Result = NewSet.get();
+        ChannelSets.push_back(eastl::move(NewSet));
+        ActiveChannelSet.store(Result, std::memory_order_release);
+        return Result;
+    }
+
+    void FAnimationResource::InvalidateResolvedChannelSets()
+    {
+        FScopeLock Lock(ChannelSetMutex);
+        ActiveChannelSet.store(nullptr, std::memory_order_release);
+        ChannelSets.clear();
+    }
 
     void CAnimation::Serialize(FArchive& Ar)
     {
@@ -148,15 +177,19 @@ namespace Lumina
 
         Memory::Memset(ScratchTouched.data(), 0, (size_t)NumBones * sizeof(uint8));
 
-        // Pass 1: gather per-bone TRS overrides; one sample per channel, zero decompositions.
-        for (const FAnimationChannel& Channel : AnimationResource->Channels)
+        // Pass 1: gather per-bone TRS overrides; one sample per channel, bone indices pre-resolved.
+        const FAnimationResource::FResolvedChannelSet* Resolved = AnimationResource->GetResolvedChannelSet(InSkeleton);
+        const TVector<FAnimationChannel>& Channels = AnimationResource->Channels;
+
+        for (SIZE_T c = 0; c < Channels.size(); ++c)
         {
-            const int32 BoneIdx = InSkeleton->FindBoneIndex(Channel.TargetBone);
+            const int32 BoneIdx = Resolved->BoneIndices[c];
             if (BoneIdx < 0 || BoneIdx >= NumBones)
             {
                 continue;
             }
 
+            const FAnimationChannel& Channel = Channels[c];
             switch (Channel.TargetPath)
             {
             case FAnimationChannel::ETargetPath::Translation:
@@ -176,56 +209,44 @@ namespace Lumina
             }
         }
 
-        // Pass 2: build per-bone local matrices into OutBoneTransforms (scratch; later passes overwrite).
+        // Pass 2: local matrices fused with FK; Bones[] is parents-before-children so a single linear pass works.
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
             const uint8 Touched = ScratchTouched[i];
 
+            FMatrix4 Local;
             if (Touched == 0)
             {
-                OutBoneTransforms[i] = Bone.LocalTransform;
-                continue;
+                Local = Bone.LocalTransform;
             }
-
-            if (Touched == Detail::TouchedAll)
+            else
             {
-                OutBoneTransforms[i] =
-                    Math::Translate(FMatrix4(1.0f), ScratchT[i]) *
-                    Math::ToMatrix4(ScratchR[i]) *
-                    Math::Scale(FMatrix4(1.0f), ScratchS[i]);
-                continue;
+                FVector3 T, S;
+                FQuat R;
+                if (Touched == Detail::TouchedAll)
+                {
+                    T = ScratchT[i];
+                    R = ScratchR[i];
+                    S = ScratchS[i];
+                }
+                else
+                {
+                    Detail::GetBindTRS(InSkeleton, i, T, R, S);
+                    if (Touched & Detail::TouchedT) T = ScratchT[i];
+                    if (Touched & Detail::TouchedR) R = ScratchR[i];
+                    if (Touched & Detail::TouchedS) S = ScratchS[i];
+                }
+                Local = AnimPose::ComposeTRS(T, R, S);
             }
 
-            FVector3 T, S;
-            FQuat R;
-            Detail::FastDecomposeTRS(Bone.LocalTransform, T, R, S);
-
-            if (Touched & Detail::TouchedT) T = ScratchT[i];
-            if (Touched & Detail::TouchedR) R = ScratchR[i];
-            if (Touched & Detail::TouchedS) S = ScratchS[i];
-
-            OutBoneTransforms[i] =
-                Math::Translate(FMatrix4(1.0f), T) *
-                Math::ToMatrix4(R) *
-                Math::Scale(FMatrix4(1.0f), S);
+            OutBoneTransforms[i] = Bone.ParentIndex != INDEX_NONE ? OutBoneTransforms[Bone.ParentIndex] * Local : Local;
         }
 
-        // Pass 3: FK in skeleton order; Bones[] is parents-before-children so a single linear pass works.
+        // Pass 3: fold in InvBind to produce the GPU skinning matrix.
         for (int32 i = 0; i < NumBones; ++i)
         {
-            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
-            if (Bone.ParentIndex != INDEX_NONE)
-            {
-                OutBoneTransforms[i] = OutBoneTransforms[Bone.ParentIndex] * OutBoneTransforms[i];
-            }
-        }
-
-        // Pass 4: fold in InvBind to produce the GPU skinning matrix.
-        for (int32 i = 0; i < NumBones; ++i)
-        {
-            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
-            OutBoneTransforms[i] = OutBoneTransforms[i] * Bone.InvBindMatrix;
+            OutBoneTransforms[i] = OutBoneTransforms[i] * InSkeleton->GetBone(i).InvBindMatrix;
         }
     }
 
@@ -241,91 +262,55 @@ namespace Lumina
             return;
         }
 
-        // Per-thread scratch reused across frames; thread_local required since this runs in ParallelFor.
-        thread_local TVector<FVector3> ScratchT;
-        thread_local TVector<FQuat> ScratchR;
-        thread_local TVector<FVector3> ScratchS;
-        thread_local TVector<uint8>     ScratchTouched;
+        // Start from the bind pose, then overwrite whatever the channels animate. With the skeleton's
+        // SoA bind cache this is three bulk copies instead of a per-bone decompose.
+        OutPose.ResetToBindPose(InSkeleton);
 
-        if ((int32)ScratchT.size() < NumBones)
+        const FAnimationResource::FResolvedChannelSet* Resolved = AnimationResource->GetResolvedChannelSet(InSkeleton);
+        const TVector<FAnimationChannel>& Channels = AnimationResource->Channels;
+
+        for (SIZE_T c = 0; c < Channels.size(); ++c)
         {
-            ScratchT.resize(NumBones);
-            ScratchR.resize(NumBones);
-            ScratchS.resize(NumBones);
-            ScratchTouched.resize(NumBones);
-        }
-
-        Memory::Memset(ScratchTouched.data(), 0, (size_t)NumBones * sizeof(uint8));
-
-        // Pass 1: gather per-bone TRS overrides; one sample per channel, zero decompositions.
-        for (const FAnimationChannel& Channel : AnimationResource->Channels)
-        {
-            const int32 BoneIdx = InSkeleton->FindBoneIndex(Channel.TargetBone);
+            const int32 BoneIdx = Resolved->BoneIndices[c];
             if (BoneIdx < 0 || BoneIdx >= NumBones)
             {
                 continue;
             }
 
+            const FAnimationChannel& Channel = Channels[c];
             switch (Channel.TargetPath)
             {
             case FAnimationChannel::ETargetPath::Translation:
-                ScratchT[BoneIdx]       = Detail::SampleVec3(Channel.Timestamps, Channel.Translations, Time);
-                ScratchTouched[BoneIdx] |= Detail::TouchedT;
+                OutPose.Translations[BoneIdx] = Detail::SampleVec3(Channel.Timestamps, Channel.Translations, Time);
                 break;
             case FAnimationChannel::ETargetPath::Rotation:
-                ScratchR[BoneIdx]       = Detail::SampleQuat(Channel.Timestamps, Channel.Rotations, Time);
-                ScratchTouched[BoneIdx] |= Detail::TouchedR;
+                OutPose.Rotations[BoneIdx] = Detail::SampleQuat(Channel.Timestamps, Channel.Rotations, Time);
                 break;
             case FAnimationChannel::ETargetPath::Scale:
-                ScratchS[BoneIdx]       = Detail::SampleVec3(Channel.Timestamps, Channel.Scales, Time);
-                ScratchTouched[BoneIdx] |= Detail::TouchedS;
+                OutPose.Scales[BoneIdx] = Detail::SampleVec3(Channel.Timestamps, Channel.Scales, Time);
                 break;
             default:
                 break;
             }
-        }
-
-        // Pass 2: resolve each bone's local TRS, falling back to the bind pose for untouched channels.
-        for (int32 i = 0; i < NumBones; ++i)
-        {
-            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
-            const uint8 Touched = ScratchTouched[i];
-
-            if (Touched == Detail::TouchedAll)
-            {
-                OutPose.Translations[i] = ScratchT[i];
-                OutPose.Rotations[i]    = ScratchR[i];
-                OutPose.Scales[i]       = ScratchS[i];
-                continue;
-            }
-
-            FVector3 T, S;
-            FQuat R;
-            Detail::FastDecomposeTRS(Bone.LocalTransform, T, R, S);
-
-            if (Touched & Detail::TouchedT) T = ScratchT[i];
-            if (Touched & Detail::TouchedR) R = ScratchR[i];
-            if (Touched & Detail::TouchedS) S = ScratchS[i];
-
-            OutPose.Translations[i] = T;
-            OutPose.Rotations[i]    = R;
-            OutPose.Scales[i]       = S;
         }
     }
 
     void CAnimation::SampleBoneLocal(float Time, FSkeletonResource* RESTRICT InSkeleton, int32 BoneIndex,
                                      FVector3& OutT, FQuat& OutR, FVector3& OutS) const
     {
-        Detail::FastDecomposeTRS(InSkeleton->GetBone(BoneIndex).LocalTransform, OutT, OutR, OutS);
+        Detail::GetBindTRS(InSkeleton, BoneIndex, OutT, OutR, OutS);
 
-        const FName& BoneName = InSkeleton->GetBone(BoneIndex).Name;
-        for (const FAnimationChannel& Channel : AnimationResource->Channels)
+        const FAnimationResource::FResolvedChannelSet* Resolved = AnimationResource->GetResolvedChannelSet(InSkeleton);
+        const TVector<FAnimationChannel>& Channels = AnimationResource->Channels;
+
+        for (SIZE_T c = 0; c < Channels.size(); ++c)
         {
-            if (Channel.TargetBone != BoneName)
+            if (Resolved->BoneIndices[c] != BoneIndex)
             {
                 continue;
             }
 
+            const FAnimationChannel& Channel = Channels[c];
             switch (Channel.TargetPath)
             {
             case FAnimationChannel::ETargetPath::Translation:

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "AudioSystem.h"
+#include "Assets/AssetTypes/Audio/AudioStream.h"
 #include "Audio/AudioGlobals.h"
 #include "World/Entity/EntityHandle.h"
 #include "World/Entity/Components/AudioSourceComponent.h"
@@ -73,11 +74,11 @@ namespace Lumina
 				{
 					Audio.bReady = true;
 
-					if (Audio.bPlayOnReady && !Audio.SoundFile.empty())
+					if (Audio.bPlayOnReady && Audio.Sound != nullptr && Audio.Sound->IsValid())
 					{
 						const STransformComponent& Transform = XFormStorage.get(Entity);
-						Audio.ActiveHandle = GAudioContext->PlaySoundAtLocation(
-							FStringView(Audio.SoundFile),
+						Audio.ActiveHandle = GAudioContext->PlayAudioAtLocation(
+							Audio.Sound->GetAudioData(),
 							Transform.GetWorldLocation(),
 							Audio.Volume,
 							Audio.Pitch,

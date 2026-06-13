@@ -39,6 +39,7 @@
 #include "LuminaEditor.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
+#include "Assets/AssetTypes/Audio/AudioStream.h"
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/DataAsset/DataAsset.h"
 #include "Assets/AssetTypes/Font/Font.h"
@@ -113,6 +114,7 @@
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
 #include "Tools/AssetEditors/DataAsset/DataAssetEditorTool.h"
+#include "Tools/AssetEditors/AudioStream/AudioStreamEditorTool.h"
 #include "Tools/AssetEditors/PhysicsMaterial/PhysicsMaterialEditorTool.h"
 #include "Tools/AssetEditors/DataAsset/DataAssetSchemaEditorTool.h"
 #include "Tools/AssetEditors/EntityComponentType/EntityComponentTypeEditorTool.h"
@@ -910,6 +912,7 @@ namespace Lumina
         Registry.RegisterAssetEditor<CDataAssetSchema,    FDataAssetSchemaEditorTool>();
         Registry.RegisterAssetEditor<CDataAsset,          FDataAssetEditorTool>();
         Registry.RegisterAssetEditor<CPhysicsMaterial,    FPhysicsMaterialEditorTool>();
+        Registry.RegisterAssetEditor<CAudioStream,        FAudioStreamEditorTool>();
         Registry.RegisterAssetEditor<CEntityComponentType, FEntityComponentTypeEditorTool>();
         Registry.RegisterAssetEditor<CGeometryCollection, FGeometryCollectionEditorTool>();
         Registry.RegisterAssetEditor<CTexture,            FTextureEditorTool>();

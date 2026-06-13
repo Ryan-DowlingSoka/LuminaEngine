@@ -162,4 +162,117 @@ namespace Lumina
         FString GetNodeTooltip() const override { return "Returns cos(A), with A in radians."; }
         EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Cos; }
     };
+
+    REFLECT()
+    class CAnimGraphNode_Modulo : public CAnimGraphNode_ScalarBinaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Modulo"; }
+        FString GetNodeTooltip() const override { return "Returns A mod B (fmod). B of zero yields 0."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Mod; }
+        float GetDefaultB() const override { return 1.0f; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Power : public CAnimGraphNode_ScalarBinaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Power"; }
+        FString GetNodeTooltip() const override { return "Returns A raised to the power B."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Pow; }
+        float GetDefaultA() const override { return 1.0f; }
+        float GetDefaultB() const override { return 1.0f; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Atan2 : public CAnimGraphNode_ScalarBinaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Atan2"; }
+        FString GetNodeTooltip() const override { return "Returns atan2(A, B) in radians. Useful for aim angles."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Atan2; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Less : public CAnimGraphNode_ScalarBinaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Less"; }
+        FString GetNodeTooltip() const override { return "Returns 1 when A < B, else 0. Feeds blend alphas and transition parameters."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Less; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Greater : public CAnimGraphNode_ScalarBinaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Greater"; }
+        FString GetNodeTooltip() const override { return "Returns 1 when A > B, else 0. Feeds blend alphas and transition parameters."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Greater; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Floor : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Floor"; }
+        FString GetNodeTooltip() const override { return "Rounds A down to the nearest integer."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Floor; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Ceil : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Ceil"; }
+        FString GetNodeTooltip() const override { return "Rounds A up to the nearest integer."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Ceil; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Frac : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Frac"; }
+        FString GetNodeTooltip() const override { return "Returns the fractional part of A (A - floor(A))."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Frac; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_SquareRoot : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Square Root"; }
+        FString GetNodeTooltip() const override { return "Returns sqrt(A). Negative A yields 0."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Sqrt; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Negate : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Negate"; }
+        FString GetNodeTooltip() const override { return "Returns -A."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Negate; }
+    };
+
+    REFLECT()
+    class CAnimGraphNode_Sign : public CAnimGraphNode_ScalarUnaryOp
+    {
+        GENERATED_BODY()
+    public:
+        FString GetNodeDisplayName() const override { return "Sign"; }
+        FString GetNodeTooltip() const override { return "Returns -1, 0, or 1 depending on the sign of A."; }
+        EAnimScalarOp GetScalarOp() const override { return EAnimScalarOp::Sign; }
+    };
 }

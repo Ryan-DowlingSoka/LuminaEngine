@@ -9,8 +9,6 @@
 
 namespace Lumina
 {
-    // Pimpl-forward decl so this header doesn't pull <Jolt/...> into every ECS TU.
-    // Defined in Physics/API/Jolt/JoltCharacterHandle.h.
     struct FJoltCharacterHandle;
 
     // NoLua: physics characters aren't script-creatable; the engine

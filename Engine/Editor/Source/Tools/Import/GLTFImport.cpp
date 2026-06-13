@@ -283,7 +283,8 @@ namespace Lumina::Import::Mesh::GLTF
                 NewSkeleton->Bones.push_back(Bone);
                 NewSkeleton->BoneNameToIndex[Bone.Name] = (int32)JointIdx;
             }
-            
+
+            NewSkeleton->BuildBindPoseCache();
             ImportData.Skeletons.push_back(Move(NewSkeleton));
         }
 

@@ -343,7 +343,6 @@ namespace Lumina
                 FExponentialHeightFogParams      FogParams           = {};
                 bool                             bHasFog             = false;
                 bool                             bVolumetricFog      = false;
-                uint32                           VolumetricStepCount = 16;
                 bool                             bIBLDirty            = false;
                 bool                             bIBLConvolutionDirty = false;
                 FIBLBakeResolution               IBLResolution        = {};
@@ -393,9 +392,11 @@ namespace Lumina
             SMAAArea,
             SMAASearch,
 
-            // Screen-space ambient occlusion factor (R8). SSAOPass writes it from reconstructed
-            // depth+normals; SSAOBlurPass box-blurs it into SSAOBlur, which the base pass samples.
+            // Screen-space ambient occlusion factor (R8). SSAOPass writes raw half-res GTAO into
+            // SSAO; SSAOBlurPass denoises it (half res, SSAODenoise) then joint-bilateral-upsamples
+            // into the full-res SSAOBlur the base pass samples.
             SSAO,
+            SSAODenoise,
             SSAOBlur,
             Cascade,
             DepthAttachment,
@@ -762,9 +763,9 @@ namespace Lumina
         /** Reconcile cached sample count with the world setting; reallocates every view's MS images when it changes. */
         void SyncMSAAState();
 
-        // Bloom mip chain (one image, BLOOM_MIP_COUNT mips). SPD downsample writes
+        // Bloom mip chain (one image, up to BLOOM_MIP_COUNT mips). Per-mip 13-tap downsample writes
         // mips 0..N-1 from HDR; upsample walks back additively. Tone-mapping samples mip 0.
-        static constexpr uint32                         BLOOM_MIP_COUNT = 5;
+        static constexpr uint32                         BLOOM_MIP_COUNT = 8;
 
         // SceneViews[0] is primary, rest are captures; reserved to MaxSceneViews and never grown past it,
         // since CurrentView is a raw pointer the render thread holds across a frame (a realloc would dangle it).
@@ -821,8 +822,6 @@ namespace Lumina
 
         // SSAO setup, built once in Init(): the 4x4 tangent-rotation noise texture (sampled tiled with
         // a wrap point sampler) and the cached hemisphere kernel copied into each frame's SceneGlobalData.
-        RHI::FManagedTexture                    SSAONoiseTexture;
-        FSSAOSettings                           CachedSSAOSettings = {};
 
         // Latest post-process material list from the world; captured into
         // FFrameData::ActivePostProcessMaterials at the start of Extract.

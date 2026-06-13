@@ -2,6 +2,7 @@
 
 #include "Containers/Array.h"
 #include "Core/Math/AABB.h"
+#include "Core/Math/Matrix/MatrixMath.h"
 #include "Core/Serialization/Archiver.h"
 
 namespace Lumina
@@ -32,6 +33,45 @@ namespace Lumina
 
     namespace AnimPose
     {
+        // Direct TRS -> column-major matrix; same result as Translate * ToMatrix4(R) * Scale
+        // without the two 4x4 multiplies. Matches Math::ToMatrix3's quat convention.
+        FORCEINLINE FMatrix4 ComposeTRS(const FVector3& T, const FQuat& R, const FVector3& S)
+        {
+            const float XX = R.x * R.x; const float YY = R.y * R.y; const float ZZ = R.z * R.z;
+            const float XY = R.x * R.y; const float XZ = R.x * R.z; const float YZ = R.y * R.z;
+            const float WX = R.w * R.x; const float WY = R.w * R.y; const float WZ = R.w * R.z;
+
+            FMatrix4 M;
+            M[0] = FVector4((1.0f - 2.0f * (YY + ZZ)) * S.x, (2.0f * (XY + WZ)) * S.x, (2.0f * (XZ - WY)) * S.x, 0.0f);
+            M[1] = FVector4((2.0f * (XY - WZ)) * S.y, (1.0f - 2.0f * (XX + ZZ)) * S.y, (2.0f * (YZ + WX)) * S.y, 0.0f);
+            M[2] = FVector4((2.0f * (XZ + WY)) * S.z, (2.0f * (YZ - WX)) * S.z, (1.0f - 2.0f * (XX + YY)) * S.z, 0.0f);
+            M[3] = FVector4(T.x, T.y, T.z, 1.0f);
+            return M;
+        }
+
+        // Cheap TRS extract for rigid + per-axis-scale matrices (no skew/projective handling);
+        // the shared decomposition for all bind-pose math so results stay bit-consistent.
+        FORCEINLINE void DecomposeTRS(const FMatrix4& M, FVector3& OutT, FQuat& OutR, FVector3& OutS)
+        {
+            OutT = FVector3(M[3]);
+
+            const FVector3 C0(M[0]);
+            const FVector3 C1(M[1]);
+            const FVector3 C2(M[2]);
+
+            OutS = FVector3(Math::Length(C0), Math::Length(C1), Math::Length(C2));
+
+            const float InvSx = OutS.x > 1e-8f ? 1.0f / OutS.x : 0.0f;
+            const float InvSy = OutS.y > 1e-8f ? 1.0f / OutS.y : 0.0f;
+            const float InvSz = OutS.z > 1e-8f ? 1.0f / OutS.z : 0.0f;
+
+            FMatrix3 Rot;
+            Rot[0] = C0 * InvSx;
+            Rot[1] = C1 * InvSy;
+            Rot[2] = C2 * InvSz;
+            OutR = Math::ToQuat(Rot);
+        }
+
         // Out = Lerp(A, B, Alpha). A, B and Out may alias. Alpha is clamped to [0,1].
         RUNTIME_API void Blend(const FPose& A, const FPose& B, float Alpha, FPose& Out);
 

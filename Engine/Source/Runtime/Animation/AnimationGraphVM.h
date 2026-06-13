@@ -61,6 +61,7 @@ namespace Lumina
         Output,          // src:pReg
     };
 
+    // Append-only: the enum value is baked into compiled bytecode.
     REFLECT()
     enum class EAnimScalarOp : uint8
     {
@@ -70,12 +71,25 @@ namespace Lumina
         Div,
         Min,
         Max,
-        // Unary ops below ignore operand B.
+        // Unary (ignore operand B).
         Clamp01,
         OneMinus,    // 1 - A
         Abs,         // |A|
         Sin,         // sin(A)
         Cos,         // cos(A)
+        // Binary.
+        Mod,         // fmod(A, B), 0 when B == 0
+        Pow,         // A ^ B
+        Atan2,       // atan2(A, B)
+        Less,        // A < B ? 1 : 0
+        Greater,     // A > B ? 1 : 0
+        // Unary (ignore operand B).
+        Floor,
+        Ceil,
+        Frac,        // A - floor(A)
+        Sqrt,        // sqrt(max(A, 0))
+        Negate,      // -A
+        Sign,        // -1 / 0 / 1
     };
 
     // Per-instance mutable execution state. Persists across frames so playback

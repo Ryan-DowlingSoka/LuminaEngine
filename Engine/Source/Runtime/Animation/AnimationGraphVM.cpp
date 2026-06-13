@@ -38,7 +38,10 @@ namespace Lumina
                                                         const CAnimationGraph* Graph,
                                                         const TVector<float>& Parameters)
         {
-            const int32 ParamIdx = Graph->FindParameterIndex(Transition.ConditionParameter);
+            // Resolved at load/compile; the fallback covers graphs built outside those paths.
+            const int32 ParamIdx = Transition.CachedParamIndex != FAnimGraphTransition::ParamUnresolved
+                ? Transition.CachedParamIndex
+                : Graph->FindParameterIndex(Transition.ConditionParameter);
             const float Value = (ParamIdx >= 0 && ParamIdx < (int32)Parameters.size())
                 ? Parameters[ParamIdx]
                 : 0.0f;
@@ -78,6 +81,17 @@ namespace Lumina
             case EAnimScalarOp::Abs:      return Math::Abs(A);
             case EAnimScalarOp::Sin:      return Math::Sin(A);
             case EAnimScalarOp::Cos:      return Math::Cos(A);
+            case EAnimScalarOp::Mod:      return B != 0.0f ? fmodf(A, B) : 0.0f;
+            case EAnimScalarOp::Pow:      return Math::Pow(A, B);
+            case EAnimScalarOp::Atan2:    return Math::Atan2(A, B);
+            case EAnimScalarOp::Less:     return A < B ? 1.0f : 0.0f;
+            case EAnimScalarOp::Greater:  return A > B ? 1.0f : 0.0f;
+            case EAnimScalarOp::Floor:    return Math::Floor(A);
+            case EAnimScalarOp::Ceil:     return Math::Ceil(A);
+            case EAnimScalarOp::Frac:     return Math::Fract(A);
+            case EAnimScalarOp::Sqrt:     return Math::Sqrt(Math::Max(A, 0.0f));
+            case EAnimScalarOp::Negate:   return -A;
+            case EAnimScalarOp::Sign:     return Math::Sign(A);
             }
             return 0.0f;
         }
@@ -418,8 +432,6 @@ namespace Lumina
                 }
                 else
                 {
-                    // Mid-transition: bCanInterrupt transitions are re-checked each frame so a
-                    // higher-priority condition can pre-empt the cross-fade in flight.
                     From   = Math::Clamp(From, 0, NumStates - 1);
                     Timer += DeltaTime;
 
@@ -566,8 +578,7 @@ namespace Lumina
 
             default:
             {
-                // Unknown opcode -- the stream is corrupt or version-mismatched.
-                // Stop rather than walk off into garbage.
+                // Unknown opcode, so the stream is corrupt or version-mismatched.
                 Reader.Cursor = Reader.Size;
                 break;
             }

@@ -5,8 +5,9 @@
 
 namespace Lumina
 {
-    // Exponential height fog: density falls off with world height (thick valleys, clear peaks). Drives the
-    // analytic composite + (when bVolumetricFog) the light-shaft march. Singleton: one enabled instance/frame.
+    // Exponential height fog: density falls off with world height (thick valleys, clear peaks). One medium:
+    // the shadowed froxel volume covers the near range (when bVolumetricFog), then the same profile continues
+    // analytically to the scene depth and over the sky/horizon. Singleton: one enabled instance/frame.
     REFLECT(Component, Category = "Environment")
     struct RUNTIME_API SExponentialHeightFogComponent
     {
@@ -40,7 +41,7 @@ namespace Lumina
         PROPERTY(Editable, Color, Category = "Fog")
         FVector3 FogInscatteringColor = FVector3(0.5f, 0.6f, 0.7f);
 
-        /** Fog tint blended in when looking toward the sun (light shafts / haze glow). */
+        /** Fog albedo blended in when looking toward the sun (warm haze glow around the sun). */
         PROPERTY(Editable, Color, Category = "Directional Inscatter")
         FVector3 DirectionalInscatteringColor = FVector3(1.0f, 0.9f, 0.7f);
 
@@ -52,26 +53,25 @@ namespace Lumina
         PROPERTY(Editable, Category = "Directional Inscatter", ClampMin = 0.0f, Units = "m")
         float DirectionalInscatteringStartDistance = 0.0f;
 
-        /** When true, the fog's height-density profile drives the volumetric light-shaft march. */
+        /** When true, the near range gets shadowed volumetric scattering (god rays, light shafts)
+        from the froxel volume; beyond VolumetricMaxDistance the fog continues analytically.
+        When false, the whole range is analytic (cheap, no shafts). */
         PROPERTY(Editable, Category = "Volumetric")
         bool bVolumetricFog = true;
 
-        /** Brightness multiplier on the volumetric scattering (god rays). Decoupled from
-        FogDensity, so raise this to make shafts pop without thickening the fog. */
+        /** Brightness multiplier on the fog's in-scattered light (volumetric and analytic alike).
+        Decoupled from FogDensity, so raise this to make fog glow without thickening it. */
         PROPERTY(Editable, Category = "Volumetric", ClampMin = 0.0f)
         float VolumetricScatteringIntensity = 3.0f;
 
-        /** Phase asymmetry for shafts (0 = isotropic, ~0.6 = forward god rays). Blended
+        /** Phase asymmetry for sun scattering (0 = isotropic, ~0.6 = forward god rays). Blended
         with an isotropic floor so shafts stay visible side-on, not only sun-facing. */
         PROPERTY(Editable, Category = "Volumetric", ClampMin = -0.95f, ClampMax = 0.95f)
         float VolumetricAnisotropy = 0.6f;
 
-        /** Maximum ray-march distance for the volumetric shafts. */
+        /** Far plane of the shadowed froxel volume; the analytic fog takes over beyond it.
+        Bigger = shafts reach farther but each froxel covers more space (softer detail). */
         PROPERTY(Editable, Category = "Volumetric", ClampMin = 1.0f, Units = "m")
         float VolumetricMaxDistance = 200.0f;
-
-        /** Ray-march step count; higher is smoother but costlier. */
-        PROPERTY(Editable, Category = "Volumetric", ClampMin = 4, ClampMax = 128)
-        int32 VolumetricStepCount = 16;
     };
 }

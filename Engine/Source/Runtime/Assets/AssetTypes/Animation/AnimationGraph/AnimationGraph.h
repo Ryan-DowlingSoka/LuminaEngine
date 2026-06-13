@@ -64,6 +64,11 @@ namespace Lumina
         // Re-evaluate the condition mid-cross-fade to pre-empt in flight; default off (runs to completion).
         bool bCanInterrupt = false;
 
+        // ConditionParameter resolved to a Parameters index (INDEX_NONE = undeclared) so the VM skips
+        // the per-frame name lookup. Transient: filled by ResolveTransitionParameters, not serialized.
+        static constexpr int32 ParamUnresolved = -2;
+        int32 CachedParamIndex = ParamUnresolved;
+
         friend FArchive& operator << (FArchive& Ar, FAnimGraphTransition& Data)
         {
             Ar << Data.FromState;
@@ -167,6 +172,9 @@ namespace Lumina
         bool IsAsset() const override { return true; }
 
         int32 FindParameterIndex(const FName& Name) const;
+
+        // Fills every transition's CachedParamIndex; call after Parameters/StateMachines change.
+        void ResolveTransitionParameters();
 
         bool IsCompiled() const { return !Bytecode.empty(); }
 

@@ -55,6 +55,11 @@ namespace Lumina
 
 			struct
 			{
+				uint64 Frame;
+			} Seek;
+
+			struct
+			{
 				FVector3 Position;
 				FQuat Rotation;
 			} Listener;
@@ -140,6 +145,15 @@ namespace Lumina
 			Cmd.Handle              = InHandle;
 			Cmd.SetMinMax.MinDistance = MinDistance;
 			Cmd.SetMinMax.MaxDistance = MaxDistance;
+			return Cmd;
+		}
+
+		static FAudioCommand MakeSeekToFrame(FAudioHandle InHandle, uint64 Frame)
+		{
+			FAudioCommand Cmd;
+			Cmd.Type       = EAudioCommandType::SeekToFrame;
+			Cmd.Handle     = InHandle;
+			Cmd.Seek.Frame = Frame;
 			return Cmd;
 		}
 

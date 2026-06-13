@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Assets/Factories/Factory.h"
-#include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Audio/AudioStream.h"
 #include "AudioStreamFactory.generated.h"
 
@@ -18,8 +17,11 @@ namespace Lumina
 
 		bool IsExtensionSupported(FStringView Ext) override { return Ext == ".wav"; }
 		bool CanImport() override { return true; }
-		
+
+		void TryImport(const FFixedString& ImportFilePath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings) override;
+
 		FString GetAssetName() const override { return "Audio Stream"; }
+		FString GetCategory() const override { return "Audio"; }
 		FStringView GetDefaultAssetCreationName() override { return "NewAudioStream"; }
 		FString GetAssetDescription() const override { return "An audio clip."; }
 		CClass* GetAssetClass() const override { return CAudioStream::StaticClass(); }

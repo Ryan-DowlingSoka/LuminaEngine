@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "AudioSourceComponent.h"
 
+#include "Assets/AssetTypes/Audio/AudioStream.h"
 #include "Audio/AudioGlobals.h"
 
 namespace Lumina
@@ -12,13 +13,13 @@ namespace Lumina
 			GAudioContext->StopSound(ActiveHandle);
 		}
 
-		if (SoundFile.empty())
+		if (Sound == nullptr || !Sound->IsValid())
 		{
 			return;
 		}
 
-		ActiveHandle = GAudioContext->PlaySoundAtLocation(
-			FStringView(SoundFile),
+		ActiveHandle = GAudioContext->PlayAudioAtLocation(
+			Sound->GetAudioData(),
 			FVector3(0.0f), // Position will be set by the system from the transform.
 			Volume,
 			Pitch,

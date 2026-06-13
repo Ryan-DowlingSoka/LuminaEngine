@@ -10,29 +10,6 @@ namespace Lumina::RootMotion
 {
     namespace
     {
-        // Cheap rigid + per-axis-scale TRS extract; matches the decomposition used elsewhere in the
-        // animation pipeline so bind-pose math stays consistent.
-        void FastDecomposeTRS(const FMatrix4& M, FVector3& OutT, FQuat& OutR, FVector3& OutS)
-        {
-            OutT = FVector3(M[3]);
-
-            const FVector3 C0(M[0]);
-            const FVector3 C1(M[1]);
-            const FVector3 C2(M[2]);
-
-            OutS = FVector3(Math::Length(C0), Math::Length(C1), Math::Length(C2));
-
-            const float InvSx = OutS.x > 1e-8f ? 1.0f / OutS.x : 0.0f;
-            const float InvSy = OutS.y > 1e-8f ? 1.0f / OutS.y : 0.0f;
-            const float InvSz = OutS.z > 1e-8f ? 1.0f / OutS.z : 0.0f;
-
-            FMatrix3 Rot;
-            Rot[0] = C0 * InvSx;
-            Rot[1] = C1 * InvSy;
-            Rot[2] = C2 * InvSz;
-            OutR = Math::ToQuat(Rot);
-        }
-
         // Root bone's local (== component) transform at a clip time, translation + rotation only.
         FTransform SampleRoot(const CAnimation* Animation, FSkeletonResource* Skeleton, int32 RootIndex, float Time)
         {
@@ -81,12 +58,16 @@ namespace Lumina::RootMotion
             return;
         }
 
-        FVector3 T, S;
-        FQuat R;
-        FastDecomposeTRS(Skeleton->GetBone(RootIndex).LocalTransform, T, R, S);
-        Pose.Translations[RootIndex] = T;
-        Pose.Rotations[RootIndex]    = R;
-        Pose.Scales[RootIndex]       = S;
+        if (Skeleton->HasBindPoseCache())
+        {
+            Pose.Translations[RootIndex] = Skeleton->BindLocalTranslations[RootIndex];
+            Pose.Rotations[RootIndex]    = Skeleton->BindLocalRotations[RootIndex];
+            Pose.Scales[RootIndex]       = Skeleton->BindLocalScales[RootIndex];
+            return;
+        }
+
+        AnimPose::DecomposeTRS(Skeleton->GetBone(RootIndex).LocalTransform,
+                               Pose.Translations[RootIndex], Pose.Rotations[RootIndex], Pose.Scales[RootIndex]);
     }
 
     FRootMotionDelta ExtractRootDelta(const CAnimation* Animation,

@@ -24,35 +24,18 @@ struct FPushConstants
 };
 FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
-// Cornette-Shanks: a smoother, energy-normalized HG. Same `G` control, but the
-// lobe isn't as much of a needle.
-float PhaseCornetteShanks(float CosTheta, float G)
-{
-    float G2  = G * G;
-    float Num = 3.0 * (1.0 - G2) * (1.0 + CosTheta * CosTheta);
-    float Den = 8.0 * PI * (2.0 + G2) * pow(max(1.0 + G2 - 2.0 * G * CosTheta, 1e-4), 1.5);
-    return Num / Den;
-}
-
-// Two-lobe phase: forward Cornette-Shanks lobe blended with an isotropic floor so side-on shafts
-// stay visible (a single high-G lobe goes near-black off-axis) while the sun-facing glow remains.
-float PhaseVolumetric(float CosTheta, float G)
-{
-    const float Isotropic = 1.0 / (4.0 * PI);
-    return lerp(Isotropic, PhaseCornetteShanks(CosTheta, G), 0.5);
-}
-
 // Froxel center -> world position. Slices are view-Z planes (exponential), matching
 // the clustered light grid; jitter breaks the slice banding before the integrate.
+// View space is +Z forward (LH LookAt + [2][3]=+1 projection), so visible rays have ViewRay.z > 0.
 float3 FroxelToWorld(uint3 Coord, float3 Jitter)
 {
     float2 UV  = (float2(Coord.xy) + Jitter.xy) / float2(Pass().GridSize.xy);
     float2 NDC = UV * 2.0 - 1.0;
 
     float4 ViewH   = mul(GetInverseCameraProjection(), float4(NDC, 1.0, 1.0));
-    float3 ViewRay = ViewH.xyz / ViewH.w;            // far-plane point in view space
+    float3 ViewRay = ViewH.xyz / ViewH.w;            // point on the pixel ray in view space
     float  Dist    = Froxel_SliceDistance(float(Coord.z) + Jitter.z, float(Pass().GridSize.z), Pass().NearPlane, Pass().FogRange);
-    float3 ViewPos = ViewRay * (Dist / max(-ViewRay.z, 1e-4));  // view Z = -Dist
+    float3 ViewPos = ViewRay * (Dist / max(ViewRay.z, 1e-4));   // view Z = +Dist
     return mul(GetInverseCameraView(), float4(ViewPos, 1.0)).xyz;
 }
 
@@ -126,17 +109,47 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         return;
     }
 
+    // Froxels fully behind opaque geometry are never sampled by the apply pass (it reads at scene
+    // depth, +-half a slice of dither plus one slice of linear filter), so skip their shadow taps.
+    // Hi-Z min-reduction = farthest depth in the tile under reverse-Z; the level covers ~2x the
+    // froxel footprint for conservatism, and the 2-slice margin covers the apply-side filtering.
+    {
+        float2 TileUV  = (float2(DispatchID.xy) + 0.5) / float2(Pass().GridSize.xy);
+        float  TexelsX = Scene().CullData.PyramidWidth / float(Pass().GridSize.x);
+        float  TexelsY = Scene().CullData.PyramidHeight / float(Pass().GridSize.y);
+        float  Level   = max(ceil(log2(max(TexelsX, TexelsY))), 0.0);
+        float  TileDepth = SampleTexture2DLevel(Scene().CullData.DepthPyramidIndex, SAMPLER_MIN_REDUCTION, TileUV, Level).x;
+        if (TileDepth > 0.0)   // 0 = sky somewhere in the tile -> nothing to skip
+        {
+            float MaxTileDist = ReconstructViewPos(TileUV, TileDepth, GetInverseCameraProjection()).z;
+            if (Froxel_SliceDistance(float(DispatchID.z) - 2.0, float(Pass().GridSize.z), Pass().NearPlane, Pass().FogRange) > MaxTileDist)
+            {
+                gRWTextures3D[Pass().ScatterUAV][DispatchID] = float4(0.0);
+                return;
+            }
+        }
+    }
+
     // Sample the slice center. The apply-pass screen-space depth dither + 128 Z slices
     // keep banding down without per-frame jitter (which needs temporal accumulation).
     FExponentialHeightFogParams uFog = Pass().Fog.get();
 
     float3 WorldPos = FroxelToWorld(DispatchID, float3(0.5, 0.5, 0.5));
-    float3 ToCam    = normalize(GetCameraPosition() - WorldPos);
+    float3 ToCamVec = GetCameraPosition() - WorldPos;
+    float  CamDist  = length(ToCamVec);
+    float3 ToCam    = ToCamVec / max(CamDist, 1e-4);
 
-    // Extinction from the exp-height profile (clamped so it can't explode below base).
+    // Sun-facing albedo tint applies whenever a directional light exists, independent of whether
+    // it casts volumetric shafts; both this pass and the analytic far fog use the same albedo.
+    bool bHasSun = GetNumLights() > 0 && HasFlag(GetLightAt(0).Flags, ELightFlags::Directional);
+    float CosSun = bHasSun ? dot(normalize(GetLightAt(0).Direction), ToCam) : -1.0;
+
+    // Extinction from the exp-height profile (clamped so it can't explode below base),
+    // ramped in past FogStartDistance.
     float  Density   = clamp(Fog_DensityAt(uFog, WorldPos), 0.0, uFog.InscatteringColor.w);
+    Density         *= Fog_StartRamp(uFog, CamDist);
     float  SigmaT    = Density;
-    float3 SigmaS    = uFog.InscatteringColor.rgb * Density;   // scattering = albedo * density
+    float3 SigmaS    = Fog_Albedo(uFog, CosSun, CamDist) * Density;   // scattering = albedo * density
     float  G         = uFog.VolumetricParams.y;
     float  Intensity = uFog.VolumetricParams.x;
 
@@ -148,8 +161,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     if (Pass().bSunVolumetric != 0)
     {
         FLight Sun     = GetLightAt(0);
-        float3 SunDir  = normalize(Sun.Direction);
-        float  Phase   = PhaseVolumetric(dot(SunDir, ToCam), G);
+        float  Phase   = Fog_Phase(CosSun, G);
         float  Shadow  = SampleSunShadowAA(Sun, DispatchID);
         float3 SunColor = UnpackColor(Sun.Color).rgb;
         InScatter += SunColor * Sun.Intensity * Phase * Shadow * Sun.VolumetricIntensity;
@@ -191,7 +203,7 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
 
         // Ldir points toward the light; the photon travels the other way, so
         // negate to match the sun's travel-direction phase convention.
-        float  Phase = PhaseVolumetric(dot(-Ldir, ToCam), G);
+        float  Phase = Fog_Phase(dot(-Ldir, ToCam), G);
         float3 LC    = UnpackColor(L.Color).rgb;
         InScatter += LC * L.Intensity * Atten * Cone * Phase * Shadow * L.VolumetricIntensity;
     }

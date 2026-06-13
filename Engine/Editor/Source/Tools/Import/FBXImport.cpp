@@ -460,6 +460,7 @@ namespace Lumina::Import::Mesh::FBX
             }
             
             Skeleton->BoneNameToIndex = BoneNameToIndex;
+            Skeleton->BuildBindPoseCache();
             ImportData.Skeletons.push_back(Move(Skeleton));
         }
         

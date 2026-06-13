@@ -132,50 +132,6 @@ namespace Lumina
         RHI::Free(Staging);
     }
     
-    static void GenerateSSAOKernel(FSSAOSettings& Settings)
-    {
-        std::mt19937 Rng(1337u);
-        std::uniform_real_distribution<float> Rand01(0.0f, 1.0f);
-        std::uniform_real_distribution<float> RandM11(-1.0f, 1.0f);
-
-        for (uint32 i = 0; i < SSAO_KERNEL_SIZE; ++i)
-        {
-            FVector3 Sample(RandM11(Rng), RandM11(Rng), Rand01(Rng));
-            float Len = Math::Sqrt(Sample.x * Sample.x + Sample.y * Sample.y + Sample.z * Sample.z);
-            if (Len > 1e-6f)
-            {
-                Sample /= Len;
-            }
-            Sample *= Rand01(Rng);
-
-            // Accelerating distribution: push samples toward the surface for tighter contact AO.
-            float T     = (float)i / (float)SSAO_KERNEL_SIZE;
-            float Scale = 0.1f + 0.9f * T * T;
-            Sample *= Scale;
-
-            Settings.Samples[i] = FVector4(Sample.x, Sample.y, Sample.z, 0.0f);
-        }
-    }
-
-    // 4x4 RGBA32F rotation noise: random vectors in the XY tangent plane (z=0) used to rotate the kernel
-    // per-pixel, trading banding for high-frequency noise the (here absent) blur would normally smooth out.
-    static RHI::FManagedTexture CreateSSAONoiseTexture()
-    {
-        std::mt19937 Rng(7331u);
-        std::uniform_real_distribution<float> RandM11(-1.0f, 1.0f);
-
-        FVector4 Noise[16];
-        for (int i = 0; i < 16; ++i)
-        {
-            Noise[i] = FVector4(RandM11(Rng), RandM11(Rng), 0.0f, 0.0f);
-        }
-
-        RHI::FManagedTexture Tex = RHI::Textures::Create(RHI::FTexture2DDesc{ .Width = 4, .Height = 4, .Format = EFormat::RGBA32_FLOAT });
-        RHI::Textures::Upload(Tex, 0, Noise, sizeof(Noise), 4);
-        return Tex;
-    }
-
-
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , ShadowAtlas(FShadowAtlasConfig())
@@ -197,9 +153,6 @@ namespace Lumina
         InitBuffers();
 
         InitSharedResources();
-
-        GenerateSSAOKernel(CachedSSAOSettings);
-        SSAONoiseTexture = CreateSSAONoiseTexture();
 
         AppliedIBLResolution = FIBLBakeResolution{};
         InitSkyCube(AppliedIBLResolution.SkyCube);
@@ -392,8 +345,6 @@ namespace Lumina
         ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyIrradiance]);
         ReleaseSceneImage(NamedImages[(int)ENamedImage::SkyPrefilter]);
 
-        RHI::Textures::Release(SSAONoiseTexture);
-
         // Persistent GPU buffers + rings.
         auto FreeBuffer = [](FSceneBuffer& Buffer)
         {
@@ -584,9 +535,9 @@ namespace Lumina
         SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
         SceneGlobalData.FarPlane                        = ViewVolume.GetFar();
         SceneGlobalData.NearPlane                       = ViewVolume.GetNear();
-        // SSAO: static kernel + per-world tuning. AOTextureIndex stays the ~0u sentinel here; the render
-        // thread patches it (or leaves the sentinel when SSAO is off) before upload. Capture views keep it.
-        SceneGlobalData.SSAOSettings                    = CachedSSAOSettings;
+        // SSAO (GTAO): per-world tuning only, no CPU kernel. AOTextureIndex stays the ~0u sentinel here;
+        // the render thread patches it (or leaves the sentinel when SSAO is off) before upload.
+        SceneGlobalData.SSAOSettings                    = FSSAOSettings{};
         SceneGlobalData.SSAOSettings.Radius             = Frame.CachedWorldSettings.SSAORadius;
         SceneGlobalData.SSAOSettings.Intensity          = Frame.CachedWorldSettings.SSAOIntensity;
         SceneGlobalData.SSAOSettings.Power              = Frame.CachedWorldSettings.SSAOPower;
@@ -2052,10 +2003,9 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Fog Processing");
 
-                Frame.Volumetrics.bHasFog             = false;
-                Frame.Volumetrics.bVolumetricFog      = false;
-                Frame.Volumetrics.VolumetricStepCount = 16;
-                Frame.Volumetrics.FogParams           = FExponentialHeightFogParams{};
+                Frame.Volumetrics.bHasFog        = false;
+                Frame.Volumetrics.bVolumetricFog = false;
+                Frame.Volumetrics.FogParams      = FExponentialHeightFogParams{};
 
                 FogView.each([&Frame, &Registry] (entt::entity Entity, const SExponentialHeightFogComponent& Fog)
                 {
@@ -2081,9 +2031,8 @@ namespace Lumina
                                                     Fog.VolumetricMaxDistance,
                                                     Fog.DirectionalInscatteringStartDistance);
 
-                    Frame.Volumetrics.bHasFog             = true;
-                    Frame.Volumetrics.bVolumetricFog      = Fog.bVolumetricFog;
-                    Frame.Volumetrics.VolumetricStepCount = (uint32)Math::Clamp(Fog.VolumetricStepCount, 4, 128);
+                    Frame.Volumetrics.bHasFog        = true;
+                    Frame.Volumetrics.bVolumetricFog = Fog.bVolumetricFog;
                 });
             }
         }
@@ -5688,7 +5637,9 @@ namespace Lumina
 
         // Only Load when an earlier pass wrote these targets; in the particle preview world
         // BasePass/DepthPrePass early-return, so the first pass must clear them itself.
-        const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
+        const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment
+            || !Frame.Extracts.TerrainExtracts.empty() || !Frame.Primitives.SolidBatches.empty()
+            || !Frame.Primitives.LineBatches.empty();
 
         RHI::FRenderAttachment Color;
         Color.Texture  = HDR.Texture;
@@ -6619,11 +6570,9 @@ namespace Lumina
         struct FData
         {
             uint32 DepthIndex;
-            uint32 NoiseIndex;
         } PC;
 
         PC.DepthIndex = (uint32)Depth.GetResourceID();
-        PC.NoiseIndex = SSAONoiseTexture.ResourceID();
 
         RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
         RHI::CmdEndRenderPass(CL);
@@ -6641,45 +6590,67 @@ namespace Lumina
         LUMINA_PROFILE_SECTION_COLORED("SSAO Blur", tracy::Color::Red);
 
         static const FShaderEntry* const VertexShader = FShaderLibrary::Get("FullscreenQuad.slang");
-        static const FShaderEntry* const PixelShader = FShaderLibrary::Get("SSAOBlurPixel.slang");
-        if (!VertexShader || !PixelShader)
+        static const FShaderEntry* const DenoisePS    = FShaderLibrary::Get("SSAOBlurPixel.slang");
+        static const FShaderEntry* const UpsamplePS   = FShaderLibrary::Get("SSAOUpsamplePixel.slang");
+        if (!VertexShader || !DenoisePS || !UpsamplePS)
         {
             return;
         }
 
-        const FSceneImage& Output = GetNamedImage(ENamedImage::SSAOBlur);
-        const FSceneImage& Input  = GetNamedImage(ENamedImage::SSAO);
-
-        RHI::FRenderAttachment Color;
-        Color.Texture = Output.Texture;
-        Color.LoadOp  = RHI::ELoadOp::Undefined;
-        Color.StoreOp = RHI::EStoreOp::Store;
-
-        RHI::FRenderPassDesc Pass;
-        Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
-        Pass.RenderArea       = Output.GetExtent();
-
-        RHI::CmdBeginRenderPass(CL, Pass);
-        SetViewportScissor(CL, Output.GetExtent());
-        RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
-        RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
-
-        FGraphicsPipelineKey Key;
-        Key.VS = VertexShader;
-        Key.PS = PixelShader;
-        Key.ColorTargets.push_back({ Output.Desc.Format, {} });
-        RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
+        const FSceneImage& Raw      = GetNamedImage(ENamedImage::SSAO);
+        const FSceneImage& Denoised = GetNamedImage(ENamedImage::SSAODenoise);
+        const FSceneImage& Output   = GetNamedImage(ENamedImage::SSAOBlur);
+        const FSceneImage& Depth    = GetNamedImage(ENamedImage::DepthAttachment);
 
         struct FData
         {
             uint32 AOIndex;
-        } PC;
+            uint32 DepthIndex;
+        };
 
-        PC.AOIndex = (uint32)Input.GetResourceID();
+        // Stage 1: plane-aware 5x5 denoise, half res (SSAO -> SSAODenoise).
+        // Stage 2: joint bilateral upsample, full res (SSAODenoise -> SSAOBlur).
+        const struct
+        {
+            const FShaderEntry* PS;
+            const FSceneImage*  Src;
+            const FSceneImage*  Dst;
+        } Stages[2] =
+        {
+            { DenoisePS,  &Raw,      &Denoised },
+            { UpsamplePS, &Denoised, &Output   },
+        };
 
-        RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
-        RHI::CmdEndRenderPass(CL);
-        Barriers::RasterToRead(CL);
+        for (const auto& Stage : Stages)
+        {
+            RHI::FRenderAttachment Color;
+            Color.Texture = Stage.Dst->Texture;
+            Color.LoadOp  = RHI::ELoadOp::Undefined;
+            Color.StoreOp = RHI::EStoreOp::Store;
+
+            RHI::FRenderPassDesc Pass;
+            Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+            Pass.RenderArea       = Stage.Dst->GetExtent();
+
+            RHI::CmdBeginRenderPass(CL, Pass);
+            SetViewportScissor(CL, Stage.Dst->GetExtent());
+            RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(RHI::FDepthStencilDesc{}));
+            RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
+
+            FGraphicsPipelineKey Key;
+            Key.VS = VertexShader;
+            Key.PS = Stage.PS;
+            Key.ColorTargets.push_back({ Stage.Dst->Desc.Format, {} });
+            RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
+
+            FData PC;
+            PC.AOIndex    = (uint32)Stage.Src->GetResourceID();
+            PC.DepthIndex = (uint32)Depth.GetResourceID();
+
+            RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+            RHI::CmdEndRenderPass(CL);
+            Barriers::RasterToRead(CL);
+        }
     }
 
     void FForwardRenderScene::BillboardPass(RHI::FCmdListH CL)
@@ -6705,9 +6676,15 @@ namespace Lumina
         const FSceneImage& HDR    = GetNamedImage(ENamedImage::HDR);
         const FSceneImage& Picker = GetNamedImage(ENamedImage::Picker);
 
+        // Only Load when an earlier pass wrote HDR; debug tris/lines and particles render before this
+        // pass, so clearing here would erase them (editor grid + a light billboard hit this).
+        const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment
+            || !Frame.Extracts.TerrainExtracts.empty() || !Frame.Primitives.SolidBatches.empty()
+            || !Frame.Primitives.LineBatches.empty() || !Frame.Extracts.ParticleExtracts.empty();
+
         RHI::FRenderAttachment Colors[2];
         Colors[0].Texture = HDR.Texture;
-        Colors[0].LoadOp  = (RenderSettings.bHasEnvironment || !DrawCommands.empty()) ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Colors[0].LoadOp  = bHDRWasWritten ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
         Colors[0].StoreOp = RHI::EStoreOp::Store;
         Colors[1].Texture = Picker.Texture;
         Colors[1].LoadOp  = RHI::ELoadOp::Load;
@@ -7262,7 +7239,7 @@ namespace Lumina
             uint32 GridZ;
             float  NearPlane;
             float  FogRange;
-            uint32 _Pad0;
+            uint32 bVolumetric;      // froxel volume valid this frame; 0 = analytic height fog only
         };
         static_assert(sizeof(FFroxelApplyPushConstants) == 32, "Froxel apply PC must match the slang push block.");
     }
@@ -7270,7 +7247,7 @@ namespace Lumina
     void FForwardRenderScene::FroxelInjectPass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
-        if (!Frame.Volumetrics.bHasFog || !CVarVolFogEnabled.GetValue())
+        if (!Frame.Volumetrics.bHasFog || !Frame.Volumetrics.bVolumetricFog || !CVarVolFogEnabled.GetValue())
         {
             return;
         }
@@ -7345,7 +7322,7 @@ namespace Lumina
     void FForwardRenderScene::FroxelIntegratePass(RHI::FCmdListH CL)
     {
         const FFrameData& Frame = *RenderFrame;
-        if (!Frame.Volumetrics.bHasFog)
+        if (!Frame.Volumetrics.bHasFog || !Frame.Volumetrics.bVolumetricFog || !CVarVolFogEnabled.GetValue())
         {
             return;
         }
@@ -7385,8 +7362,10 @@ namespace Lumina
 
     void FForwardRenderScene::FroxelApplyPass(RHI::FCmdListH CL)
     {
+        // Runs whenever fog is enabled: composites the froxel volume when volumetrics are on,
+        // and always continues the medium analytically past the froxel range / over the sky.
         const FFrameData& Frame = *RenderFrame;
-        if (!Frame.Volumetrics.bHasFog || !CVarVolFogEnabled.GetValue())
+        if (!Frame.Volumetrics.bHasFog)
         {
             return;
         }
@@ -7440,6 +7419,7 @@ namespace Lumina
         PC.GridZ           = GFroxelGridZ;
         PC.NearPlane       = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange        = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+        PC.bVolumetric     = (Frame.Volumetrics.bVolumetricFog && CVarVolFogEnabled.GetValue()) ? 1u : 0u;
 
         RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
         RHI::CmdEndRenderPass(CL);
@@ -7819,6 +7799,24 @@ namespace Lumina
     {
         if (!RenderSettings.bHasEnvironment)
         {
+            // This pass owns the HDR clear (LoadOp::Clear below). With no environment AND no
+            // geometry nothing else writes scene color, and the viewport shows uninitialized
+            // memory -- so run a clear-only pass instead of skipping outright.
+            const FSceneImage& ColorRT = GetSceneColorRT();
+
+            RHI::FRenderAttachment Color;
+            Color.Texture        = ColorRT.Texture;
+            Color.ResolveTexture = GetSceneColorResolve();
+            Color.LoadOp         = RHI::ELoadOp::Clear;
+            Color.StoreOp        = RHI::EStoreOp::Store;
+
+            RHI::FRenderPassDesc Pass;
+            Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(&Color, 1);
+            Pass.RenderArea       = GetNamedImage(ENamedImage::HDR).GetExtent();
+
+            RHI::CmdBeginRenderPass(CL, Pass);
+            RHI::CmdEndRenderPass(CL);
+            Barriers::RasterToRead(CL);
             return;
         }
 
@@ -7895,7 +7893,6 @@ namespace Lumina
         const auto& SimpleVertices     = Frame.Primitives.SimpleVertices;
         const auto& LineBatches        = Frame.Primitives.LineBatches;
         const auto& DrawCommands       = Frame.Geometry.DrawCommands;
-        const auto& BillboardInstances = Frame.Primitives.BillboardInstances;
 
         if (SimpleVertices.empty() || LineBatches.empty())
         {
@@ -7913,10 +7910,14 @@ namespace Lumina
 
         const FSceneImage& HDR = GetNamedImage(ENamedImage::HDR);
 
+        // Only Load when an earlier pass wrote HDR (base pass / terrain / solid tris); billboards render
+        // after this pass, so they must not count.
+        const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment
+            || !Frame.Extracts.TerrainExtracts.empty() || !Frame.Primitives.SolidBatches.empty();
+
         RHI::FRenderAttachment Color;
         Color.Texture = HDR.Texture;
-        Color.LoadOp  = (!DrawCommands.empty() || RenderSettings.bHasEnvironment || !BillboardInstances.empty())
-            ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
+        Color.LoadOp  = bHDRWasWritten ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
         Color.StoreOp = RHI::EStoreOp::Store;
 
         RHI::FRenderPassDesc Pass;
@@ -7976,6 +7977,7 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const auto& SolidVertices = Frame.Primitives.SolidVertices;
         const auto& SolidBatches  = Frame.Primitives.SolidBatches;
+        const auto& DrawCommands  = Frame.Geometry.DrawCommands;
 
         if (SolidVertices.empty() || SolidBatches.empty())
         {
@@ -7993,9 +7995,12 @@ namespace Lumina
 
         const FSceneImage& HDR = GetNamedImage(ENamedImage::HDR);
 
+        // First HDR writer in the frame clears; later writers load. Earlier writers here: base pass / terrain.
+        const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment || !Frame.Extracts.TerrainExtracts.empty();
+
         RHI::FRenderAttachment Color;
         Color.Texture = HDR.Texture;
-        Color.LoadOp  = RHI::ELoadOp::Load;
+        Color.LoadOp  = bHDRWasWritten ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
         Color.StoreOp = RHI::EStoreOp::Store;
 
         RHI::FRenderPassDesc Pass;
@@ -8155,26 +8160,21 @@ namespace Lumina
 
     namespace
     {
-        constexpr uint32 BloomMaxMips = 5;
-
-        // Push constants for BloomDownsampleSPD.slang. Bindless: HDRIndex picks the
-        // source SRV, MipUAV[i] picks the per-mip UAV, no pass-local binding set.
-        struct FBloomDownSPDPushConstants
+        // Push constants for BloomDownsample.slang; one dispatch per mip.
+        struct FBloomDownPushConstants
         {
-            FUIntVector2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
-            uint32     NumMips;
-            uint32     HDRIndex;
+            FVector2     SrcTexelSize;
+            uint32       SrcIndex;
+            float        SrcMip;
 
-            FVector2  InvHDRSize;
-            float      Threshold;
-            float      _Pad0;
+            FUIntVector2 DstSize;
+            uint32       DstUAV;
+            uint32       bFirstPass;
 
-            FVector3  KneeCurve;
-            float      _Pad1;
-
-            uint32     MipUAV[BloomMaxMips];
+            float        Threshold;
+            FVector3     KneeCurve;
         };
-        static_assert(sizeof(FBloomDownSPDPushConstants) == 68, "FBloomDownSPDPushConstants must match BloomDownsampleSPD.slang::FPushConstants.");
+        static_assert(sizeof(FBloomDownPushConstants) == 48, "FBloomDownPushConstants must match BloomDownsample.slang::FPushConstants.");
 
         // Push constants for BloomUpsampleCS.slang. SrcIndex is the all-mips
         // bindless SRV of BloomChain; SrcMip picks the level via SampleLevel.
@@ -8187,13 +8187,16 @@ namespace Lumina
             FUIntVector2 DstSize;
             uint32     DstUAV;
             float      SrcMip;
+
+            float      Scatter;
+            uint32     _Pad0;
+            uint32     _Pad1;
+            uint32     _Pad2;
         };
-        static_assert(sizeof(FBloomUpCSPushConstants) == 32,
+        static_assert(sizeof(FBloomUpCSPushConstants) == 48,
             "FBloomUpCSPushConstants must match BloomUpsampleCS.slang::FPushConstants.");
 
-        // SPD tile in destination-mip-0 pixels. The 16x16 thread group writes
-        // a 32x32 patch of mip 0 (each thread owns a 2x2 sub-quad).
-        constexpr uint32 BloomSPDTileSize = 32;
+        constexpr uint32 BloomTileSize = 8;
     }
 
     void FForwardRenderScene::BloomPass(RHI::FCmdListH CL)
@@ -8208,7 +8211,7 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Bloom Pass", tracy::Color::Yellow3);
 
-        static const FShaderEntry* const DownCS = FShaderLibrary::Get("BloomDownsampleSPD.slang");
+        static const FShaderEntry* const DownCS = FShaderLibrary::Get("BloomDownsample.slang");
         static const FShaderEntry* const UpCS = FShaderLibrary::Get("BloomUpsampleCS.slang");
         if (!DownCS || !UpCS)
         {
@@ -8222,36 +8225,47 @@ namespace Lumina
         const uint32 Mip0W    = eastl::max<uint32>(HDRWidth >> 1u, 1u);
         const uint32 Mip0H    = eastl::max<uint32>(HDRHght  >> 1u, 1u);
 
+        // Use as many octaves as the resolution supports (smallest mip ~8px on the short axis);
+        // the deep mips are what give the wide cinematic veil.
+        const uint32 MinDim  = eastl::min(Mip0W, Mip0H);
+        const uint32 NumMips = Math::Clamp((uint32)Math::Log2((float)MinDim) - 2u, 1u, BLOOM_MIP_COUNT);
+
         const float Threshold = ActivePostProcess->BloomThreshold;
         const float Knee      = ActivePostProcess->BloomSoftKnee * Threshold + 1e-5f;
 
+        // Down chain: 13-tap filtered reduction per mip, prefilter on the first.
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(DownCS));
+        for (uint32 Mip = 0; Mip < NumMips; ++Mip)
         {
-            const FVector3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
+            const uint32 DstW = eastl::max<uint32>(Mip0W >> Mip, 1u);
+            const uint32 DstH = eastl::max<uint32>(Mip0H >> Mip, 1u);
+            const uint32 SrcW = (Mip == 0) ? HDRWidth : eastl::max<uint32>(Mip0W >> (Mip - 1u), 1u);
+            const uint32 SrcH = (Mip == 0) ? HDRHght  : eastl::max<uint32>(Mip0H >> (Mip - 1u), 1u);
 
-            RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(DownCS));
-
-            FBloomDownSPDPushConstants PC = {};
-            PC.PyramidSize  = FUIntVector2(Mip0W, Mip0H);
-            PC.NumMips      = BLOOM_MIP_COUNT;
-            PC.HDRIndex     = (uint32)HDR.GetResourceID();
-            PC.InvHDRSize   = FVector2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
-            PC.Threshold    = Threshold;
-            PC.KneeCurve    = KneeCurve;
-            for (uint32 i = 0; i < BloomMaxMips; ++i)
+            if (Mip > 0)
             {
-                const uint32 SrcMip = (i < BLOOM_MIP_COUNT) ? i : 0u;
-                PC.MipUAV[i] = (uint32)Bloom.GetMipUAVIndex(SrcMip);
+                // Order against the previous mip's writes.
+                RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
             }
 
-            const uint32 GroupsX = RenderUtils::GetGroupCount(Mip0W, BloomSPDTileSize);
-            const uint32 GroupsY = RenderUtils::GetGroupCount(Mip0H, BloomSPDTileSize);
-            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsX, GroupsY, 1);
+            FBloomDownPushConstants PC = {};
+            PC.SrcTexelSize = FVector2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
+            PC.SrcIndex     = (Mip == 0) ? (uint32)HDR.GetResourceID() : (uint32)Bloom.GetResourceID();
+            PC.SrcMip       = (Mip == 0) ? 0.0f : (float)(Mip - 1u);
+            PC.DstSize      = FUIntVector2(DstW, DstH);
+            PC.DstUAV       = (uint32)Bloom.GetMipUAVIndex(Mip);
+            PC.bFirstPass   = (Mip == 0) ? 1u : 0u;
+            PC.Threshold    = Threshold;
+            PC.KneeCurve    = FVector3(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
+
+            RHI::CmdDispatch(CL, MakeArgs(PC),
+                             RenderUtils::GetGroupCount(DstW, BloomTileSize),
+                             RenderUtils::GetGroupCount(DstH, BloomTileSize), 1);
         }
 
+        // Up chain: tent-filtered progressive accumulation, scatter-weighted.
         RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(UpCS));
-
-        constexpr uint32 BloomUpTileSize = 8;
-        for (uint32 i = BLOOM_MIP_COUNT - 1; i > 0; --i)
+        for (uint32 i = NumMips - 1; i > 0; --i)
         {
             const uint32 SrcMip = i;
             const uint32 DstMip = i - 1;
@@ -8259,7 +8273,6 @@ namespace Lumina
             const uint32 SrcH   = eastl::max<uint32>(Mip0H >> SrcMip, 1u);
             const uint32 DstW   = eastl::max<uint32>(Mip0W >> DstMip, 1u);
             const uint32 DstH   = eastl::max<uint32>(Mip0H >> DstMip, 1u);
-            (void)SrcW; (void)SrcH;
 
             // Order against the previous mip's writes (down chain, then each up step).
             RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
@@ -8271,10 +8284,11 @@ namespace Lumina
             PC.DstSize      = FUIntVector2(DstW, DstH);
             PC.DstUAV       = (uint32)Bloom.GetMipUAVIndex(DstMip);
             PC.SrcMip       = (float)SrcMip;
+            PC.Scatter      = Math::Clamp(ActivePostProcess->BloomScatter, 0.0f, 1.0f);
 
-            const uint32 GroupsX = RenderUtils::GetGroupCount(DstW, BloomUpTileSize);
-            const uint32 GroupsY = RenderUtils::GetGroupCount(DstH, BloomUpTileSize);
-            RHI::CmdDispatch(CL, MakeArgs(PC), GroupsX, GroupsY, 1);
+            RHI::CmdDispatch(CL, MakeArgs(PC),
+                             RenderUtils::GetGroupCount(DstW, BloomTileSize),
+                             RenderUtils::GetGroupCount(DstH, BloomTileSize), 1);
         }
 
         Barriers::ComputeToAll(CL);
@@ -8798,6 +8812,7 @@ namespace Lumina
         FForwardRenderScene::ENamedImage::SMAAEdges,
         FForwardRenderScene::ENamedImage::SMAABlend,
         FForwardRenderScene::ENamedImage::SSAO,
+        FForwardRenderScene::ENamedImage::SSAODenoise,
         FForwardRenderScene::ENamedImage::SSAOBlur,
         FForwardRenderScene::ENamedImage::DepthAttachment,
         FForwardRenderScene::ENamedImage::DepthPyramid,
@@ -8868,16 +8883,20 @@ namespace Lumina
         Desc.Format = EFormat::RGBA8_UNORM;
         View.Images[(int)ENamedImage::SMAABlend] = CreateSceneImage(Desc);
 
-        // Single-channel AO factor at half res; SSAOPass renders into it, the base pass samples the blur.
-        Desc.Dimension = FUIntVector3(Math::Max(Extent.x / 2, 1u), Math::Max(Extent.y / 2, 1u), 1);
+        // Single-channel AO chain: raw GTAO + plane-aware denoise at half res, then a joint
+        // bilateral upsample into the full-res SSAOBlur the base pass samples (half-res AO
+        // edges stair-step at creases under plain bilinear).
         Desc.Format    = EFormat::R8_UNORM;
-        View.Images[(int)ENamedImage::SSAO]     = CreateSceneImage(Desc);
-        View.Images[(int)ENamedImage::SSAOBlur] = CreateSceneImage(Desc);
+        Desc.Dimension = FUIntVector3(Math::Max(Extent.x / 2, 1u), Math::Max(Extent.y / 2, 1u), 1);
+        View.Images[(int)ENamedImage::SSAO]        = CreateSceneImage(Desc);
+        View.Images[(int)ENamedImage::SSAODenoise] = CreateSceneImage(Desc);
         Desc.Dimension = FUIntVector3(Extent.x, Extent.y, 1);
+        View.Images[(int)ENamedImage::SSAOBlur]    = CreateSceneImage(Desc);
 
         // Scene depth; transfer-dst for the no-occluder clear.
         Desc.Format = EFormat::D32;
-        Desc.Usage  = RHI::EImageUsageFlags::DepthAttachment | RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::TransferDst;
+        Desc.Usage  = RHI::EImageUsageFlags::DepthAttachment | RHI::EImageUsageFlags::Sampled |
+                      RHI::EImageUsageFlags::TransferDst;
         View.Images[(int)ENamedImage::DepthAttachment] = CreateSceneImage(Desc);
 
         {

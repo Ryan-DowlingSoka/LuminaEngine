@@ -1240,16 +1240,17 @@ namespace Lumina
                         SharedState->ImportSettings = Move(Settings);
 
                         ToolContext->PushModal("Import", {700, 800},
-                            [Factory, Path, DestinationPath, SharedState]() mutable
+                            [this, Factory, Path, DestinationPath, SharedState]() mutable
                             {
                                 if (Factory->DrawImportDialogue(Path, DestinationPath, SharedState->ImportSettings, SharedState->bShouldClose))
                                 {
-                                    Task::AsyncTask(1, 1, [Factory, Path, DestinationPath, ImportSettings = Move(SharedState->ImportSettings)](uint32, uint32, uint32)
+                                    Task::AsyncTask(1, 1, [this, Factory, Path, DestinationPath, ImportSettings = Move(SharedState->ImportSettings)](uint32, uint32, uint32)
                                     {
                                         Factory->Import(Path, DestinationPath, ImportSettings.get());
 
-                                        MainThread::Enqueue([Path]()
+                                        MainThread::Enqueue([this, Path]()
                                         {
+                                            RefreshContentBrowser();
                                             ImGuiX::Notifications::NotifySuccess("Successfully Imported: \"{0}\"", Path);
                                         });
                                     });
@@ -1264,11 +1265,12 @@ namespace Lumina
                 Task::AsyncTask(1, 1, [this, Factory, Path = Move(Path), PathString = Move(DestinationPath)] (uint32, uint32, uint32)
                 {
                     Factory->Import(Path, PathString, nullptr);
-                    
-                    MainThread::Enqueue([Path = Move(Path)] ()
+
+                    MainThread::Enqueue([this, Path = Move(Path)] ()
                     {
+                        RefreshContentBrowser();
                         ImGuiX::Notifications::NotifySuccess("Successfully Imported: \"{0}\"", Path);
-                    });            
+                    });
                 });
             }
         }
@@ -1899,7 +1901,7 @@ namespace Lumina
         if (ImGui::MenuItem(LE_ICON_IMPORT " Import Asset..."))
         {
             FFixedString SelectedFile;
-            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf\0All Files (*.*)\0*.*\0";
+            const char* Filter = "Supported Assets (*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf)\0*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf\0All Files (*.*)\0*.*\0";
             if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
             {
                 TryImport(SelectedFile);

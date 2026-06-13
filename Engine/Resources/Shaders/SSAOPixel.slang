@@ -1,109 +1,200 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Hemisphere SSAO from depth alone. View-space position is reconstructed from the depth buffer; the
-// normal is reconstructed from neighbouring depth taps (no G-Buffer normal). A small tiled noise texture
-// rotates the kernel per-pixel. Output is a single grayscale AO factor in [0,1] (1 = unoccluded).
+// GTAO (Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indirect Occlusion"):
+// per pixel, a few hemisphere slices march the depth buffer for horizon angles and integrate the
+// cosine-weighted visible arc analytically. Spatial-only (IGN rotation per pixel, no noise texture,
+// no temporal accumulation); the matching bilateral blur removes the slice noise. Runs at half res.
+// View space is +Z forward; output is one grayscale visibility factor in [0,1] (1 = unoccluded).
+
+#define GTAO_SLICES          3
+#define GTAO_STEPS_PER_SIDE  6
 
 struct FragmentInput
 {
-    float2 UV : TEXCOORD0;
-};
-
-struct FragmentOutput
-{
-    float4 Color : SV_Target0;
+    float4 Position : SV_Position;
+    float2 UV       : TEXCOORD0;
 };
 
 struct FData
 {
-    uint DepthIndex;   // bindless SRV of the scene depth buffer
-    uint NoiseIndex;   // bindless SRV of the 4x4 RGBA32F rotation noise
+    uint DepthIndex;   // bindless SRV of the full-res scene depth buffer
 };
 
-[shader("fragment")]
-FragmentOutput FragmentMain(FragmentInput Input)
+float SampleDepth(uint DepthIndex, float2 UV)
 {
-    FragmentOutput Output;
+    return gTextures2D[DepthIndex].SampleLevel(gSamplers[SAMPLER_POINT_CLAMP], UV, 0.0).r;
+}
 
+// Interleaved gradient noise: stable per-pixel spatial rotation, no texture needed.
+float IGN(float2 PixelPos)
+{
+    return frac(52.9829189 * frac(dot(PixelPos, float2(0.06711056, 0.00583715))));
+}
+
+[shader("fragment")]
+float4 FragmentMain(FragmentInput Input) : SV_Target0
+{
     FData* Data = GetPassArgs<FData>();
 
-    float2 ScreenSize = float2(Scene().ScreenSize.xy);
-    float2 TexelSize  = 1.0 / ScreenSize;
-
-    float4x4 Proj    = GetCameraProjection();
     float4x4 InvProj = GetInverseCameraProjection();
 
-    float DepthC = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV).r;
+    // Half-res pixel centers land exactly on full-res depth texel CORNERS, so an unsnapped point
+    // sample flip-flops between neighbouring texels per row/column and the whole pass inherits a
+    // scanline pattern. Snap to the nearest full-res texel center first.
+    float2 FullTexel = 1.0 / float2(Scene().ScreenSize.xy);
+    float2 UV = (floor(Input.UV * float2(Scene().ScreenSize.xy)) + 0.5) * FullTexel;
+
+    float DepthC = SampleDepth(Data.DepthIndex, UV);
 
     // Reverse-Z: the far plane / sky is 0. Nothing to occlude there -> fully lit.
     if (DepthC <= 0.0)
     {
-        Output.Color = float4(1.0, 1.0, 1.0, 1.0);
-        return Output;
+        return float4(1.0, 1.0, 1.0, 1.0);
     }
 
-    // View-space position of this pixel and its right/up neighbours, used to reconstruct the normal.
-    float3 P  = ReconstructViewPos(Input.UV, DepthC, InvProj);
+    float3 P = ReconstructViewPos(UV, DepthC, InvProj);
+    float3 V = normalize(-P);   // toward the camera
 
-    float DepthR = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(TexelSize.x, 0.0)).r;
-    float DepthU = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, Input.UV + float2(0.0, TexelSize.y)).r;
-    float3 Px = ReconstructViewPos(Input.UV + float2(TexelSize.x, 0.0), DepthR, InvProj);
-    float3 Py = ReconstructViewPos(Input.UV + float2(0.0, TexelSize.y), DepthU, InvProj);
+    // Normal from depth: side-picked derivatives (use the neighbour with the smaller depth delta
+    // per axis) so normals stay clean at depth edges instead of smearing across silhouettes.
+    float  DL = SampleDepth(Data.DepthIndex, UV - float2(FullTexel.x, 0.0));
+    float  DR = SampleDepth(Data.DepthIndex, UV + float2(FullTexel.x, 0.0));
+    float  DU = SampleDepth(Data.DepthIndex, UV - float2(0.0, FullTexel.y));
+    float  DD = SampleDepth(Data.DepthIndex, UV + float2(0.0, FullTexel.y));
 
-    float3 N = normalize(cross(Px - P, Py - P));
-    // The camera sits at the view-space origin looking down -Z, so a visible surface's normal faces it.
-    if (dot(N, -P) < 0.0)
+    float3 dPdx, dPdy;
+    if (abs(DR - DepthC) < abs(DL - DepthC))
+    {
+        dPdx = ReconstructViewPos(UV + float2(FullTexel.x, 0.0), DR, InvProj) - P;
+    }
+    else
+    {
+        dPdx = P - ReconstructViewPos(UV - float2(FullTexel.x, 0.0), DL, InvProj);
+    }
+    if (abs(DD - DepthC) < abs(DU - DepthC))
+    {
+        dPdy = ReconstructViewPos(UV + float2(0.0, FullTexel.y), DD, InvProj) - P;
+    }
+    else
+    {
+        dPdy = P - ReconstructViewPos(UV - float2(0.0, FullTexel.y), DU, InvProj);
+    }
+    float3 N = normalize(cross(dPdy, dPdx));
+    if (dot(N, V) < 0.0)
     {
         N = -N;
     }
 
-    // Tile the 4x4 noise across the screen (wrap point sampler) for a per-pixel TBN rotation.
-    float2 NoiseScale = ScreenSize / 4.0;
-    float3 RandomVec  = SampleTexture2D(Data.NoiseIndex, SAMPLER_POINT_WRAP, Input.UV * NoiseScale).xyz;
-
-    // Gram-Schmidt: build an orthonormal tangent basis with the noise as the in-plane rotation.
-    float3 Tangent   = normalize(RandomVec - N * dot(RandomVec, N));
-    float3 Bitangent = cross(N, Tangent);
-    float3x3 TBN     = float3x3(Tangent, Bitangent, N);   // rows; mul(v, TBN) = tangent -> view
-
     float Radius = Scene().SSAOSettings.Radius;
-    float Bias   = Scene().SSAOSettings.Bias;
 
-    float Occlusion = 0.0;
-    for (int i = 0; i < SSAO_KERNEL_SIZE; ++i)
+    // World radius -> UV-space march radius at this depth. abs() on [1][1]: the
+    // projection bakes the Vulkan Y-flip.
+    float  ProjScale  = abs(GetCameraProjection()[1][1]);
+    float  RadiusUV   = Radius * ProjScale * 0.5 / max(P.z, 0.05);
+    // Clamp the footprint so very near surfaces don't march the whole screen.
+    RadiusUV = min(RadiusUV, 0.25);
+
+    // Too far for the radius to span even one depth texel: nothing to measure.
+    float MaxTexel = max(FullTexel.x, FullTexel.y);
+    if (RadiusUV < MaxTexel)
     {
-        // Kernel sample: tangent-space hemisphere direction rotated into view space, placed around P.
-        float3 SampleDir = mul(Scene().SSAOSettings.Samples[i].xyz, TBN);
-        float3 SamplePos = P + SampleDir * Radius;
+        return float4(1.0, 1.0, 1.0, 1.0);
+    }
+    // Never march closer than ~1.5 depth texels: a same-texel tap yields a degenerate
+    // near-zero-length direction that reads as patterned self-occlusion on flat surfaces.
+    float TMin = saturate(1.5 * MaxTexel / RadiusUV);
 
-        // Project the sample into screen UV to look up the actual scene depth there.
-        float4 Offset = mul(Proj, float4(SamplePos, 1.0));
-        Offset.xyz /= Offset.w;
-        float2 SampleUV = Offset.xy * 0.5 + 0.5;
+    float Noise     = IGN(Input.Position.xy);
+    // Phase-shifted IGN so the step jitter doesn't share the slice rotation's spatial pattern.
+    float StepNoise = IGN(Input.Position.xy + float2(47.0, 17.0));
+    // Distance falloff so occlusion fades smoothly at the radius edge.
+    float FalloffMul = -1.0 / max(Radius, 1e-4);
+    // Horizon-cos guard against depth-precision self-occlusion on flat surfaces.
+    float HorizonBias = Scene().SSAOSettings.Bias;
 
-        if (any(SampleUV < 0.0) || any(SampleUV > 1.0))
+    float Visibility = 0.0;
+
+    [unroll]
+    for (int SliceI = 0; SliceI < GTAO_SLICES; ++SliceI)
+    {
+        float  Phi  = (float(SliceI) + Noise) * (PI / float(GTAO_SLICES));
+        float  CosP = cos(Phi);
+        float  SinP = sin(Phi);
+
+        // Screen march direction. View +Y maps to UV -Y (Vulkan Y-flip), hence the negated y.
+        float2 Omega = float2(CosP, -SinP) * RadiusUV;
+
+        // Slice basis: project N onto the plane spanned by V and the slice direction.
+        float3 DirV     = float3(CosP, SinP, 0.0);
+        float3 OrthoDir = DirV - V * dot(DirV, V);
+        float3 Axis     = normalize(cross(OrthoDir, V));
+        float3 ProjN    = N - Axis * dot(N, Axis);
+        float  ProjNLen = length(ProjN);
+        if (ProjNLen < 1e-4)
         {
+            Visibility += 1.0;   // normal ~parallel to the slice axis: nothing to occlude in-plane
             continue;
         }
 
-        float SampleDepth = SampleTexture2D(Data.DepthIndex, SAMPLER_POINT_CLAMP, SampleUV).r;
-        if (SampleDepth <= 0.0)
+        float CosNorm = saturate(dot(ProjN, V) / ProjNLen);
+        float Gamma   = sign(dot(OrthoDir, ProjN)) * acos(CosNorm);   // signed angle of ProjN from V
+
+        // March both sides for the max horizon cosine.
+        float2 HorizonCos = float2(-1.0, -1.0);
+        [unroll]
+        for (int StepI = 0; StepI < GTAO_STEPS_PER_SIDE; ++StepI)
         {
-            continue;
+            // Squared distribution (more samples near the center, where occlusion detail lives),
+            // remapped to start at the minimum texel offset.
+            float T = (float(StepI) + StepNoise) / float(GTAO_STEPS_PER_SIDE);
+            T = lerp(TMin, 1.0, T * T);
+
+            [unroll]
+            for (int Side = 0; Side < 2; ++Side)
+            {
+                float2 SUV = UV + (Side == 0 ? Omega : -Omega) * T;
+                float  SD  = SampleDepth(Data.DepthIndex, SUV);
+                if (SD <= 0.0 || any(saturate(SUV) != SUV))
+                {
+                    continue;
+                }
+
+                float3 SP   = ReconstructViewPos(SUV, SD, InvProj);
+                float3 Diff = SP - P;
+                float  Dist = length(Diff);
+                if (Dist < 1e-3)
+                {
+                    continue;   // same surface point: no horizon information
+                }
+                float  CosH = dot(Diff, V) / Dist - HorizonBias;
+
+                // Fade samples out toward the radius so AO doesn't hard-cut, and reject far
+                // background (thin-object heuristic: distant geometry can't be this surface's occluder).
+                float Falloff = saturate(Dist * FalloffMul + 1.0);
+                CosH = lerp(-1.0, CosH, Falloff);
+
+                if (Side == 0) { HorizonCos.x = max(HorizonCos.x, CosH); }
+                else           { HorizonCos.y = max(HorizonCos.y, CosH); }
+            }
         }
 
-        // View-space Z of the scene surface at the sample's screen location.
-        float SceneZ = ReconstructViewPos(SampleUV, SampleDepth, InvProj).z;
+        // Horizon angles relative to V, clamped to the hemisphere around the projected normal.
+        float H0 = -acos(clamp(HorizonCos.y, -1.0, 1.0));
+        float H1 =  acos(clamp(HorizonCos.x, -1.0, 1.0));
+        H0 = Gamma + max(H0 - Gamma, -PI * 0.5);
+        H1 = Gamma + min(H1 - Gamma,  PI * 0.5);
 
-        // This engine's view space is +Z forward, so a sample is occluded if the scene depth is less than its own (minus bias).
-        float RangeCheck = smoothstep(0.0, 1.0, Radius / max(abs(P.z - SceneZ), 1e-4));
-        Occlusion += ((SceneZ <= SamplePos.z - Bias) ? 1.0 : 0.0) * RangeCheck;
+        // Analytic cosine-weighted arc integral (the "ground truth" part of GTAO).
+        float Arc0 = -cos(2.0 * H0 - Gamma) + CosNorm + 2.0 * H0 * sin(Gamma);
+        float Arc1 = -cos(2.0 * H1 - Gamma) + CosNorm + 2.0 * H1 * sin(Gamma);
+        Visibility += ProjNLen * 0.25 * (Arc0 + Arc1);
     }
 
-    float AO = 1.0 - (Occlusion / float(SSAO_KERNEL_SIZE)) * Scene().SSAOSettings.Intensity;
-    AO = pow(saturate(AO), Scene().SSAOSettings.Power);
+    Visibility = saturate(Visibility / float(GTAO_SLICES));
 
-    Output.Color = float4(AO, AO, AO, 1.0);
-    return Output;
+    float AO = saturate(1.0 - (1.0 - Visibility) * Scene().SSAOSettings.Intensity);
+    AO = pow(AO, Scene().SSAOSettings.Power);
+
+    return float4(AO, AO, AO, 1.0);
 }

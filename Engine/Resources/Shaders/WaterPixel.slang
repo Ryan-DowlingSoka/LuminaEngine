@@ -12,9 +12,10 @@ struct PSInput
     nointerpolation uint WaterIndex : WATER_INDEX;
 };
 
+// View space is +Z forward; visible geometry has positive view Z.
 float SceneDistFromRaw(float2 UV, float RawDepth)
 {
-    return -ReconstructViewPos(UV, RawDepth, GetInverseCameraProjection()).z;
+    return ReconstructViewPos(UV, RawDepth, GetInverseCameraProjection()).z;
 }
 
 float SampleSceneDepthRaw(float2 UV)
@@ -102,8 +103,8 @@ float4 FragmentMain(PSInput Input) : SV_Target0
     bool   HasScene      = (SceneRawDepth > 0.0);
     float3 SceneViewPos  = ReconstructViewPos(ScreenUV, max(SceneRawDepth, 1e-5), GetInverseCameraProjection());
     float3 SceneWorldPos = mul(GetInverseCameraView(), float4(SceneViewPos, 1.0)).xyz;
-    float  WaterViewDist = -WorldToView(Input.WorldPos).z;
-    float  SceneViewDist = HasScene ? -SceneViewPos.z : GetFarPlane();
+    float  WaterViewDist = WorldToView(Input.WorldPos).z;
+    float  SceneViewDist = HasScene ? SceneViewPos.z : GetFarPlane();
     float  ColumnDepth   = max(SceneViewDist - WaterViewDist, 0.0);
     float  DepthFade     = saturate(ColumnDepth / max(W.FoamAbsorb.z, 0.01));
 
@@ -140,7 +141,7 @@ float4 FragmentMain(PSInput Input) : SV_Target0
         float  MaxDist   = W.SSRSpecOpacity.x;
         float3 StartV    = mul(GetCameraView(), float4(Input.WorldPos, 1.0)).xyz;
         float3 DirV      = normalize(mul((float3x3)GetCameraView(), R));
-        if (DirV.z < -0.001)   // only march toward the scene (view looks down -Z)
+        if (DirV.z > 0.001)   // only march toward the scene (view space is +Z forward)
         {
             float  StepLen = MaxDist / StepCount;
             float3 Pv      = StartV;
@@ -167,7 +168,7 @@ float4 FragmentMain(PSInput Input) : SV_Target0
                     continue;   // sky: no geometry to reflect
                 }
                 float SampleDist = SceneDistFromRaw(Suv, SampleRaw);
-                float RayDist    = -Pv.z;
+                float RayDist    = Pv.z;
                 if (RayDist > SampleDist && (RayDist - SampleDist) < StepLen * 3.0)
                 {
                     Hit   = true;

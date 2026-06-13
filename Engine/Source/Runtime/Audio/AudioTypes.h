@@ -1,9 +1,18 @@
 #pragma once
 
+#include "Containers/Array.h"
 #include "Platform/GenericPlatform.h"
 
 namespace Lumina
 {
+	// Immutable encoded audio bytes (e.g. a .wav file image) shared between an asset and any
+	// in-flight sounds; the audio pump decodes from these bytes, so they must stay alive for
+	// the duration of playback. Share via TSharedPtr.
+	struct FAudioData
+	{
+		TVector<uint8> Bytes;
+	};
+
 	struct FAudioHandle
 	{
 		uint32 Generation = 0;
@@ -34,6 +43,7 @@ namespace Lumina
 		SetLooping,
 		SetPosition,
 		SetMinMaxDistance,
+		SeekToFrame,
 		UpdateListener,
 	};
 

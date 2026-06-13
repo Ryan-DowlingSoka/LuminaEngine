@@ -14,7 +14,6 @@
 
 #define MAX_LIGHTS 8192
 #define MAX_SHADOWS 256
-#define SSAO_KERNEL_SIZE 32
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT 2
 #define LIGHTS_PER_CLUSTER 100
@@ -434,7 +433,7 @@ namespace Lumina
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
 
         float           VolumetricIntensity;
-        uint32          Padding0;
+        float           _Pad0;
     };
 
     static_assert(sizeof(FLight) == 64, "FLight hot struct must fit a cache line");
@@ -500,12 +499,14 @@ namespace Lumina
         bool    bDepthTest;
     };
 
+    // GTAO tuning; must match FSSAOSettings in Common.slang. No CPU kernel: the shader generates
+    // its slice directions from per-pixel interleaved gradient noise.
     struct FSSAOSettings
     {
         float  Radius    = 0.5f;
         float  Intensity = 1.0f;
         float  Power     = 2.0f;
-        float  Bias      = 0.025f;
+        float  Bias      = 0.025f;   // reserved (unused by GTAO)
 
         // Bindless SRV index of the per-view AO output the base pass samples. ~0u = no SSAO this
         // view (e.g. capture views, which never run the SSAO pass) -> base pass treats AO as 1.
@@ -513,9 +514,6 @@ namespace Lumina
         uint32 _Pad0 = 0;
         uint32 _Pad1 = 0;
         uint32 _Pad2 = 0;
-
-        // Hemisphere kernel (view/tangent-space directions, w unused). Generated once on the CPU.
-        FVector4 Samples[SSAO_KERNEL_SIZE];
     };
 
     // 32 byte layout, must match FBillboardInstance in Common.slang.

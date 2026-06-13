@@ -284,8 +284,6 @@ namespace Lumina::Lua
     struct TStack<FName>
     {
         static FStringView TypeName(lua_State* State)               { return lua_typename(State, LUA_TSTRING); }
-        // FName has no stored length, Length() does its own strlen, so just let
-        // lua_pushstring do the single strlen instead of paying it twice.
         static void Push(lua_State* State, const FName& Value)      { lua_pushstring(State, Value.c_str()); }
         static FName Get(lua_State* State, int Index)
         {

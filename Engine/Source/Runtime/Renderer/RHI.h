@@ -391,9 +391,9 @@ namespace Lumina::RHI
     {
         THandle<FTexture>   Texture;
         THandle<FTexture>   ResolveTexture; // MSAA resolve target, optional.
-        ELoadOp             LoadOp;
-        EStoreOp            StoreOp;
-        float               Color[4];
+        ELoadOp             LoadOp  = ELoadOp::Undefined;
+        EStoreOp            StoreOp = EStoreOp::Store;
+        float               Color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     };
     
     struct FRenderPassDesc

@@ -66,6 +66,17 @@ namespace Lumina
         RegisterGraphNode(CAnimGraphNode_AbsoluteValue::StaticClass());
         RegisterGraphNode(CAnimGraphNode_Sine::StaticClass());
         RegisterGraphNode(CAnimGraphNode_Cosine::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Modulo::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Power::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Atan2::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Less::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Greater::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Floor::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Ceil::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Frac::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_SquareRoot::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Negate::StaticClass());
+        RegisterGraphNode(CAnimGraphNode_Sign::StaticClass());
         RegisterGraphNode(CAnimGraphNode_Remap::StaticClass());
 
         // State machine nodes can be placed in any blend-tree graph; the State node

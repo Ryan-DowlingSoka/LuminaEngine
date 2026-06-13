@@ -35,12 +35,24 @@ namespace Lumina
 		NODISCARD virtual FAudioHandle PlaySoundAtLocation(FStringView File, FVector3 Location,
 			float Volume = 1.0f, float Pitch = 1.0f, float MinDistance = 1.0f, float MaxDistance = 50.0f, bool bLooping = false) = 0;
 
+		// Asset-backed playback: the shared bytes are decoded on the audio pump and kept alive
+		// for the lifetime of the sound (the caller's asset can be unloaded mid-playback).
+		// StartFrame begins playback at the given PCM frame (0 = start).
+		NODISCARD virtual FAudioHandle PlayAudio2D(const TSharedPtr<FAudioData>& Data,
+			float Volume = 1.0f, float Pitch = 1.0f, bool bLooping = false, uint64 StartFrame = 0) = 0;
+
+		NODISCARD virtual FAudioHandle PlayAudioAtLocation(const TSharedPtr<FAudioData>& Data, FVector3 Location,
+			float Volume = 1.0f, float Pitch = 1.0f, float MinDistance = 1.0f, float MaxDistance = 50.0f, bool bLooping = false, uint64 StartFrame = 0) = 0;
+
 		virtual void StopSound(FAudioHandle Handle, EAudioStopMode Mode = EAudioStopMode::Immediate) = 0;
 		virtual void SetVolume(FAudioHandle Handle, float Volume) = 0;
 		virtual void SetPitch(FAudioHandle Handle, float Pitch) = 0;
 		virtual void SetLooping(FAudioHandle Handle, bool bLooping) = 0;
 		virtual void SetPosition(FAudioHandle Handle, FVector3 Position) = 0;
 		virtual void SetMinMaxDistance(FAudioHandle Handle, float MinDistance, float MaxDistance) = 0;
+
+		// Seeks a playing (non-procedural) sound to the given PCM frame.
+		virtual void SeekToFrame(FAudioHandle Handle, uint64 Frame) = 0;
 
 		virtual void UpdateListenerPosition(FVector3 Location, FQuat Rotation) = 0;
 

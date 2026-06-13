@@ -380,5 +380,7 @@ namespace Lumina
         OutGraph->NumScalarRegisters = NextScalarReg;
         OutGraph->NumPoseRegisters   = NextPoseReg;
         OutGraph->NumStateSlots      = NextStateSlot;
+
+        OutGraph->ResolveTransitionParameters();
     }
 }

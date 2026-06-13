@@ -5,7 +5,6 @@ static const float PI     = 3.1415926535897932384626433832795;
 static const float TWO_PI = 6.28318530718;
 static const float INV_PI = 0.31830988618;
 
-static const int SSAO_KERNEL_SIZE = 32;
 
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT  2
@@ -175,17 +174,18 @@ struct FEntityAABB
     float MaxY;
 };
 
+// GTAO tuning; matches C++ FSSAOSettings (SceneRenderTypes.h). Slice directions come from
+// per-pixel interleaved gradient noise in the shader, no CPU kernel.
 struct FSSAOSettings
 {
     float  Radius;
     float  Intensity;
     float  Power;
-    float  Bias;
-    uint   AOTextureIndex;   // bindless SRV the base pass samples; ~0u = no SSAO for this view
+    float  Bias;             // reserved (unused by GTAO)
+    uint   AOTextureIndex;    // bindless SRV the base pass samples; ~0u = no SSAO for this view
     uint   _Pad0;
     uint   _Pad1;
-    uint   _Pad2;            // pad header to 32 B so Samples stays 16-aligned (matches C++ FSSAOSettings)
-    float4 Samples[SSAO_KERNEL_SIZE];
+    uint   _Pad2;
 };
 
 static const uint MatFlag_None        = 0;
@@ -431,7 +431,7 @@ struct FLight
 
     // Per-light scattering strength; only meaningful when Flags has ELightFlags::Volumetric.
     float  VolumetricIntensity;
-    uint   _Pad0;
+    float  _Pad0;
 };
 
 // Cold shadow data, fetched only after a light is known to cast a shadow, so it stays out
