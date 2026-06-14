@@ -12,6 +12,11 @@ namespace Lumina
         GENERATED_BODY()
         ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::FrameEnd, EUpdatePriority::Medium))
 
+        // Writes transforms + the follow/spring-arm rig components; reads the physics scene (spring-arm
+        // collision sweep) via the PhysicsQuery resource. Runs before SCameraSystem in the same stage; the
+        // shared STransformComponent write keeps that ordering. Defined in the .cpp.
+        static FSystemAccess Access;
+
         static void Update(const FSystemContext& Context) noexcept;
     };
 }

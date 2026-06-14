@@ -8,6 +8,10 @@
 
 namespace Lumina
 {
+	FSystemAccess SAudioSystem::Access = FSystemAccess{}
+		.Write<SAudioSourceComponent, SProceduralAudioComponent>()
+		.Read<STransformComponent, SAudioListenerComponent>();
+
 	void SAudioSystem::Startup(const FSystemContext& Context) noexcept
 	{
 	}

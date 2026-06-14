@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "BuoyancySystem.h"
 #include "SystemContext.h"
+#include "SystemResources.h"
 #include "World/Entity/Components/BuoyancyComponent.h"
 #include "World/Entity/Components/WaterComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
@@ -8,6 +9,10 @@
 
 namespace Lumina
 {
+    FSystemAccess SBuoyancySystem::Access = FSystemAccess{}
+        .Read<SWaterComponent, STransformComponent, SBuoyancyComponent, SRigidBodyComponent>()
+        .Write<SystemResource::PhysicsQuery>();
+
     static float WaterGerstnerHeight(const SWaterComponent& W, float WorldX, float WorldZ, float Time)
     {
         float WindLen = Math::Sqrt(W.WindDirection.x * W.WindDirection.x + W.WindDirection.y * W.WindDirection.y);

@@ -496,6 +496,12 @@ namespace Lumina::Lua
         }
     };
     
+    template<typename RawT>
+    void ValueDtorThunk(void* Payload)
+    {
+        static_cast<TUserdataHeader<RawT>*>(Payload)->InvokeDtor();
+    }
+
     template<typename T>
     requires(!eastl::is_enum_v<T> && !eastl::is_pointer_v<T> && !eastl::is_reference_v<T>)
     struct TStack<T>
@@ -505,26 +511,35 @@ namespace Lumina::Lua
         using RawT = eastl::remove_pointer_t<eastl::decay_t<T>>;
         using StorageT = TUserdataHeader<RawT>;
 
+        static constexpr bool   bNeedsDtor = !eastl::is_trivially_destructible_v<RawT>;
+        static constexpr int    BlockTag   = bNeedsDtor ? BoundTag_Value : BoundTag_Plain;
+        static constexpr size_t HeaderOff  = bNeedsDtor ? sizeof(void*) : 0;
+
         template<typename... TArgs>
         requires(eastl::is_constructible_v<RawT, TArgs...>)
         static void Push(lua_State* State, TArgs&&... Args)
         {
-            void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
-            auto* Header = new (Block) StorageT{};
+            void* Block = NewBoundUserdata(State, HeaderOff + sizeof(StorageT), BlockTag, TClassTraits<RawT>::TypeId());
+            if constexpr (bNeedsDtor)
+            {
+                *reinterpret_cast<void(**)(void*)>(Block) = &ValueDtorThunk<RawT>;
+            }
+            auto* Header = new (static_cast<char*>(Block) + HeaderOff) StorageT{};
             Header->External = nullptr;
             Header->Emplace(eastl::forward<TArgs>(Args)...);
         }
 
         static RawT& Get(lua_State* State, int Index)
         {
-            auto* Userdata = static_cast<TUserdataHeader<RawT>*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
-            DEBUG_ASSERT(Userdata, "Tagged userdata not found!");
-            return *Userdata->Underlying();
+            void* Block = GetBoundUserdata(State, Index, TClassTraits<RawT>::TypeId());
+            DEBUG_ASSERT(Block, "Bound userdata not found!");
+            auto* Header = reinterpret_cast<StorageT*>(static_cast<char*>(Block) + HeaderOff);
+            return *Header->Underlying();
         }
 
         static bool Check(lua_State* State, int Index)
         {
-            return lua_userdatatag(State, Index) == TClassTraits<RawT>::Tag();
+            return HasTypeMetatable(State, Index, TClassTraits<RawT>::TypeId());
         }
     };
     
@@ -546,23 +561,22 @@ namespace Lumina::Lua
 
             if constexpr (eastl::is_base_of_v<CObject, RawT>)
             {
-                // CObjects are owned by an embedded TObjectPtr (ctor takes a strong GC ref, the userdata
-                // destructor releases it). It's a single RawT* at offset 0, so raw-pointer readers recover it.
+                // CObjects are owned by an embedded TObjectPtr (ctor takes a strong GC ref, the shared
+                // dtor releases it). It's a single RawT* at offset 0, so raw-pointer readers recover it.
                 static_assert(sizeof(TObjectPtr<RawT>) == sizeof(RawT*), "TObjectPtr must be pointer-sized for offset-0 recovery");
-                void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(TObjectPtr<RawT>), TClassTraits<RawT>::Tag());
+                void* Block = NewBoundUserdata(State, sizeof(TObjectPtr<RawT>), BoundTag_CObject, TClassTraits<RawT>::TypeId());
                 new (Block) TObjectPtr<RawT>(Ptr);
             }
             else
             {
-                // Non-owning raw pointer (engine-managed lifetime, e.g. component refs / subsystems).
-                void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(RawT*), TClassTraits<RawT>::Tag());
+                void* Block = NewBoundUserdata(State, sizeof(RawT*), BoundTag_Plain, TClassTraits<RawT>::TypeId());
                 *static_cast<RawT**>(Block) = Ptr;
             }
         }
 
         static RawT* Get(lua_State* State, int Index)
         {
-            auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
+            auto* Header = static_cast<StorageT*>(GetBoundUserdata(State, Index, TClassTraits<RawT>::TypeId()));
             if (Header == nullptr)
             {
                 return nullptr;
@@ -573,7 +587,7 @@ namespace Lumina::Lua
 
         static bool Check(lua_State* State, int Index)
         {
-            return lua_userdatatag(State, Index) == TClassTraits<RawT>::Tag();
+            return HasTypeMetatable(State, Index, TClassTraits<RawT>::TypeId());
         }
     };
     

@@ -5,6 +5,9 @@
 
 namespace Lumina
 {
+    FSystemAccess SInputSystem::Access = FSystemAccess{}
+        .Write<SInputComponent>();
+
     void SInputSystem::Update(const FSystemContext& Context) noexcept
     {
         LUMINA_PROFILE_SCOPE();

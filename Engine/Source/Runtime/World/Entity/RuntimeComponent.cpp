@@ -21,8 +21,6 @@
 
 namespace Lumina
 {
-    static int GRuntimeComponentMetatableRef = LUA_NOREF;
-
     FRuntimeComponentStorage::FRuntimeComponentStorage(const allocator_type& Allocator)
         : base_type(entt::type_id<FDynamicComponentTag>(), entt::deletion_policy::swap_and_pop, Allocator)
     {
@@ -379,9 +377,9 @@ namespace Lumina
             return Map;
         }
 
-        uint16 RuntimeComponentTag()
+        uint32 RuntimeComponentTypeId()
         {
-            return Lua::TClassTraits<FDynamicComponentTag>::Tag();
+            return Lua::TClassTraits<FDynamicComponentTag>::TypeId();
         }
 
         FRuntimeComponentStorage* ResolveRefStorage(const FRuntimeComponentRef& Ref, void*& OutData, CStruct*& OutLayout)
@@ -414,13 +412,8 @@ namespace Lumina
 
         void PushProxy(lua_State* L, entt::registry* Registry, entt::entity Entity, uint32 StorageId, uint32 ByteOffset, CStruct* StructLayout)
         {
-            void* Block = lua_newuserdatatagged(L, sizeof(FRuntimeComponentRef), RuntimeComponentTag());
+            void* Block = Lua::NewBoundUserdata(L, sizeof(FRuntimeComponentRef), Lua::BoundTag_Plain, RuntimeComponentTypeId());
             new (Block) FRuntimeComponentRef{ Registry, Entity, StorageId, ByteOffset, StructLayout };
-            if (GRuntimeComponentMetatableRef != LUA_NOREF)
-            {
-                lua_getref(L, GRuntimeComponentMetatableRef);
-                lua_setmetatable(L, -2);
-            }
         }
 
         int PushPropertyValue(lua_State* L, const FRuntimeComponentRef& ParentRef, void* Data, FProperty* Prop)
@@ -475,7 +468,7 @@ namespace Lumina
 
                 if (S != nullptr)
                 {
-                    if (auto* Src = static_cast<FRuntimeComponentRef*>(lua_touserdatatagged(L, ValueIndex, RuntimeComponentTag())))
+                    if (auto* Src = static_cast<FRuntimeComponentRef*>(Lua::GetBoundUserdata(L, ValueIndex, RuntimeComponentTypeId())))
                     {
                         void* SrcData = nullptr;
                         CStruct* SrcLayout = nullptr;
@@ -497,7 +490,7 @@ namespace Lumina
 
         int RuntimeComponent_Index(lua_State* L)
         {
-            auto* Ref = static_cast<FRuntimeComponentRef*>(lua_touserdatatagged(L, 1, RuntimeComponentTag()));
+            auto* Ref = static_cast<FRuntimeComponentRef*>(Lua::GetBoundUserdata(L, 1, RuntimeComponentTypeId()));
             const char* Key = lua_tostring(L, 2);
             void* Data = nullptr;
             CStruct* Layout = nullptr;
@@ -516,7 +509,7 @@ namespace Lumina
 
         int RuntimeComponent_Newindex(lua_State* L)
         {
-            auto* Ref = static_cast<FRuntimeComponentRef*>(lua_touserdatatagged(L, 1, RuntimeComponentTag()));
+            auto* Ref = static_cast<FRuntimeComponentRef*>(Lua::GetBoundUserdata(L, 1, RuntimeComponentTypeId()));
             const char* Key = lua_tostring(L, 2);
             void* Data = nullptr;
             CStruct* Layout = nullptr;
@@ -536,7 +529,7 @@ namespace Lumina
     {
         int RuntimeComponent_ToString(lua_State* L)
         {
-            auto* Ref = static_cast<FRuntimeComponentRef*>(lua_touserdatatagged(L, 1, RuntimeComponentTag()));
+            auto* Ref = static_cast<FRuntimeComponentRef*>(Lua::GetBoundUserdata(L, 1, RuntimeComponentTypeId()));
             if (Ref != nullptr)
             {
                 const char* Name = Ref->StructLayout ? Ref->StructLayout->GetName().c_str() : nullptr;
@@ -570,11 +563,7 @@ namespace Lumina
         lua_pushcfunction(L, &RuntimeComponent_ToString, "__tostring");
         lua_rawsetfield(L, -2, "__tostring");
 
-        if (GRuntimeComponentMetatableRef != LUA_NOREF)
-        {
-            lua_unref(L, GRuntimeComponentMetatableRef);
-        }
-        GRuntimeComponentMetatableRef = lua_ref(L, -1);
+        Lua::StoreTypeMetatable(L, RuntimeComponentTypeId());
         lua_pop(L, 1);
     }
 

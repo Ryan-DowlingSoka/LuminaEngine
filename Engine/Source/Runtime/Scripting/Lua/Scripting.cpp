@@ -711,6 +711,8 @@ namespace Lumina::Lua
 
         luaL_openlibs(L);
 
+        RegisterBoundDestructors(L);
+
         lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
         lua_setglobal(L, "print");
 

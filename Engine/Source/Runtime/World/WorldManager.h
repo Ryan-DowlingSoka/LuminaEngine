@@ -33,7 +33,7 @@ namespace Lumina
         void ExtractWorlds();
 
         // Render thread
-        void RenderWorlds_NewRHI(uint8 FrameIndex);
+        void RenderWorlds(uint8 FrameIndex);
 
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.
         FWorldContext* CreateWorldContext(CWorld* World, EWorldType Type, ENetMode NetMode = ENetMode::Standalone);

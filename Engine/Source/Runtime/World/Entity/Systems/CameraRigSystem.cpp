@@ -8,9 +8,14 @@
 #include "World/Entity/Components/SpringArmComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/Components/EntityTags.h"
+#include "SystemResources.h"
 
 namespace Lumina
 {
+    FSystemAccess SCameraRigSystem::Access = FSystemAccess{}
+        .Write<STransformComponent, SCameraFollowComponent, SSpringArmComponent>()
+        .Read<SystemResource::PhysicsQuery>();
+
     namespace Detail
     {
         // Frame-rate independent exponential smoothing weight. LagSpeed <= 0 snaps.

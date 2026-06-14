@@ -28,13 +28,18 @@ namespace Lumina
         // volumes. Not retained across frames -- the world rebuilds the list each tick.
         virtual void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) {}
 
-        // Game thread: populate the frame slot's snapshot. N-buffered so Extract and RenderView run
+        // Game thread, populate the frame slot's snapshot. N-buffered so Extract and RenderView run
         // concurrently; Extract back-pressures on the slot's consumed fence.
         virtual void Extract(const FViewVolume&, const SPostProcessSettings* PostProcess) = 0;
 
-        // Render thread: record + submit this frame's rendering through RHI:: into the scene's
-        // heap-registered targets. Display happens by ResourceID (GetDisplayResourceID).
-        virtual void RenderView_NewRHI(uint8 FrameIndex) {}
+        // Render thread, serial: device-wide reconciliation that can't run while other scenes record
+        // (e.g. WaitDeviceIdle-guarded resource recreation). Runs for every scene before the parallel
+        // RenderView pass, so RenderView can record off-thread.
+        virtual void PrepareRender(uint8 FrameIndex) {}
+
+        // Render thread, record + submit this frame's rendering. Safe to run concurrently across scenes
+        // (each opens its own command list; shared RHI creation is internally locked).
+        virtual void RenderView(uint8 FrameIndex) {}
 
         // New-heap ResourceID of the scene's final display image (for new-RHI ImGui viewport
         // sampling). ~0u = none (old scenes that render to an old-RHI target).

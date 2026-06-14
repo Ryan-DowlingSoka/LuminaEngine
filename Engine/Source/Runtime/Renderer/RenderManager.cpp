@@ -165,16 +165,12 @@ namespace Lumina
 
         ENQUEUE_RENDER_COMMAND(RenderFrame)([this, ThisFrameIndex, Snapshot = ImGuiSnapshot]() mutable
         {
-            // Everything up to each scene's slot release (inside RenderWorlds) is what the game
-            // thread's WaitForSlotConsumed actually waits on; keep these stages attributed.
             {
                 LUMINA_PROFILE_SECTION_COLORED("RT Frame Fence (GPU)", tracy::Color::Crimson);
                 RHI::Core::BeginFrame(ThisFrameIndex);
             }
-
-            // RenderWorlds signals each scene's slot exactly once (after its recording); a second
-            // blanket signal here would race a freshly started Extract and corrupt frame data.
-            GWorldManager->RenderWorlds_NewRHI(ThisFrameIndex);
+            
+            GWorldManager->RenderWorlds(ThisFrameIndex);
 
             RHI::FTextureH SwapImage;
             {
@@ -200,7 +196,6 @@ namespace Lumina
             RHI::CmdSwapchainBarrierToRender(CL, Swapchain);
 
             #if WITH_EDITOR
-            // Editor RmlUi previews rasterize before ImGui samples their RTs below.
             {
                 LUMINA_PROFILE_SECTION_COLORED("RT Editor UI", tracy::Color::SlateBlue1);
                 RmlUi::RenderEditorContexts(CL);

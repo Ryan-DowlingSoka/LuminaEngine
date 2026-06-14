@@ -16,6 +16,10 @@ namespace Lumina
         ENTITY_SYSTEM(  RequiresUpdate(EUpdateStage::FrameStart, EUpdatePriority::Highest),
                         RequiresUpdate(EUpdateStage::PrePhysics, EUpdatePriority::Highest))
 
+        // Writes only the per-entity input snapshot; the viewport registry it reads is a process global
+        // accessed read-only. Disjoint from gameplay/physics → overlaps them. Defined in the .cpp.
+        static FSystemAccess Access;
+
         static void Update(const FSystemContext& Context) noexcept;
     };
 }

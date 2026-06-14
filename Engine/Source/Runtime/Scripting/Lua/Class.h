@@ -157,9 +157,8 @@ namespace Lumina::Lua
     // Lets PushCObjectAsActualType wrap with the runtime class's metatable, not the static type's.
     struct FUserdataLayout
     {
-        uint16  Tag         = 0;
+        uint32  TypeId      = 0;
         size_t  Size        = 0;
-        void  (*Initialize) (void* Block)             = nullptr;
         void  (*SetExternal)(void* Block, void* Ptr)  = nullptr;
     };
 
@@ -190,7 +189,7 @@ namespace Lumina::Lua
         FClassBuilder& AddMetamethod(FStringView MetaName, lua_CFunction Func);
 
         // Merges parent entries (child wins), sorts, stamps metatable + global. Stack-balanced.
-        FClassBuilder& Register(int UserdataTag);
+        FClassBuilder& Register(uint32 TypeId);
 
         // Must be called after Register.
         FClassBuilder& AddStaticFunction(FStringView FuncName, lua_CFunction Func);
@@ -221,8 +220,6 @@ namespace Lumina::Lua
         }
 
     protected:
-
-        virtual void InstallUserdataDestructor(int /*Tag*/) {}
 
         lua_State*                  L           = nullptr;
         FStringView                 Name        = {};
@@ -345,16 +342,13 @@ namespace Lumina::Lua
 
         TClass& Register()
         {
-            FClassBuilder::Register(TClassTraits<ClassT>::Tag());
+            FClassBuilder::Register(TClassTraits<ClassT>::TypeId());
 
-            // CObject pushes embed an owning TObjectPtr<ClassT> (one strong GC ref); the userdata
-            // destructor above runs ~TObjectPtr to release it. Pointer-sized, ClassT* at offset 0.
             if constexpr (eastl::is_base_of_v<CObject, ClassT>)
             {
                 FUserdataLayout Layout;
-                Layout.Tag         = TClassTraits<ClassT>::Tag();
+                Layout.TypeId      = TClassTraits<ClassT>::TypeId();
                 Layout.Size        = sizeof(TObjectPtr<ClassT>);
-                Layout.Initialize  = +[](void*) {};
                 Layout.SetExternal = +[](void* Block, void* Ptr)
                 {
                     new (Block) TObjectPtr<ClassT>(static_cast<ClassT*>(Ptr));
@@ -377,29 +371,6 @@ namespace Lumina::Lua
         {
             FClassBuilder::AddStaticFunction(FuncName, Func);
             return *this;
-        }
-
-    protected:
-
-        void InstallUserdataDestructor(int Tag) override
-        {
-            if constexpr (eastl::is_base_of_v<CObject, ClassT>)
-            {
-                // CObject userdata embeds a TObjectPtr<ClassT>; running its destructor releases the
-                // strong GC ref it took on construction -- same lifetime path as any owning handle.
-                lua_setuserdatadtor(L, Tag, [](lua_State*, void* UD)
-                {
-                    static_cast<TObjectPtr<ClassT>*>(UD)->~TObjectPtr<ClassT>();
-                });
-            }
-            else if constexpr (!eastl::is_trivially_destructible_v<ClassT>)
-            {
-                lua_setuserdatadtor(L, Tag, [](lua_State*, void* UD)
-                {
-                    auto* TypedData = static_cast<TUserdataHeader<ClassT>*>(UD);
-                    TypedData->InvokeDtor();
-                });
-            }
         }
     };
 }

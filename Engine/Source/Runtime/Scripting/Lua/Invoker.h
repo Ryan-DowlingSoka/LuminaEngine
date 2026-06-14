@@ -167,7 +167,7 @@ namespace Lumina::Lua
             static constexpr int StackSlots = 0;
             static SelfClassT* Get(lua_State* L)
             {
-                auto* Self = static_cast<SelfClassT*>(lua_tolightuserdatatagged(L, lua_upvalueindex(1), TClassTraits<SelfClassT>::Tag()));
+                auto* Self = static_cast<SelfClassT*>(lua_tolightuserdatatagged(L, lua_upvalueindex(1), LightTag_Self));
                 CheckSelf(L, Self);
                 return Self;
             }

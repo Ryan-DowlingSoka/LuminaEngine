@@ -171,7 +171,7 @@ namespace Lumina
         }
         if (BitCursor + NumBytes * 8 > TotalBits)
         {
-            return nullptr; // out of range -- let the caller's Serialize fallback flag the error
+            return nullptr; // out of range
         }
         const uint8* Ptr = ReadBytes + (BitCursor >> 3);
         BitCursor += NumBytes * 8;

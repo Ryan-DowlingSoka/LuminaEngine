@@ -5,6 +5,7 @@
 #include "Core/Profiler/Profile.h"
 #include "Physics/PhysicsThread.h"
 #include "Renderer/RenderThread.h"
+#include "TaskSystem/TaskSystem.h"
 
 
 namespace Lumina
@@ -13,6 +14,9 @@ namespace Lumina
 
     static TConsoleVar<float> CVarIdleReclaimSeconds("Editor.RenderScene.IdleReclaimSeconds", 3.0f,
         "Seconds a hidden world's render scene is kept resident before being freed.");
+
+    static TConsoleVar<bool> CVarParallelWorldRender("r.ParallelWorldRender", true,
+        "Record each world's render commands on a separate task thread (only engages with >1 live world).");
 
     FWorldManager::~FWorldManager()
     {
@@ -123,33 +127,56 @@ namespace Lumina
         }
     }
 
-    void FWorldManager::RenderWorlds_NewRHI(uint8 FrameIndex)
+    void FWorldManager::RenderWorlds(uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
-
+        
+        uint32 LiveWorlds = 0;
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
-            if (World == nullptr)
-            {
-                continue;
-            }
-
-            IRenderScene* Renderer = World->GetRenderer();
+            IRenderScene* Renderer = World ? World->GetRenderer() : nullptr;
             if (Renderer == nullptr)
             {
                 continue;
             }
-
+            Renderer->PrepareRender(FrameIndex);
+            ++LiveWorlds;
+        }
+        
+        auto RecordContext = [&](uint32 i)
+        {
+            CWorld* World = Contexts[i]->World.Get();
+            IRenderScene* Renderer = World ? World->GetRenderer() : nullptr;
+            if (Renderer == nullptr)
+            {
+                return;
+            }
             if (!World->IsSuspended())
             {
-                Renderer->RenderView_NewRHI(FrameIndex);
+                Renderer->RenderView(FrameIndex);
             }
-
-            // Exactly ONE signal per scene per frame, immediately after its recording (or its
-            // skip). A second signal later would race: it can consume a produce the game thread
-            // started in between, letting Extract overwrite frame data mid-record.
             Renderer->SignalFrameConsumed(FrameIndex);
+        };
+
+        // Parallel only earns its keep with multiple live worlds (editor multi-view); a single world
+        // takes the identical serial path with no task overhead.
+        if (CVarParallelWorldRender.GetValue() && LiveWorlds > 1)
+        {
+            Task::ParallelFor((uint32)Contexts.size(), [&](const Task::FParallelRange& Range)
+            {
+                for (uint32 i = Range.Start; i < Range.End; ++i)
+                {
+                    RecordContext(i);
+                }
+            }, 1);
+        }
+        else
+        {
+            for (uint32 i = 0; i < (uint32)Contexts.size(); ++i)
+            {
+                RecordContext(i);
+            }
         }
     }
 

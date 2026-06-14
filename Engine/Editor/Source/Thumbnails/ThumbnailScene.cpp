@@ -117,7 +117,8 @@ namespace Lumina
         auto RecordCapture = [&]()
         {
             IRenderScene* Scene = World->GetRenderer();
-            Scene->RenderView_NewRHI(FrameIndex);
+            Scene->PrepareRender(FrameIndex);
+            Scene->RenderView(FrameIndex);
 
             auto* Forward = static_cast<FForwardRenderScene*>(Scene);
             const FSceneImage& Output = Forward->GetDisplayImage();

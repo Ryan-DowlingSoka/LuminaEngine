@@ -15,6 +15,11 @@ namespace Lumina
         GENERATED_BODY()
         ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::PrePhysics))
 
+        // Reads the water/body/transform components; mutates the physics scene (force application) so it
+        // declares the PhysicsQuery resource to serialize against any other physics-touching system.
+        // Defined in the .cpp.
+        static FSystemAccess Access;
+
         static void Update(const FSystemContext& Context) noexcept;
     };
 }

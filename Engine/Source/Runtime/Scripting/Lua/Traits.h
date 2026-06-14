@@ -5,9 +5,22 @@
 #include "Containers/Tuple.h"
 #include "Platform/GenericPlatform.h"
 
+struct lua_State;
 
 namespace Lumina::Lua
 {
+    enum EBoundTag : int
+    {
+        BoundTag_Plain   = 1,
+        BoundTag_CObject = 2,
+        BoundTag_Value   = 3,
+    };
+
+    enum ELightTag : int
+    {
+        LightTag_Self = 1,
+    };
+
     template<typename T>
     struct TFunctionTraits;
     
@@ -42,27 +55,29 @@ namespace Lumina::Lua
     
     struct FTypeIndex final
     {
-        // Resolves a unique type name to a process-global tag. Keyed by exact string match so
-        // distinct types can never alias a tag; the registry lives once in the Runtime module,
-        // so every DLL resolves the same type to the same tag.
-        RUNTIME_API static uint16 GetOrCreate(const char* UniqueTypeName);
+        RUNTIME_API static uint32 GetOrCreate(const char* UniqueTypeName);
     };
-
 
     template<typename T>
     struct TClassTraits
     {
-        static uint16 Tag()
+        static uint32 TypeId()
         {
-            // The signature string embeds T and is identical in every module built by the same compiler.
             #if defined(_MSC_VER)
-            static const uint16 STag = FTypeIndex::GetOrCreate(__FUNCSIG__);
+            static const uint32 SId = FTypeIndex::GetOrCreate(__FUNCSIG__);
             #else
-            static const uint16 STag = FTypeIndex::GetOrCreate(__PRETTY_FUNCTION__);
+            static const uint32 SId = FTypeIndex::GetOrCreate(__PRETTY_FUNCTION__);
             #endif
-            return STag;
+            return SId;
         }
     };
+
+    RUNTIME_API void  RegisterBoundDestructors(lua_State* State);
+    RUNTIME_API void  StoreTypeMetatable(lua_State* State, uint32 TypeId);
+    RUNTIME_API void  SetTypeMetatable(lua_State* State, uint32 TypeId);
+    RUNTIME_API bool  HasTypeMetatable(lua_State* State, int Index, uint32 TypeId);
+    RUNTIME_API void* NewBoundUserdata(lua_State* State, size_t Size, int Tag, uint32 TypeId);
+    RUNTIME_API void* GetBoundUserdata(lua_State* State, int Index, uint32 TypeId);
     
     enum class EMetaMethod : uint8
     {

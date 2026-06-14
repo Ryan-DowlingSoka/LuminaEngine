@@ -1,8 +1,6 @@
 #include "pch.h"
 #include "ForwardRenderScene.h"
 #include <algorithm>
-#include <execution>
-#include <random>
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
@@ -612,7 +610,23 @@ namespace Lumina
         ExtractFrame = nullptr;
     }
 
-    void FForwardRenderScene::RenderView_NewRHI(uint8 FrameIndex)
+    void FForwardRenderScene::PrepareRender(uint8 FrameIndex)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        const uint8 Slot = (uint8)(FrameIndex % RHI::kFramesInFlight);
+        FFrameData& Frame = FrameRing[Slot];
+        if (!Frame.bExtractedThisFrame)
+        {
+            return;
+        }
+
+        // Recreating the IBL cubes calls WaitDeviceIdle, so it can't run while sibling scenes record.
+        // RenderWorlds runs this serially for every scene before the parallel RenderView pass.
+        SyncIBLResolution(Frame.Volumetrics.IBLResolution);
+    }
+
+    void FForwardRenderScene::RenderView(uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
         LUMINA_MEMORY_SCOPE("Render Scene");
@@ -646,7 +660,7 @@ namespace Lumina
 
         CurrentFrameSlot = Slot;
 
-        SyncIBLResolution(Frame.Volumetrics.IBLResolution);
+        // IBL cube reconciliation already ran serially in PrepareRender (it issues WaitDeviceIdle).
 
         PointAtView(SceneViews[0]);
         CurrentCameraEarlyView = 0u;                                // primary's early/frustum cull view
@@ -1062,27 +1076,15 @@ namespace Lumina
 
         FFrameData& Frame = *ExtractFrame;
         auto& Instances              = Frame.Geometry.Instances;
-        auto& BonesData              = Frame.Geometry.BonesData;
         auto& DrawCommands           = Frame.Geometry.DrawCommands;
-        auto& OpaqueDrawList         = Frame.Geometry.OpaqueDrawList;
-        auto& OpaqueOccluderDrawList = Frame.Geometry.OpaqueOccluderDrawList;
-        auto& TranslucentDrawList    = Frame.Geometry.TranslucentDrawList;
-        auto& SceneCullContext       = Frame.Geometry.SceneCullContext;
-        auto& CullViews              = Frame.Views.CullViews;
-        auto& IndirectArgs           = Frame.Views.IndirectArgs;
         auto& DrawMeshletStartOffsets= Frame.Geometry.DrawMeshletStartOffsets;
-        auto& InstanceMeshletPrefix  = Frame.Geometry.InstanceMeshletPrefix;
         auto& LightData              = Frame.Lighting.LightData;
-        auto& PackedShadows          = Frame.Lighting.PackedShadows;
         auto& EnvironmentParams      = Frame.Volumetrics.EnvironmentParams;
         auto& SceneGlobalData        = Frame.SceneGlobalData;
-        auto& SimpleVertices         = Frame.Primitives.SimpleVertices;
-        auto& LineBatches            = Frame.Primitives.LineBatches;
         auto& BillboardInstances     = Frame.Primitives.BillboardInstances;
         auto& WidgetInstances        = Frame.Primitives.WidgetInstances;
         auto& GlyphInstances         = Frame.Primitives.GlyphInstances;
         auto& TextBatches            = Frame.Primitives.TextBatches;
-        auto& FrameStats             = Frame.FrameStats;
 
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
@@ -3400,7 +3402,7 @@ namespace Lumina
 
         // Round-up-pow2 clamped to [Min, Max], matching FShadowAtlas::AllocateTile's
         // quantization so the area sum equals what the allocator consumes.
-        TVector<uint32> Sizes;
+        TVector<uint32>& Sizes = ShadowSizeScratch;
         Sizes.resize(NumRequests);
         for (uint32 i = 0; i < NumRequests; ++i)
         {
@@ -3462,7 +3464,7 @@ namespace Lumina
 
         // Largest-first allocation keeps the quad-tree from fragmenting; small-first
         // would waste root splits on leaves.
-        TVector<uint32> SortedIndices;
+        TVector<uint32>& SortedIndices = ShadowSortedScratch;
         SortedIndices.resize(NumRequests);
         for (uint32 i = 0; i < NumRequests; ++i)
         {
@@ -6028,8 +6030,6 @@ namespace Lumina
 
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.Extracts.TerrainExtracts)
         {
-            const entt::entity Entity = TerrainItem.Entity;
-            (void)Entity;
             if (TerrainItem.Resolution < 2 || TerrainItem.ChunkResolution < 2)
             {
                 continue;
@@ -8736,13 +8736,11 @@ namespace Lumina
 
     static uint32 PreviousPow2(uint32 v)
     {
-        uint32_t r = 1;
-
+        uint32 r = 1;
         while (r * 2 < v)
         {
             r *= 2;
         }
-
         return r;
     }
 

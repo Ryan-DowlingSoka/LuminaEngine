@@ -258,7 +258,7 @@ namespace Lumina::Lua
         }
         else
         {
-            lua_pushlightuserdatatagged(State, Instance, TClassTraits<ClassT>::Tag());
+            lua_pushlightuserdatatagged(State, Instance, LightTag_Self);
             lua_pushcclosure(State, [](lua_State* L)
             {
                 return InvokerWithInstance<TFunc>(L);

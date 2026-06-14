@@ -57,7 +57,7 @@ namespace Lumina::Lua
         return *this;
     }
 
-    FClassBuilder& FClassBuilder::Register(int UserdataTag)
+    FClassBuilder& FClassBuilder::Register(uint32 TypeId)
     {
         // Stack on entry: [MT]
 
@@ -222,10 +222,7 @@ namespace Lumina::Lua
             lua_rawsetfield(L, -2, "__type_id"); // [MT]
         }
 
-        InstallUserdataDestructor(UserdataTag);
-
-        lua_pushvalue(L, -1); // [MT, MTcopy]
-        lua_setuserdatametatable(L, UserdataTag); // [MT]
+        StoreTypeMetatable(L, TypeId); // [MT]
 
         lua_newtable(L); // [MT, GlobalTable]
         if (bHasTypeId)
@@ -267,14 +264,6 @@ namespace Lumina::Lua
             static THashMap<const CClass*, FUserdataLayout> Registry;
             return Registry;
         }
-
-        // Reverse map: runtime userdata tag -> the CObject class registered for it. Lets us recognize a
-        // CObject userdata on the Lua stack when the concrete C++ type isn't known at compile time.
-        THashMap<uint16, const CClass*>& GetCObjectTagRegistry()
-        {
-            static THashMap<uint16, const CClass*> Registry;
-            return Registry;
-        }
     }
 
     void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout)
@@ -284,22 +273,11 @@ namespace Lumina::Lua
             return;
         }
         GetCObjectLayoutRegistry()[Class] = Layout;
-        GetCObjectTagRegistry()[Layout.Tag] = Class;
     }
 
     bool IsCObjectUserdata(lua_State* L, int Index)
     {
-        if (!lua_isuserdata(L, Index))
-        {
-            return false;
-        }
-        const int Tag = lua_userdatatag(L, Index);
-        if (Tag < 0)
-        {
-            return false;
-        }
-        const auto& Registry = GetCObjectTagRegistry();
-        return Registry.find(static_cast<uint16>(Tag)) != Registry.end();
+        return lua_isuserdata(L, Index) && lua_userdatatag(L, Index) == BoundTag_CObject;
     }
 
     CObject* ToCObject(lua_State* L, int Index)
@@ -349,10 +327,9 @@ namespace Lumina::Lua
             return;
         }
 
-        void* Block = lua_newuserdatataggedwithmetatable(L, Layout->Size, Layout->Tag);
-        Layout->Initialize(Block);
+        void* Block = NewBoundUserdata(L, Layout->Size, BoundTag_CObject, Layout->TypeId);
         // SetExternal constructs the userdata's owning TObjectPtr<ClassT> (takes a strong GC ref);
-        // the tag's destructor (TClass::Register) runs ~TObjectPtr to release it.
+        // the shared BoundTag_CObject destructor runs ~TObjectPtr to release it.
         Layout->SetExternal(Block, Object);
     }
 }

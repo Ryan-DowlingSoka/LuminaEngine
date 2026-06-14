@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Threading/Thread.h"
 
 
 namespace Lumina
@@ -25,33 +26,40 @@ namespace Lumina
             DtorFn = Fn;
         }
         
+        // Emplace/Erase mutate the shared free list, so they serialize on Mutex; reads (operator[])
+        // stay lock-free because Segments[] is fixed-size and live entries never move.
         template<typename... TArgs>
         HandleT Emplace(TArgs&&... Value)
         {
+            FScopeLock Lock(Mutex);
+
             if (Head == kEndOfList)
             {
                 AddSegment();
             }
-            
+
             uint32 Index = Head;
             DEBUG_ASSERT(Index != kNotInFreeList && Index != kEndOfList);
-            
+
             FEntry* Entry = Get(Index);
-            
+
             Head = Entry->Next;
             Entry->Next = kNotInFreeList;
-            
+
             ::new(&Entry->Data) T(eastl::forward<TArgs>(Value)...);
-            
+
             return ToHandle(Index, ++Entry->Gen);
         }
-        
+
         void Erase(HandleT Handle)
         {
             auto&& [I, G] = FromHandle(Handle);
             FEntry* Entry = Get(I);
+            // Destruct outside the lock: the entry isn't on the free list yet (nothing can grab it),
+            // and DtorFn may take other RHI locks -- holding Mutex across it would couple lock orders.
             DtorFn(&Entry->Data);
-            
+
+            FScopeLock Lock(Mutex);
             Entry->Next = Head;
             Head = I;
         }
@@ -167,6 +175,7 @@ namespace Lumina
         uint32      UsedSegments    = 0;
         uint32      Head            = kEndOfList;
         FEntry*     Segments[26]    {nullptr};
+        FMutex      Mutex;
     };
     
 }
