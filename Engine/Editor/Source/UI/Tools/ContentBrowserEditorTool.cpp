@@ -258,6 +258,30 @@ namespace Lumina
                 || IEquals(VirtualPath, "/Engine/Resources/Content")
                 || IEquals(VirtualPath, "/Engine/Resources/Scripts");
         }
+
+        // True if VirtualPath is a mount's "Scripts" subdir or anything beneath it.
+        bool IsScriptDirectory(FStringView VirtualPath)
+        {
+            size_t Pos = 0;
+            auto NextSegment = [&]() -> FStringView
+            {
+                while (Pos < VirtualPath.size() && VirtualPath[Pos] == '/') { ++Pos; }
+                const size_t Begin = Pos;
+                while (Pos < VirtualPath.size() && VirtualPath[Pos] != '/') { ++Pos; }
+                return FStringView(VirtualPath.data() + Begin, Pos - Begin);
+            };
+
+            const FStringView Root = NextSegment();
+            if (Root.empty())
+            {
+                return false;
+            }
+            if (IEquals(Root, "Engine"))
+            {
+                return IEquals(NextSegment(), "Resources") && IEquals(NextSegment(), "Scripts");
+            }
+            return IEquals(NextSegment(), "Scripts");
+        }
         
         struct FScriptHoverInfo
         {
@@ -2387,14 +2411,13 @@ namespace Lumina
             }
             ImGui::EndMenu();
         }
-
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " New C# Script"))
+        
+        if (IsScriptDirectory(FStringView(SelectedPath.c_str(), SelectedPath.size()))
+            && ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " New C# Script"))
         {
             FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.cs";
             NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
-
-            // The class name must be unique across the whole compile, so derive it from the (already
-            // unique) file stem and sanitize it into a valid C# identifier.
+            
             FStringView Stem = VFS::FileName(FStringView(NewScriptPath.c_str(), NewScriptPath.size()), true);
             FFixedString ClassName;
             for (char C : Stem)
