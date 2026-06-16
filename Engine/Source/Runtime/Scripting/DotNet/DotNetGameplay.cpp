@@ -77,11 +77,6 @@ extern "C" RUNTIME_API void* LuminaSharp_GetEntityScriptHandle(uint64 World, uin
         return nullptr;
     }
     const SCSharpScriptComponent* Script = W->GetEntityRegistry().try_get<SCSharpScriptComponent>(AsEntity(Entity));
-    // Only hand back a CURRENT-generation, bound handle. A stale (pre-hot-reload) Instance points at a
-    // GCHandle managed already freed on unload, so resolving it in C# would be a use-after-free. This is the
-    // same generation guard every other Component.Instance consumer uses (the on_destroy hook, SetEntityScript,
-    // physics collision dispatch). A merely-disabled script is never refreshed by the bind pass, so without
-    // this its Instance would dangle after a reload.
     if (Script == nullptr || Script->Instance == nullptr || Script->Generation != DotNet::GetScriptGeneration())
     {
         return nullptr;

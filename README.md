@@ -231,6 +231,10 @@ Regenerating prints the resolved feature set, e.g.
 >   intermittent issue with a font file.
 > - **"Application control policy blocked this file"?** Disable Windows 11
 >   Smart App Control.
+> - **"C# scripting disabled: managed bootstrap missing"?** The `LuminaSharp`
+>   managed project didn't build. Reopen `Lumina.sln` so Visual Studio restores
+>   its NuGet packages, then rebuild (the `Lumina` app now builds it as a
+>   dependency). From the command line, pass `-restore` to MSBuild.
 > - **Build still failing?**
 >   [Submit an issue](https://github.com/mrdrelliot/LuminaEngine/issues) or
 >   reach out on Discord.

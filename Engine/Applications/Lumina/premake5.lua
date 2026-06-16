@@ -5,6 +5,13 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
 })
 
+-- LuminaSharp.dll (the managed C# API) is loaded at RUNTIME by this exe; it's NOT a C++ link dependency,
+-- so a "build/run startup project" (F5/Play) builds only the C++ chain and would skip it -> C# scripting
+-- disabled, [NativeCall] unresolved. This edge puts the managed project in the app's solution build graph
+-- (correct build order + restore) so building/running Lumina always builds it. A solution clean/reload is
+-- needed once after regenerating for the IDE to pick up the new dependency.
+dependson { "LuminaSharp" }
+
 -- Monolithic Shipping: every module is StaticLib linked here with /WHOLEARCHIVE so its FStaticModuleRegistration ctor survives the linker.
 filter "configurations:Shipping"
     local Force = {}
