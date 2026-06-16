@@ -35,8 +35,7 @@
 #include "Platform/Filesystem/FileHelper.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderThread.h"
-#include "Scripting/Lua/Scripting.h"
-#include "Scripting/Lua/Debugger/LuaDebugger.h"
+#include "Scripting/DotNet/DotNetHost.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/FontManager/FontManager.h"
@@ -202,11 +201,12 @@ namespace Lumina
             EngineViewportSize = Windowing::GetPrimaryWindowHandle()->GetExtent();
         }
 
-        Lua::Initialize();
+        // C# host; non-fatal if the bundled runtime/bootstrap is absent.
+        DotNet::Initialize();
 
         ProcessNewlyLoadedCObjects();
 
-        // Post Lua+reflection so module static initializers don't null-deref the VM;
+        // Post-reflection so module static initializers don't null-deref;
         // pre WorldManager so anything they spawn at its construction sees them.
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PreEngineInit);
         ProcessNewlyLoadedCObjects();
@@ -291,7 +291,7 @@ namespace Lumina
 
         ShutdownCObjectSystem();
 
-        Lua::Shutdown();
+        DotNet::Shutdown();
 
         if (GRenderManager)
         {
@@ -468,10 +468,7 @@ namespace Lumina
                     GRenderManager->FrameEnd();
                 }
 
-                Lua::FScriptingContext::Get().ProcessDeferredActions();
-
-                // Runs after ProcessDeferredActions so a hot-reloaded script gets fresh breakpoints before resume.
-                Lua::FLuaDebugger::Get().Tick();
+                DotNet::Tick();
 
                 OnUpdateStage(UpdateContext);
 
@@ -519,10 +516,6 @@ namespace Lumina
 
     void FEngine::OnUpdateStage(const FUpdateContext& Context)
     {
-        if (ModuleUpdateFunc.IsValid())
-        {
-            ModuleUpdateFunc(Context.GetDeltaTime());
-        }
     }
 
     FUIntVector2 FEngine::GetEngineViewportSize()
@@ -603,10 +596,19 @@ namespace Lumina
         ProjectName                     = Data["Name"].get<std::string>().c_str();
 
         FFixedString ConfigDir          = Paths::Combine(ProjectPath, "Config");
-        FFixedString GameDir            = Paths::Combine(ProjectPath, "Game", "Content");
+        FFixedString GameRootDir        = Paths::Combine(ProjectPath, "Game");
+        FFixedString GameContentDir     = Paths::Combine(GameRootDir, "Content");
+        FFixedString GameScriptsDir     = Paths::Combine(GameRootDir, "Scripts");
         FFixedString BinariesDirectory  = Paths::Combine(ProjectPath, "Binaries");
 
-        VFS::Mount<VFS::FNativeFileSystem>("/Game", GameDir);
+        // Content and Scripts are siblings under the Game project root, both surfaced under the SINGLE /Game
+        // mount: assets at /Game/Content, C# scripts at /Game/Scripts. Ensure both exist so they're always
+        // valid roots even before the first asset/script is authored.
+        std::error_code GameDirEc;
+        std::filesystem::create_directories(GameContentDir.c_str(), GameDirEc);
+        std::filesystem::create_directories(GameScriptsDir.c_str(), GameDirEc);
+
+        VFS::Mount<VFS::FNativeFileSystem>("/Game", GameRootDir);
         VFS::Mount<VFS::FNativeFileSystem>("/Config", ConfigDir);
 
         GConfig->LoadPath("/Config");
@@ -723,6 +725,11 @@ namespace Lumina
         LoadStartupMap();
 
         OnProjectLoaded.Broadcast();
+
+        // Initial C# script compile/load now that the project and its plugins are mounted (Scripts/ folders
+        // are discovered across every VFS mount). ReloadScripts also (re)generates the IDE .csproj files, so
+        // a deleted/absent project self-heals here. Re-run via "dotnet.reload" / "dotnet.genprojects".
+        DotNet::ReloadScripts();
     }
 
     void FEngine::CreateGameInstance()
@@ -1147,7 +1154,9 @@ namespace Lumina
         }
 
 
-        // Loose-files overlay; mounted after PAK so most-recently-mounted wins and users can tweak shipped scripts.
+        // Loose-files overlay; mounted after PAK so most-recently-mounted wins and users can tweak shipped
+        // files. /Game is the project root, so this overlays both Content (loose .rml/.wav) and Scripts
+        // (.cs compiled at runtime) under the single /Game mount.
         const FString LooseGameDir = ExeDir + "/Game";
         if (std::filesystem::exists(LooseGameDir.c_str()))
         {
@@ -1256,32 +1265,6 @@ namespace Lumina
 
     void FEngine::LoadProjectScript(FStringView Path)
     {
-        if (!VFS::Exists(Path))
-        {
-            return;
-        }
-        
-        if (ProjectScript)
-        {
-            if (auto Ref = ProjectScript->Reference["OnUnload"])
-            {
-                Ref(Ref);
-            }
-            
-            ModuleUpdateFunc = {};
-        }
-        
-        ProjectScript = Lua::FScriptingContext::Get().LoadUniqueScriptPath(Path);
-        
-        if (ProjectScript)
-        {
-            if (auto Ref = ProjectScript->Reference["OnLoad"])
-            {
-                Ref(Ref);
-            }
-            
-            ModuleUpdateFunc = ProjectScript->Reference["OnUpdate"];
-        }
     }
 
     FFixedString FEngine::GetProjectContentDirectory() const
@@ -1290,8 +1273,18 @@ namespace Lumina
         {
             return {};
         }
-        
+
         return Paths::Combine(ProjectPath, "Game", "Content");
 
+    }
+
+    FFixedString FEngine::GetProjectScriptsDirectory() const
+    {
+        if (!HasLoadedProject())
+        {
+            return {};
+        }
+
+        return Paths::Combine(ProjectPath, "Game", "Scripts");
     }
 }

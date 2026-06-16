@@ -4,8 +4,11 @@ local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 
 
+-- Durable Dropbox direct-download link: the persistent 'rlkey' share key + 'dl' (rewritten to dl=1 below).
+-- Do NOT add an 'st=' session token here -- Dropbox session tokens expire after a while and then silently
+-- break the download for every fresh clone. rlkey alone resolves to the file (verified: HTTP 206 binary).
 local DEPENDENCY_URL =
-    "https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&st=pw81jqsw&dl=0"
+    "https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&dl=0"
 
 local DEPENDENCY_FILENAME   = "External.zip"
 local DEPENDENCY_MARKER_DIR = "External"  -- skip download if this exists

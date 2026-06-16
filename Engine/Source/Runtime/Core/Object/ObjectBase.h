@@ -153,7 +153,7 @@ namespace Lumina
     struct FRegisterCompiledInInfo
     {
         template<typename ... TArgs>
-        FRegisterCompiledInInfo(TArgs&& ... Args)
+        FRegisterCompiledInInfo(TArgs&& ... Args) noexcept
         {
             RegisterCompiledInInfo(std::forward<TArgs>(Args)...);
         }

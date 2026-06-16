@@ -8,160 +8,60 @@
 #include "Components/NameComponent.h"
 #include "Components/RelationshipComponent.h"
 #include "Components/NetworkComponent.h"
-#include "Components/ScriptComponent.h"
+#include "Components/CSharpScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
-#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectArray.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
-#include "RuntimeComponent.h"
+#include "Components/Component.h"
 #include "Memory/SmartPtr.h"
-#include "Scripting/Lua/ScriptTypes.h"
-#include "Scripting/Lua/Scripting.h"
 #include "World/World.h"
 #include "World/WorldContext.h"
 #include "World/Net/NetReplication.h"
 #include <atomic>
+#include <EASTL/hash_map.h>
+
+namespace Lumina
+{
+    // Registry of per-component direct-call op tables (see FComponentOps). Populated at component
+    // registration; resolved by the C# bridge once per type. Keyed by a hash of the exact name bytes
+    // so a non-null-terminated name from C# matches the registered c_str name.
+    namespace
+    {
+        eastl::hash_map<uint32, const FComponentOps*>& ComponentOpsMap()
+        {
+            static eastl::hash_map<uint32, const FComponentOps*> Map;
+            return Map;
+        }
+
+        uint32 ComponentOpsKey(FStringView Name)
+        {
+            const eastl::string Terminated(Name.data(), Name.size());
+            return entt::hashed_string(Terminated.c_str());
+        }
+    }
+
+    void RegisterComponentOps(FStringView Name, const FComponentOps* Ops)
+    {
+        ComponentOpsMap()[ComponentOpsKey(Name)] = Ops;
+    }
+
+    const FComponentOps* FindComponentOps(FStringView Name)
+    {
+        const auto It = ComponentOpsMap().find(ComponentOpsKey(Name));
+        return It != ComponentOpsMap().end() ? It->second : nullptr;
+    }
+}
 
 using namespace entt::literals; 
 
 namespace Lumina::ECS::Utils
 {
-    // '@' prefix ensures no collision with reflected CStruct names. Lazy to avoid static-init order issues.
-    static const FName& RuntimeComponentTypeName()
-    {
-        static const FName Name("@RuntimeComponent");
-        return Name;
-    }
-
-    namespace
-    {
-        void OnComponentTypePackageDeleted(FName Path)
-        {
-            const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Path.c_str());
-            if (Data == nullptr)
-            {
-                return;
-            }
-
-            const FGuid DeletedGuid = Data->AssetGUID;
-            const uint32 StorageId = static_cast<uint32>(DeletedGuid.Hash());
-
-            UnregisterRuntimeComponentTypeGlobal(Lua::FScriptingContext::Get().GetVM(), DeletedGuid);
-
-            GObjectArray.ForEachObject([&](CObjectBase* Object, int32)
-            {
-                if (Object == nullptr || !Object->IsA<CWorld>())
-                {
-                    return;
-                }
-
-                CWorld* World = static_cast<CWorld*>(Object);
-                FRuntimeComponentStorage* Storage = FindRuntimeStorageById(World->GetEntityRegistry(), StorageId);
-                if (Storage != nullptr && Storage->GetSchemaGuid() == DeletedGuid)
-                {
-                    Storage->Invalidate();
-                    if (World->GetPackage() != nullptr)
-                    {
-                        World->GetPackage()->MarkDirty();
-                    }
-                }
-            });
-        }
-    }
-
-    FRuntimeComponentStorage& GetOrCreateRuntimeStorage(FEntityRegistry& Registry, CEntityComponentType* Type)
-    {
-        static const FDelegateHandle DeleteHook = CPackage::OnPackageDestroyed.AddStatic(&OnComponentTypePackageDeleted);
-        (void)DeleteHook;
-
-        FRuntimeComponentStorage& Storage = Registry.storage<FDynamicComponentTag>(Type->GetStorageId());
-        if (!Storage.IsBound())
-        {
-            Storage.BindLayout(Type);
-        }
-        else
-        {
-            Storage.RefreshSchema();
-        }
-        return Storage;
-    }
-
-    FRuntimeComponentStorage* FindRuntimeStorage(FEntityRegistry& Registry, CEntityComponentType* Type)
-    {
-        return FindRuntimeStorageById(Registry, Type->GetStorageId());
-    }
-
-    FRuntimeComponentStorage* FindRuntimeStorageById(FEntityRegistry& Registry, uint32 StorageId)
-    {
-        if (auto* Set = Registry.storage(StorageId))
-        {
-            if (FRuntimeComponentStorage::IsRuntimeStorage(*Set))
-            {
-                return static_cast<FRuntimeComponentStorage*>(Set);
-            }
-        }
-        return nullptr;
-    }
-
-    void* AddRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type)
-    {
-        FRuntimeComponentStorage& Storage = GetOrCreateRuntimeStorage(Registry, Type);
-        if (!Storage.contains(Entity))
-        {
-            Storage.push(Entity);
-        }
-        return Storage.value(Entity);
-    }
-
-    bool RemoveRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type)
-    {
-        if (FRuntimeComponentStorage* Storage = FindRuntimeStorage(Registry, Type))
-        {
-            return Storage->remove(Entity);
-        }
-        return false;
-    }
-
-    void* GetRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type)
-    {
-        FRuntimeComponentStorage* Storage = FindRuntimeStorage(Registry, Type);
-        return (Storage != nullptr && Storage->contains(Entity)) ? Storage->value(Entity) : nullptr;
-    }
-
-    bool HasRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type)
-    {
-        FRuntimeComponentStorage* Storage = FindRuntimeStorage(Registry, Type);
-        return Storage != nullptr && Storage->contains(Entity);
-    }
-
-    void RefreshRuntimeComponentSchemas(FEntityRegistry& Registry)
-    {
-        for (auto&& [Id, Set] : Registry.storage())
-        {
-            if (FRuntimeComponentStorage::IsRuntimeStorage(Set))
-            {
-                static_cast<FRuntimeComponentStorage&>(Set).RefreshSchema();
-            }
-        }
-    }
-
-    void RefreshAllWorldsRuntimeComponentSchemas()
-    {
-        GObjectArray.ForEachObject([](CObjectBase* Object, int32)
-        {
-            if (Object != nullptr && Object->IsA<CWorld>())
-            {
-                RefreshRuntimeComponentSchemas(static_cast<CWorld*>(Object)->GetEntityRegistry());
-            }
-        });
-    }
-
     bool SerializeEntity(FArchive& RESTRICT Ar, FEntityRegistry& RESTRICT Registry, entt::entity& RESTRICT Entity)
     {
         using namespace entt::literals;
@@ -187,40 +87,6 @@ namespace Lumina::ECS::Utils
             {
                 if (!Set.contains(Entity))
                 {
-                    continue;
-                }
-
-                if (FRuntimeComponentStorage::IsRuntimeStorage(Set))
-                {
-                    FRuntimeComponentStorage& RuntimeStorage = static_cast<FRuntimeComponentStorage&>(Set);
-                    CEntityComponentType* Type = RuntimeStorage.GetSchemaType();
-                    if (Type == nullptr)
-                    {
-                        continue;
-                    }
-
-                    FName Name = RuntimeComponentTypeName();
-                    Ar << Name;
-
-                    int64 ComponentStart = Ar.Tell();
-                    int64 ComponentSize = 0;
-                    Ar << ComponentSize;
-                    int64 StartOfComponentData = Ar.Tell();
-
-                    CObject* SchemaObject = Type;
-                    Ar << SchemaObject;
-                    if (CStruct* Layout = RuntimeStorage.GetLayout())
-                    {
-                        Layout->SerializeTaggedProperties(Ar, RuntimeStorage.value(Entity));
-                    }
-
-                    int64 EndOfComponentData = Ar.Tell();
-                    ComponentSize = EndOfComponentData - StartOfComponentData;
-                    Ar.Seek(ComponentStart);
-                    Ar << ComponentSize;
-                    Ar.Seek(EndOfComponentData);
-
-                    NumComponents++;
                     continue;
                 }
 
@@ -303,32 +169,7 @@ namespace Lumina::ECS::Utils
 
                 int64 ComponentStart = Ar.Tell();
 
-                if (TypeName == RuntimeComponentTypeName())
-                {
-                    CObject* SchemaObject = nullptr;
-                    Ar << SchemaObject;
-
-                    CEntityComponentType* Type = (SchemaObject != nullptr && SchemaObject->IsA<CEntityComponentType>())
-                        ? static_cast<CEntityComponentType*>(SchemaObject) : nullptr;
-
-                    if (Type != nullptr)
-                    {
-                        FRuntimeComponentStorage& Storage = GetOrCreateRuntimeStorage(Registry, Type);
-                        if (!Storage.contains(Entity))
-                        {
-                            Storage.push(Entity);
-                        }
-                        if (CStruct* Layout = Storage.GetLayout())
-                        {
-                            Layout->SerializeTaggedProperties(Ar, Storage.value(Entity));
-                        }
-                    }
-                    else
-                    {
-                        LOG_WARN("[ECS] Entity {}: skipping runtime component (schema asset not found, {} bytes). Save will drop this component.", (uint32)Entity, ComponentSize);
-                    }
-                }
-                else if (CStruct* Struct = FindObject<CStruct>(TypeName))
+                if (CStruct* Struct = FindObject<CStruct>(TypeName))
                 {
                     if (Struct == STagComponent::StaticStruct())
                     {
@@ -1232,9 +1073,8 @@ namespace Lumina::ECS::Utils
             {
                 if (Storage.contains(Source) && !Storage.contains(To))
                 {
-                        // Scripts/rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
+                        // Rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
                     if (ID == entt::type_hash<FRelationshipComponent>::value()
-                        || ID == entt::type_hash<SScriptComponent>::value()
                         || ID == entt::type_hash<SRigidBodyComponent>::value())
                     {
                         continue;
@@ -1261,15 +1101,15 @@ namespace Lumina::ECS::Utils
                 Registry.emplace<SRigidBodyComponent>(To, eastl::move(NewBody));
             }
 
-            // Emplace editable fields only; on_construct loads a unique FScript for the duplicate.
-            if (const SScriptComponent* SourceScript = Registry.try_get<SScriptComponent>(Source))
+            // The bit-copy carried the source's transient managed binding (Instance is a GCHandle the two
+            // components would otherwise share and double-free). Keep the serialized fields, reset the rest
+            // so the duplicate rebinds to its own managed instance next tick.
+            if (SCSharpScriptComponent* NewScript = Registry.try_get<SCSharpScriptComponent>(To))
             {
-                SScriptComponent NewScript;
-                NewScript.ScriptPath        = SourceScript->ScriptPath;
-                NewScript.PropertyOverrides = SourceScript->PropertyOverrides;
-                NewScript.UpdateStage       = SourceScript->UpdateStage;
-                NewScript.TickRate          = SourceScript->TickRate;
-                Registry.emplace<SScriptComponent>(To, eastl::move(NewScript));
+                NewScript->Instance      = nullptr;
+                NewScript->Generation    = -1;
+                NewScript->BindState     = ECSharpBindState::Unbound;
+                NewScript->CallbackFlags = 0;
             }
 
             if (NewParent != entt::null)
@@ -1466,21 +1306,6 @@ namespace Lumina::ECS::Utils
     entt::id_type GetTypeID(const CStruct* Type)
     {
         return entt::hashed_string(Type->GetName().c_str());
-    }
-
-    entt::id_type GetTypeID(const Lua::FRef& Obj)
-    {
-        if (!Obj.IsTable())
-        {
-            return entt::id_type{};
-        }
-        auto Ref = Obj["__type_id"];
-        if (Ref.IsValid())
-        {
-            return Ref.As<entt::id_type>().value();
-        }
-
-        return entt::id_type{};
     }
 
     void SetEntityBodyType(FEntityRegistry& Registry, entt::entity Entity)

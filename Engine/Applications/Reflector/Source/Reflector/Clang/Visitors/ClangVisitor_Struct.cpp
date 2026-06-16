@@ -518,6 +518,9 @@ namespace Lumina::Reflection::Visitor
 			{
 				// Soft-fail: a missing arg only affects the Lua binding shape, not
 				// memory layout (C++ still links). Warn so it shows in the build log.
+				// Flag the function so the C# binder skips it - its reflected arg list is now shorter
+				// than the real signature, so a generated thunk would call with too few arguments.
+				NewFunction->bHasOmittedArgs = true;
 				LRT_WARNING(ArgCursor, Reflection::EDiagId::FunctionFieldFailed,
 					"Argument '%s' of function '%s' has an unsupported type and will be omitted from the script binding. Reflected function args accept core types, structs, enums, and TObjectPtr<T>.",
 					ArgName.c_str(), NewFunction->Name.c_str());

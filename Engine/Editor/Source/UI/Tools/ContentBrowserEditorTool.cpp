@@ -12,7 +12,6 @@
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "Platform/Process/PlatformProcess.h"
-#include "Scripting/Lua/Scripting.h"
 #include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/Dialogs/Dialogs.h"
@@ -53,6 +52,8 @@
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include <LuminaEditor.h>
+#include "Scripting/DotNet/DotNetHost.h"
+#include <atomic>
 
 #include "Config/Config.h"
 #include "Core/Object/ObjectCore.h"
@@ -61,44 +62,6 @@
 
 namespace Lumina
 {
-    // Starter contents for a freshly created Lua entity script. Lives at
-    // Templates/Scripts/EntityScript.luau so it can be edited without a
-    // rebuild; the inline fallback only fires if that file is missing.
-    FString LoadNewEntityScriptTemplate()
-    {
-        const FString& EngineDir = Paths::GetEngineInstallDirectory();
-        if (!EngineDir.empty())
-        {
-            const FFixedString TemplatePath =
-                Paths::Combine(EngineDir, "Templates", "Scripts", "EntityScript.luau");
-
-            std::ifstream Input(TemplatePath.c_str(), std::ios::binary);
-            if (Input.is_open())
-            {
-                std::string Contents(
-                    (std::istreambuf_iterator<char>(Input)),
-                    std::istreambuf_iterator<char>());
-                if (!Contents.empty())
-                {
-                    return FString(Contents.c_str(), Contents.size());
-                }
-            }
-        }
-
-        return
-            "local EntityScript = require(\"Stdlib/EntityScript\")\n"
-            "local Script: EntityScript = EntityScript.new()\n"
-            "\n"
-            "function Script:OnReady()\n"
-            "end\n"
-            "\n"
-            "-- Per-frame tick in play mode. Define it and the engine ticks this entity.\n"
-            "function Script:OnUpdate(DeltaTime)\n"
-            "end\n"
-            "\n"
-            "return Script\n";
-    }
-
     namespace
     {
 
@@ -220,6 +183,520 @@ namespace Lumina
             ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y));
             ImGui::Dummy(ImVec2(Avail, 1.0f));
         }
+
+        // Case-insensitive compare of a view against a NUL-terminated literal.
+        bool IEquals(FStringView A, const char* B)
+        {
+            size_t i = 0;
+            for (; i < A.size() && B[i] != '\0'; ++i)
+            {
+                char a = A[i]; if (a >= 'A' && a <= 'Z')
+                {
+                    a += 32;
+                }
+                char b = B[i]; if (b >= 'A' && b <= 'Z')
+                {
+                    b += 32;
+                }
+                if (a != b)
+                {
+                    return false;
+                }
+            }
+            return i == A.size() && B[i] == '\0';
+        }
+
+        // Loose files the browser surfaces. Anything outside this set (generated .csproj, .lmeta
+        // sidecars, IDE files, C# build output) is hidden so the grid shows only engine content.
+        bool IsBrowsableFileExtension(FStringView Ext)
+        {
+            static constexpr const char* kSupported[] =
+            {
+                ".lasset", ".cs", ".rml", ".rcss",
+            };
+            for (const char* S : kSupported)
+            {
+                if (IEquals(Ext, S)) { return true; }
+            }
+            return false;
+        }
+
+        // Build / IDE directories that never belong in the browser (regenerated on demand).
+        bool IsHiddenBrowserDirectory(FStringView Name)
+        {
+            static constexpr const char* kHidden[] = { "bin", "obj", ".vs", ".vscode", ".idea", ".git" };
+            for (const char* S : kHidden)
+            {
+                if (IEquals(Name, S)) { return true; }
+            }
+            return false;
+        }
+
+        bool ShouldHideDirectory(const VFS::FFileInfo& Info)
+        {
+            if (Info.IsHidden()) { return true; }
+            const FStringView Name(Info.Name.c_str(), Info.Name.size());
+            if (!Name.empty() && Name.front() == '.') { return true; }
+            if (IsHiddenBrowserDirectory(Name)) { return true; }
+            
+            const FStringView Parent = VFS::Parent(FStringView(Info.VirtualPath.c_str(), Info.VirtualPath.size()), true);
+            if (IEquals(Parent, "/Engine/Resources") && !IEquals(Name, "Content") && !IEquals(Name, "Scripts"))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        // Engine-managed root mounts shown as protected, undeletable folders: each project root (Game,
+        // Engine) and its core Content + Scripts subdirs.
+        bool IsProtectedRoot(FStringView VirtualPath)
+        {
+            return IEquals(VirtualPath, "/Game")
+                || IEquals(VirtualPath, "/Game/Content")
+                || IEquals(VirtualPath, "/Game/Scripts")
+                || IEquals(VirtualPath, "/Engine/Resources")
+                || IEquals(VirtualPath, "/Engine/Resources/Content")
+                || IEquals(VirtualPath, "/Engine/Resources/Scripts");
+        }
+        
+        struct FScriptHoverInfo
+        {
+            bool             bValid = false;
+            FString          Namespace;
+            FString          ClassName;
+            FString          BaseClass;
+            FString          Summary;
+            TVector<FString> Lifecycle;
+            TVector<FString> Properties;
+            TVector<FString> PropertyTips;
+        };
+
+        struct FScriptHoverCacheEntry
+        {
+            FScriptHoverCacheEntry() noexcept = default;
+            
+            FString          Path;
+            int64            MTime = 0;
+            FScriptHoverInfo Info;
+        };
+
+        FScriptHoverCacheEntry GScriptHoverCache;
+
+        bool IsCsIdentChar(char C)
+        {
+            return (C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || (C >= '0' && C <= '9') || C == '_';
+        }
+
+        // Strips C# access/storage modifiers off a field/property declaration, leaving "Type Name [= default]".
+        FString CleanScriptDeclaration(const char* Begin, const char* End)
+        {
+            static const char* const Modifiers[] =
+            {
+                "public", "private", "protected", "internal", "static", "readonly",
+                "const", "sealed", "virtual", "override", "new", "required", "volatile", "partial",
+            };
+            FString Out;
+            const char* P = Begin;
+            while (P < End)
+            {
+                while (P < End && (*P == ' ' || *P == '\t' || *P == '\r' || *P == '\n')) { ++P; }
+                const char* TokStart = P;
+                while (P < End && !(*P == ' ' || *P == '\t' || *P == '\r' || *P == '\n')) { ++P; }
+                const size_t Len = (size_t)(P - TokStart);
+                if (Len == 0)
+                {
+                    break;
+                }
+                bool bIsModifier = false;
+                for (const char* Mod : Modifiers)
+                {
+                    if (Len == strlen(Mod) && memcmp(TokStart, Mod, Len) == 0) { bIsModifier = true; break; }
+                }
+                if (bIsModifier)
+                {
+                    continue;
+                }
+                if (!Out.empty())
+                {
+                    Out += ' ';
+                }
+                Out.append(TokStart, Len);
+            }
+            return Out;
+        }
+
+        FScriptHoverInfo ParseScriptHoverInfo(FStringView VirtualPath)
+        {
+            FScriptHoverInfo Info;
+            FString Text;
+            if (!VFS::ReadFile(Text, VirtualPath) || Text.empty())
+            {
+                return Info;
+            }
+            Info.bValid = true;
+            const size_t N = Text.size();
+
+            // namespace X
+            {
+                const size_t Pos = Text.find("namespace ");
+                if (Pos != FString::npos)
+                {
+                    size_t P = Pos + 10;
+                    while (P < N && (Text[P] == ' ' || Text[P] == '\t')) { ++P; }
+                    const size_t Start = P;
+                    while (P < N && (IsCsIdentChar(Text[P]) || Text[P] == '.')) { ++P; }
+                    Info.Namespace.assign(Text.data() + Start, P - Start);
+                }
+            }
+
+            // primary class declaration + base type
+            size_t ClassPos = FString::npos;
+            {
+                size_t Search = 0;
+                while (true)
+                {
+                    const size_t C = Text.find("class ", Search);
+                    if (C == FString::npos) { break; }
+                    if (C == 0 || !IsCsIdentChar(Text[C - 1])) { ClassPos = C; break; }
+                    Search = C + 6;
+                }
+                if (ClassPos != FString::npos)
+                {
+                    size_t P = ClassPos + 6;
+                    while (P < N && (Text[P] == ' ' || Text[P] == '\t')) { ++P; }
+                    const size_t Start = P;
+                    while (P < N && IsCsIdentChar(Text[P])) { ++P; }
+                    Info.ClassName.assign(Text.data() + Start, P - Start);
+                    while (P < N && (Text[P] == ' ' || Text[P] == '\t')) { ++P; }
+                    if (P < N && Text[P] == ':')
+                    {
+                        ++P;
+                        while (P < N && (Text[P] == ' ' || Text[P] == '\t')) { ++P; }
+                        const size_t BStart = P;
+                        while (P < N && (IsCsIdentChar(Text[P]) || Text[P] == '.')) { ++P; }
+                        Info.BaseClass.assign(Text.data() + BStart, P - BStart);
+                    }
+                }
+            }
+
+            // /// <summary> doc comment
+            {
+                const size_t S = Text.find("<summary>");
+                const size_t E = Text.find("</summary>");
+                if (S != FString::npos && E != FString::npos && E > S && (ClassPos == FString::npos || S < ClassPos))
+                {
+                    FString Clean;
+                    bool bPrevSpace = true;
+                    for (size_t i = S + 9; i < E; ++i)
+                    {
+                        const char Ch = Text[i];
+                        if (Ch == '/' || Ch == '\r') { continue; }
+                        if (Ch == '\n' || Ch == '\t' || Ch == ' ')
+                        {
+                            if (!bPrevSpace) { Clean += ' '; bPrevSpace = true; }
+                            continue;
+                        }
+                        Clean += Ch;
+                        bPrevSpace = false;
+                    }
+                    while (!Clean.empty() && Clean.back() == ' ') { Clean.pop_back(); }
+                    Info.Summary = Clean;
+                }
+            }
+
+            // overridden methods (lifecycle hooks: OnReady/OnUpdate/OnInput/...)
+            {
+                size_t P = 0;
+                while (Info.Lifecycle.size() < 16)
+                {
+                    const size_t O = Text.find("override", P);
+                    if (O == FString::npos) { break; }
+                    P = O + 8;
+                    if ((O > 0 && IsCsIdentChar(Text[O - 1])) || (P < N && IsCsIdentChar(Text[P]))) { continue; }
+                    FString Method;
+                    size_t Q = P;
+                    while (Q < N && Text[Q] != '\n' && Text[Q] != '{' && Text[Q] != ';')
+                    {
+                        while (Q < N && !IsCsIdentChar(Text[Q]) && Text[Q] != '\n' && Text[Q] != '{' && Text[Q] != ';') { ++Q; }
+                        const size_t Start = Q;
+                        while (Q < N && IsCsIdentChar(Text[Q])) { ++Q; }
+                        if (Q > Start)
+                        {
+                            size_t R = Q;
+                            while (R < N && (Text[R] == ' ' || Text[R] == '\t')) { ++R; }
+                            if (R < N && Text[R] == '(') { Method.assign(Text.data() + Start, Q - Start); break; }
+                        }
+                        else
+                        {
+                            ++Q;
+                        }
+                    }
+                    if (!Method.empty())
+                    {
+                        bool bDup = false;
+                        for (const FString& M : Info.Lifecycle) { if (M == Method) { bDup = true; break; } }
+                        if (!bDup) { Info.Lifecycle.push_back(Method); }
+                    }
+                }
+            }
+
+            // [Property] exported fields (+ Tooltip="...")
+            {
+                size_t P = 0;
+                while (Info.Properties.size() < 24)
+                {
+                    const size_t A = Text.find("[Property", P);
+                    if (A == FString::npos) { break; }
+                    const size_t Brk = Text.find(']', A);
+                    if (Brk == FString::npos) { break; }
+                    P = Brk + 1;
+
+                    FString Tip;
+                    {
+                        const size_t T = Text.find("Tooltip", A);
+                        if (T != FString::npos && T < Brk)
+                        {
+                            const size_t Q1 = Text.find('"', T);
+                            if (Q1 != FString::npos && Q1 < Brk)
+                            {
+                                const size_t Q2 = Text.find('"', Q1 + 1);
+                                if (Q2 != FString::npos) { Tip.assign(Text.data() + Q1 + 1, Q2 - Q1 - 1); }
+                            }
+                        }
+                    }
+
+                    // Skip past any further attribute lines to the actual declaration.
+                    size_t D = Brk + 1;
+                    for (;;)
+                    {
+                        while (D < N && (Text[D] == ' ' || Text[D] == '\t' || Text[D] == '\r' || Text[D] == '\n')) { ++D; }
+                        if (D < N && Text[D] == '[')
+                        {
+                            const size_t E = Text.find(']', D);
+                            if (E == FString::npos) { D = N; break; }
+                            D = E + 1;
+                            continue;
+                        }
+                        break;
+                    }
+                    size_t End = D;
+                    while (End < N && Text[End] != ';' && Text[End] != '{' && Text[End] != '\n') { ++End; }
+                    FString Decl = CleanScriptDeclaration(Text.data() + D, Text.data() + End);
+                    if (!Decl.empty())
+                    {
+                        Info.Properties.push_back(Decl);
+                        Info.PropertyTips.push_back(Tip);
+                    }
+                }
+            }
+
+            return Info;
+        }
+
+        void UpdateScriptHoverCache(FStringView VirtualPath, FStringView DiskPath)
+        {
+            int64 MTime = 0;
+            std::error_code Ec;
+            const std::filesystem::file_time_type Time = std::filesystem::last_write_time(std::filesystem::path(DiskPath.data(), DiskPath.data() + DiskPath.size()), Ec);
+            if (!Ec) { MTime = (int64)Time.time_since_epoch().count(); }
+
+            const bool bSamePath = GScriptHoverCache.Path.size() == VirtualPath.size()
+                && memcmp(GScriptHoverCache.Path.data(), VirtualPath.data(), VirtualPath.size()) == 0;
+            if (bSamePath && GScriptHoverCache.MTime == MTime && GScriptHoverCache.Info.bValid)
+            {
+                return;
+            }
+            GScriptHoverCache.Path.assign(VirtualPath.data(), VirtualPath.size());
+            GScriptHoverCache.MTime = MTime;
+            GScriptHoverCache.Info = ParseScriptHoverInfo(VirtualPath);
+        }
+
+        void DrawScriptHoverContent(const FScriptHoverInfo& Info)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuAccentScript);
+            ImGui::TextUnformatted(Info.ClassName.empty() ? "C# Script" : Info.ClassName.c_str());
+            ImGui::PopStyleColor();
+            if (!Info.BaseClass.empty())
+            {
+                ImGui::SameLine(0.0f, 6.0f);
+                ImGui::TextColored(kMenuTextDim, ": %s", Info.BaseClass.c_str());
+            }
+            if (!Info.Namespace.empty())
+            {
+                ImGui::TextColored(kMenuTextDim, "namespace %s", Info.Namespace.c_str());
+            }
+
+            if (!Info.Summary.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextUnformatted(Info.Summary.c_str());
+            }
+
+            if (!Info.Lifecycle.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(kMenuTextSection, "Lifecycle");
+                FString Line;
+                for (size_t i = 0; i < Info.Lifecycle.size(); ++i)
+                {
+                    if (i != 0) { Line += ", "; }
+                    Line += Info.Lifecycle[i];
+                }
+                ImGui::TextUnformatted(Line.c_str());
+            }
+
+            if (!Info.Properties.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(kMenuTextSection, "Properties");
+                const size_t Max = 12;
+                for (size_t i = 0; i < Info.Properties.size() && i < Max; ++i)
+                {
+                    ImGui::BulletText("%s", Info.Properties[i].c_str());
+                    if (i < Info.PropertyTips.size() && !Info.PropertyTips[i].empty())
+                    {
+                        ImGui::Indent(14.0f);
+                        ImGui::TextColored(kMenuTextDim, "%s", Info.PropertyTips[i].c_str());
+                        ImGui::Unindent(14.0f);
+                    }
+                }
+                if (Info.Properties.size() > Max)
+                {
+                    ImGui::TextColored(kMenuTextDim, "(+%d more)", (int)(Info.Properties.size() - Max));
+                }
+            }
+
+            if (Info.Summary.empty() && Info.Lifecycle.empty() && Info.Properties.empty())
+            {
+                ImGui::TextColored(kMenuTextDim, "C# script source");
+            }
+        }
+
+        // File size line (from the on-disk source) shared by the non-script tooltip kinds.
+        void DrawItemSizeLine(const VFS::FFileInfo& Info)
+        {
+            std::error_code Ec;
+            const std::uintmax_t Bytes = std::filesystem::file_size(std::filesystem::path(Info.PathSource.c_str()), Ec);
+            if (Ec) { return; }
+            const double B = (double)Bytes;
+            if (Bytes < 1024ull)                    { ImGui::TextColored(kMenuTextDim, "Size: %llu B", (unsigned long long)Bytes); }
+            else if (Bytes < 1024ull * 1024)        { ImGui::TextColored(kMenuTextDim, "Size: %.1f KB", B / 1024.0); }
+            else if (Bytes < 1024ull * 1024 * 1024) { ImGui::TextColored(kMenuTextDim, "Size: %.1f MB", B / (1024.0 * 1024.0)); }
+            else                                    { ImGui::TextColored(kMenuTextDim, "Size: %.2f GB", B / (1024.0 * 1024.0 * 1024.0)); }
+        }
+
+        // Rich tooltip body for a .lasset: type, owning plugin, outbound refs, cook flags, size, GUID.
+        void DrawAssetTooltipContent(const VFS::FFileInfo& Info)
+        {
+            const FStringView VPath(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+            const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(VPath);
+            if (Data == nullptr)
+            {
+                ImGui::TextColored(kMenuTextDim, "Asset (not yet indexed)");
+                DrawItemSizeLine(Info);
+                return;
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuAccentScript);
+            ImGui::TextUnformatted(Data->AssetClass.IsNone() ? "Asset" : Data->AssetClass.c_str());
+            ImGui::PopStyleColor();
+
+            if (!Data->OwningPlugin.IsNone())
+            {
+                ImGui::TextColored(kMenuTextDim, "Plugin: %s", Data->OwningPlugin.c_str());
+            }
+            if (!Data->Dependencies.empty())
+            {
+                ImGui::TextColored(kMenuTextDim, "References: %d", (int)Data->Dependencies.size());
+            }
+
+            FString Flags;
+            const auto AddFlag = [&Flags](const char* Name)
+            {
+                if (!Flags.empty()) { Flags += ", "; }
+                Flags += Name;
+            };
+            if (HasFlag(Data->Flags, EAssetFlags::EditorOnly))  { AddFlag("Editor-Only"); }
+            if (HasFlag(Data->Flags, EAssetFlags::RuntimeOnly)) { AddFlag("Runtime-Only"); }
+            if (HasFlag(Data->Flags, EAssetFlags::AlwaysCook))  { AddFlag("Always Cook"); }
+            if (HasFlag(Data->Flags, EAssetFlags::NeverCook))   { AddFlag("Never Cook"); }
+            if (HasFlag(Data->Flags, EAssetFlags::Primary))     { AddFlag("Primary"); }
+            if (!Flags.empty())
+            {
+                ImGui::TextColored(kMenuTextDim, "Flags: %s", Flags.c_str());
+            }
+
+            DrawItemSizeLine(Info);
+            ImGui::TextColored(kMenuTextDim, "GUID: %s", Data->AssetGUID.ToString(false, true).c_str());
+        }
+
+        std::atomic<bool> GScriptReloadQueued{ false };
+    }
+
+    // Single framework-driven hover tooltip (called via BeginItemTooltip). Rich, per-kind content:
+    // scripts show class/lifecycle/properties; assets show type/refs/flags/size/GUID; other files show
+    // type + size; folders show item counts.
+    void FContentBrowserEditorTool::FContentBrowserTileViewItem::DrawTooltip() const
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, kMenuAccent);
+        ImGui::TextUnformatted(FileInfo.Name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+
+        switch (IconKind)
+        {
+        case EIconKind::CSharpScript:
+            {
+                const FStringView VPath(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                const FStringView DPath(FileInfo.PathSource.c_str(), FileInfo.PathSource.size());
+                UpdateScriptHoverCache(VPath, DPath);
+                DrawScriptHoverContent(GScriptHoverCache.Info);
+                break;
+            }
+        case EIconKind::Asset:
+            {
+                DrawAssetTooltipContent(FileInfo);
+                break;
+            }
+        case EIconKind::Directory:
+            {
+                int32 Count = 0;
+                const FStringView VPath(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                VFS::DirectoryIterator(VPath, [&Count](const VFS::FFileInfo&) { ++Count; });
+                ImGui::TextColored(kMenuTextDim, "Folder - %d item%s", Count, Count == 1 ? "" : "s");
+                break;
+            }
+        case EIconKind::Markup:
+            {
+                const FString Ext = FileInfo.GetExt();
+                ImGui::TextColored(kMenuTextDim, "%s", Ext == ".rcss" ? "UI Stylesheet (.rcss)" : "UI Document (.rml)");
+                DrawItemSizeLine(FileInfo);
+                break;
+            }
+        case EIconKind::Audio:
+            {
+                ImGui::TextColored(kMenuTextDim, "Audio Clip (%s)", FileInfo.GetExt().c_str());
+                DrawItemSizeLine(FileInfo);
+                break;
+            }
+        case EIconKind::Generic:
+            {
+                const FString Ext = FileInfo.GetExt();
+                if (!Ext.empty())
+                {
+                    ImGui::TextColored(kMenuTextDim, "%s file", Ext.c_str());
+                }
+                DrawItemSizeLine(FileInfo);
+                break;
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::TextColored(kMenuTextDim, "%s", FileInfo.VirtualPath.c_str());
+
+        ImGui::PopTextWrapPos();
     }
 
     template<size_t BufferSize = 42>
@@ -382,9 +859,12 @@ namespace Lumina
                     }
                     break;
                 }
-            case EIconKind::LuaScript:
+            case EIconKind::CSharpScript:
                 {
-                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
+                    // No dedicated C# logo yet; a tinted generic file icon keeps it visually distinct
+                    // until one is added.
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/File.png");
+                    TintColor = ImVec4(0.62f, 0.46f, 0.80f, 1.0f);
                     break;
                 }
             case EIconKind::Markup:
@@ -398,6 +878,7 @@ namespace Lumina
                     break;
                 }
             case EIconKind::Generic:
+                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/File.png");
                 break;
             }
 
@@ -419,7 +900,7 @@ namespace Lumina
             );
             
             ImGui::ImageButton("##", ImTexture, Size, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), TintColor);
-        
+
             if (ImGui::IsItemHovered())
             {
                 DrawList->AddRect(
@@ -482,13 +963,19 @@ namespace Lumina
                     ToolContext->OpenAssetEditor(Asset->AssetGUID);
                 }
             }
-            else
+            else if (ContentItem->GetIconKind() == EIconKind::Markup)
             {
-                // Non-CObject files (e.g. .rml): OpenFileEditor falls back to OS launcher if no editor is registered.
+                // Files with an in-engine editor (.rml/.rcss) open as editor tabs.
                 ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
             }
+            else
+            {
+                // No in-engine editor (e.g. .cs): hand the native file to the OS so it opens in the
+                // user's associated app (Rider / Visual Studio / VS Code for C#).
+                Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
+            }
         };
-        
+
         ContentBrowserTileViewContext.ItemSelectedFunction = [this] (FTileViewItem* Item)
         {
             
@@ -537,10 +1024,22 @@ namespace Lumina
 
             VFS::DirectoryIterator(SelectedPath, [&](const VFS::FFileInfo& FileInfo)
             {
-                // Hide dot-entries (e.g. the .lmeta identity-sidecar tree) and OS-hidden files.
-                if (FileInfo.IsHidden() || (!FileInfo.Name.empty() && FileInfo.Name[0] == '.') || !PassesFilter(FileInfo))
+                if (FileInfo.IsDirectory())
                 {
-                    return;
+                    // Hide dot-entries (e.g. the .lmeta sidecar tree) and build/IDE folders.
+                    if (ShouldHideDirectory(FileInfo))
+                    {
+                        return;
+                    }
+                }
+                else
+                {
+                    // Only surface extensions the engine actually authors/consumes; everything else
+                    // (csproj, sidecars, IDE cruft) stays hidden.
+                    if (!IsBrowsableFileExtension(FileInfo.GetExt()) || !PassesFilter(FileInfo))
+                    {
+                        return;
+                    }
                 }
 
                 SortedPaths.emplace_back(FileInfo);
@@ -558,15 +1057,8 @@ namespace Lumina
             
             for (const VFS::FFileInfo& Info : SortedPaths)
             {
-                if (Info.VirtualPath == "/Game")
-                {
-                    ContentBrowserTileView.AddItemToTree<FContentBrowserTileViewItem>(nullptr, Info, true);
-                }
-                else
-                {
-                    ContentBrowserTileView.AddItemToTree<FContentBrowserTileViewItem>(nullptr, Info, false);
-                }
-                
+                const bool bProtected = IsProtectedRoot(FStringView(Info.VirtualPath.c_str(), Info.VirtualPath.size()));
+                ContentBrowserTileView.AddItemToTree<FContentBrowserTileViewItem>(nullptr, Info, bProtected);
             }
         };
 
@@ -658,11 +1150,11 @@ namespace Lumina
                 State.bSelected = true;
             }
 
-            // Probe for at least one subdirectory; if any exists, mark lazy so the arrow appears.
+            // Probe for at least one visible subdirectory; if any exists, mark lazy so the arrow appears.
             bool bHasSubdirs = false;
             VFS::DirectoryIterator(Info.VirtualPath, [&](const VFS::FFileInfo& Child)
             {
-                if (Child.IsDirectory())
+                if (Child.IsDirectory() && !ShouldHideDirectory(Child))
                 {
                     bHasSubdirs = true;
                 }
@@ -691,8 +1183,19 @@ namespace Lumina
                 Tree.MarkHasLazyChildren(RootItem);
                 return RootItem;
             };
+            // Primary mount roots: each project is a top-level node (Game, Engine, plugins). Expanding one
+            // reveals its real on-disk subdirs -- for the game, Content (assets) and Scripts (C#).
             AddRoot("/Game", "Game");
-            AddRoot("/Engine/Resources/Content", "Engine");
+            AddRoot("/Engine/Resources", "Engine");
+            for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+            {
+                if (Plugin->IsEnabled() && Plugin->IsContentMounted())
+                {
+                    const FString Alias = Plugin->GetMountAlias();
+                    const char* Label = (!Alias.empty() && Alias[0] == '/') ? Alias.c_str() + 1 : Alias.c_str();
+                    AddRoot(Alias.c_str(), Label);
+                }
+            }
         };
 
         DirectoryContext.BuildChildrenFunction = [this, AddFolderNode](FTreeListView& Tree, FTreeNodeID Parent)
@@ -700,7 +1203,7 @@ namespace Lumina
             FContentBrowserListViewItemData& Data = Tree.Get<FContentBrowserListViewItemData>(Parent);
             VFS::DirectoryIterator(FStringView(Data.Path.data(), Data.Path.length()), [&](const VFS::FFileInfo& Info)
             {
-                if (!Info.IsDirectory())
+                if (!Info.IsDirectory() || ShouldHideDirectory(Info))
                 {
                     return;
                 }
@@ -966,7 +1469,7 @@ namespace Lumina
             "Left panel is the directory tree, right is the tile grid for the selected folder. "
             "Double-click a folder to enter, double-click an asset to open its editor.");
         DrawHelpTextRow("Create",
-            "Right-click empty space in the tile grid for the New menu (Material, Prefab, Lua script, etc). "
+            "Right-click empty space in the tile grid for the New menu (Material, Prefab, C# script, etc). "
             "Right-click a folder for create-in-place.");
         DrawHelpTextRow("Import",
             "Drag external files (FBX, PNG, WAV, ...) onto the tile grid to import. "
@@ -1055,7 +1558,10 @@ namespace Lumina
         // destructor stops its worker thread. Project reload rebuilds from scratch.
         for (FContentWatcher& W : Watchers)
         {
-            if (W.Watcher) W.Watcher->Stop();
+            if (W.Watcher)
+            {
+                W.Watcher->Stop();
+            }
         }
         Watchers.clear();
 
@@ -1071,7 +1577,10 @@ namespace Lumina
         {
             Paths::Normalize(DiskRoot);
             TrimTrailingSeparators(DiskRoot);
-            if (DiskRoot.empty()) return;
+            if (DiskRoot.empty())
+            {
+                return;
+            }
 
             FContentWatcher Entry;
             Entry.VirtualPrefix.assign_convert(VirtualPrefix.data(), VirtualPrefix.size());
@@ -1109,15 +1618,9 @@ namespace Lumina
                 {
                     return;
                 }
-
-                // Central content-change signal: subsystems (UI hot-reload, etc.) subscribe and
-                // filter by extension, so none has to run its own watcher or hard-code paths.
+                
                 FCoreDelegates::OnContentFileModified.Broadcast(RelView);
-
-                // Keep text-asset identities in sync with edits made outside the editor (idempotent for
-                // edits we already handled in-process). Sidecar I/O is marshalled to the main thread so it
-                // can't race the content-browser handler (which also mutates sidecars) -- concurrent
-                // filesystem access on the same sidecar tree caused a sharing-violation crash.
+                
                 if (TextAsset::IsTextAssetPath(RelView))
                 {
                     const EFileAction Action  = Event.Action;
@@ -1138,52 +1641,54 @@ namespace Lumina
                     });
                 }
 
-                if (!VFS::HasExtension(Event.Path, ".luau"))
+                // Text edits and C# sources want a browser refresh for add/remove/rename
+                // (C# isn't a text asset, so check its extension explicitly).
+                const bool bIsCSharp = VFS::HasExtension(Event.Path, ".cs");
+                if ((TextAsset::IsTextAssetPath(RelView) || bIsCSharp) && Event.Action != EFileAction::Modified)
                 {
-                    // Non-script text edits still want a browser refresh for add/remove/rename.
-                    if (TextAsset::IsTextAssetPath(RelView) && Event.Action != EFileAction::Modified)
-                    {
-                        RefreshContentBrowser();
-                    }
-                    return;
+                    RefreshContentBrowser();
                 }
 
-                switch (Event.Action)
+                // A C# source added/removed/renamed (in the browser or an external editor) changes what
+                // compiles -> recompile + regenerate the IDE project automatically, so the user never has to
+                // hit "Reload Scripts". Coalesced, and marshalled to the game thread (CLR ops aren't thread-
+                // safe). ReloadScripts also self-heals the .csproj. (Content edits = Modified are left to the
+                // explicit reload; create/delete/rename are the browser operations.)
+                if (bIsCSharp && Event.Action != EFileAction::Modified)
                 {
-                case EFileAction::Added:
-                    Lua::FScriptingContext::Get().ScriptCreated(RelativePath);
-                    RefreshContentBrowser();
-                    break;
-                case EFileAction::Modified:
-                    Lua::FScriptingContext::Get().ScriptReloaded(RelativePath);
-                    RefreshContentBrowser();
-                    break;
-                case EFileAction::Removed:
-                    Lua::FScriptingContext::Get().ScriptDeleted(RelativePath);
-                    RefreshContentBrowser();
-                    break;
-                case EFileAction::Renamed:
-                {
-                    FFixedString RelativeOldPath = MakeVirtualPath(Event.OldPath);
-                    Lua::FScriptingContext::Get().ScriptRenamed(RelativePath, RelativeOldPath);
-                    RefreshContentBrowser();
-                    break;
-                }
+                    if (!GScriptReloadQueued.exchange(true))
+                    {
+                        MainThread::Enqueue([]
+                        {
+                            GScriptReloadQueued.store(false);
+                            DotNet::ReloadScripts();
+                        });
+                    }
                 }
             });
 
             Watchers.emplace_back(Move(Entry));
         };
 
-        // Project's /Game content. Always present.
-        SpawnWatcher(FFixedString(GEditorEngine->GetProjectContentDirectory()), FStringView("/Game"));
+        // Project's Content (assets), under the /Game mount. Always present.
+        SpawnWatcher(FFixedString(GEditorEngine->GetProjectContentDirectory()), FStringView("/Game/Content"));
+
+        // Project's Scripts (C# sources), the sibling of Content under /Game. The callback refreshes the
+        // browser for .cs add/remove/rename.
+        SpawnWatcher(FFixedString(GEditorEngine->GetProjectScriptsDirectory()), FStringView("/Game/Scripts"));
 
         // Every enabled plugin with a content mount. Same callback shape,
         // virtual prefix is the plugin's mount alias ("/<PluginName>").
         for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
         {
-            if (!Plugin->IsEnabled())        continue;
-            if (!Plugin->IsContentMounted()) continue;
+            if (!Plugin->IsEnabled())
+            {
+                continue;
+            }
+            if (!Plugin->IsContentMounted())
+            {
+                continue;
+            }
             const FString Disk  = Plugin->GetContentDirectory();
             const FString Mount = Plugin->GetMountAlias();
             SpawnWatcher(FFixedString(Disk.c_str(), Disk.size()),
@@ -1524,39 +2029,50 @@ namespace Lumina
         
         ImGui::BeginHorizontal("Breadcrumbs");
 
-        auto GameDirPos = SelectedPath.find("Game");
-        if (GameDirPos != std::string::npos)
+        // Walk the virtual path segment-by-segment so every mount root (Content, Scripts, Engine,
+        // plugins) renders the same way. The first segment is the mount alias, shown with its tree label.
+        auto RootSegmentLabel = [](FStringView) -> const char*
         {
-            FFixedString BasePathStr = SelectedPath.substr(0, GameDirPos);
-            std::filesystem::path BasePath(BasePathStr.c_str());
-            std::filesystem::path RelativePath = std::filesystem::path(SelectedPath.c_str()).lexically_relative(BasePath);
-    
-            std::filesystem::path BuildingPath = BasePath;
-    
-            for (auto it = RelativePath.begin(); it != RelativePath.end(); ++it)
+            return nullptr; // use the raw segment text (Game, Content, Scripts, Engine, plugins)
+        };
+
+        const FStringView FullPath(SelectedPath.c_str(), SelectedPath.size());
+        size_t Cursor = 0;
+        int CrumbIndex = 0;
+        while (Cursor < FullPath.size())
+        {
+            while (Cursor < FullPath.size() && FullPath[Cursor] == '/') { ++Cursor; }
+            if (Cursor >= FullPath.size()) { break; }
+
+            const size_t SegStart = Cursor;
+            while (Cursor < FullPath.size() && FullPath[Cursor] != '/') { ++Cursor; }
+            const FStringView Segment   = FullPath.substr(SegStart, Cursor - SegStart);
+            const FStringView CrumbPath = FullPath.substr(0, Cursor);
+
+            if (CrumbIndex > 0)
             {
-                BuildingPath /= *it;
-        
-                ImGui::PushID(static_cast<int>(std::distance(RelativePath.begin(), it)));
-                {
-                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3, 2));
-                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 0));
-            
-                    if (ImGui::Button(it->string().c_str()))
-                    {
-                        SelectedPath = BuildingPath.generic_string().c_str();
-                        ContentBrowserTileView.MarkTreeDirty();
-                    }
-            
-                    ImGui::PopStyleVar(2);
-                }
-                ImGui::PopID();
-        
-                if (std::next(it) != RelativePath.end())
-                {
-                    ImGui::TextUnformatted(LE_ICON_ARROW_RIGHT);
-                }
+                ImGui::TextUnformatted(LE_ICON_ARROW_RIGHT);
             }
+
+            ImGui::PushID(CrumbIndex);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3, 2));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 0));
+
+            const char* Label = (CrumbIndex == 0) ? RootSegmentLabel(Segment) : nullptr;
+            FFixedString Display;
+            if (Label != nullptr) { Display.assign(Label); }
+            else                  { Display.assign(Segment.data(), Segment.size()); }
+
+            if (ImGui::Button(Display.c_str()))
+            {
+                SelectedPath.assign(CrumbPath.data(), CrumbPath.size());
+                ContentBrowserTileView.MarkTreeDirty();
+            }
+
+            ImGui::PopStyleVar(2);
+            ImGui::PopID();
+
+            ++CrumbIndex;
         }
 
         ImGui::EndHorizontal();
@@ -1590,8 +2106,10 @@ namespace Lumina
     {
         const bool bIsAsset      = ContentItem->IsAsset();
         const bool bIsDirectory  = ContentItem->IsDirectory();
-        const bool bIsScript     = ContentItem->IsLuaScript();
+        const bool bIsCSharp     = ContentItem->GetIconKind() == EIconKind::CSharpScript;
         const bool bIsProtected  = ContentItem->IsProtected();
+        // UI markup has an in-engine editor; everything else opens externally.
+        const bool bHasInEngineEditor = ContentItem->GetIconKind() == EIconKind::Markup;
         const FString  Extension = ContentItem->GetExtension();
 
         const char* HeaderIcon;
@@ -1609,11 +2127,11 @@ namespace Lumina
             HeaderTint = kMenuAccent;
             TypeLabel  = "Asset";
         }
-        else if (bIsScript)
+        else if (bIsCSharp)
         {
-            HeaderIcon = LE_ICON_LANGUAGE_LUA;
+            HeaderIcon = LE_ICON_LANGUAGE_CSHARP;
             HeaderTint = kMenuAccentScript;
-            TypeLabel  = "Lua Script";
+            TypeLabel  = "C# Script";
         }
         else
         {
@@ -1655,7 +2173,15 @@ namespace Lumina
         {
             if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open", "Dbl-Click"))
             {
-                ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
+                if (bHasInEngineEditor)
+                {
+                    ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
+                }
+                else
+                {
+                    // .cs and other loose files: open in the OS-associated app.
+                    Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
+                }
             }
             if (ImGui::MenuItem(LE_ICON_OPEN_IN_NEW " Open Externally"))
             {
@@ -1862,11 +2388,42 @@ namespace Lumina
             ImGui::EndMenu();
         }
 
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " New Lua Script"))
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " New C# Script"))
         {
-            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
+            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.cs";
             NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
-            VFS::WriteFile(NewScriptPath, LoadNewEntityScriptTemplate());
+
+            // The class name must be unique across the whole compile, so derive it from the (already
+            // unique) file stem and sanitize it into a valid C# identifier.
+            FStringView Stem = VFS::FileName(FStringView(NewScriptPath.c_str(), NewScriptPath.size()), true);
+            FFixedString ClassName;
+            for (char C : Stem)
+            {
+                const bool bValid = (C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || (C >= '0' && C <= '9') || C == '_';
+                ClassName.push_back(bValid ? C : '_');
+            }
+            if (ClassName.empty() || (ClassName[0] >= '0' && ClassName[0] <= '9'))
+            {
+                ClassName.insert(ClassName.begin(), '_');
+            }
+
+            FString Contents;
+            Contents += "using LuminaSharp;\n";
+            Contents += "using Lumina;\n\n";
+            Contents += "namespace Game;\n\n";
+            Contents += "public sealed class ";
+            Contents += ClassName.c_str();
+            Contents += " : EntityScript\n";
+            Contents += "{\n";
+            Contents += "    public override void OnReady()\n";
+            Contents += "    {\n";
+            Contents += "    }\n\n";
+            Contents += "    public override void OnUpdate(float deltaTime)\n";
+            Contents += "    {\n";
+            Contents += "    }\n";
+            Contents += "}\n";
+
+            VFS::WriteFile(NewScriptPath, Contents);
             RefreshContentBrowser();
         }
 

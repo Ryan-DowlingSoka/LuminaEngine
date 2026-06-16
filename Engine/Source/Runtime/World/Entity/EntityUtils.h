@@ -4,15 +4,12 @@
 #include "Containers/Name.h"
 #include "Core/Serialization/Archiver.h"
 #include "Registry/EntityRegistry.h"
-#include "RuntimeComponent.h"
-#include "Scripting/Lua/Reference.h"
 #include "TaskSystem/TaskSystem.h"
 
 
 namespace Lumina
 {
 	class CStruct;
-	class CEntityComponentType;
 	struct FTransform;
 }
 
@@ -58,48 +55,6 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API bool HasComponent(FEntityRegistry& Registry, entt::entity Entity, entt::meta_type Type);
 	RUNTIME_API void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity);
 
-	// Runtime (data-authored) components: instances of a CEntityComponentType, stored contiguously per type in FRuntimeComponentStorage.
-
-	// Returns the storage for Type, creating + binding it (or migrating it to the current schema)
-	// as needed. The returned reference is stable for the registry's lifetime.
-	RUNTIME_API FRuntimeComponentStorage& GetOrCreateRuntimeStorage(FEntityRegistry& Registry, CEntityComponentType* Type);
-
-	// Finds an existing storage for Type without creating one. Null if the type was never added.
-	RUNTIME_API FRuntimeComponentStorage* FindRuntimeStorage(FEntityRegistry& Registry, CEntityComponentType* Type);
-
-	// As above but keyed by the storage id (CEntityComponentType::GetStorageId()), so callers can
-	// look a storage up without holding a (possibly dangling) type pointer.
-	RUNTIME_API FRuntimeComponentStorage* FindRuntimeStorageById(FEntityRegistry& Registry, uint32 StorageId);
-
-	// Adds (default-initialized) / removes / queries a runtime component on one entity. Add returns
-	// the value buffer (null for a field-less, tag-like type); Get returns null when absent.
-	RUNTIME_API void* AddRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type);
-	RUNTIME_API bool  RemoveRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type);
-	RUNTIME_API void* GetRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type);
-	RUNTIME_API bool  HasRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, CEntityComponentType* Type);
-
-	// Migrates every runtime storage whose type schema has advanced (Case B fixup). Cheap when none
-	// changed; called once per frame at FrameStart.
-	RUNTIME_API void RefreshRuntimeComponentSchemas(FEntityRegistry& Registry);
-
-	// Runs the above for every loaded world. Call right after editing a component-type schema so the
-	// change propagates immediately (and deterministically) rather than waiting for a world's sweep.
-	RUNTIME_API void RefreshAllWorldsRuntimeComponentSchemas();
-
-	// Visits each runtime component on Entity: Func(CEntityComponentType*, CStruct* Layout, void* Data).
-	template<typename TFunc>
-	void ForEachRuntimeComponent(FEntityRegistry& Registry, entt::entity Entity, TFunc&& Func)
-	{
-		for (auto&& [Id, Set] : Registry.storage())
-		{
-			if (FRuntimeComponentStorage::IsRuntimeStorage(Set) && Set.contains(Entity))
-			{
-				auto& Storage = static_cast<FRuntimeComponentStorage&>(Set);
-				eastl::invoke(Func, Storage.GetSchemaType(), Storage.GetLayout(), Set.value(Entity));
-			}
-		}
-	}
-
 	// Bulk-resolve every FNeedsTransformUpdate entity + descendants, then clear the pool (O(dirty)). Lets a
 	// system read WorldTransform lock-free in a ParallelFor after one main-thread call. Main thread only.
 	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
@@ -140,7 +95,6 @@ namespace Lumina::ECS::Utils
 
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(FStringView Name);
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(const CStruct* Type);
-	NODISCARD RUNTIME_API entt::id_type GetTypeID(const Lua::FRef& Obj);
 
 	
 	template<typename... Ts, typename TFunc, typename... TArgs>

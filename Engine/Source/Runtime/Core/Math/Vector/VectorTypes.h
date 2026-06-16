@@ -3,8 +3,7 @@
 #include "Platform/GenericPlatform.h"
 #include <type_traits>
 
-// Lumina vector types. Left-handed, contiguous storage for direct GPU upload; per-dimension
-// specializations expose x/y/z/w + r/g/b/a/s/t/p/q aliases, behavior generic over TVec<T,N>.
+// Lumina vector types. Left-handed.
 
 #if defined(_MSC_VER)
     #pragma warning(push)

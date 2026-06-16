@@ -5,9 +5,6 @@
 #include "Core/LuminaMacros.h"
 #include <cmath>
 
-// Free functions over Lumina vector types; generic over TVec<T,N> except dimension-specific
-// entries (Cross, Reflect) which constrain to their dimension.
-
 namespace Lumina::Math
 {
     template<typename T, int N>
@@ -129,7 +126,6 @@ namespace Lumina::Math
         return true;
     }
 
-    // Each maps the matching scalar Math:: function over the components.
     #define LUMINA_VEC_MAP1(Name)                                                          \
         template<typename T, int N> [[nodiscard]] TVec<T, N> Name(const TVec<T, N>& V)      \
         { TVec<T, N> R{}; for (int i = 0; i < N; ++i) { R[i] = Name(V[i]); } return R; }

@@ -17,13 +17,15 @@ namespace Lumina
         void GenerateMetadata(const eastl::string& InMetadata) override;
 
         void AddArgument(FFieldInfo&& Field) { Arguments.emplace_back(Field); }
-        
-        void AppendDefinition(eastl::string& Stream);
-        
+
         eastl::optional<FFieldInfo>     Return;
         eastl::vector<FFieldInfo>       Arguments;
         eastl::vector<FMetadataPair>    Metadata;
         eastl::string                   Name;
-        eastl::string                   Outer;  
+        eastl::string                   Outer;
+        // True when an unsupported argument was dropped from Arguments during parsing (LRT1005). The C#
+        // binder must skip such a function: its reflected arg list is shorter than the real signature, so
+        // a generated call would pass too few args.
+        bool                            bHasOmittedArgs = false;
     };
 }

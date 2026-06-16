@@ -119,8 +119,9 @@ LuminaThirdParty.Register({ Name = "Recast",        IncludeDirs = { "Recast/Reca
 LuminaThirdParty.Register({ Name = "ENet",          IncludeDirs = { "enet/include" }, Link = { "ENet", "ws2_32", "winmm" } })
 
 -- Scripting
-LuminaThirdParty.Register({ Name = "Luau",          IncludeDirs = { "luau/include" } })
-LuminaThirdParty.Register({ Name = "LuauAnalysis",  IncludeDirs = { "luau/include" } })
+-- .NET host headers (hostfxr/coreclr_delegates/nethost) from the bundled runtime in External.
+-- Header-only here: FDotNetHost LoadLibrary's hostfxr at runtime, so there is no import lib to link.
+LuminaThirdParty.Register({ Name = "DotNetHost",    IncludeDirs = { LuminaConfig.EnginePath("External/DotNet/include") }, Link = false })
 
 
 -- MSDF font-atlas baking (runtime, for the default engine font + editor import). Included as
@@ -149,12 +150,12 @@ LuminaThirdParty.RuntimePublicDeps =
     "Vulkan", "Volk", "VMA", "SLang",
     "MiniAudio", "JoltPhysics", "Recast",
     "ENet",
-    "Luau",
+    "DotNetHost",
     "MeshOptimizer", "MikkTSpace", "BasicUniversal", "MSDFGen",
 }
 
 -- Extra third-party the Editor module exposes on top of Runtime's set.
 LuminaThirdParty.EditorPublicDeps =
 {
-    "TinyOBJLoader", "OpenFBX", "FastGLTF", "LuauAnalysis",
+    "TinyOBJLoader", "OpenFBX", "FastGLTF",
 }

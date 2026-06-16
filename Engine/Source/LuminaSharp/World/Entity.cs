@@ -1,0 +1,53 @@
+using System;
+
+namespace LuminaSharp;
+
+/// <summary>
+/// A handle to an entity, the C# mirror of C++ <c>entt::entity</c> / <c>FEntity</c>. Holds the packed
+/// entt id; not a live object. Resolve components through <see cref="EntityRegistry"/>.
+/// </summary>
+public readonly struct Entity : IEquatable<Entity>
+{
+    /// <summary>The packed entt id (entt::to_integral).</summary>
+    public readonly uint Id;
+
+    public Entity(uint Id)
+    {
+        this.Id = Id;
+    }
+
+    /// <summary>entt::null sentinel (all bits set for the default 32-bit entity type).</summary>
+    public static readonly Entity Null = new(0xFFFFFFFFu);
+
+    public bool IsNull => Id == Null.Id;
+
+    public bool Equals(Entity Other)
+    {
+        return Id == Other.Id;
+    }
+
+    public override bool Equals(object? Obj)
+    {
+        return Obj is Entity Other && Equals(Other);
+    }
+
+    public override int GetHashCode()
+    {
+        return (int)Id;
+    }
+
+    public static bool operator ==(Entity Left, Entity Right)
+    {
+        return Left.Id == Right.Id;
+    }
+
+    public static bool operator !=(Entity Left, Entity Right)
+    {
+        return Left.Id != Right.Id;
+    }
+
+    public override string ToString()
+    {
+        return IsNull ? "Entity(null)" : $"Entity({Id})";
+    }
+}

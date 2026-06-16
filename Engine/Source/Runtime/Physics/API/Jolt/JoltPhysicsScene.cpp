@@ -30,8 +30,13 @@
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
 #include "Jolt/Physics/Collision/Shape/HeightFieldShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
+#include "JoltRagdollHandle.h"
+#include <Jolt/Skeleton/Skeleton.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Assets/AssetTypes/PhysicsMaterial/PhysicsMaterial.h"
+#include "Assets/AssetTypes/PhysicsAsset/PhysicsAsset.h"
+#include "Animation/Pose.h"
 #include "Renderer/MeshData.h"
 #include "Renderer/RendererUtils.h"
 #include "World/World.h"
@@ -39,19 +44,15 @@
 #include "World/Entity/Components/CharacterControllerComponent.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
-#include "World/Entity/Components/ScriptComponent.h"
+#include "World/Entity/Components/CSharpScriptComponent.h"
+#include "Scripting/DotNet/DotNetHost.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TerrainComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "world/entity/components/velocitycomponent.h"
 #include "World/Entity/Events/CollisionEvent.h"
 #include "World/Entity/Events/ImpulseEvent.h"
-#include "World/Entity/Events/LuaEventBus.h"
 #include "World/Subsystems/WorldSettings.h"
-#include "Scripting/Lua/Reference.h"
-#include "Scripting/Lua/Scripting.h"
-#include "Scripting/Lua/Stack.h"
-#include "lua.h"
 
 using namespace JPH::literals;
 
@@ -336,15 +337,10 @@ namespace Lumina::Physics
             Drain.swap(PendingContacts);
         }
 
-        lua_State* L = Lua::FScriptingContext::Get().GetVM();
-        if (L == nullptr)
-        {
-            return;
-        }
-
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
-        // Invoke the script's cached FRef if defined; Contact = solid impact, Overlap = a sensor/trigger side.
+        // Invoke the script's callback if defined; Contact = solid impact, Overlap = a sensor/trigger side.
+        // Routes to C# (EntityScript) scripts on this entity.
         auto Deliver = [&](entt::entity Self, entt::entity Other, uint32 SelfBody, uint32 OtherBody,
                            const FContactRecord& Record, bool bFlipNormal, bool bIsAdded, bool bIsOverlap)
         {
@@ -352,25 +348,27 @@ namespace Lumina::Physics
             {
                 return;
             }
-            SScriptComponent* Comp = Registry.try_get<SScriptComponent>(Self);
-            if (Comp == nullptr || Comp->Script == nullptr)
-            {
-                return;
-            }
 
-            const Lua::FRef& Func = bIsOverlap
-                ? (bIsAdded ? Comp->OverlapBeginFunc : Comp->OverlapEndFunc)
-                : (bIsAdded ? Comp->ContactBeginFunc : Comp->ContactEndFunc);
-            if (!Func.IsInvokable())
+            // Kind: 0=ContactBegin, 1=ContactEnd, 2=OverlapBegin, 3=OverlapEnd (matches the C# side).
+            const int32 Kind = bIsOverlap ? (bIsAdded ? 2 : 3) : (bIsAdded ? 0 : 1);
+
+            // C# side: gated on the script's overridden-callback bitmask so we don't cross the boundary
+            // for callbacks it doesn't handle.
+            SCSharpScriptComponent* CsComp = Registry.try_get<SCSharpScriptComponent>(Self);
+            // Require the instance to be from the CURRENT generation: after a hot reload a component can
+            // still hold a freed handle until the bind pass rebinds it next frame; never dispatch onto that.
+            const bool bCs = CsComp != nullptr && CsComp->Instance != nullptr
+                && CsComp->Generation == DotNet::GetScriptGeneration()
+                && (CsComp->CallbackFlags & (1 << Kind)) != 0;
+
+            if (!bCs)
             {
                 return;
             }
 
             const SCollisionEvent Event = BuildCollisionEvent(Self, Other, SelfBody, OtherBody, Record, bFlipNormal);
 
-            // Pass `self` first so scripts use `function MyScript:OnContactBegin(Event)`; event is tagged userdata.
-            // Coroutine so contact hooks can yield (wait/await); also sets this entity's thread data correctly.
-            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Event);
+            DotNet::DispatchScriptCollision(CsComp->Instance, Kind, &Event);
         };
 
         for (const FContactRecord& Record : Drain)
@@ -2064,6 +2062,402 @@ namespace Lumina::Physics
         bBatchingBodies = false;
         CreateRigidBodiesBatched(BatchedBodyCreations);
         BatchedBodyCreations.clear();
+    }
+
+    namespace
+    {
+        // Quaternion (w,x,y,z) rotating by Angle (radians) about a unit Axis.
+        FQuat RagdollAxisAngle(const FVector3& Axis, float Angle)
+        {
+            const float Half = Angle * 0.5f;
+            const float S = Math::Sin(Half);
+            return FQuat(Math::Cos(Half), Axis.x * S, Axis.y * S, Axis.z * S);
+        }
+
+        // Rotation taking +Y onto Dir (Dir assumed normalized). Jolt capsules run along local Y.
+        FQuat RagdollYToDir(const FVector3& Dir)
+        {
+            const FVector3 Y(0.0f, 1.0f, 0.0f);
+            const float D = Math::Clamp(Math::Dot(Y, Dir), -1.0f, 1.0f);
+            if (D > 0.99999f)
+            {
+                return FQuat::Identity();
+            }
+            if (D < -0.99999f)
+            {
+                return RagdollAxisAngle(FVector3(0.0f, 0.0f, 1.0f), LE_PI_F);
+            }
+            return RagdollAxisAngle(Math::Normalize(Math::Cross(Y, Dir)), Math::Acos(D));
+        }
+
+        // Any unit vector perpendicular to Axis (assumed normalized).
+        FVector3 RagdollPerpendicular(const FVector3& Axis)
+        {
+            const FVector3 Ref = Math::Abs(Axis.x) < 0.9f ? FVector3(1.0f, 0.0f, 0.0f) : FVector3(0.0f, 0.0f, 1.0f);
+            return Math::Normalize(Math::Cross(Axis, Ref));
+        }
+
+        // One resolved ragdoll body before it becomes a Jolt part.
+        struct FRagdollBodyDef
+        {
+            int32           BoneIndex = INDEX_NONE;
+            int32           ParentBodyIndex = -1;
+            FVector3        WorldPos;
+            FQuat           WorldRot;
+            JPH::ShapeRefC  Shape;
+            bool            bOverrideMass = false;
+            float           Mass = 1.0f;
+            float           TwistDeg = 30.0f;
+            float           Swing1Deg = 45.0f;
+            float           Swing2Deg = 45.0f;
+        };
+    }
+
+    TSharedPtr<FJoltRagdollHandle> FJoltPhysicsScene::CreateRagdoll(const FRagdollDesc& Desc)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        const FSkeletonResource* Skeleton = Desc.Skeleton;
+        if (Skeleton == nullptr || Desc.ComponentBoneGlobals == nullptr)
+        {
+            return nullptr;
+        }
+
+        const TVector<FMatrix4>& Globals = *Desc.ComponentBoneGlobals;
+        const int32 NumBones = Skeleton->GetNumBones();
+        if ((int32)Globals.size() != NumBones || NumBones == 0)
+        {
+            return nullptr;
+        }
+
+        const FCollisionProfile Profile = Desc.Asset ? Desc.Asset->CollisionProfile : Desc.FallbackProfile;
+        const JPH::ObjectLayer Layer = JoltUtils::PackToObjectLayer(Profile);
+
+        // Resolve which bones get bodies (authored or auto-generated), sorted parent-before-child (ascending
+        // bone index, since the skeleton stores parents before children).
+        TVector<FRagdollBodyDef> Defs;
+        THashMap<int32, int32> BoneToBody;
+
+        auto DecomposeWorld = [&](int32 BoneIndex, FVector3& OutPos, FQuat& OutRot)
+        {
+            const FMatrix4 World = Desc.EntityToWorld * Globals[BoneIndex];
+            FVector3 Scale;
+            AnimPose::DecomposeTRS(World, OutPos, OutRot, Scale);
+        };
+
+        if (Desc.Asset && !Desc.Asset->Bodies.empty())
+        {
+            // Stable order by bone index.
+            TVector<int32> Order;
+            Order.reserve(Desc.Asset->Bodies.size());
+            for (int32 i = 0; i < (int32)Desc.Asset->Bodies.size(); ++i)
+            {
+                const int32 BoneIndex = Skeleton->FindBoneIndex(Desc.Asset->Bodies[i].BoneName);
+                if (BoneIndex != INDEX_NONE)
+                {
+                    Order.push_back(i);
+                }
+            }
+            std::sort(Order.begin(), Order.end(), [&](int32 A, int32 B)
+            {
+                return Skeleton->FindBoneIndex(Desc.Asset->Bodies[A].BoneName) < Skeleton->FindBoneIndex(Desc.Asset->Bodies[B].BoneName);
+            });
+
+            for (int32 SetupIdx : Order)
+            {
+                const SPhysicsBodySetup& Setup = Desc.Asset->Bodies[SetupIdx];
+                const int32 BoneIndex = Skeleton->FindBoneIndex(Setup.BoneName);
+
+                FRagdollBodyDef Def;
+                Def.BoneIndex = BoneIndex;
+                Def.bOverrideMass = Setup.bOverrideMass;
+                Def.Mass = Setup.Mass;
+                DecomposeWorld(BoneIndex, Def.WorldPos, Def.WorldRot);
+
+                // Inner primitive.
+                JPH::Shape* InnerRaw = nullptr;
+                switch (Setup.Shape)
+                {
+                case ERagdollBodyShape::Box:
+                    InnerRaw = Memory::New<JPH::BoxShape>(JoltUtils::ToJPHVec3(Setup.HalfExtent));
+                    break;
+                case ERagdollBodyShape::Sphere:
+                    InnerRaw = Memory::New<JPH::SphereShape>(Setup.Radius);
+                    break;
+                default:
+                    InnerRaw = Memory::New<JPH::CapsuleShape>(Setup.HalfHeight, Setup.Radius);
+                    break;
+                }
+
+                const FQuat OffsetRot = FQuat(Math::Radians(Setup.RotationOffset));
+                auto Result = JPH::RotatedTranslatedShapeSettings(
+                    JoltUtils::ToJPHVec3(Setup.TranslationOffset),
+                    JoltUtils::ToJPHQuat(OffsetRot).Normalized(),
+                    InnerRaw).Create();
+                if (Result.HasError())
+                {
+                    LOG_ERROR("Ragdoll shape create failed for bone {}: {}", BoneIndex, Result.GetError().c_str());
+                    continue;
+                }
+                Def.Shape = Result.Get();
+
+                BoneToBody[BoneIndex] = (int32)Defs.size();
+                Defs.push_back(Move(Def));
+            }
+        }
+        else
+        {
+            // Auto-generate: a capsule per bone fit toward the average child position.
+            for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+            {
+                FRagdollBodyDef Def;
+                Def.BoneIndex = BoneIndex;
+                FVector3 Scale;
+                AnimPose::DecomposeTRS(Desc.EntityToWorld * Globals[BoneIndex], Def.WorldPos, Def.WorldRot, Scale);
+
+                // Component-space bone origin + average child origin -> limb direction in bone-local space.
+                const FVector3 BonePos(Globals[BoneIndex][3]);
+                FQuat BoneRotC; FVector3 BonePosC, BoneScaleC;
+                AnimPose::DecomposeTRS(Globals[BoneIndex], BonePosC, BoneRotC, BoneScaleC);
+
+                const TVector<int32> Children = Skeleton->GetChildBones(BoneIndex);
+                JPH::Shape* InnerRaw = nullptr;
+                JPH::Vec3 OffsetPos = JPH::Vec3::sZero();
+                JPH::Quat OffsetRot = JPH::Quat::sIdentity();
+
+                if (!Children.empty())
+                {
+                    FVector3 ChildAvg(0.0f);
+                    for (int32 C : Children)
+                    {
+                        ChildAvg += FVector3(Globals[C][3]);
+                    }
+                    ChildAvg /= (float)Children.size();
+
+                    const FVector3 DirC = ChildAvg - BonePos;
+                    const float Length = Math::Length(DirC);
+                    if (Length > 1e-4f)
+                    {
+                        const FVector3 DirLocal = Math::Normalize(Math::Inverse(BoneRotC) * DirC);
+                        const float Radius = Math::Clamp(Length * 0.12f, 0.02f, 0.1f);
+                        const float HalfHeight = Math::Max(Length * 0.5f - Radius, 0.01f);
+                        InnerRaw = Memory::New<JPH::CapsuleShape>(HalfHeight, Radius);
+                        OffsetPos = JoltUtils::ToJPHVec3(DirLocal * (Length * 0.5f));
+                        OffsetRot = JoltUtils::ToJPHQuat(RagdollYToDir(DirLocal)).Normalized();
+                    }
+                }
+
+                if (InnerRaw == nullptr)
+                {
+                    InnerRaw = Memory::New<JPH::SphereShape>(0.03f);
+                }
+
+                auto Result = JPH::RotatedTranslatedShapeSettings(OffsetPos, OffsetRot, InnerRaw).Create();
+                if (Result.HasError())
+                {
+                    LOG_ERROR("Ragdoll shape create failed for bone {}: {}", BoneIndex, Result.GetError().c_str());
+                    continue;
+                }
+                Def.Shape = Result.Get();
+
+                BoneToBody[BoneIndex] = (int32)Defs.size();
+                Defs.push_back(Move(Def));
+            }
+        }
+
+        if (Defs.empty())
+        {
+            return nullptr;
+        }
+
+        // Resolve each body's parent body by walking up the bone hierarchy to the nearest bodied ancestor.
+        for (FRagdollBodyDef& Def : Defs)
+        {
+            int32 Parent = Skeleton->GetBone(Def.BoneIndex).ParentIndex;
+            while (Parent >= 0)
+            {
+                auto It = BoneToBody.find(Parent);
+                if (It != BoneToBody.end())
+                {
+                    Def.ParentBodyIndex = It->second;
+                    break;
+                }
+                Parent = Skeleton->GetBone(Parent).ParentIndex;
+            }
+        }
+
+        // Build the Jolt ragdoll settings.
+        JPH::Ref<JPH::RagdollSettings> Settings = Memory::New<JPH::RagdollSettings>();
+        Settings->mSkeleton = Memory::New<JPH::Skeleton>();
+        Settings->mParts.resize(Defs.size());
+
+        for (int32 i = 0; i < (int32)Defs.size(); ++i)
+        {
+            const FRagdollBodyDef& Def = Defs[i];
+            const FString BoneName = Skeleton->GetBone(Def.BoneIndex).Name.ToString();
+            Settings->mSkeleton->AddJoint(BoneName.c_str(), Def.ParentBodyIndex);
+
+            JPH::RagdollSettings::Part& Part = Settings->mParts[i];
+            Part.SetShape(Def.Shape.GetPtr());
+            Part.mPosition = JoltUtils::ToJPHRVec3(FDoubleVector3(Def.WorldPos));
+            Part.mRotation = JoltUtils::ToJPHQuat(Def.WorldRot).Normalized();
+            Part.mMotionType = JPH::EMotionType::Dynamic;
+            Part.mObjectLayer = Layer;
+            Part.mUserData = (uint64)entt::to_integral(Desc.Entity);
+            Part.mAllowSleeping = true;
+            if (Def.bOverrideMass)
+            {
+                Part.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+                Part.mMassPropertiesOverride.mMass = Def.Mass;
+            }
+
+            if (Def.ParentBodyIndex >= 0)
+            {
+                const FRagdollBodyDef& ParentDef = Defs[Def.ParentBodyIndex];
+
+                FVector3 TwistAxis = Def.WorldPos - ParentDef.WorldPos;
+                if (Math::Length(TwistAxis) > 1e-4f)
+                {
+                    TwistAxis = Math::Normalize(TwistAxis);
+                }
+                else
+                {
+                    TwistAxis = Math::Normalize(Def.WorldRot * FVector3(0.0f, 1.0f, 0.0f));
+                }
+                const FVector3 PlaneAxis = RagdollPerpendicular(TwistAxis);
+
+                float Twist = Def.TwistDeg, Swing1 = Def.Swing1Deg, Swing2 = Def.Swing2Deg;
+                if (Desc.Asset)
+                {
+                    const FName ChildBone = Skeleton->GetBone(Def.BoneIndex).Name;
+                    for (const SPhysicsConstraintSetup& C : Desc.Asset->Constraints)
+                    {
+                        if (C.ChildBone == ChildBone)
+                        {
+                            Twist = C.TwistLimitDegrees; Swing1 = C.Swing1LimitDegrees; Swing2 = C.Swing2LimitDegrees;
+                            break;
+                        }
+                    }
+                }
+
+                JPH::Ref<JPH::SwingTwistConstraintSettings> Cs = Memory::New<JPH::SwingTwistConstraintSettings>();
+                Cs->mSpace = JPH::EConstraintSpace::WorldSpace;
+                Cs->mPosition1 = Cs->mPosition2 = JoltUtils::ToJPHRVec3(FDoubleVector3(Def.WorldPos));
+                Cs->mTwistAxis1 = Cs->mTwistAxis2 = JoltUtils::ToJPHVec3(TwistAxis);
+                Cs->mPlaneAxis1 = Cs->mPlaneAxis2 = JoltUtils::ToJPHVec3(PlaneAxis);
+                Cs->mNormalHalfConeAngle = Math::Radians(Swing1);
+                Cs->mPlaneHalfConeAngle = Math::Radians(Swing2);
+                Cs->mTwistMinAngle = -Math::Radians(Twist);
+                Cs->mTwistMaxAngle = Math::Radians(Twist);
+                Part.mToParent = Cs;
+            }
+        }
+
+        Settings->Stabilize();
+        Settings->DisableParentChildCollisions();
+        Settings->CalculateBodyIndexToConstraintIndex();
+
+        JPH::Ragdoll* Ragdoll = Settings->CreateRagdoll(
+            (JPH::CollisionGroup::GroupID)Desc.CollisionGroupID,
+            (uint64)entt::to_integral(Desc.Entity),
+            JoltSystem.get());
+        if (Ragdoll == nullptr)
+        {
+            return nullptr;
+        }
+
+        TSharedPtr<FJoltRagdollHandle> Handle = MakeShared<FJoltRagdollHandle>();
+        Handle->Settings = Settings;
+        Handle->Ragdoll = Ragdoll;
+        Handle->JointToBone.resize(Defs.size());
+        for (int32 i = 0; i < (int32)Defs.size(); ++i)
+        {
+            Handle->JointToBone[i] = Defs[i].BoneIndex;
+        }
+
+        Ragdoll->AddToPhysicsSystem(JPH::EActivation::Activate);
+        Handle->bAddedToScene = true;
+        return Handle;
+    }
+
+    void FJoltPhysicsScene::ReadRagdollPose(const FJoltRagdollHandle& Handle, const FMatrix4& WorldToEntity, const FSkeletonResource* Skeleton, TVector<FMatrix4>& OutBoneTransforms)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        if (Handle.Ragdoll == nullptr || Skeleton == nullptr)
+        {
+            return;
+        }
+
+        const int32 NumBones = Skeleton->GetNumBones();
+        OutBoneTransforms.resize(NumBones);
+
+        TVector<FMatrix4> ComponentGlobals;
+        ComponentGlobals.resize(NumBones);
+        TVector<uint8> Mapped;
+        Mapped.resize(NumBones, 0);
+
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+
+        for (int32 j = 0; j < (int32)Handle.JointToBone.size(); ++j)
+        {
+            const int32 BoneIndex = Handle.JointToBone[j];
+            if (!Skeleton->IsBoneIndexValid(BoneIndex))
+            {
+                continue;
+            }
+            const JPH::BodyID BodyID = Handle.Ragdoll->GetBodyID(j);
+            const FVector3 Pos = FVector3(JoltUtils::FromJPHRVec3(BodyInterface.GetPosition(BodyID)));
+            const FQuat Rot = JoltUtils::FromJPHQuat(BodyInterface.GetRotation(BodyID));
+            const FMatrix4 WorldBone = AnimPose::ComposeTRS(Pos, Rot, FVector3(1.0f));
+            ComponentGlobals[BoneIndex] = WorldToEntity * WorldBone;
+            Mapped[BoneIndex] = 1;
+        }
+
+        // Bones without a body follow their parent rigidly via the bind-pose local transform (parents
+        // precede children in the bone array, so a single forward pass resolves them).
+        for (int32 i = 0; i < NumBones; ++i)
+        {
+            if (!Mapped[i])
+            {
+                const int32 Parent = Skeleton->GetBone(i).ParentIndex;
+                const FMatrix4& Local = Skeleton->GetBone(i).LocalTransform;
+                ComponentGlobals[i] = Parent >= 0 ? ComponentGlobals[Parent] * Local : Local;
+            }
+            OutBoneTransforms[i] = ComponentGlobals[i] * Skeleton->GetBone(i).InvBindMatrix;
+        }
+    }
+
+    void FJoltPhysicsScene::DestroyRagdoll(const TSharedPtr<FJoltRagdollHandle>& Handle)
+    {
+        if (!Handle || Handle->Ragdoll == nullptr)
+        {
+            return;
+        }
+        if (Handle->bAddedToScene)
+        {
+            Handle->Ragdoll->RemoveFromPhysicsSystem();
+            Handle->bAddedToScene = false;
+        }
+        Handle->Ragdoll = nullptr;
+        Handle->Settings = nullptr;
+    }
+
+    void FJoltPhysicsScene::GetRagdollRootTransform(const FJoltRagdollHandle& Handle, FVector3& OutPosition, FQuat& OutRotation)
+    {
+        OutPosition = FVector3(0.0f);
+        OutRotation = FQuat::Identity();
+
+        if (Handle.Ragdoll == nullptr || Handle.Ragdoll->GetBodyCount() == 0)
+        {
+            return;
+        }
+
+        // Body 0 is the ragdoll's root (lowest bodied bone; its bodied ancestors are none).
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+        const JPH::BodyID RootID = Handle.Ragdoll->GetBodyID(0);
+        OutPosition = FVector3(JoltUtils::FromJPHRVec3(BodyInterface.GetPosition(RootID)));
+        OutRotation = JoltUtils::FromJPHQuat(BodyInterface.GetRotation(RootID));
     }
 
     void FJoltPhysicsScene::CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity)

@@ -70,6 +70,18 @@ namespace Lumina
             {
                 PropertyFlags |= EPropertyFlags::Replicated;
             }
+            else if (MetadataPair.Key == "ScriptReadOnly")
+            {
+                PropertyFlags |= EPropertyFlags::ScriptReadOnly;
+            }
+            else if (MetadataPair.Key == "ScriptWritable")
+            {
+                PropertyFlags |= EPropertyFlags::ScriptWritable;
+            }
+            else if (MetadataPair.Key == "ScriptHidden" || MetadataPair.Key == "NotScriptable")
+            {
+                PropertyFlags |= EPropertyFlags::ScriptHidden;
+            }
             else if (MetadataPair.Key == "Getter")
             {
                 GetterFunc = MetadataPair.Value.empty() ? ("Get" + Name) : MetadataPair.Value;

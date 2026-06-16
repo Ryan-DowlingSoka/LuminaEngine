@@ -3,7 +3,6 @@
 #include "Containers/Array.h"
 #include "Containers/Function.h"
 #include "Core/LuminaMacros.h"
-#include "Scripting/Lua/Reference.h"
 #include "entt/entt.hpp"
 
 namespace Lumina
@@ -31,12 +30,6 @@ namespace Lumina
         FTimerManager() = default;
         ~FTimerManager();
         LE_NO_COPYMOVE(FTimerManager);
-
-        static void RegisterLuaModule(Lua::FRef& GlobalRef);
-
-        // Yields the running coroutine and schedules a one-shot timer (tied to its owner entity) to resume
-        // it after Seconds. Shared by Timer:Wait and the global Wait()/Task.Wait(). Returns lua_yield(L, 0).
-        static int WaitImpl(struct lua_State* L, float Seconds, FTimerManager* TimerManager);
 
         FTimerHandle SetTimer(float Rate, FTimerCallback Callback, bool bLoop = false, float FirstDelay = -1.0f);
         FTimerHandle SetTimerForEntity(entt::entity Owner, float Rate, FTimerCallback Callback, bool bLoop = false, float FirstDelay = -1.0f);
@@ -66,23 +59,9 @@ namespace Lumina
             bool                bPendingDestroy = false;
             entt::entity        Owner           = entt::null;
             FTimerCallback      NativeCallback;
-            Lua::FRef           LuaCallback;
         };
 
-        //~ Lua binding shims (call through the script's injected Timer global).
-        entt::entity SetTimer_Lua(float Rate, Lua::FRef Callback, bool bLoop);
-        entt::entity SetEntityTimer_Lua(entt::entity Owner, float Rate, Lua::FRef Callback, bool bLoop);
-        entt::entity Delay_Lua(float Delay, Lua::FRef Callback);
-        void         ClearTimer_Lua(entt::entity Handle);
-        bool         IsTimerActive_Lua(entt::entity Handle) const;
-        float        GetTimerRemaining_Lua(entt::entity Handle) const;
-        void         PauseTimer_Lua(entt::entity Handle, bool bPause);
-
-        // Raw lua_CFunction: yields the coroutine and schedules a one-shot timer to resume it after
-        // `seconds`. Bound via AddRawFunction since the templated Invoker can't represent yielding functions.
-        static int   Wait_Lua(struct lua_State* L);
-
-        entt::entity CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback, Lua::FRef LuaCallback);
+        entt::entity CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback);
 
         mutable entt::registry  Registry;
         bool                    bTicking = false;

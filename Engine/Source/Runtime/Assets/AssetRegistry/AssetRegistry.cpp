@@ -132,8 +132,8 @@ namespace Lumina
         WalkedRoots.emplace_back(FFixedString("/Engine/Resources/Content"));
         VFS::RecursiveDirectoryIterator("/Engine/Resources/Content", Callback);
 
-        WalkedRoots.emplace_back(FFixedString("/Game"));
-        VFS::RecursiveDirectoryIterator("/Game", Callback);
+        WalkedRoots.emplace_back(FFixedString("/Game/Content"));
+        VFS::RecursiveDirectoryIterator("/Game/Content", Callback);
 
         // Plugin content: walk every enabled plugin's mount alias. The
         // PluginManager already mounted these into VFS at /<PluginName>.
@@ -366,7 +366,7 @@ namespace Lumina
 
         TVector<FFixedString> Roots;
         Roots.emplace_back(FFixedString("/Engine/Resources/Content"));
-        Roots.emplace_back(FFixedString("/Game"));
+        Roots.emplace_back(FFixedString("/Game/Content"));
         for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
         {
             if (!Plugin->IsEnabled())        continue;

@@ -22,11 +22,7 @@ namespace Lumina::VFS
             if (Dot != FStringView::npos)
             {
                 FStringView Ext = Path.substr(Dot);
-                if (Ext == ".lua" || Ext == ".luau")
-                {
-                    Flags |= EFileFlags::LuaFile;
-                }
-                else if (Ext == ".lasset")
+                if (Ext == ".lasset")
                 {
                     Flags |= EFileFlags::LAssetFile;
                 }

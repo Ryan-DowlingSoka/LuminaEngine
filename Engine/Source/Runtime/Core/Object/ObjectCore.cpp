@@ -20,7 +20,6 @@
 #include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "Package/Package.h"
 #include "Paths/Paths.h"
-#include "Scripting/Lua/Scripting.h"
 #include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 
@@ -476,9 +475,6 @@ namespace Lumina
             const FMetaDataPairParam& Param = Params.MetaDataArray[i];
             FinalClass->Metadata.AddValue(Param.NameUTF8, Param.ValueUTF8);
         }
-        
-        lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
-        Params.LuaRegisterFn(LuaVM);
     }
 
     void ConstructCEnum(CEnum** OutEnum, const FEnumParams& Params)
@@ -493,9 +489,6 @@ namespace Lumina
         CEnum* NewEnum = (CEnum*)StaticAllocateObject(ObjectParms);
         
         *OutEnum = NewEnum;
-        
-        lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
-        Params.LuaRegisterFn(LuaVM);
         
         for (uint16 i = 0; i < Params.NumMetaData; ++i)
         {
@@ -543,9 +536,6 @@ namespace Lumina
             CStruct* SuperStruct = Params.SuperFunc();
             FinalClass->SetSuperStruct(SuperStruct);
         }
-        
-        lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
-        Params.LuaRegisterFn(LuaVM);
         
         FinalClass->Link();
 

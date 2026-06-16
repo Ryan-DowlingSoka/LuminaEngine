@@ -19,11 +19,6 @@ namespace Lumina
 {
     class CObjectRedirector;
     struct FAssetData;
-
-    // Starter contents for a new Lua entity script (Templates/Scripts/EntityScript.luau,
-    // with an inline fallback). Shared by the content browser's "New Lua Script" and the
-    // world editor's "Attach New Script".
-    FString LoadNewEntityScriptTemplate();
 }
 
 
@@ -61,7 +56,7 @@ namespace Lumina
         {
             Directory,
             Asset,
-            LuaScript,
+            CSharpScript,
             Markup,     // .rml / .rcss
             Audio,      // .wav
             Generic,
@@ -93,12 +88,7 @@ namespace Lumina
                 DragDrop::SetFilePayload(FStringView(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size()));
             }
 
-            void DrawTooltip() const override
-            {
-                ImGuiX::Text("Name: {}", FileInfo.Name);
-                ImGuiX::Text("Virtual Path: {}", FileInfo.VirtualPath);
-                ImGuiX::Text("Source Path: {}", FileInfo.PathSource);
-            }
+            void DrawTooltip() const override;
             
             NODISCARD bool HasContextMenu() override { return true; }
 
@@ -112,7 +102,6 @@ namespace Lumina
             NODISCARD FStringView GetVirtualPath() const { return FileInfo.VirtualPath; }
             NODISCARD bool IsAsset() const { return FileInfo.IsLAsset(); }
             NODISCARD bool IsDirectory() const { return FileInfo.IsDirectory(); }
-            NODISCARD bool IsLuaScript() const { return FileInfo.IsLua(); }
             NODISCARD FString GetExtension() const { return FileInfo.GetExt(); }
             NODISCARD bool IsProtected() const { return bProtected; }
             NODISCARD EIconKind GetIconKind() const { return IconKind; }
@@ -123,11 +112,11 @@ namespace Lumina
             {
                 if (Info.IsDirectory()) { return EIconKind::Directory; }
                 if (Info.IsLAsset())    { return EIconKind::Asset; }
-                if (Info.IsLua())       { return EIconKind::LuaScript; }
 
                 const FString Ext = Info.GetExt();
                 if (Ext == ".rml" || Ext == ".rcss") { return EIconKind::Markup; }
                 if (Ext == ".wav")                   { return EIconKind::Audio; }
+                if (Ext == ".cs")                    { return EIconKind::CSharpScript; }
                 return EIconKind::Generic;
             }
 

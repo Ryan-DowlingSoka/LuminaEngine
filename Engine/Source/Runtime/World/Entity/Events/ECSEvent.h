@@ -18,31 +18,11 @@ namespace Lumina::Meta
     }
     
     template<typename TEvent>
-    void DispatchEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
-    {
-        if (Ref.Is<TEvent>())
-        {
-            Registry.ctx().get<entt::dispatcher&>().trigger(Ref.As<TEvent>().value());
-        }
-    }
-    
-    template<typename TEvent>
-    void EnqueueEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
-    {
-        if (Ref.Is<TEvent>())
-        {
-            Registry.ctx().get<entt::dispatcher&>().enqueue(Ref.As<TEvent>().value());
-        }
-    }
-    
-    template<typename TEvent>
     void RegisterECSEvent()
     {
         using namespace entt::literals;
-        auto Meta = entt::meta_factory<TEvent>(GetEngineMetaContext())
+        entt::meta_factory<TEvent>(GetEngineMetaContext())
             .type(TEvent::StaticStruct()->GetName().c_str())
-            .traits(ECS::ETraits::Event)
-            .template func<&DispatchEvent_Lua<TEvent>>("dispatch_lua"_hs)
-            .template func<&EnqueueEvent_Lua<TEvent>>("enqueue_lua"_hs);
+            .traits(ECS::ETraits::Event);
     }
 }

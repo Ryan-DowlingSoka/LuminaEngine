@@ -5,7 +5,7 @@
 #include "Memory/SmartPtr.h"
 #include "Renderer/RHI.h"
 #include "Renderer/RHICore.h"
-#include "Renderer/RHITexture.h"
+#include "Core/Threading/Thread.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskGraph.h"
 #include "World/Entity/Components/LineBatcherComponent.h"
@@ -81,7 +81,7 @@ namespace Lumina
             uint16              _Pad;
         };
 
-        struct alignas(64) FLocalBatchEntry
+        struct CACHE_ALIGN FLocalBatchEntry
         {
             FDrawBatchKey                       Key;
             const FShaderEntry*                 VertexShader = nullptr;
@@ -131,9 +131,7 @@ namespace Lumina
             TFrameVector<FProcessedDrawItem>    Items;
             TFrameVector<FEntityRecord>         EntityRecords;
             TFrameVector<FLocalBatchEntry>      LocalBatches;
-            // 48B/bone (last row dropped). Arena-backed; arena block must exceed one thread's worst-case bone vector.
             TFrameVector<FBoneTransform>        BonesData;
-            // Per-thread material resolve cache; linear-scanned (few unique materials per thread).
             TFrameVector<FMaterialCacheEntry>   MaterialCache;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
@@ -202,14 +200,11 @@ namespace Lumina
                 entt::entity        Entity;
                 FMatrix4            WorldMatrix;
 
-                // Snapshot of the scalar params the render passes need.
                 int32               Resolution      = 0;
                 int32               ChunkResolution = 0;
                 float               TileWorldSize   = 0.0f;
                 float               MaxHeight       = 0.0f;
                 int32               LayerCount       = 0;
-                // Shaders resolved + ref-held on the game thread (never the live CMaterial*) so a
-                // deleted terrain material can't dangle the render thread. Null VS => skip this terrain.
                 FRenderMaterialShaders Shaders;
                 uint32              MaterialIndex   = 0;
                 bool                bCastShadow     = true;

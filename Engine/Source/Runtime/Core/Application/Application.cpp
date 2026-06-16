@@ -65,9 +65,6 @@ namespace Lumina
             if (!GIsHeadless)
             {
                 MainWindow->ProcessMessages();
-
-                // Run before the world ticks so script OnUpdate observes handler effects.
-                FInputViewportRegistry::Get().DispatchActions();
             }
 
             bool bApplicationWantsExit = ShouldExit();

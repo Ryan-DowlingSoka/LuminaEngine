@@ -1,7 +1,6 @@
 #include "ReflectedType.h"
 
 #include "Reflector/CodeGeneration/CodeWriter.h"
-#include "Reflector/CodeGeneration/LuaBindingEmitter.h"
 #include "Reflector/CodeGeneration/ReflectionNames.h"
 #include "Reflector/ReflectionCore/ReflectedHeader.h"
 #include "Reflector/ReflectionCore/ReflectedProject.h"
@@ -194,7 +193,6 @@ namespace Lumina::Reflection
             }
 
             Writer.Line("\t&GetStructOps,");
-            Writer.Line("\t&SetupLuaBindings,");
             Writer.Linef("\t\"%s\",", Struct.DisplayName.c_str());
 
             if (!Struct.Props.empty())
@@ -261,7 +259,6 @@ namespace Lumina::Reflection
 
         Writer.Line();
 
-        LuaBindingEmitter::EmitForStruct(Writer, *this);
         Writer.PopIndent();
         Writer.Line("};");
         Writer.Line();

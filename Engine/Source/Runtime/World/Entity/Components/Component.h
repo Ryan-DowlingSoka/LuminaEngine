@@ -1,16 +1,34 @@
 #pragma once
 
+#include <new>
+
 #include "Core/Engine/Engine.h"
 #include "Core/Engine/EngineMetaContext.h"
 #include "Core/Object/Class.h"
 #include "Core/Serialization/Archiver.h"
-#include "Scripting/Lua/Reference.h"
-#include "Scripting/Lua/Stack.h"
+#include "Memory/Memory.h"
 #include "Traits/ComponentTraits.h"
 #include "World/Entity/Traits.h"
 
 namespace Lumina
 {
+    // Direct per-component-type functions for the C# bridge's registry ops, bypassing entt::meta's
+    // type-erased trampoline. Resolved once per type via FindComponentOps, then called directly.
+    struct FComponentOps
+    {
+        void* (*Get)(entt::registry&, entt::entity);     // try_get -> ptr or null
+        int32 (*Has)(entt::registry&, entt::entity);     // 0/1
+        void* (*Emplace)(entt::registry&, entt::entity); // get-or-emplace -> live ptr (null for tags)
+        int32 (*Remove)(entt::registry&, entt::entity);  // 0/1
+        void* (*New)();                                  // detached engine-allocated default instance
+        void  (*Delete)(void*);                          // free a New() instance
+        void* (*EmplaceCopy)(entt::registry&, entt::entity, const void*); // emplace a COPY of *src -> live ptr
+        uint64 TypeId;                                   // entt::type_hash<T>::value() -> registry.storage(id) for the View
+    };
+
+    RUNTIME_API void RegisterComponentOps(FStringView Name, const FComponentOps* Ops);
+    RUNTIME_API const FComponentOps* FindComponentOps(FStringView Name);
+
     namespace Meta
     {
         template<typename T>
@@ -68,44 +86,6 @@ namespace Lumina
         }
         
         template<typename TComponent>
-        Lua::FRef GetComponent_Lua(entt::registry& Registry, entt::entity Entity, const Lua::FRef& Ref)
-        {
-            TComponent* Component = Registry.try_get<TComponent>(Entity);
-            if (Component == nullptr)
-            {
-                lua_pushnil(Ref.GetState());
-                return Lua::FRef(Ref.GetState(), -1);
-            }
-            Lua::TStack<TComponent*>::Push(Ref.GetState(), Component);
-            return Lua::FRef(Ref.GetState(), -1);
-        }
-        
-        template<typename TComponent>
-        Lua::FRef EmplaceComponent_Lua(entt::registry& Registry, entt::entity Entity, const Lua::FRef& Ref)
-        {
-            if constexpr (eastl::is_empty_v<TComponent>)
-            {
-                Registry.emplace<TComponent>(Entity);
-                return Lua::FNil{};
-            }
-            else
-            {
-                TComponent* New = nullptr;
-                if (Ref.Is<TComponent>())
-                {
-                    New = &Registry.emplace_or_replace<TComponent>(Entity, Ref.As<TComponent>().value());
-                }
-                else
-                {
-                    New = &Registry.emplace_or_replace<TComponent>(Entity);
-                }
-                
-                Lua::TStack<TComponent*>::Push(Ref.GetState(), New);
-                return Lua::FRef(Ref.GetState(), -1);
-            }
-        }
-
-        template<typename TComponent>
         void Serialize(FArchive& Ar, entt::meta_any& Any)
         {
             CStruct* Struct = TComponent::StaticStruct();
@@ -118,7 +98,58 @@ namespace Lumina
         {
             return TComponent::StaticStruct();
         }
-        
+
+        // The direct-call op table for one component type (captureless lambdas -> plain fn ptrs).
+        template<typename TComponent>
+        const FComponentOps& GetComponentOps()
+        {
+            static const FComponentOps Ops = {
+                +[](entt::registry& R, entt::entity E) -> void*
+                {
+                    if constexpr (eastl::is_empty_v<TComponent>) { return nullptr; }
+                    else { return R.try_get<TComponent>(E); }
+                },
+                +[](entt::registry& R, entt::entity E) -> int32 { return R.any_of<TComponent>(E) ? 1 : 0; },
+                +[](entt::registry& R, entt::entity E) -> void*
+                {
+                    if constexpr (eastl::is_empty_v<TComponent>)
+                    {
+                        if (!R.any_of<TComponent>(E)) { R.emplace<TComponent>(E); }
+                        return nullptr;
+                    }
+                    else { return &R.get_or_emplace<TComponent>(E); } // idempotent: never clobbers an existing one
+                },
+                +[](entt::registry& R, entt::entity E) -> int32 { return R.remove<TComponent>(E) > 0 ? 1 : 0; },
+                +[]() -> void*
+                {
+                    void* Mem = Memory::Malloc(sizeof(TComponent), alignof(TComponent));
+                    return new (Mem) TComponent();
+                },
+                +[](void* Ptr)
+                {
+                    static_cast<TComponent*>(Ptr)->~TComponent();
+                    void* Mem = Ptr;
+                    Memory::Free(Mem);
+                },
+                +[](entt::registry& R, entt::entity E, const void* Src) -> void*
+                {
+                    // emplace_or_replace from a configured instance: on the ADD path this constructs the
+                    // component from *Src and THEN fires on_construct, so hooks see the configured value.
+                    if constexpr (eastl::is_empty_v<TComponent>)
+                    {
+                        if (!R.any_of<TComponent>(E)) { R.emplace<TComponent>(E); }
+                        return nullptr;
+                    }
+                    else
+                    {
+                        return &R.emplace_or_replace<TComponent>(E, *static_cast<const TComponent*>(Src));
+                    }
+                },
+                (uint64)entt::type_hash<TComponent>::value(),
+            };
+            return Ops;
+        }
+
         template<typename TComponent>
         void RegisterComponentMeta()
         {
@@ -132,13 +163,14 @@ namespace Lumina
             .template func<&RemoveComponent<TComponent>>("remove"_hs)
             .template func<&ClearComponent<TComponent>>("clear"_hs)
             .template func<&EmplaceComponent<TComponent>>("emplace"_hs)
-            .template func<&EmplaceComponent_Lua<TComponent>>("emplace_lua"_hs)
             .template func<&HasComponent<TComponent>>("has"_hs);
+
+            // Direct-call op table for the C# bridge (bypasses the meta trampoline above on the hot path).
+            RegisterComponentOps(TComponent::StaticStruct()->GetName().c_str(), &GetComponentOps<TComponent>());
             
             if constexpr (!eastl::is_empty_v<TComponent>)
             {
                 Meta.template func<&GetComponent<TComponent>>("get"_hs);
-                Meta.template func<&GetComponent_Lua<TComponent>>("get_lua"_hs);
                 Meta.template func<&PatchComponent<TComponent>>("patch"_hs);
                 Meta.template func<&Serialize<TComponent>>("serialize"_hs);
             }

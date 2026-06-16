@@ -52,7 +52,8 @@ namespace Lumina
             FStringView PakPath,
             const TFunction<void(FStringView)>& LogFunc = {});
 
-        // Mirrors /Game/Scripts/ as loose files under <OutDir>/Game/Scripts/. Main-thread only (walks VFS).
+        // Mirrors loose (non-.lasset) files from /Game and /Scripts under <OutDir>/{Game,Scripts}/.
+        // Main-thread only (walks VFS).
         static size_t ExtractLooseScripts(const FString& OutDir, const TFunction<void(FStringView)>& LogFunc = {});
 
         // Default MSBuild path baked into the editor; overridable via FPackageBuildOptions::MSBuildPath.

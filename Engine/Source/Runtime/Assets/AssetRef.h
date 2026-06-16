@@ -14,7 +14,7 @@ namespace Lumina
     {
         GENERATED_BODY()
 
-        /** Last-known virtual path, e.g. "/Game/Scripts/Player.luau". Healed on resolve after a rename. */
+        /** Last-known virtual path, e.g. "/Scripts/Player.luau". Healed on resolve after a rename. */
         PROPERTY(Editable)
         FString Path;
 

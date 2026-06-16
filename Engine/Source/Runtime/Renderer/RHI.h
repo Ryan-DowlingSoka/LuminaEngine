@@ -521,7 +521,7 @@ namespace Lumina::RHI
 
     RUNTIME_API void        CmdMemcpy(FCmdListH CL, GPUPtr Dest, GPUPtr Source, size_t Size);
     RUNTIME_API void        CmdMemset(FCmdListH CL, GPUPtr Dest, uint64 Size, uint32 Value);
-    // Inline write embedded in the command list (no staging); <= kMaxInlineWrite, 4-byte aligned.
+    RUNTIME_API void        CmdMemzero(FCmdListH CL, GPUPtr Dest, uint64 Size);
     RUNTIME_API void        CmdWriteMemory(FCmdListH CL, GPUPtr Dest, const void* Data, uint64 Size);
 
     RUNTIME_API void        CmdCopyTexture(FCmdListH CL, FTextureH Source, const FTextureSlice& SourceSlice, FTextureH Dest, const FTextureSlice& DestSlice);

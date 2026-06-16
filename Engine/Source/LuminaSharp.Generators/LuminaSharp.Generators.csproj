@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Roslyn source generator for LuminaSharp's native bindings: turns a `[NativeCall] partial` method
+       into the `delegate* unmanaged` field + resolve + marshalling, so a hand-written engine binding is
+       one line with zero runtime overhead. Analyzer-only: not shipped, referenced by LuminaSharp as an
+       Analyzer. Must target netstandard2.0 (the compiler host framework). -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+
+    <!-- Mirror the consumer's flattened config/platform set (see LuminaSharp.csproj) so an MSBuild .sln
+         build that drives this through the analyzer ProjectReference resolves a matching configuration. -->
+    <Configurations>Debug Editor;Development Editor;Shipping Editor;Debug Game;Development Game;Shipping Game</Configurations>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same version LuminaSharp already pins (present in the local NuGet cache, offline-safe). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

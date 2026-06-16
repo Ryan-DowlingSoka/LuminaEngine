@@ -46,10 +46,8 @@ namespace Lumina::Memory
             uint32 CatId   = 0;
             uint32 StackId = 0;             // 1-based call-site slot, 0 == none
         };
-
-        // Open-addressing (linear-probe) table, one per shard. Storage comes from
-        // rpmalloc directly so the tracker never recurses through Memory::Malloc.
-        struct alignas(Threading::GCacheLineSize) FShard
+        
+        struct CACHE_ALIGN FShard
         {
             FMutex  Mutex;
             FEntry* Entries  = nullptr;
@@ -64,9 +62,7 @@ namespace Lumina::Memory
         TAtomic<uint64> gGlobalLiveBytes;
         TAtomic<uint64> gGlobalLiveCount;
         TAtomic<uint64> gOverflowCount;
-
-        // Constant-initialized so early static-init allocations are captured; OnAlloc
-        // only runs from Memory::Malloc, after rpmalloc is already live on that thread.
+        
         TAtomic<bool>   gEnabled{ true };
 
         struct FCallSite

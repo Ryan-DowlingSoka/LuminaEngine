@@ -7,10 +7,7 @@
 namespace Lumina
 {
 	class CMaterialInterface;
-
-	// Shader entries resolved from a material on the GAME thread. Entries live in the shader
-	// library for the process lifetime, so these stay valid even after the owning material
-	// asset is destroyed mid-frame.
+	
 	struct FRenderMaterialShaders
 	{
 		const FShaderEntry* VertexShader = nullptr;
@@ -74,8 +71,6 @@ namespace Lumina
 	{
 		const FShaderEntry*					VertexShader = nullptr;
 		const FShaderEntry*					PixelShader  = nullptr;
-		// Per-material depth-prepass / shadow VS, populated only for WPO materials so prepass
-		// depth matches the base pass. Null means fall back to the global library shader.
 		const FShaderEntry*					DepthVertexShader  = nullptr;
 		const FShaderEntry*					ShadowVertexShader = nullptr;
 		uint32                      		IndirectDrawOffset = 0;

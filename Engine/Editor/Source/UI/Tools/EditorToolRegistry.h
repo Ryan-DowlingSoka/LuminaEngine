@@ -45,7 +45,7 @@ namespace Lumina
             });
         }
 
-        // Register a file editor keyed by extension (leading-dot form, e.g. ".luau";
+        // Register a file editor keyed by extension (leading-dot form, e.g. ".rml";
         // case-insensitive). A later registration overrides the earlier one.
         void RegisterFileEditor(FStringView Extension, FFileEditorFactory Factory);
 

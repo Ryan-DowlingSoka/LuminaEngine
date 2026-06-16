@@ -8,7 +8,7 @@ LuminaModule({
     ModuleDependencies = { "Runtime" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "Tracy", "Luau", "LuauAnalysis", "FreeType",
+        "ImGui", "RPMalloc", "EA", "Tracy", "FreeType",
         -- Model-format parsers (moved out of Runtime). MeshOptimizer is needed
         -- directly by the GLTF importer; BasicUniversal by the texture cooker.
         "TinyOBJLoader", "OpenFBX", "FastGLTF", "MeshOptimizer", "BasicUniversal",

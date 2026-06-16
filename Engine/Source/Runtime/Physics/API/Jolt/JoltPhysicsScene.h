@@ -161,6 +161,12 @@ namespace Lumina::Physics
     	void BeginBodyBatch() override;
     	void EndBodyBatch() override;
 
+    	TSharedPtr<FJoltRagdollHandle> CreateRagdoll(const FRagdollDesc& Desc) override;
+    	void ReadRagdollPose(const FJoltRagdollHandle& Handle, const FMatrix4& WorldToEntity, const FSkeletonResource* Skeleton, TVector<FMatrix4>& OutBoneTransforms) override;
+    	void DestroyRagdoll(const TSharedPtr<FJoltRagdollHandle>& Handle) override;
+    	void GetRagdollRootTransform(const FJoltRagdollHandle& Handle, FVector3& OutPosition, FQuat& OutRotation) override;
+    	uint32 AllocateRagdollGroupID() override { return NextRagdollGroupID++; }
+
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
     	
     	void EnqueueContactRecord(const FContactRecord& Record);
@@ -294,6 +300,9 @@ namespace Lumina::Physics
 
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;
+
+    	// Monotonic source for per-ragdoll self-collision group ids.
+    	uint32										NextRagdollGroupID = 1;
 
     	// Interp transforms staged by the physics thread, read game-thread (FrameStart join orders them).
     	// SoA, grow-only: positions are flat float3, rotations deinterleaved to x/y/z/w so nlerp vectorizes.

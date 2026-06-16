@@ -227,63 +227,6 @@ namespace Lumina
         ActionDownLastFrame[ActionName] = bDown;
     }
 
-    uint64 FInputContext::RegisterActionCallback(FName ActionName, EActionTrigger Trigger, Lua::FRef Function)
-    {
-        FActionCallback Cb;
-        Cb.ActionName = ActionName;
-        Cb.Trigger    = Trigger;
-        Cb.Function   = std::move(Function);
-        Cb.Id         = NextCallbackId++;
-        const uint64 Id = Cb.Id;
-        ActionCallbacks.push_back(std::move(Cb));
-        return Id;
-    }
-
-    void FInputContext::UnregisterActionCallback(uint64 Id)
-    {
-        for (auto It = ActionCallbacks.begin(); It != ActionCallbacks.end(); ++It)
-        {
-            if (It->Id == Id)
-            {
-                ActionCallbacks.erase(It);
-                return;
-            }
-        }
-    }
-
-    void FInputContext::ClearActionCallbacks()
-    {
-        ActionCallbacks.clear();
-    }
-
-    void FInputContext::DispatchActionCallbacks()
-    {
-        if (ActionCallbacks.empty())
-        {
-            return;
-        }
-
-        // Callbacks may unregister themselves; iterate a snapshot.
-        TVector<FActionCallback*> Snapshot;
-        Snapshot.reserve(ActionCallbacks.size());
-        for (FActionCallback& Cb : ActionCallbacks)
-        {
-            Snapshot.push_back(&Cb);
-        }
-
-        const FInputActionMap& Map = FInputActionMap::Get();
-        for (FActionCallback* Cb : Snapshot)
-        {
-            const bool bShouldFire = (Cb->Trigger == EActionTrigger::Pressed)
-                ? Map.IsActionPressed (Cb->ActionName, *this)
-                : Map.IsActionReleased(Cb->ActionName, *this);
-            if (bShouldFire && Cb->Function.IsInvokable())
-            {
-                Cb->Function();
-            }
-        }
-    }
-
     void FInputContext::UpdateActionEdgeState()
     {
         const FInputActionMap& Map = FInputActionMap::Get();

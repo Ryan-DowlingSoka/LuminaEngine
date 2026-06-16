@@ -3,6 +3,7 @@
 #include "Containers/Array.h"
 #include "Containers/Function.h"
 #include "Core/Assertions/Assert.h"
+#include "Core/Threading/Atomic.h"
 
 namespace Lumina
 {
@@ -73,6 +74,18 @@ namespace Lumina
             }
         }
 
+        // Calls the bound function if any. Only valid for void-returning delegates.
+        template<typename... TCallArgs>
+        bool ExecuteIfBound(TCallArgs&&... Args) const requires(eastl::is_void_v<R>)
+        {
+            if (!Func)
+            {
+                return false;
+            }
+            Func(eastl::forward<TCallArgs>(Args)...);
+            return true;
+        }
+
         void Unbind() { Func = nullptr; }
 
     private:
@@ -84,31 +97,25 @@ namespace Lumina
     {
     public:
         using FBase = TBaseDelegate<R, Args...>;
-        
+
         TMulticastDelegate() noexcept = default;
 
         template<typename TFunc>
         NODISCARD FDelegateHandle AddStatic(TFunc&& Func)
         {
-            FDelegateHandle Handle = GenerateHandle();
-            InvocationList.push_back({Handle, FBase::CreateStatic(eastl::forward<TFunc>(Func))});
-            return Handle;
+            return Add(FBase::CreateStatic(eastl::forward<TFunc>(Func)));
         }
 
         template<typename TObject, typename TMemFunc>
         NODISCARD FDelegateHandle AddMember(TObject* Object, TMemFunc Method)
         {
-            FDelegateHandle Handle = GenerateHandle();
-            InvocationList.push_back({Handle, FBase::CreateMember(Object, Method)});
-            return Handle;
+            return Add(FBase::CreateMember(Object, Method));
         }
 
         template<typename TLambda>
         NODISCARD FDelegateHandle AddLambda(TLambda&& Lambda)
         {
-            FDelegateHandle Handle = GenerateHandle();
-            InvocationList.push_back({Handle, FBase::CreateLambda(eastl::forward<TLambda>(Lambda))});
-            return Handle;
+            return Add(FBase::CreateLambda(eastl::forward<TLambda>(Lambda)));
         }
 
         bool Remove(FDelegateHandle Handle)
@@ -118,11 +125,18 @@ namespace Lumina
                 return false;
             }
 
-            for (auto it = InvocationList.begin(); it != InvocationList.end(); ++it)
+            for (SIZE_T Index = 0; Index < InvocationList.size(); ++Index)
             {
-                if (it->Handle == Handle)
+                if (InvocationList[Index].Handle == Handle)
                 {
-                    InvocationList.erase(it);
+                    if (LockCount > 0)
+                    {
+                        DeferRemove(InvocationList[Index]);
+                    }
+                    else
+                    {
+                        InvocationList.erase(InvocationList.begin() + Index);
+                    }
                     return true;
                 }
             }
@@ -133,33 +147,39 @@ namespace Lumina
         {
             Clear();
         }
-        
-        template<typename... CallArgs>
-        void Broadcast(CallArgs&&... args)
+
+        void Clear()
         {
-            if (InvocationList.empty())
-            {
-                return;
-            }
-
-            TVector<FDelegateHandle> Handles;
-            Handles.reserve(InvocationList.size());
-            for (const FDelegateEntry& Entry : InvocationList)
-            {
-                Handles.push_back(Entry.Handle);
-            }
-
-            for (FDelegateHandle Handle : Handles)
+            if (LockCount > 0)
             {
                 for (FDelegateEntry& Entry : InvocationList)
                 {
-                    if (Entry.Handle == Handle && Entry.Delegate.IsBound())
-                    {
-                        Entry.Delegate.Execute(eastl::forward<CallArgs>(args)...);
-                        break;
-                    }
+                    DeferRemove(Entry);
                 }
             }
+            else
+            {
+                InvocationList.clear();
+                InvocationList.shrink_to_fit();
+            }
+        }
+
+        template<typename... CallArgs>
+        void Broadcast(CallArgs&&... args)
+        {
+            ++LockCount;
+            
+            const SIZE_T Count = InvocationList.size();
+            for (SIZE_T Index = 0; Index < Count; ++Index)
+            {
+                if (InvocationList[Index].Delegate.IsBound())
+                {
+                    FBase Delegate = InvocationList[Index].Delegate;
+                    Delegate.Execute(args...);
+                }
+            }
+
+            Unlock();
         }
 
         template<typename... CallArgs>
@@ -169,10 +189,16 @@ namespace Lumina
             Clear();
         }
 
-        void Clear()
+        bool IsBound() const
         {
-            InvocationList.clear();
-            InvocationList.shrink_to_fit();
+            for (const FDelegateEntry& Entry : InvocationList)
+            {
+                if (Entry.Delegate.IsBound())
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         size_t GetCount() const { return InvocationList.size(); }
@@ -184,15 +210,55 @@ namespace Lumina
             FBase Delegate;
         };
 
-        static FDelegateHandle GenerateHandle()
+        FDelegateHandle Add(FBase&& Delegate)
         {
-            static uint64 NextID = 1;
-            FDelegateHandle Handle;
-            Handle.ID = NextID++;
+            const FDelegateHandle Handle = GenerateHandle();
+            InvocationList.push_back({Handle, eastl::move(Delegate)});
             return Handle;
         }
-        
+
+        // Marks an entry dead during an active broadcast; compacted away on unwind.
+        void DeferRemove(FDelegateEntry& Entry)
+        {
+            Entry.Handle.Reset();
+            Entry.Delegate.Unbind();
+            bCompactionPending = true;
+        }
+
+        void Unlock()
+        {
+            ASSERT(LockCount > 0);
+            if (--LockCount == 0 && bCompactionPending)
+            {
+                bCompactionPending = false;
+
+                SIZE_T Write = 0;
+                for (SIZE_T Read = 0; Read < InvocationList.size(); ++Read)
+                {
+                    if (InvocationList[Read].Delegate.IsBound())
+                    {
+                        if (Write != Read)
+                        {
+                            InvocationList[Write] = eastl::move(InvocationList[Read]);
+                        }
+                        ++Write;
+                    }
+                }
+                InvocationList.resize(Write);
+            }
+        }
+
+        static FDelegateHandle GenerateHandle()
+        {
+            static TAtomic<uint64> NextID{1};
+            FDelegateHandle Handle;
+            Handle.ID = NextID.fetch_add(1, Atomic::MemoryOrderRelaxed);
+            return Handle;
+        }
+
         TVector<FDelegateEntry> InvocationList;
+        int32                   LockCount = 0;
+        bool                    bCompactionPending = false;
     };
 }
 

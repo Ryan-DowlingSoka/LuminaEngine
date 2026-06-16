@@ -44,18 +44,9 @@ namespace Lumina
         /** Reserved for future split-screen routing; currently unused. */
         PROPERTY(Editable)
         int32 PlayerIndex = 0;
-
-        /** IDs of action callbacks this component bound, for teardown. */
-        TVector<uint64> ActionCallbackIds;
-
-        // Owning world (runtime, not serialized). Set by CWorld so input queries resolve to THIS world's
-        // input viewport rather than the single global "active" one -- lets each PIE world be driven
-        // independently (focus a viewport, control that world).
+        
         CWorld* World = nullptr;
-
-        //~ Per-frame input snapshot, written by SInputSystem before gameplay/scripts run. Queries below read
-        //  this data -- no globals at call time -- so input behaves identically in editor and shipping and is
-        //  the per-entity command we can later serialize for networked play. Not reflected (transient).
+        
         bool   bReceivingInput = false;
         double SnapMouseX = 0.0;
         double SnapMouseY = 0.0;
@@ -65,7 +56,6 @@ namespace Lumina
         TArray<Input::EKeyState,   (uint32)EKey::Num>      KeyStates   = {};
         TArray<Input::EMouseState, (uint32)EMouseKey::Num> MouseStates = {};
 
-        // SInputSystem fills the snapshot from this world's OWN context once per frame.
         void SnapshotFrom(const FInputContext& Ctx, bool bReceiving)
         {
             bReceivingInput = bReceiving;
@@ -90,9 +80,7 @@ namespace Lumina
             for (auto& S : MouseStates) { S = Input::EMouseState::Up; }
             SnapMouseX = SnapMouseY = SnapMouseZ = SnapMouseDeltaX = SnapMouseDeltaY = 0.0;
         }
-
-        //~ Actions stay live + per-world (gated per-action by the action map); they were already correct.
-
+        
         FUNCTION(Script)
         bool IsActionDown(const FName& Name) const
         {
@@ -152,16 +140,10 @@ namespace Lumina
             }
             return FInputActionMap::Get().GetActionAxis(Name, V->GetContext());
         }
-
-        //~ Raw key/mouse state -- read straight from the snapshot, true only when this world is receiving input.
-
-        // True when THIS component's world owns the focused input viewport (so scripts can gate mouse-look
-        // etc. to the active window in multi-world PIE; raw keys already return false off the focused world).
+        
         FUNCTION(Script)
         bool IsInputActive() const { return bEnabled && bReceivingInput; }
-
-        // Raw key state (e.g. "W", "Space", "Shift"). Only the FOCUSED viewport's world reports keys, so
-        // multiple PIE worlds don't all move at once. For bound gameplay actions prefer IsActionDown.
+        
         FUNCTION(Script)
         bool IsKeyDown(const FName& KeyName) const
         {

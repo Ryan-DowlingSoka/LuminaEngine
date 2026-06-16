@@ -2,7 +2,6 @@
 #include "World.h"
 #include <cmath>
 #include <utility>
-#include "lua.h"
 #include "WorldManager.h"
 #include "WorldContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
@@ -25,9 +24,7 @@
 #include "Core/Serialization/MemoryArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
-#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Entity/EntityUtils.h"
-#include "Entity/RuntimeComponent.h"
 #include "Entity/Components/CameraComponent.h"
 #include "Entity/Components/DestructibleComponent.h"
 #include "Entity/Components/DirtyComponent.h"
@@ -42,7 +39,6 @@
 #include "Entity/Components/PhysicsComponent.h"
 #include "Entity/Components/PostProcessComponent.h"
 #include "Entity/Components/TransformComponent.h"
-#include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/WidgetComponent.h"
 #include "Entity/Components/InputComponent.h"
 #include "Input/InputContext.h"
@@ -52,26 +48,19 @@
 #include "Entity/Systems/CameraSystem.h"
 #include "entity/components/tagcomponent.h"
 #include "Entity/Events/WorldEvents.h"
-#include "Entity/Events/LuaEventBus.h"
 #include "Physics/Physics.h"
 #include "Renderer/RenderThread.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
-#include "Scripting/Lua/Scripting.h"
-#include "World/Net/NetRpc.h"
+#include "Scripting/DotNet/DotNetHost.h"
+#include "World/Entity/Components/CSharpScriptComponent.h"
 #include "World/Net/NetWorldState.h"
 #include "World/Net/NetRole.h"
 #include "World/Net/NetReplication.h"
-#include "World/Net/ScriptRepState.h"
 #include "World/Entity/Components/NetworkComponent.h"
-#include "Scripting/Lua/ScriptTypeRegistry.h"
-#include "Scripting/Lua/Stack.h"
-#include "Scripting/Lua/VariadicArgs.h"
-#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Subsystems/WorldSettings.h"
 #include "UI/RmlUiBridge.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/entity/systems/EntitySystem.h"
-#include "WorldLuaSubsystem.h"
 
 namespace Lumina
 {
@@ -83,187 +72,12 @@ namespace Lumina
         {
             return Mode == ENetMode::ListenServer || Mode == ENetMode::DedicatedServer;
         }
-    }
 
-    bool FNetLuaInterface::IsServer() const
-    {
-        return World != nullptr && World->IsNetServer();
-    }
-    
-    bool FNetLuaInterface::IsClient() const
-    {
-        return World != nullptr && World->GetNetMode() == ENetMode::Client;
-    }
-    
-    bool FNetLuaInterface::IsStandalone() const
-    {
-        return World == nullptr || World->GetNetMode() == ENetMode::Standalone;
-    }
-    
-    bool FNetLuaInterface::IsNetworked() const
-    {
-        return !IsStandalone();
-    }
-
-    int32 FNetLuaInterface::GetConnectedClients() const
-    {
-        return World != nullptr ? World->GetConnectedClientCount() : 0;
-    }
-
-    bool FNetLuaInterface::IsConnected() const
-    {
-        if (World == nullptr)
+        // Shared FSystemFn for every C#-authored system: the FStageSlot's Self is the managed system's
+        // GCHandle, so one shim forwards every managed tick to the right instance via the .NET host.
+        void ManagedSystemUpdate(void* Self, const FSystemContext& Ctx) noexcept
         {
-            return false;
-        }
-        
-        if (World->IsNetServer())
-        {
-            return World->GetConnectedClientCount() > 0;
-        }
-        const FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        return State != nullptr && State->bClientConnected;
-    }
-
-    uint32 FNetLuaInterface::GetUniqueId() const
-    {
-        if (World == nullptr)
-        {
-            return ServerPeerId;
-        }
-        
-        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        return State != nullptr ? State->LocalPeerId : ServerPeerId;
-    }
-
-    int32 FNetLuaInterface::GetConnectionCount() const
-    {
-        if (World == nullptr)
-        {
-            return 0;
-        }
-        
-        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        return State != nullptr ? (int32)State->ConnectedClientIds.size() : 0;
-    }
-
-    uint32 FNetLuaInterface::GetConnectionAt(int32 Index) const
-    {
-        if (World == nullptr || Index < 0)
-        {
-            return 0;
-        }
-        
-        FNetWorldState* State = World->GetEntityRegistry().ctx().find<FNetWorldState>();
-        if (State == nullptr || Index >= (int32)State->ConnectedClientIds.size()) { return 0; }
-        return State->ConnectedClientIds[(size_t)Index];
-    }
-
-    bool FNetLuaInterface::HasAuthority(entt::entity Entity) const
-    {
-        if (World == nullptr)
-        {
-            return false;
-        }
-        
-        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
-        return Net == nullptr ? IsStandalone() || IsServer() : Net->LocalRole == ENetRole::Authority;
-    }
-
-    bool FNetLuaInterface::IsLocallyOwned(entt::entity Entity) const
-    {
-        if (World == nullptr)
-        {
-            return false;
-        }
-        
-        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
-        return Net != nullptr && Net->LocalRole == ENetRole::AutonomousProxy;
-    }
-
-    int32 FNetLuaInterface::GetLocalRole(entt::entity Entity) const
-    {
-        if (World == nullptr)
-        {
-            return (int32)ENetRole::None;
-        }
-        
-        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
-        return Net != nullptr ? (int32)Net->LocalRole : (int32)ENetRole::None;
-    }
-
-    int32 FNetLuaInterface::GetRemoteRole(entt::entity Entity) const
-    {
-        if (World == nullptr)
-        {
-            return (int32)ENetRole::None;
-        }
-        
-        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
-        return Net != nullptr ? (int32)Net->RemoteRole : (int32)ENetRole::None;
-    }
-
-    uint32 FNetLuaInterface::GetOwner(entt::entity Entity) const
-    {
-        if (World == nullptr)
-        {
-            return 0;
-        }
-        
-        const SNetworkComponent* Net = World->GetEntityRegistry().try_get<SNetworkComponent>(Entity);
-        return Net != nullptr ? Net->OwningConnectionId : 0u;
-    }
-
-    void FNetLuaInterface::SetOwner(entt::entity Entity, uint32 ConnectionId)
-    {
-        if (World == nullptr || !IsServer()) { return; } // only the authority assigns ownership
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        SNetworkComponent* Net = Registry.try_get<SNetworkComponent>(Entity);
-        if (Net == nullptr) { return; }
-        Net->OwningConnectionId = ConnectionId;
-        if (FNetWorldState* State = Registry.ctx().find<FNetWorldState>())
-        {
-            State->bOwnershipDirty = true; // replicate the new owner to clients next tick
-        }
-    }
-
-    void FNetLuaInterface::MarkDirty(entt::entity Entity)
-    {
-        if (World == nullptr || !IsServer()) { return; } // only the authority replicates
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (Registry.valid(Entity) && Registry.all_of<SNetworkComponent>(Entity))
-        {
-            Registry.emplace_or_replace<FNetDirty>(Entity);
-        }
-    }
-
-    entt::entity FNetLuaInterface::GetLocallyOwnedEntity() const
-    {
-        if (World == nullptr) { return entt::null; }
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        for (entt::entity Entity : Registry.view<SNetworkComponent>())
-        {
-            if (Registry.get<SNetworkComponent>(Entity).LocalRole == ENetRole::AutonomousProxy)
-            {
-                return Entity;
-            }
-        }
-        return entt::null;
-    }
-
-    void FNetLuaInterface::Host(FStringView Map, int32 Port) const
-    {
-        if (GEngine != nullptr)
-        {
-            GEngine->HostLevel(Map, Port > 0 ? static_cast<uint16>(Port) : 7777);
-        }
-    }
-
-    void FNetLuaInterface::Connect(FStringView InHost, int32 Port) const
-    {
-        if (GEngine != nullptr)
-        {
-            GEngine->ConnectToServer(InHost, Port > 0 ? static_cast<uint16>(Port) : 7777);
+            DotNet::TickManagedSystem(Self, &Ctx);
         }
     }
 
@@ -325,7 +139,6 @@ namespace Lumina
         , LineBatcherComponent(nullptr)
         , TriangleBatcherComponent(nullptr)
     {
-        NetInterface.World = this;
         DebugInterface.World = this;
     }
 
@@ -473,16 +286,14 @@ namespace Lumina
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
         EntityRegistry.ctx().emplace<CWorld*>(this);
 
-        // Per-world subsystem singletons ticked by their systems: SEventBusSystem flushes FLuaEventBus,
-        // STimerSystem advances FTimerManager (both at FrameStart). Scripts reach them by ctx address.
-        EntityRegistry.ctx().emplace<FLuaEventBus>();
+        // Per-world subsystem singleton ticked by its system: STimerSystem advances FTimerManager
+        // (FrameStart). Reached by ctx address.
         EntityRegistry.ctx().emplace<FTimerManager>();
 
         // System-produced singletons: SCameraSystem owns FCameraGlobalState (active camera + blend) and
-        // writes FResolvedSceneView (read in Extract); SScriptSystem owns FScriptFixedUpdateState.
+        // writes FResolvedSceneView (read in Extract).
         EntityRegistry.ctx().emplace<FCameraGlobalState>();
         EntityRegistry.ctx().emplace<FResolvedSceneView>();
-        EntityRegistry.ctx().emplace<FScriptFixedUpdateState>();
 
         CreateRenderer();
         UIContext = RmlUi::CreateWorldUI(this);
@@ -495,15 +306,6 @@ namespace Lumina
             DisabledSystems.insert(Name);
         }
         PendingDisabledSystems = DisabledSystems;
-
-        // Seed the assigned script-system paths from saved settings before registering, so they load and
-        // start alongside native systems below.
-        ScriptSystems.clear();
-        for (const FString& Path : GetDefaultWorldSettings().ScriptSystems)
-        {
-            ScriptSystems.push_back(Path);
-        }
-        PendingScriptSystems = ScriptSystems;
 
         RegisterSystems();
         
@@ -522,30 +324,11 @@ namespace Lumina
 
         EntityRegistry.on_destroy   <FRelationshipComponent>()      .connect<&ThisClass::OnRelationshipComponentDestroyed>(this);
         EntityRegistry.on_construct <STransformComponent>()         .connect<&ThisClass::OnTransformComponentConstruct>(this);
-        EntityRegistry.on_construct <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentConstruct>(this);
-        EntityRegistry.on_update    <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentUpdated>(this);
-        EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
+        EntityRegistry.on_destroy   <SCSharpScriptComponent>()      .connect<&ThisClass::OnCSharpScriptComponentDestroyed>(this);
         EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
         EntityRegistry.on_construct <SInputComponent>()             .connect<&ThisClass::OnInputComponentConstruct>(this);
-        EntityRegistry.on_destroy   <SInputComponent>()             .connect<&ThisClass::OnInputComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
-        SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
 
-        ScriptReloadedHandle = Lua::FScriptingContext::Get().OnScriptLoaded.AddMember(this, &ThisClass::OnScriptSourceReloaded);
-        
-        if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
-        {
-            lua_newtable(VM);
-            DrawInterfaceRef = Lua::FRef(VM, -1);
-            auto* DI = static_cast<IPrimitiveDrawInterface*>(this);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawLine>   ("DrawLine",    DI);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawBox>    ("DrawBox",     DI);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawSphere> ("DrawSphere",  DI);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawCapsule>("DrawCapsule", DI);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawCone>   ("DrawCone",    DI);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawArrow>  ("DrawArrow",   DI);
-        }
-        
         auto TransformView = EntityRegistry.view<STransformComponent>();
         TransformView.each([&](entt::entity Entity, STransformComponent& TransformComponent)
         {
@@ -589,9 +372,7 @@ namespace Lumina
                SingletonDispatcher.trigger<FSwitchActiveCameraEvent>(FSwitchActiveCameraEvent{Entity});
            }
         });
-        
-        InitializeScriptEntities();
-        
+
         if (WorldType == EWorldType::Simulation || WorldType == EWorldType::Game)
         {
             bPaused = false;
@@ -617,16 +398,8 @@ namespace Lumina
             GAudioContext->StopAllSounds();
         }
 
-        if (ScriptReloadedHandle.IsValid())
-        {
-            Lua::FScriptingContext::Get().OnScriptLoaded.Remove(ScriptReloadedHandle);
-            ScriptReloadedHandle = {};
-        }
-
         EntityRegistry.on_destroy<FRelationshipComponent>().disconnect<&ThisClass::OnRelationshipComponentDestroyed>(this);
-        EntityRegistry.on_update<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentUpdated>(this);
-        EntityRegistry.on_construct<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
-        
+
         ForEachUniqueSystem([&](const FActiveSystem& System)
         {
             if (System.Teardown)
@@ -635,26 +408,22 @@ namespace Lumina
             }
         });
 
-        // Release the loaded script systems (drops their Lua refs) after their Teardown has run.
-        ScriptSystemInstances.clear();
-        ScriptSystemsToReload.clear();
+        // Release this world's C# system instances (OnTeardown + GCHandle free).
+        DestroyManagedSystems();
 
         if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
         {
             PhysicsScene->StopSimulate();
         }
-        
-        EntityRegistry.ctx().get<FLuaEventBus>().Clear();
+
         EntityRegistry.ctx().get<FTimerManager>().Clear();
 
         RegistryPending.clear<>();
         EntityRegistry.clear<>();
         PhysicsScene.reset();
         DestroyRenderer();
-        
-        FCoreDelegates::PostWorldUnload.Broadcast();
 
-        Lua::FScriptingContext::Get().RunGC();
+        FCoreDelegates::PostWorldUnload.Broadcast();
     }
     
     static const char* StageName(EUpdateStage Stage)
@@ -686,16 +455,20 @@ namespace Lumina
         // is applied here (between frames) and never inside a running system batch.
         ApplyPendingSystemChanges();
 
+        // C# hot reload: the script generation bumped, so the ManagedSystems hold GCHandles the managed
+        // side already freed. Rebuild the system lists (drops stale slots, re-creates under the new
+        // generation) before any tick so the shared shim never dereferences a freed handle. FrameStart
+        // only, between frames, never inside a running batch.
+        if (Stage == EUpdateStage::FrameStart && DotNet::IsInitialized()
+            && DotNet::GetScriptGeneration() != ManagedSystemGeneration)
+        {
+            RegisterSystems();
+        }
+
         if (Stage == EUpdateStage::FrameStart)
         {
             DeltaTime = Context.GetDeltaTime() * GetDefaultWorldSettings().DeltaTimeScale;
             TimeSinceCreation += DeltaTime;
-
-#if USING(WITH_EDITOR)
-            // Migrate runtime-component storage whose schema was edited. Editor-only (schemas immutable
-            // at runtime); runs even while paused so editor worlds reflect live edits. Cheap revision compare.
-            ECS::Utils::RefreshRuntimeComponentSchemas(EntityRegistry);
-#endif
         }
 
         if (bPaused && Stage != EUpdateStage::Paused || (!bPaused && Stage == EUpdateStage::Paused))
@@ -707,26 +480,12 @@ namespace Lumina
         SystemContext.Time          = TimeSinceCreation;
         SystemContext.UpdateStage   = Stage;
 
-        {
-            CPU_PROFILE_SCOPE("PendingReady Dispatch");
-            SingletonDispatcher.update<FScriptComponentPendingReady>();
-        }
-
-        // Deferred Lua events + timers run inside TickSystems now (SEventBusSystem / STimerSystem,
-        // both FrameStart/Highest), so they tick before gameplay systems just as the old inline block did.
+        // Deferred timers run inside TickSystems now (STimerSystem, FrameStart/Highest), so they tick
+        // before gameplay systems just as the old inline block did.
         {
             CPU_PROFILE_SCOPE("Systems");
             TickSystems(SystemContext);
         }
-    }
-
-    bool CWorld::IsScriptActiveInWorld(entt::entity Entity) const
-    {
-        if (WorldType == EWorldType::Editor)
-        {
-            return EntityRegistry.all_of<FScriptHasEditorUpdateFn>(Entity);
-        }
-        return true;
     }
 
     void CWorld::TickPhysics()
@@ -779,105 +538,6 @@ namespace Lumina
 
         RenderScene->SetActivePostProcessMaterials({});
         RenderScene->Extract(FViewVolume{}, nullptr);
-    }
-
-    void CWorld::OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event)
-    {
-        entt::entity Entity = Event.Entity;
-        
-        if (!EntityRegistry.valid(Entity))
-        {
-            return;
-        }
-            
-        SScriptComponent* ScriptComponent = EntityRegistry.try_get<SScriptComponent>(Entity);
-        if (!ScriptComponent)
-        {
-            return;
-        }
-            
-        if (ScriptComponent->ReadyFunc.IsValid())
-        {
-            ScriptComponent->Script->PublishThreadContext();
-            // Coroutine so OnReady can yield (wait/await) and resume later.
-            ScriptComponent->Script->InvokeAsCoroutine(ScriptComponent->ReadyFunc, ScriptComponent->Script->Reference);
-        }
-    }
-
-    void CWorld::InitializeScriptEntities()
-    {
-        auto ScriptView = EntityRegistry.view<SScriptComponent>(entt::exclude<SDisabledTag>);
-
-        ScriptView.each([&](entt::entity Entity, SScriptComponent& Component)
-        {
-            SetupScriptComponent(Entity, Component);
-        });
-
-        auto Visit = [&](entt::entity Entity, const Lua::FRef SScriptComponent::*Hook)
-        {
-            if (EntityRegistry.any_of<SDisabledTag>(Entity))
-            {
-                return;
-            }
-            SScriptComponent* Component = EntityRegistry.try_get<SScriptComponent>(Entity);
-            if (!Component || Component->Script == nullptr)
-            {
-                return;
-            }
-            if (!IsScriptActiveInWorld(Entity))
-            {
-                return;
-            }
-            const Lua::FRef& HookRef = Component->*Hook;
-            if (HookRef.IsValid())
-            {
-                Component->Script->PublishThreadContext();
-                // OnAttach/OnReady run on a coroutine so they can yield (wait/await) and resume later.
-                Component->Script->InvokeAsCoroutine(HookRef, Component->Script->Reference);
-            }
-        };
-
-        auto InvokeAttach = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::AttachFunc); };
-        auto InvokeReady  = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::ReadyFunc);  };
-
-        auto RelationshipRoots = EntityRegistry.view<FRelationshipComponent>(entt::exclude<SDisabledTag>);
-
-        RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
-        {
-            if (Relationship.Parent != entt::null)
-            {
-                return;
-            }
-            InvokeAttach(Entity);
-            ECS::Utils::ForEachDescendant(EntityRegistry, Entity, InvokeAttach);
-        });
-        
-        // Scriptless-root entities fall outside the relationship view; handle here.
-        ScriptView.each([&](entt::entity Entity, SScriptComponent&)
-        {
-            if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
-            {
-                InvokeAttach(Entity);
-            }
-        });
-
-        RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
-        {
-            if (Relationship.Parent != entt::null)
-            {
-                return;
-            }
-            ECS::Utils::ForEachDescendantReverse(EntityRegistry, Entity, InvokeReady);
-            InvokeReady(Entity);
-        });
-
-        ScriptView.each([&](entt::entity Entity, SScriptComponent&)
-        {
-            if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
-            {
-                InvokeReady(Entity);
-            }
-        });
     }
 
     entt::entity CWorld::ConstructEntity(const FName& Name, const FTransform& Transform)
@@ -1226,9 +886,8 @@ namespace Lumina
                     }
                 }
 
-                // Scripts/rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
+                // Rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
                 if (ID == entt::type_hash<FRelationshipComponent>::value()
-                    || ID == entt::type_hash<SScriptComponent>::value()
                     || ID == entt::type_hash<SRigidBodyComponent>::value())
                 {
                     continue;
@@ -1255,17 +914,6 @@ namespace Lumina
 
                 EntityRegistry.remove<SRigidBodyComponent>(NewEntity);
                 EntityRegistry.emplace<SRigidBodyComponent>(NewEntity, eastl::move(NewBody));
-            }
-
-            // Emplace editable fields only; on_construct loads a unique FScript for the duplicate.
-            if (const SScriptComponent* SourceScript = EntityRegistry.try_get<SScriptComponent>(Source))
-            {
-                SScriptComponent NewScript;
-                NewScript.ScriptPath        = SourceScript->ScriptPath;
-                NewScript.PropertyOverrides = SourceScript->PropertyOverrides;
-                NewScript.UpdateStage       = SourceScript->UpdateStage;
-                NewScript.TickRate          = SourceScript->TickRate;
-                EntityRegistry.emplace<SScriptComponent>(NewEntity, eastl::move(NewScript));
             }
 
             if (NewParent != entt::null)
@@ -1559,371 +1207,54 @@ namespace Lumina
         Registry.get<SInputComponent>(Entity).World = this;
     }
 
-    void CWorld::OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity)
+    void CWorld::OnCSharpScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
-        // Release every action callback this entity registered so its captured Lua FRefs don't keep
-        // the script env alive (and can't fire after the entity is gone).
-        SInputComponent& Input = Registry.get<SInputComponent>(Entity);
-        if (Input.ActionCallbackIds.empty())
+        SCSharpScriptComponent& Component = Registry.get<SCSharpScriptComponent>(Entity);
+        // Only destroy a live instance from the CURRENT generation. After a hot reload the managed side
+        // already freed the old generation's handles, so a stale Instance must not be touched.
+        if (Component.Instance != nullptr && Component.Generation == DotNet::GetScriptGeneration())
         {
-            return;
+            DotNet::DestroyEntityScript(Component.Instance);
         }
-        if (FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport())
-        {
-            for (uint64 Id : Input.ActionCallbackIds)
-            {
-                V->GetContext().UnregisterActionCallback(Id);
-            }
-        }
-        Input.ActionCallbackIds.clear();
+        Component.Instance = nullptr;
+        Component.BindState = ECSharpBindState::Unbound;
     }
 
-    void CWorld::OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity)
-    {
-        SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
-        OnScriptComponentCreated(Entity, ScriptComponent, true);
-    }
-
-    void CWorld::OnScriptComponentUpdated(entt::registry& Registry, entt::entity Entity)
-    {
-        // Fired by entt on_update when the component is patched -- on a client this is the replication "OnRep"
-        // for a received SScriptComponent (NetReplication patches each applied component). Reattach only when
-        // the ScriptPath actually changed, so a PropertyUpdate that re-sends an unchanged script is a no-op.
-        SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
-        const FStringView Path = ScriptComponent.ScriptPath.ResolvePath();
-
-        // Already running exactly this script -> nothing to do.
-        if (ScriptComponent.Script != nullptr &&
-            FStringView(ScriptComponent.Script->Path.c_str(), ScriptComponent.Script->Path.size()) == Path)
-        {
-            return;
-        }
-
-        // Nothing attached and this exact path already failed to load -- don't retry every update.
-        if (ScriptComponent.Script == nullptr)
-        {
-            if (FScriptAttachFailed* Failed = Registry.try_get<FScriptAttachFailed>(Entity))
-            {
-                if (FStringView(Failed->Path.c_str(), Failed->Path.size()) == Path)
-                {
-                    return;
-                }
-            }
-        }
-
-        // (Re)load from the now-current ScriptPath. Detaches the old script first if it was swapped.
-        ReloadScriptForComponent(Entity, ScriptComponent);
-
-        if (ScriptComponent.Script == nullptr && !Path.empty())
-        {
-            Registry.emplace_or_replace<FScriptAttachFailed>(Entity).Path.assign(Path.data(), Path.size());
-            LOG_WARN("[Net] Replicated script '{}' failed to load on this peer -- marking failed (won't reload until the path changes or the entity respawns).",
-                FString(Path.data(), Path.size()).c_str());
-        }
-        else
-        {
-            Registry.remove<FScriptAttachFailed>(Entity); // success (or cleared path) clears any prior failure
-        }
-    }
-
-    void CWorld::SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
-    {
-        ScriptComponent.Entity = Entity;
-        ScriptComponent.World  = this;
-        
-        const FStringView ResolvedScriptPath = ScriptComponent.ScriptPath.ResolvePath();
-        if (ResolvedScriptPath.empty())
-        {
-            return;
-        }
-
-        ScriptComponent.Script = Lua::FScriptingContext::Get().LoadUniqueScriptPath(ResolvedScriptPath);
-        if (ScriptComponent.Script == nullptr || !ScriptComponent.Script->Reference.IsValid())
-        {
-            return;
-        }
-
-        // Stable ptr: FScript is held by shared_ptr for the script's lifetime.
-        ScriptComponent.Script->ThreadData.Entity = Entity;
-        ScriptComponent.Script->ThreadData.World  = this;
-        if (lua_State* ScriptThread = ScriptComponent.Script->Reference.GetState())
-        {
-            lua_setthreaddata(ScriptThread, &ScriptComponent.Script->ThreadData);
-        }
-        
-        ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
-        ScriptComponent.Script->Reference.RawSet("_Events",   &EntityRegistry.ctx().get<FLuaEventBus>());
-        ScriptComponent.Script->Reference.RawSet("_Timers",   &EntityRegistry.ctx().get<FTimerManager>());
-        ScriptComponent.Script->Reference.RawSet("_Draw",     DrawInterfaceRef);
-
-        // Per-entity fields visible to the user as `self.*`.
-        ScriptComponent.Script->Reference.RawSet("World",     this);
-        ScriptComponent.Script->Reference.RawSet("Entity",    Entity);
-        ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
-        ScriptComponent.Script->Reference.RawSet("Name",      EntityRegistry.get<SNameComponent>(Entity).Name);
-        
-        ScriptComponent.ScriptMetaTable     = ScriptComponent.Script->Reference["Meta"];
-        ScriptComponent.AttachFunc          = ScriptComponent.Script->Reference["OnAttach"];
-        ScriptComponent.ReadyFunc           = ScriptComponent.Script->Reference["OnReady"];
-        ScriptComponent.UpdateFunc          = ScriptComponent.Script->Reference["OnUpdate"];
-        ScriptComponent.DetachFunc          = ScriptComponent.Script->Reference["OnDetach"];
-
-        // No base no-op fallback (see ScriptComponent.h): invalid FRef means "not defined".
-        ScriptComponent.FixedUpdateFunc     = ScriptComponent.Script->Reference["OnFixedUpdate"];
-        ScriptComponent.EditorUpdateFunc    = ScriptComponent.Script->Reference["OnEditorUpdate"];
-        ScriptComponent.InputFunc           = ScriptComponent.Script->Reference["OnInput"];
-
-        ScriptComponent.ContactBeginFunc    = ScriptComponent.Script->Reference["OnContactBegin"];
-        ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
-        ScriptComponent.OverlapBeginFunc    = ScriptComponent.Script->Reference["OnOverlapBegin"];
-        ScriptComponent.OverlapEndFunc      = ScriptComponent.Script->Reference["OnOverlapEnd"];
-
-        // Install RPC dispatch wrappers over --@rpc methods (captures originals for receive-side invoke).
-        Net::WrapScriptRpcs(ScriptComponent.Script.get());
-        
-        if (ScriptComponent.Script->ExportsSchema.IsValid())
-        {
-            Lua::ReconcileOverrides(
-                ScriptComponent.Script->ExportsSchema,
-                ScriptComponent.Script->ExportDefaults,
-                ScriptComponent.PropertyOverrides.Items);
-
-            if (lua_State* ScriptState = ScriptComponent.Script->Reference.GetState())
-            {
-                ScriptComponent.Script->Reference.Push();
-                Lua::ApplyOverridesToScriptTable(
-                    ScriptState, -1,
-                    ScriptComponent.Script->ExportsSchema,
-                    ScriptComponent.PropertyOverrides.Items);
-                lua_pop(ScriptState, 1);
-            }
-        }
-        
-        if (ScriptComponent.ScriptMetaTable.IsValid())
-        {
-            auto MaybeTickRate = ScriptComponent.ScriptMetaTable.Get<float>("TickRate");
-            ScriptComponent.TickRate = MaybeTickRate ? MaybeTickRate.value() : 0.0f;
-            
-            auto MaybeUpdateStage = ScriptComponent.ScriptMetaTable.Get<EUpdateStage>("UpdateStage");
-            ScriptComponent.UpdateStage = MaybeUpdateStage ? MaybeUpdateStage.value() : EUpdateStage::PrePhysics;
-        }
-        
-        if (EntityRegistry.any_of<
-                FUpdateStage_FrameStart,
-                FUpdateStage_PrePhysics,
-                FUpdateStage_DuringPhysics,
-                FUpdateStage_PostPhysics,
-                FUpdateStage_FrameEnd,
-                FUpdateStage_Paused>(Entity))
-        {
-            EntityRegistry.remove<FUpdateStage_FrameStart>(Entity);
-            EntityRegistry.remove<FUpdateStage_PrePhysics>(Entity);
-            EntityRegistry.remove<FUpdateStage_DuringPhysics>(Entity);
-            EntityRegistry.remove<FUpdateStage_PostPhysics>(Entity);
-            EntityRegistry.remove<FUpdateStage_FrameEnd>(Entity);
-            EntityRegistry.remove<FUpdateStage_Paused>(Entity);
-        }
-
-        switch (ScriptComponent.UpdateStage)
-        {
-        case EUpdateStage::FrameStart:
-            EntityRegistry.emplace_or_replace<FUpdateStage_FrameStart>(Entity);
-            break;
-        case EUpdateStage::PrePhysics:
-            EntityRegistry.emplace_or_replace<FUpdateStage_PrePhysics>(Entity);
-            break;
-        case EUpdateStage::DuringPhysics:
-            EntityRegistry.emplace_or_replace<FUpdateStage_DuringPhysics>(Entity);
-            break;
-        case EUpdateStage::PostPhysics:
-            EntityRegistry.emplace_or_replace<FUpdateStage_PostPhysics>(Entity);
-            break;
-        case EUpdateStage::FrameEnd:
-            EntityRegistry.emplace_or_replace<FUpdateStage_FrameEnd>(Entity);
-            break;
-        case EUpdateStage::Paused:
-            EntityRegistry.emplace_or_replace<FUpdateStage_Paused>(Entity);
-            break;
-        case EUpdateStage::Max:
-            break;
-        }
-
-        if (ScriptComponent.UpdateFunc.IsValid())
-            EntityRegistry.emplace_or_replace<FScriptHasUpdateFn>(Entity);
-        else
-            EntityRegistry.remove<FScriptHasUpdateFn>(Entity);
-
-        if (ScriptComponent.FixedUpdateFunc.IsValid())
-            EntityRegistry.emplace_or_replace<FScriptHasFixedUpdateFn>(Entity);
-        else
-            EntityRegistry.remove<FScriptHasFixedUpdateFn>(Entity);
-
-        if (ScriptComponent.EditorUpdateFunc.IsValid())
-            EntityRegistry.emplace_or_replace<FScriptHasEditorUpdateFn>(Entity);
-        else
-            EntityRegistry.remove<FScriptHasEditorUpdateFn>(Entity);
-
-        if (ScriptComponent.InputFunc.IsValid())
-            EntityRegistry.emplace_or_replace<FScriptHasInputFn>(Entity);
-        else
-            EntityRegistry.remove<FScriptHasInputFn>(Entity);
-    }
-
-    void CWorld::OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady)
-    {
-        SetupScriptComponent(Entity, ScriptComponent);
-
-        if (ScriptComponent.Script == nullptr)
-        {
-            return;
-        }
-
-        if (!IsScriptActiveInWorld(Entity))
-        {
-            return;
-        }
-
-        if (ScriptComponent.AttachFunc.IsValid())
-        {
-            ScriptComponent.Script->PublishThreadContext();
-            // Coroutine so OnAttach can yield (wait/await) and resume later.
-            ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.AttachFunc, ScriptComponent.Script->Reference);
-        }
-
-        if (bRunReady)
-        {
-            SingletonDispatcher.enqueue<FScriptComponentPendingReady>(Entity);
-        }
-    }
-
-    void CWorld::OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity)
-    {
-        // Auto-remove all event bus subscriptions owned by this entity.
-        Registry.ctx().get<FLuaEventBus>().UnsubscribeEntity(Entity);
-        Registry.ctx().get<FTimerManager>().ClearTimersForEntity(Entity);
-
-        SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
-        if (ScriptComponent.Script == nullptr || !ScriptComponent.DetachFunc.IsValid())
-        {
-            return;
-        }
-
-        if (IsScriptActiveInWorld(Entity))
-        {
-            ScriptComponent.Script->PublishThreadContext();
-            ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
-        }
-    }
-
-    void CWorld::ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
-    {
-        if (ScriptComponent.Script != nullptr && ScriptComponent.DetachFunc.IsValid())
-        {
-            if (IsScriptActiveInWorld(Entity))
-            {
-                ScriptComponent.Script->PublishThreadContext();
-                ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
-            }
-        }
-
-        EntityRegistry.ctx().get<FLuaEventBus>().UnsubscribeEntity(Entity);
-        EntityRegistry.ctx().get<FTimerManager>().ClearTimersForEntity(Entity);
-
-        ScriptComponent.Script.reset();
-        ScriptComponent.AttachFunc          = {};
-        ScriptComponent.ReadyFunc           = {};
-        ScriptComponent.UpdateFunc          = {};
-        ScriptComponent.DetachFunc          = {};
-        ScriptComponent.FixedUpdateFunc     = {};
-        ScriptComponent.EditorUpdateFunc    = {};
-        ScriptComponent.ContactBeginFunc    = {};
-        ScriptComponent.ContactEndFunc      = {};
-        ScriptComponent.OverlapBeginFunc    = {};
-        ScriptComponent.OverlapEndFunc      = {};
-        ScriptComponent.ScriptMetaTable     = {};
-        ScriptComponent.MessageHandlers.clear();
-
-        OnScriptComponentCreated(Entity, ScriptComponent, /*bRunReady*/ true);
-    }
-
-    void CWorld::SetEntityScript(entt::entity Entity, FStringView Path)
+    void CWorld::SetEntityScript(entt::entity Entity, FStringView ScriptClass)
     {
         if (!EntityRegistry.valid(Entity))
         {
             return;
         }
 
-        SScriptComponent& ScriptComponent = EntityRegistry.get_or_emplace<SScriptComponent>(Entity);
-
-        // Already running this exact script -> nothing to do (avoids a needless detach/reattach).
-        if (ScriptComponent.Script != nullptr &&
-            FStringView(ScriptComponent.Script->Path.c_str(), ScriptComponent.Script->Path.size()) == Path)
+        SCSharpScriptComponent& Component = EntityRegistry.get_or_emplace<SCSharpScriptComponent>(Entity);
+        if (FStringView(Component.ScriptClass.c_str(), Component.ScriptClass.size()) == ScriptClass)
         {
-            return;
+            return; // already bound to this class
         }
 
-        ScriptComponent.ScriptPath.SetPath(Path);
-        ReloadScriptForComponent(Entity, ScriptComponent); // detaches any prior script, attaches the new one
-
-        // On the authority, a networked entity's script change must reach clients: flag it dirty so the next
-        // tick sends a PropertyUpdate carrying the new (replicated) ScriptPath, which clients swap to.
-        if (NetIsServerMode(GetNetMode()) && EntityRegistry.all_of<SNetworkComponent>(Entity))
+        // Free any live instance from the current generation before swapping classes so the bind pass
+        // does not overwrite (and leak) the managed handle.
+        if (Component.Instance != nullptr && Component.Generation == DotNet::GetScriptGeneration())
         {
-            EntityRegistry.emplace_or_replace<FNetDirty>(Entity);
-        }
-    }
-
-    void CWorld::OnScriptSourceReloaded(FStringView Path)
-    {
-        // Snapshot the matching entities BEFORE reloading: ReloadScriptForComponent synchronously calls the
-        // script's Lua OnDetach/OnAttach, which can create/destroy entities or add/remove SScriptComponent --
-        // mutating the pool we'd otherwise be iterating (iterator invalidation + dangling component ref).
-        TVector<entt::entity> ToReload;
-        auto View = EntityRegistry.view<SScriptComponent>();
-        for (entt::entity Entity : View)
-        {
-            if (View.get<SScriptComponent>(Entity).ScriptPath.ResolvePath() == Path)
-            {
-                ToReload.push_back(Entity);
-            }
+            DotNet::DestroyEntityScript(Component.Instance);
         }
 
-        for (entt::entity Entity : ToReload)
-        {
-            // A prior reload's hook may have destroyed this entity or removed its script; re-check + re-fetch.
-            if (!EntityRegistry.valid(Entity))
-            {
-                continue;
-            }
-            if (SScriptComponent* Component = EntityRegistry.try_get<SScriptComponent>(Entity))
-            {
-                ReloadScriptForComponent(Entity, *Component);
-
-                if (NetIsServerMode(GetNetMode()) && EntityRegistry.all_of<SNetworkComponent>(Entity))
-                {
-                    EntityRegistry.remove<FScriptRepState>(Entity);
-                    EntityRegistry.emplace_or_replace<FNetDirty>(Entity);
-                }
-            }
-        }
-
-        // Queue any assigned script system using this path for a deferred re-bind (handled next frame in
-        // ApplyPendingSystemChanges, off the tick path).
-        for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
-        {
-            if (FStringView(Instance->Path.c_str()) == Path)
-            {
-                if (eastl::find(ScriptSystemsToReload.begin(), ScriptSystemsToReload.end(), Instance->Path) == ScriptSystemsToReload.end())
-                {
-                    ScriptSystemsToReload.push_back(Instance->Path);
-                }
-                bSystemsDirty = true;
-            }
-        }
+        Component.ScriptClass.assign(ScriptClass.data(), ScriptClass.size());
+        Component.Instance = nullptr;
+        Component.Generation = -1;
+        Component.BindState = ECSharpBindState::Unbound;
+        Component.CallbackFlags = 0;
+        // SCSharpScriptSystem rebinds (OnAttach/OnReady) next tick.
     }
 
     void CWorld::RegisterSystems()
     {
+        // RegisterSystems rebuilds the stage lists from scratch and may run on a deferred system change,
+        // so free any C# system instances created on a prior pass before we re-create them below (the
+        // stale FStageSlots are about to be cleared anyway).
+        DestroyManagedSystems();
+
         for (int i = 0; i < (int)EUpdateStage::Max; ++i)
         {
             SystemUpdateList[i].clear();
@@ -1965,36 +1296,41 @@ namespace Lumina
                 Active.Startup  = Desc.Startup;
                 Active.Teardown = Desc.Teardown;
                 Active.Self     = nullptr;
-                Active.bScript  = false;
             }
         }
 
-        // Bring the live script-system instances in line with the assigned paths, then schedule them. Script
-        // systems are always exclusive (the Lua VM is single-threaded), so they never batch in parallel.
-        ReconcileScriptSystemInstances();
-
-        for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
+        // C#-authored systems: one managed instance per descriptor for THIS world, scheduled into its
+        // declared stage via the shared ManagedSystemUpdate shim (FStageSlot Self = the GCHandle). The
+        // managed instance carries no Access info, so it runs exclusive (serial), the safe default.
+        ManagedSystemGeneration = DotNet::IsInitialized() ? DotNet::GetScriptGeneration() : -1;
+        if (DotNet::IsInitialized())
         {
-            if (!Instance->Name.IsNone() && DisabledSystems.count(Instance->Name))
-            {
-                continue;
-            }
+            const int32 Generation = ManagedSystemGeneration;
+            TVector<DotNet::FManagedSystemDesc> Descs;
+            DotNet::GatherManagedSystemDescs(Descs);
 
-            for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
+            for (const DotNet::FManagedSystemDesc& Desc : Descs)
             {
-                if (Instance->Priorities.IsStageEnabled((EUpdateStage)i))
+                if (Desc.Stage >= EUpdateStage::Max)
                 {
-                    SystemUpdateList[i].push_back(FStageSlot{ &ScriptSystem_Update, Instance.get(), FSystemAccess::Exclusive(), Instance->Priorities.GetPriorityForStage((EUpdateStage)i) });
+                    continue;
                 }
-            }
 
-            FActiveSystem& Active = ActiveSystems.emplace_back();
-            Active.Name     = Instance->Name;
-            Active.Hash     = Hash::FNV1a::GetHash64(Instance->Path.c_str());
-            Active.Startup  = &ScriptSystem_Startup;
-            Active.Teardown = &ScriptSystem_Teardown;
-            Active.Self     = Instance.get();
-            Active.bScript  = true;
+                void* Instance = DotNet::CreateManagedSystem(FStringView(Desc.TypeName.c_str(), Desc.TypeName.size()), reinterpret_cast<uint64>(this));
+                if (Instance == nullptr)
+                {
+                    continue;
+                }
+
+                FManagedSystem& Managed = ManagedSystems.emplace_back();
+                Managed.Instance   = Instance;
+                Managed.Stage      = Desc.Stage;
+                Managed.Priority   = Desc.Priority;
+                Managed.Generation = Generation;
+
+                SystemUpdateList[(int32)Desc.Stage].push_back(
+                    FStageSlot{ &ManagedSystemUpdate, Instance, FSystemAccess::Exclusive(), (uint8)Desc.Priority });
+            }
         }
 
         // Lower value = higher priority (Highest=0 .. Low=192), so ascending runs Highest first.
@@ -2005,107 +1341,26 @@ namespace Lumina
         }
     }
 
-    void CWorld::ReconcileScriptSystemInstances()
+    void CWorld::DestroyManagedSystems()
     {
-        // Drop instances whose path is no longer assigned.
-        for (auto It = ScriptSystemInstances.begin(); It != ScriptSystemInstances.end(); )
-        {
-            const bool bStillAssigned = eastl::find(ScriptSystems.begin(), ScriptSystems.end(), (*It)->Path) != ScriptSystems.end();
-            if (bStillAssigned)
-            {
-                ++It;
-            }
-            else
-            {
-                It = ScriptSystemInstances.erase(It);
-            }
-        }
-
-        // Load instances for newly assigned paths (keeping existing ones pointer-stable).
-        for (const FString& Path : ScriptSystems)
-        {
-            bool bExists = false;
-            for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
-            {
-                if (Instance->Path == Path)
-                {
-                    bExists = true;
-                    break;
-                }
-            }
-
-            if (!bExists)
-            {
-                if (TUniquePtr<FScriptSystemInstance> Instance = LoadScriptSystem(this, FStringView(Path.c_str())))
-                {
-                    ScriptSystemInstances.push_back(eastl::move(Instance));
-                }
-            }
-        }
-    }
-
-    void CWorld::SyncScriptSystemSettings()
-    {
-        SDefaultWorldSettings& Settings = GetDefaultWorldSettings();
-        Settings.ScriptSystems.clear();
-        for (const FString& Path : PendingScriptSystems)
-        {
-            Settings.ScriptSystems.push_back(Path);
-        }
-    }
-
-    void CWorld::AddScriptSystem(FStringView Path)
-    {
-        FString NewPath(Path.data(), Path.size());
-        if (eastl::find(PendingScriptSystems.begin(), PendingScriptSystems.end(), NewPath) != PendingScriptSystems.end())
+        if (ManagedSystems.empty())
         {
             return;
         }
 
-        PendingScriptSystems.push_back(NewPath);
-        SyncScriptSystemSettings();
-        bSystemsDirty = true;
-    }
-
-    void CWorld::RemoveScriptSystem(FStringView Path)
-    {
-        FString TargetPath(Path.data(), Path.size());
-        auto It = eastl::find(PendingScriptSystems.begin(), PendingScriptSystems.end(), TargetPath);
-        if (It == PendingScriptSystems.end())
+        // After a hot reload the managed side already freed the old generation's GCHandles, so an
+        // instance from a stale generation must be DROPPED, not destroyed (that would touch a freed
+        // handle, mirroring the SCSharpScriptComponent generation guard).
+        const int32 Generation = DotNet::IsInitialized() ? DotNet::GetScriptGeneration() : -1;
+        for (FManagedSystem& Managed : ManagedSystems)
         {
-            return;
-        }
-
-        PendingScriptSystems.erase(It);
-        SyncScriptSystemSettings();
-        bSystemsDirty = true;
-    }
-
-    void CWorld::GetScriptSystems(TVector<FScriptSystemInfo>& Out) const
-    {
-        Out.clear();
-        for (const FString& Path : PendingScriptSystems)
-        {
-            FScriptSystemInfo& Info = Out.emplace_back();
-            Info.Path = Path;
-
-            // Fill name + stages from the live instance if one is loaded for this path.
-            for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
+            if (Managed.Instance != nullptr && Managed.Generation == Generation)
             {
-                if (Instance->Path == Path)
-                {
-                    Info.Name = Instance->Name;
-                    for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
-                    {
-                        if (Instance->Priorities.IsStageEnabled((EUpdateStage)i))
-                        {
-                            Info.Stages.push_back((EUpdateStage)i);
-                        }
-                    }
-                    break;
-                }
+                DotNet::DestroyManagedSystem(Managed.Instance);
             }
+            Managed.Instance = nullptr;
         }
+        ManagedSystems.clear();
     }
 
     void CWorld::ApplyPendingSystemChanges()
@@ -2117,17 +1372,12 @@ namespace Lumina
         bSystemsDirty = false;
 
         const bool bDisabledChanged = (PendingDisabledSystems != DisabledSystems);
-        const bool bScriptsChanged  = (PendingScriptSystems != ScriptSystems);
-        const TVector<FString> ReloadPaths = ScriptSystemsToReload;
-        ScriptSystemsToReload.clear();
-
-        if (!bDisabledChanged && !bScriptsChanged && ReloadPaths.empty())
+        if (!bDisabledChanged)
         {
             return;
         }
 
-        // Snapshot the currently-active unique systems so we can tell which are newly removed/added. Script
-        // systems hash by their (stable) path, so a persisting script keeps its hash across the rebuild.
+        // Snapshot the currently-active unique systems so we can tell which are newly removed/added.
         THashSet<uint64> BeforeHashes;
         ForEachUniqueSystem([&](const FActiveSystem& System)
         {
@@ -2137,7 +1387,7 @@ namespace Lumina
         // Teardown native systems about to be disabled while their entries are still live (before rebuild).
         ForEachUniqueSystem([&](const FActiveSystem& System)
         {
-            if (!System.bScript && !System.Name.IsNone() && PendingDisabledSystems.count(System.Name) && !DisabledSystems.count(System.Name))
+            if (!System.Name.IsNone() && PendingDisabledSystems.count(System.Name) && !DisabledSystems.count(System.Name))
             {
                 if (System.Teardown)
                 {
@@ -2146,36 +1396,7 @@ namespace Lumina
             }
         });
 
-        // Teardown script systems whose path is being removed, while their instances are still live.
-        for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
-        {
-            const bool bStillAssigned = eastl::find(PendingScriptSystems.begin(), PendingScriptSystems.end(), Instance->Path) != PendingScriptSystems.end();
-            if (!bStillAssigned)
-            {
-                ScriptSystem_Teardown(Instance.get(), SystemContext);
-            }
-        }
-
-        // Hot-reloaded script systems (path persists): teardown + re-resolve hooks from disk in place.
-        for (const FString& Path : ReloadPaths)
-        {
-            if (eastl::find(PendingScriptSystems.begin(), PendingScriptSystems.end(), Path) == PendingScriptSystems.end())
-            {
-                continue;   // also being removed; the removal teardown above handled it
-            }
-            for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
-            {
-                if (Instance->Path == Path)
-                {
-                    ScriptSystem_Teardown(Instance.get(), SystemContext);
-                    ReloadScriptSystem(*Instance);
-                    break;
-                }
-            }
-        }
-
         DisabledSystems = PendingDisabledSystems;
-        ScriptSystems   = PendingScriptSystems;
         RegisterSystems();
 
         // Startup systems that are newly present (were not active before the rebuild).
@@ -2189,23 +1410,6 @@ namespace Lumina
                 }
             }
         });
-
-        // Restart hot-reloaded script systems: their path-hash was already present, so the diff skipped them.
-        for (const FString& Path : ReloadPaths)
-        {
-            if (eastl::find(ScriptSystems.begin(), ScriptSystems.end(), Path) == ScriptSystems.end())
-            {
-                continue;
-            }
-            for (const TUniquePtr<FScriptSystemInstance>& Instance : ScriptSystemInstances)
-            {
-                if (Instance->Path == Path)
-                {
-                    ScriptSystem_Startup(Instance.get(), SystemContext);
-                    break;
-                }
-            }
-        }
     }
 
     void CWorld::GetAllSystems(TVector<FSystemInfo>& Out) const

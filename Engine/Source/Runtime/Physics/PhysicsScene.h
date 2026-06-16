@@ -1,11 +1,33 @@
 #pragma once
 #include "PhysicsTypes.h"
 #include "Core/Templates/Optional.h"
+#include "Containers/Array.h"
+#include "Memory/SmartPtr.h"
+#include "Core/Math/Matrix/MatrixMath.h"
 #include "Ray/RayCast.h"
 #include "World/Entity/Events/ImpulseEvent.h"
 
+namespace Lumina
+{
+    class CPhysicsAsset;
+    struct FSkeletonResource;
+    struct FJoltRagdollHandle;
+}
+
 namespace Lumina::Physics
 {
+    // Inputs to build one ragdoll. Jolt-free so gameplay/world code can drive it without leaking Jolt.
+    struct FRagdollDesc
+    {
+        entt::entity                Entity = entt::null;            // Owning entity; written to each body's user data for contact mapping.
+        CPhysicsAsset*              Asset = nullptr;                 // Authored bodies/constraints; null => auto-generate from Skeleton.
+        const FSkeletonResource*    Skeleton = nullptr;             // Source skeleton (bone hierarchy + bind pose).
+        const TVector<FMatrix4>*    ComponentBoneGlobals = nullptr; // Component-space bone global transforms to spawn at (size == bone count).
+        FMatrix4                    EntityToWorld;                  // Entity world matrix (component space -> world).
+        FCollisionProfile           FallbackProfile;               // Applied when Asset is null.
+        uint32                      CollisionGroupID = 0;           // Unique per ragdoll for parent/child self-collision filtering.
+    };
+
     class IPhysicsScene
     {
     public:
@@ -56,7 +78,24 @@ namespace Lumina::Physics
         // Game-thread only, must be balanced; BodyIDs are valid after EndBodyBatch.
         virtual void BeginBodyBatch() = 0;
         virtual void EndBodyBatch() = 0;
-        
+
+        // Build a ragdoll's bodies + constraints and add them to the scene. Returns an opaque handle the
+        // caller stores; null on failure. Must be called outside the physics step (PrePhysics is fine).
+        virtual TSharedPtr<FJoltRagdollHandle> CreateRagdoll(const FRagdollDesc& Desc) = 0;
+
+        // Read the simulated body transforms back into component-space GPU skinning matrices (Global*InvBind).
+        // OutBoneTransforms is sized to the skeleton; unmapped bones are rebuilt from their parent + bind local.
+        virtual void ReadRagdollPose(const FJoltRagdollHandle& Handle, const FMatrix4& WorldToEntity, const FSkeletonResource* Skeleton, TVector<FMatrix4>& OutBoneTransforms) = 0;
+
+        // Remove a ragdoll's bodies + constraints from the scene. Safe with a null/empty handle.
+        virtual void DestroyRagdoll(const TSharedPtr<FJoltRagdollHandle>& Handle) = 0;
+
+        // World-space transform of the ragdoll's root body (used to drive the owning entity so culling tracks it).
+        virtual void GetRagdollRootTransform(const FJoltRagdollHandle& Handle, FVector3& OutPosition, FQuat& OutRotation) = 0;
+
+        // Monotonic unique id for the next ragdoll's self-collision group.
+        virtual uint32 AllocateRagdollGroupID() = 0;
+
         void AddForce(entt::entity E, const FVector3& Force)                   { SForceEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Force = Force; OnForceEvent(Ev); }
         void AddImpulse(entt::entity E, const FVector3& Impulse)               { SImpulseEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Impulse = Impulse; OnImpulseEvent(Ev); }
         void AddTorque(entt::entity E, const FVector3& Torque)                 { STorqueEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Torque = Torque; OnTorqueEvent(Ev); }

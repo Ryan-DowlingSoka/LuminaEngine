@@ -4,7 +4,7 @@ LuminaPlugin({
 })
 
 -- Runtime module: loaded in both the editor and packaged game. Put gameplay
--- here (components, systems, Lua bindings, reflected types).
+-- here (components, systems, reflected types).
 LuminaPluginModule({
     Plugin = "$PLUGINNAME",
     Name   = "$RUNTIMEMODULE",
@@ -12,7 +12,7 @@ LuminaPluginModule({
     ModuleDependencies = { "Runtime" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy",
     },
 })
 
@@ -24,6 +24,6 @@ LuminaPluginModule({
     ModuleDependencies = { "Runtime", "$RUNTIMEMODULE" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy",
     },
 })

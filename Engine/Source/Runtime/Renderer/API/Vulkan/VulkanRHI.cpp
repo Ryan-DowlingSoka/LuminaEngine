@@ -1628,6 +1628,25 @@ namespace Lumina::RHI
     {
         if (GDevice != nullptr)
         {
+            // A texture freed before its creation barrier was drained still sits in UninitializedTextures.
+            // Drop it first, or the next Submit barriers a destroyed VkImage.
+            {
+                FScopeLock Lock(GDevice->InitMutex);
+                TVector<FTextureH>& Pending = GDevice->UninitializedTextures;
+                for (size_t i = 0; i < Pending.size(); )
+                {
+                    if (Pending[i].Handle == Texture.Handle)
+                    {
+                        Pending[i] = Pending.back();
+                        Pending.pop_back();
+                    }
+                    else
+                    {
+                        ++i;
+                    }
+                }
+            }
+
             GDevice->Textures.Erase(Texture);
         }
     }
@@ -2919,6 +2938,11 @@ namespace Lumina::RHI
 
         auto* VkCmdBuf = GDevice->CommandLists[CL].CommandBuffer;
         vkCmdFillBuffer(VkCmdBuf, DestBuffer, DestOffset, Size, Value);
+    }
+
+    void CmdMemzero(FCmdListH CL, GPUPtr Dest, uint64 Size)
+    {
+        CmdMemset(CL, Dest, Size, 0u);
     }
 
     void CmdWriteMemory(FCmdListH CL, GPUPtr Dest, const void* Data, uint64 Size)

@@ -16,8 +16,6 @@
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/World.h"
 #include "World/WorldTypes.h"
-#include "Scripting/Lua/Reference.h"
-#include "Scripting/Lua/Class.h"
 
 namespace Lumina
 {
@@ -1329,53 +1327,6 @@ namespace Lumina
             if (!FindPath(World, From, To, Path) || !Path.bValid) return false;
             DrawPath(World, Path, Color, 3.0f, 0.15f, Duration);
             return true;
-        }
-
-        void RegisterLuaModule(Lua::FRef& Globals)
-        {
-            Lua::FRef NavTable = Globals.NewTable("Nav");
-
-            NavTable.SetFunction<[](CWorld* W) { return Nav::IsReady(W); }>("IsReady");
-            NavTable.SetFunction<[](CWorld* W, FVector3 From, FVector3 To) { return Nav::IsReachable(W, From, To); }>("IsReachable");
-
-            // PathLength returns < 0 when no path.
-            NavTable.SetFunction<[](CWorld* W, FVector3 From, FVector3 To) { return Nav::PathLength(W, From, To); }>("PathLength");
-
-            // Returns the input on failure; pair with IsReady/IsReachable when validity matters.
-            NavTable.SetFunction<[](CWorld* W, FVector3 P, FVector3 E) -> FVector3
-            {
-                FVector3 Out = P;
-                Nav::ProjectPoint(W, P, E, Out);
-                return Out;
-            }>("ProjectPoint");
-
-            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E) -> FVector3
-            {
-                FVector3 Out = E;
-                Nav::Raycast(W, S, E, Out);
-                return Out;
-            }>("Raycast");
-
-            NavTable.SetFunction<[](CWorld* W, FVector3 O, float R) -> FVector3
-            {
-                FVector3 Out = O;
-                Nav::FindRandomReachablePoint(W, O, R, Out);
-                return Out;
-            }>("FindRandomReachablePoint");
-
-            // Empty array when no path exists.
-            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E) -> TVector<FVector3>
-            {
-                FNavPath Path;
-                Nav::FindPath(W, S, E, Path);
-                return Path.Corners;
-            }>("FindPath");
-
-            // Duration <= 0 draws for a single frame; useful for tick-driven scripts.
-            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E, float Duration) -> bool
-            {
-                return Nav::DrawDebugPath(W, S, E, FVector4(0.10f, 1.0f, 0.95f, 1.0f), Duration);
-            }>("DrawDebugPath");
         }
     }
 }

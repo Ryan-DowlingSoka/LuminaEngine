@@ -10,14 +10,12 @@
 #include "Core/Engine/Engine.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectCore.h"
-#include "World/Net/NetRpc.h"
 #include "World/Net/NetReplication.h"
 #include "World/Net/ScriptRepState.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/Components/RepTransformComponent.h"
-#include "World/Entity/Components/ScriptComponent.h"
 #include "World/Net/NetReplicationGraph.h"
 #include "Config/NetworkSettings.h"
 #include "World/Subsystems/WorldSettings.h"
@@ -177,10 +175,9 @@ namespace Lumina
         }
 
 
-        // Serialize one SpawnEntity message for a specific recipient (TargetConn). Carries the script-rep
-        // baseline: all --@replicated fields eligible for that recipient (InitialOnly included), seeding the
-        // entity's diff snapshot so subsequent PropertyUpdates send only changes.
-        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner, uint32 TargetConn,
+        // Serialize one SpawnEntity message. Carries the replicated component baseline, seeding the entity's
+        // diff snapshot so subsequent PropertyUpdates send only changes. Recipient-independent.
+        void WriteSpawnMessage(entt::registry& Registry, FNetWorldState& State, entt::entity Entity, uint32 Guid, uint32 Owner,
             const FVector3& Pos, const FQuat& Rot, const FVector3& Scale, TVector<uint8>& OutMsg)
         {
             FNetArchive Writer(OutMsg);
@@ -190,13 +187,10 @@ namespace Lumina
             Net::WriteNetGuid(Writer, Guid);
             WriteVarUInt(Writer, Owner);
 
-            FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
-            TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/true, &Diff);
             FComponentRepState& CompDiff = Registry.get_or_emplace<FComponentRepState>(Entity);
             TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Entity, State, /*bBaseline*/true, &CompDiff);
-            const FNetRepContext Ctx{ TargetConn, Owner, /*bInitial*/true };
-            Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields, &Comps);
-            
+            Net::WriteEntityComponents(Writer, Registry, Entity, &Comps);
+
             NetQuantize::FQuantizedVector::FromVector(Pos).Write(Writer);
             NetQuantize::FQuantizedQuat::FromQuat(Rot).Write(Writer);
             NetQuantize::FQuantizedVector::FromVector(Scale, NetQuantize::ScaleQuantum).Write(Writer);
@@ -268,9 +262,7 @@ namespace Lumina
         }
 
         // Server, reliable property delta for every entity flagged FNetDirty. Sends the entity's replicated
-        // native components + changed --@replicated script fields (field-granular diff), then clears the tag.
-        // Entities with owner-filtered (OwnerOnly/SkipOwner) script fields send per-client (deferred into
-        // PendingClientReliable so exports precede them); all others take the single reliable broadcast.
+        // native components (field-granular diff) as one reliable broadcast, then clears the tag.
         void ReplicateDirtyProperties(entt::registry& Registry, FNetWorldState& State, double NowTime, TVector<uint8>& Batch)
         {
             LUMINA_PROFILE_SCOPE();
@@ -334,54 +326,21 @@ namespace Lumina
                 const entt::entity Entity = D.Entity;
                 SNetworkComponent& Net = Registry.get<SNetworkComponent>(Entity);
 
-                // Diff the --@replicated script fields once (recipient-independent); updates the snapshot.
-                FScriptRepState& Diff = Registry.get_or_emplace<FScriptRepState>(Entity);
-                TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Entity, State, /*bBaseline*/false, &Diff);
-
                 // Diff the native replicated component fields once (recipient-independent); updates the snapshot.
                 FComponentRepState& CompDiff = Registry.get_or_emplace<FComponentRepState>(Entity);
                 TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Entity, State, /*bBaseline*/false, &CompDiff);
 
-                bool bOwnerConditioned = false;
-                for (const Net::FScriptRepFieldOut& F : Fields)
-                {
-                    if (F.Cond == EScriptRepCondition::OwnerOnly || F.Cond == EScriptRepCondition::SkipOwner)
-                    {
-                        bOwnerConditioned = true;
-                        break;
-                    }
-                }
-
-                auto WriteUpdate = [&](TVector<uint8>& Dest, const FNetRepContext& Ctx) -> int32
-                {
-                    const size_t Before = Dest.size();
-                    TVector<uint8> Buffer;
-                    FNetArchive Writer(Buffer);
-                    Net::BindWriters(Writer, State);
-                    uint8 Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
-                    Writer << Type;
-                    Net::WriteNetGuid(Writer, Net.NetGUID.Value);
-                    Net::WriteEntityComponents(Writer, Registry, Entity, &Ctx, &Fields, &Comps);
-                    Net::AppendFramedMessage(Dest, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
-                    return static_cast<int32>(Dest.size() - Before);
-                };
-
-                if (!bOwnerConditioned)
-                {
-                    // Common path: native components + changed Always fields, one reliable broadcast.
-                    const FNetRepContext Ctx{ /*TargetConn*/0, Net.OwningConnectionId, /*bInitial*/false };
-                    BytesThisTick += WriteUpdate(Batch, Ctx);
-                }
-                else
-                {
-                    // Owner-filtered script fields present: per recipient (the native component blocks are
-                    // recipient-independent and reused; only the script block is condition-filtered per Ctx).
-                    for (uint32 ConnId : State.ConnectedClientIds)
-                    {
-                        const FNetRepContext Ctx{ ConnId, Net.OwningConnectionId, /*bInitial*/false };
-                        BytesThisTick += WriteUpdate(State.PendingClientReliable[ConnId], Ctx);
-                    }
-                }
+                // Native component blocks are recipient-independent: one reliable broadcast for all clients.
+                TVector<uint8> Buffer;
+                FNetArchive Writer(Buffer);
+                Net::BindWriters(Writer, State);
+                uint8 Type = static_cast<uint8>(ENetMessage::PropertyUpdate);
+                Writer << Type;
+                Net::WriteNetGuid(Writer, Net.NetGUID.Value);
+                Net::WriteEntityComponents(Writer, Registry, Entity, &Comps);
+                const size_t Before = Batch.size();
+                Net::AppendFramedMessage(Batch, Buffer.data(), static_cast<SIZE_T>(Buffer.size()));
+                BytesThisTick += static_cast<int32>(Batch.size() - Before);
 
                 CompDiff.LastReplicatedTime = NowTime; // mark sent -> drives the oldest-first fairness above
                 Registry.remove<FNetDirty>(Entity);    // sent this tick; deferred entities keep the flag
@@ -433,8 +392,6 @@ namespace Lumina
             Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
             // Now that this entity's NetGUID is registered, reparent any children that were waiting on it.
             Net::DrainPendingAttach(Registry, State, Guid, Entity);
-            // A replicated script attaches via on_update<SScriptComponent> (fired by ReadEntityComponents'
-            // patch), so the entity gains its RPC handlers without a hard-coded call here.
         }
 
         // Client, apply a reliable property delta to an existing entity.
@@ -455,7 +412,6 @@ namespace Lumina
                 Net::BindReaders(Reader, State, SenderConn);
                 Net::ReadEntityComponents(Reader, Registry, Entity);
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
-                // Script reattach (if ScriptPath changed) happens via on_update<SScriptComponent>.
             }
         }
 
@@ -732,7 +688,7 @@ namespace Lumina
                                 const FVector3 SpawnPos   = Ex.Pos[Rec];
                                 const FQuat    SpawnRot   = Ex.Rot[Rec].ToQuat();
                                 const FVector3 SpawnScale = Ex.Scale[Rec].ToVector(NetQuantize::ScaleQuantum);
-                                WriteSpawnMessage(Registry, State, Ent, Guid, Ex.OwnerConn[Rec], ConnId, SpawnPos, SpawnRot, SpawnScale, Buf);
+                                WriteSpawnMessage(Registry, State, Ent, Guid, Ex.OwnerConn[Rec], SpawnPos, SpawnRot, SpawnScale, Buf);
                                 Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
                                 ++SpawnsSum;
                                 E.bBaselinePending = true; // spawn carried the pose; hold the transform one tick
@@ -745,10 +701,8 @@ namespace Lumina
                             // Join-in-progress: send the level entity's current replicated state once if it ever
                             // changed; refs minted here are flushed by the export step before this reliable batch.
                             const entt::entity Ent = State.GuidTable.Find(FNetGUID{ Guid });
-                            if (Ent != entt::null && Registry.valid(Ent) && Registry.any_of<FScriptRepState, FComponentRepState>(Ent))
+                            if (Ent != entt::null && Registry.valid(Ent) && Registry.any_of<FComponentRepState>(Ent))
                             {
-                                FScriptRepState& SDiff = Registry.get_or_emplace<FScriptRepState>(Ent);
-                                TVector<Net::FScriptRepFieldOut> Fields = Net::CollectScriptFields(Registry, Ent, State, /*bBaseline*/true, &SDiff);
                                 FComponentRepState& CDiff = Registry.get_or_emplace<FComponentRepState>(Ent);
                                 TVector<Net::FComponentRepOut> Comps = Net::CollectComponentFields(Registry, Ent, State, /*bBaseline*/true, &CDiff);
 
@@ -758,8 +712,7 @@ namespace Lumina
                                 uint8 PType = static_cast<uint8>(ENetMessage::PropertyUpdate);
                                 W << PType;
                                 Net::WriteNetGuid(W, Guid);
-                                const FNetRepContext Ctx{ ConnId, Ex.OwnerConn[Rec], /*bInitial*/true };
-                                Net::WriteEntityComponents(W, Registry, Ent, &Ctx, &Fields, &Comps);
+                                Net::WriteEntityComponents(W, Registry, Ent, &Comps);
                                 Net::AppendFramedMessage(Reliable, Buf.data(), static_cast<SIZE_T>(Buf.size()));
                             }
                         }
@@ -1484,11 +1437,6 @@ namespace Lumina
                         break;
                     case ENetMessage::NameExport:
                         Net::ApplyNameExport(State->InNames[Event.Connection.Value], Msg, MsgSize);
-                        break;
-                    case ENetMessage::ScriptRpc:
-                        // Either side can receive (server gets Server RPCs; client gets Multicast/Client).
-                        // The ownership/authority gate lives in ReceiveScriptRpc.
-                        Net::ReceiveScriptRpc(World, Event.Connection, Msg, MsgSize);
                         break;
                     }
                 });

@@ -58,12 +58,6 @@ namespace Lumina
         PROPERTY()
         TVector<FName> DisabledSystems;
 
-        /** Lua-authored ECS systems assigned to this world, by .luau asset path. Loaded and ticked in the
-            world's system pipeline. Unknown/failed paths are ignored. Driven by the World Editor's Systems
-            panel, not the property grid. */
-        PROPERTY()
-        TVector<FString> ScriptSystems;
-
         /** Entities below this Y position are automatically destroyed. */
         PROPERTY(Editable)
         float WorldKillHeight = -5'000;

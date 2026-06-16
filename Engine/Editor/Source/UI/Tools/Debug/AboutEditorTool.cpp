@@ -27,9 +27,6 @@ namespace Lumina
         DrawHelpTextRow("Help in Other Tools",
             "Every editor tool has its own Help menu (this menu) with a quick reference for that tool's "
             "controls, plus a Keybinds submenu listing every registered keyboard shortcut.");
-        DrawHelpTextRow("Lua API",
-            "Tools > Debug > Scripts Info > API Reference for a live, searchable list of every "
-            "class/function exposed to scripts.");
     }
 
     void FAboutEditorTool::DrawWindow(bool bIsFocused)

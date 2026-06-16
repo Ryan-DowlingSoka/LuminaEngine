@@ -6,11 +6,7 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "Tracy", "Luau",
-    },
-    LibDirs =
-    {
-        LuminaConfig.EnginePath("Engine/Source/ThirdParty/lua"),
+        "ImGui", "RPMalloc", "EA", "Tracy",
     },
     ExtraFiles = { "**.lproject", "**.json" },
 })

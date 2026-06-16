@@ -19,7 +19,8 @@ namespace Lumina::TextAssetSidecar
         {
             TVector<FFixedString> Roots;
             Roots.emplace_back(FFixedString("/Engine/Resources/Content"));
-            Roots.emplace_back(FFixedString("/Game"));
+            Roots.emplace_back(FFixedString("/Game/Content"));
+            Roots.emplace_back(FFixedString("/Game/Scripts"));
 
             for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
             {

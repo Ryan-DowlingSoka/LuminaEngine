@@ -30,6 +30,19 @@ LuminaWorkspaceSettings({
         include "Engine/Sandbox"
 	group ""
 
+    -- The engine's managed C# API assembly as its own first-class C# project. premake can't generate
+    -- an SDK-style net10 csproj (its C# support is legacy), so we author the .csproj and surface it
+    -- here via externalproject; IDEs (Rider/VS) then treat it as a real C# project in the solution.
+    group "Engine/Managed"
+        externalproject "LuminaSharp"
+            location "Engine/Source/LuminaSharp"
+            uuid "8F4B1C2A-3D4E-5F6A-7B8C-9D0E1F2A3B4C"
+            kind "SharedLib"
+            language "C#"
+            -- Build after Runtime so the Reflector has emitted the generated C# bindings the csproj globs.
+            dependson { "Runtime" }
+    group ""
+
     -- Included after Engine so Tests' ModuleDependencies (Runtime/Editor) are already registered and
     -- propagate their public include dirs (notably ModuleAPI.h) into the Tests project.
     if _OPTIONS["with-tests"] then
@@ -61,7 +74,6 @@ LuminaWorkspaceSettings({
             include "Engine/Source/ThirdParty/Tracy"
         end
         include "Engine/Source/ThirdParty/MiniAudio"
-        include "Engine/Source/ThirdParty/Luau"
         include "Engine/Source/ThirdParty/SPDLog"
         include "Engine/Source/ThirdParty/JoltPhysics"
         include "Engine/Source/ThirdParty/Recast"

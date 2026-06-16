@@ -98,6 +98,10 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         EditorOnly      = BIT(11),
         // Property participates in network replication (PROPERTY(Replicated)).
         Replicated      = BIT(12),
+        // Script (C#) interop specifiers, independent of the editor flags above.
+        ScriptReadOnly  = BIT(13),
+        ScriptWritable  = BIT(14),
+        ScriptHidden    = BIT(15),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags)
@@ -136,6 +140,9 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         AppendFlag(EPropertyFlags::BulkSerialize, "Lumina::EPropertyFlags::BulkSerialize");
         AppendFlag(EPropertyFlags::EditorOnly, "Lumina::EPropertyFlags::EditorOnly");
         AppendFlag(EPropertyFlags::Replicated, "Lumina::EPropertyFlags::Replicated");
+        AppendFlag(EPropertyFlags::ScriptReadOnly, "Lumina::EPropertyFlags::ScriptReadOnly");
+        AppendFlag(EPropertyFlags::ScriptWritable, "Lumina::EPropertyFlags::ScriptWritable");
+        AppendFlag(EPropertyFlags::ScriptHidden, "Lumina::EPropertyFlags::ScriptHidden");
 
         return Result;
     }

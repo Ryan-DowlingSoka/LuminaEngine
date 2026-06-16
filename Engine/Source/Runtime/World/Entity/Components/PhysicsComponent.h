@@ -11,7 +11,7 @@ namespace Lumina
     class CPhysicsMaterial;
 
     REFLECT(Component, Category = "Physics")
-    struct RUNTIME_API alignas(Threading::GCacheLineSize) SRigidBodyComponent
+    struct RUNTIME_API CACHE_ALIGN SRigidBodyComponent
     {
         GENERATED_BODY()
         

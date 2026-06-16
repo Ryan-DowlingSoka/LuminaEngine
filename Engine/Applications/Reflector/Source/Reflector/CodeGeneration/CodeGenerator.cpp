@@ -9,6 +9,7 @@
 #include <EASTL/vector.h>
 
 #include "CodeWriter.h"
+#include "CSharpBindingEmitter.h"
 #include "ReflectionNames.h"
 #include "Reflector/ProjectSolution.h"
 #include "Reflector/ReflectionCore/ReflectedHeader.h"
@@ -98,6 +99,11 @@ namespace Lumina::Reflection
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Header.Project->Name + R"(\)" + Header.FileName + ".generated.cpp";
         }
 
+        eastl::string MakeGeneratedCSharpPath(const eastl::string& WorkspacePath, const FReflectedHeader& Header)
+        {
+            return WorkspacePath + R"(\Intermediates\CSharpBindings\)" + Header.Project->Name + R"(\)" + Header.FileName + ".generated.cs";
+        }
+
         eastl::string MakeUnityPath(const eastl::string& WorkspacePath, const FReflectedProject& Project)
         {
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Project.Name + R"(\ReflectionUnity.gen.cpp)";
@@ -106,6 +112,11 @@ namespace Lumina::Reflection
         eastl::string MakeProjectIntermediateDir(const eastl::string& WorkspacePath, const FReflectedProject& Project)
         {
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Project.Name;
+        }
+
+        eastl::string MakeProjectCSharpDir(const eastl::string& WorkspacePath, const FReflectedProject& Project)
+        {
+            return WorkspacePath + R"(\Intermediates\CSharpBindings\)" + Project.Name;
         }
 
         constexpr const char* kUnityStubContents =
@@ -156,33 +167,29 @@ namespace Lumina::Reflection
             auto& Expected = ExpectedArtifacts[Header->Project];
             Expected.insert(Header->FileName + ".generated.cpp");
             Expected.insert(Header->FileName + ".generated.h");
+            Expected.insert(Header->FileName + ".generated.cs");
 
             if (Header->bDirty)
             {
                 DirtyProjects.insert(Header->Project);
                 GenerateHeaderFile(Header);
                 GenerateSourceFile(Header);
+                GenerateCSharpFile(Header);
             }
         }
 
-        // Orphan sweep: a deleted header leaves stale .generated.{h,cpp} the loop above never sees.
-        // Remove any generated artifact whose backing header is gone and mark the project dirty.
-        for (auto& Project : Workspace->ReflectedProjects)
+        // Orphan sweep: a deleted header leaves stale generated files the dirty-loop above never visits.
+        // Reflection\<Project> holds .generated.{h,cpp}; CSharpBindings\<Project> holds .generated.cs.
+        // Remove any whose backing header is gone (not in ExpectedArtifacts) and mark the project dirty.
+        auto SweepOrphanDir = [&](FReflectedProject* Project, const eastl::string& DirPath,
+            const eastl::hash_set<eastl::string>* Expected, const char* SuffixA, const char* SuffixB)
         {
-            const std::filesystem::path Dir(
-                MakeProjectIntermediateDir(Workspace->GetPath(), *Project).c_str());
-
             std::error_code Ec;
+            const std::filesystem::path Dir(DirPath.c_str());
             if (!std::filesystem::exists(Dir, Ec))
             {
-                continue;
+                return;
             }
-
-            const auto* Expected = [&]() -> const eastl::hash_set<eastl::string>*
-            {
-                auto It = ExpectedArtifacts.find(Project.get());
-                return It != ExpectedArtifacts.end() ? &It->second : nullptr;
-            }();
 
             for (const auto& Entry : std::filesystem::directory_iterator(Dir, Ec))
             {
@@ -195,21 +202,35 @@ namespace Lumina::Reflection
                 const eastl::string Filename(FilenameStd.c_str());
 
                 const bool bIsGenerated =
-                    Filename.find(".generated.cpp") != eastl::string::npos ||
-                    Filename.find(".generated.h") != eastl::string::npos;
+                    Filename.find(SuffixA) != eastl::string::npos ||
+                    (SuffixB != nullptr && Filename.find(SuffixB) != eastl::string::npos);
                 if (!bIsGenerated)
                 {
                     continue;
                 }
 
-                if (Expected && Expected->find(Filename) != Expected->end())
+                if (Expected != nullptr && Expected->find(Filename) != Expected->end())
                 {
                     continue;
                 }
 
                 std::filesystem::remove(Entry.path(), Ec);
-                DirtyProjects.insert(Project.get());
+                DirtyProjects.insert(Project);
             }
+        };
+
+        for (auto& Project : Workspace->ReflectedProjects)
+        {
+            const auto* Expected = [&]() -> const eastl::hash_set<eastl::string>*
+            {
+                auto It = ExpectedArtifacts.find(Project.get());
+                return It != ExpectedArtifacts.end() ? &It->second : nullptr;
+            }();
+
+            SweepOrphanDir(Project.get(), MakeProjectIntermediateDir(Workspace->GetPath(), *Project),
+                Expected, ".generated.cpp", ".generated.h");
+            SweepOrphanDir(Project.get(), MakeProjectCSharpDir(Workspace->GetPath(), *Project),
+                Expected, ".generated.cs", nullptr);
         }
 
         for (auto* DirtyProject : DirtyProjects)
@@ -249,6 +270,54 @@ namespace Lumina::Reflection
         FCodeWriter Writer(kStreamInitialCapacity);
         WriteSourceContent(Writer, Header);
         WriteTextFile(MakeGeneratedSourcePath(Workspace->GetPath(), *Header), Writer.String());
+    }
+
+    void FCodeGenerator::GenerateCSharpFile(FReflectedHeader* Header)
+    {
+        FCodeWriter Writer(kStreamInitialCapacity);
+        const eastl::string Path = MakeGeneratedCSharpPath(Workspace->GetPath(), *Header);
+
+        if (WriteCSharpContent(Writer, Header))
+        {
+            WriteTextFile(Path, Writer.String());
+        }
+        else
+        {
+            // Header contributes no C#-exposed types: drop any stale .cs so it can't linger in the build.
+            std::error_code Ec;
+            std::filesystem::remove(std::filesystem::path(Path.c_str()), Ec);
+        }
+    }
+
+    bool FCodeGenerator::WriteCSharpContent(FCodeWriter& Writer, FReflectedHeader* Header)
+    {
+        const auto& Types = ReflectionDatabase->ReflectedTypes.at(Header);
+
+        Writer.Line("//*************************************************************************");
+        Writer.Line("// Generated by Lumina Reflection Tool - DO NOT EDIT.");
+        Writer.Line("//*************************************************************************");
+        Writer.Line("#nullable disable");
+        Writer.Line();
+
+        bool bEmittedAny = false;
+        for (const auto& Type : Types)
+        {
+            // FReflectedClass derives FReflectedStruct, so test it first.
+            if (auto* Enum = dynamic_cast<FReflectedEnum*>(Type.get()))
+            {
+                bEmittedAny |= CSharpBindingEmitter::EmitForEnum(Writer, *Enum);
+            }
+            else if (auto* Class = dynamic_cast<FReflectedClass*>(Type.get()))
+            {
+                bEmittedAny |= CSharpBindingEmitter::EmitForClass(Writer, *Class, *ReflectionDatabase);
+            }
+            else if (auto* Struct = dynamic_cast<FReflectedStruct*>(Type.get()))
+            {
+                bEmittedAny |= CSharpBindingEmitter::EmitForStruct(Writer, *Struct, *ReflectionDatabase);
+            }
+        }
+
+        return bEmittedAny;
     }
 
     void FCodeGenerator::WriteHeaderContent(FCodeWriter& Writer, FReflectedHeader* Header)
@@ -422,15 +491,10 @@ namespace Lumina::Reflection
         Writer.Linef("#include \"%s\"", ComputeSourceHeaderInclude(*Header).c_str());
         Writer.Line("#include \"World/Entity/Components/Component.h\"");
         Writer.Line("#include \"World/Entity/Events/ECSEvent.h\"");
-        Writer.Line("#include \"lua.h\"");
-        Writer.Line("#include \"lualib.h\"");
         Writer.Line("#include \"Core/Profiler/Profile.h\"");
         Writer.Line("#include \"Core/Math/Hash/Hash.h\"");
-        Writer.Line("#include \"Scripting/Lua/Invoker.h\"");
-        Writer.Line("#include \"Scripting/Lua/Class.h\"");
         Writer.Line("#include \"Core/Object/Class.h\"");
         Writer.Line("using namespace entt::literals;");
-        Writer.Line("using LuaMethodFn = int(*)(lua_State*);");
         Writer.BlankLines(2);
 
         EmitCrossModuleReferences(Writer, *ReflectionDatabase, Header, Types);
@@ -446,6 +510,24 @@ namespace Lumina::Reflection
 
         Writer.BlankLines(2);
         EmitStaticRegistration(Writer, FileID, Types);
+
+        // Native size guards for any opted-in blittable C# struct mirrors (struct kinds only, not classes).
+        for (const auto& Type : Types)
+        {
+            if (Type->Type == FReflectedType::EType::Structure)
+            {
+                CSharpBindingEmitter::EmitNativeLayoutCheck(Writer, static_cast<FReflectedStruct&>(*Type), *ReflectionDatabase);
+            }
+        }
+
+        // Native property thunks (extern "C" exports) backing the generated C# wrappers' scalar properties.
+        for (const auto& Type : Types)
+        {
+            if (Type->Type == FReflectedType::EType::Structure || Type->Type == FReflectedType::EType::Class)
+            {
+                CSharpBindingEmitter::EmitNativeThunks(Writer, static_cast<FReflectedStruct&>(*Type), *ReflectionDatabase);
+            }
+        }
     }
 
     void FCodeGenerator::WriteUnityBuildFile(FReflectedProject* Project, const eastl::string& Contents)

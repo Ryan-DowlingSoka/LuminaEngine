@@ -83,7 +83,6 @@ namespace Lumina
         RUNTIME_API void ReapplyActiveCursorMode();
 
         RUNTIME_API void EndFrame(double DeltaSeconds);
-        RUNTIME_API void DispatchActions();
         RUNTIME_API void OnWindowFocusLost();
 
         bool OnEvent(FEvent& Event) override;

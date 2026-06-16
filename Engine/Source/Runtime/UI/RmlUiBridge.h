@@ -21,11 +21,6 @@ namespace Lumina
     struct SWidgetComponent;
 }
 
-namespace Lumina::Lua
-{
-    class FRef;
-}
-
 namespace Lumina::RmlUi
 {
     RUNTIME_API bool            Initialize();
@@ -47,7 +42,7 @@ namespace Lumina::RmlUi
     RUNTIME_API void            RenderWorldWidgets(const CWorld* World, RHI::FCmdListH CmdList);
     RUNTIME_API void            ReleaseWidget(CWorld* World, SWidgetComponent& Component);
 
-    // The world whose context the `UI.*` Lua module targets. Set when a world comes
+    // The world whose context is the active UI target. Set when a world comes
     // up or resumes; cleared when it tears down.
     RUNTIME_API void            SetActiveWorld(CWorld* World);
 
@@ -103,6 +98,4 @@ namespace Lumina::RmlUi
     /** SourceUrl resolves relative includes. Previous document unloads either way; returns false on parse failure. */
     RUNTIME_API bool            ReplaceEditorContextDocument(Rml::Context* Context, FStringView Body, FStringView SourceUrl);
     RUNTIME_API void            ClearEditorContextDocument(Rml::Context* Context);
-
-    RUNTIME_API void            RegisterLuaModule(Lua::FRef& GlobalsRef);
 }

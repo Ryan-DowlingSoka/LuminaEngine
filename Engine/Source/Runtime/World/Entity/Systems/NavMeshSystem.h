@@ -64,7 +64,5 @@ namespace Lumina
 
         /** Convenience: FindPath + DrawPath. Returns true if a (possibly partial) path was found and drawn. */
         RUNTIME_API bool DrawDebugPath(CWorld* World, const FVector3& From, const FVector3& To, const FVector4& Color, float Duration = 0.0f);
-
-        RUNTIME_API void RegisterLuaModule(Lua::FRef& Globals);
     }
 }

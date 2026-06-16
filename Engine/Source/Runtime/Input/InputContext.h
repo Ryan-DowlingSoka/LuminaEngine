@@ -7,7 +7,6 @@
 #include "Input/Input.h"
 #include "Input/InputEvent.h"
 #include "Input/InputMode.h"
-#include "Scripting/Lua/Reference.h"
 
 namespace Lumina
 {
@@ -97,21 +96,6 @@ namespace Lumina
         bool WasActionDownLastFrame(FName ActionName) const;
         void SetActionDownLastFrame(FName ActionName, bool bDown);
 
-        enum class EActionTrigger : uint8 { Pressed, Released };
-
-        struct FActionCallback
-        {
-            FName            ActionName;
-            EActionTrigger   Trigger = EActionTrigger::Pressed;
-            Lua::FRef        Function;
-            uint64           Id = 0;
-        };
-
-        RUNTIME_API uint64 RegisterActionCallback(FName ActionName, EActionTrigger Trigger, Lua::FRef Function);
-        RUNTIME_API void   UnregisterActionCallback(uint64 Id);
-        RUNTIME_API void   ClearActionCallbacks();
-
-        void DispatchActionCallbacks();
         void UpdateActionEdgeState();
 
     private:
@@ -140,8 +124,6 @@ namespace Lumina
         TArray<Input::EMouseState, (uint32)EMouseKey::Num>  MouseStates = {};
 
         THashMap<FName, bool>          ActionDownLastFrame;
-        TVector<FActionCallback>       ActionCallbacks;
         TVector<SInputEvent>           FrameEvents;
-        uint64                         NextCallbackId = 1;
     };
 }

@@ -1,6 +1,5 @@
 #include "FSceneEditorTool.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
-#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
 #include "Components/EditorEntityTags.h"
@@ -28,7 +27,7 @@
 #include "World/Entity/Components/EntityTags.h"
 #include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
-#include "World/Entity/Components/ScriptComponent.h"
+#include "World/Entity/Components/CSharpScriptComponent.h"
 #include "World/Entity/Components/TagComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/EntityUtils.h"
@@ -287,67 +286,26 @@ namespace Lumina
             DrawComponentHeader(Entry, Entity);
             ImGui::Spacing();
         }
-
-        // Deferred so we never remove a storage element while iterating / drawing its table.
-        if (PendingRuntimeRemove != nullptr)
-        {
-            ECS::Utils::RemoveRuntimeComponent(GetSceneRegistry(), Entity, PendingRuntimeRemove);
-            PendingRuntimeRemove = nullptr;
-            bDetailsDirty = true;
-            MarkSceneDirty();
-        }
     }
 
     void FSceneEditorTool::DrawComponentHeader(FComponentTableEntry& Entry, entt::entity Entity)
     {
         using namespace entt::literals;
 
-        const bool bRuntime = Entry.bRuntime;
-
-        // The live runtime type is fetched from the storage (which strong-refs it) -- never from a
-        // cached pointer, which could dangle if the type asset was deleted.
-        CEntityComponentType* RuntimeType = nullptr;
-
-        // Existence check + re-point. Reflected components verify via meta; runtime ones verify
-        // storage still holds the entity and re-bind the table if it moved (realloc/relayout).
-        if (!bRuntime)
+        // Existence check via meta; drop this row if the entity no longer holds the component.
+        if (IsComponentHiddenInDetails(Entry.ReflectedType))
         {
-            if (IsComponentHiddenInDetails(Entry.ReflectedType))
-            {
-                return;
-            }
-
-            entt::meta_type MetaType = entt::resolve(entt::hashed_string(Entry.ReflectedType->GetName().c_str()));
-            if (!ECS::Utils::HasComponent(GetSceneRegistry(), Entity, MetaType))
-            {
-                return;
-            }
-        }
-        else
-        {
-            FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(GetSceneRegistry(), Entry.RuntimeStorageId);
-            // Missing / invalidated (type deleted) / no longer on the entity -> drop this row.
-            if (Storage == nullptr || !Storage->IsBound() || !Storage->contains(Entity))
-            {
-                bDetailsDirty = true;
-                return;
-            }
-            RuntimeType = Storage->GetSchemaType();
-            if (Entry.Table != nullptr)
-            {
-                void* CurrentData = Storage->value(Entity);
-                CStruct* CurrentLayout = Storage->GetLayout();
-                if (CurrentData != Entry.BoundData || CurrentLayout != Entry.BoundLayout)
-                {
-                    Entry.Table->SetObject(CurrentData, CurrentLayout);
-                    Entry.BoundData = CurrentData;
-                    Entry.BoundLayout = CurrentLayout;
-                }
-            }
+            return;
         }
 
-        const bool bIsRequired = !bRuntime
-            && (Entry.ReflectedType == STransformComponent::StaticStruct() || Entry.ReflectedType == SNameComponent::StaticStruct());
+        entt::meta_type MetaType = entt::resolve(entt::hashed_string(Entry.ReflectedType->GetName().c_str()));
+        if (!ECS::Utils::HasComponent(GetSceneRegistry(), Entity, MetaType))
+        {
+            return;
+        }
+
+        const bool bIsRequired =
+            Entry.ReflectedType == STransformComponent::StaticStruct() || Entry.ReflectedType == SNameComponent::StaticStruct();
 
         ImGui::PushID(&Entry);
 
@@ -369,10 +327,7 @@ namespace Lumina
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorColors::U32(EditorColors::RowBgHovered()));
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorColors::U32(EditorColors::RowBgActive()));
             ImGui::SetNextItemAllowOverlap();
-            // Runtime rows show the live type name so renaming the type asset updates the row
-            // immediately (the cached title is only refreshed on a details rebuild).
-            const char* HeaderTitle = (bRuntime && RuntimeType != nullptr) ? RuntimeType->GetName().c_str() : Entry.Title.c_str();
-            bIsOpen = ImGui::CollapsingHeader(HeaderTitle, ImGuiTreeNodeFlags_DefaultOpen);
+            bIsOpen = ImGui::CollapsingHeader(Entry.Title.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, EditorColors::U32(EditorColors::PanelBg()));
 
             ImGui::PopStyleColor(3);
@@ -389,14 +344,7 @@ namespace Lumina
 
                 if (ImGui::SmallButton(LE_ICON_TRASH_CAN "##RemoveComponent"))
                 {
-                    if (bRuntime)
-                    {
-                        PendingRuntimeRemove = RuntimeType;
-                    }
-                    else
-                    {
-                        ComponentDestroyRequests.push(FComponentDestroyRequest{ Entry.ReflectedType, Entity });
-                    }
+                    ComponentDestroyRequests.push(FComponentDestroyRequest{ Entry.ReflectedType, Entity });
                 }
 
                 ImGuiX::TextTooltip("{}", "Remove Component");
@@ -590,13 +538,12 @@ namespace Lumina
         {
             FEntityRegistry& Registry = GetSceneRegistry();
 
-            // One intermediate row for both reflected and runtime components so they sort together.
+            // One intermediate row per reflected component.
             struct FPendingRow
             {
                 void*                 Data = nullptr;
-                CStruct*              Layout = nullptr;        // reflected CStruct, or runtime layout
-                const CStruct*        ReflectedType = nullptr; // null for runtime
-                CEntityComponentType* RuntimeType = nullptr;   // null for reflected
+                CStruct*              Layout = nullptr;        // reflected CStruct
+                const CStruct*        ReflectedType = nullptr;
                 FString               Title;
                 TVector<void*>        OtherInstances;          // same component on the other selected entities (multi-edit)
             };
@@ -607,7 +554,6 @@ namespace Lumina
 
             TVector<entt::entity> OtherTargets;
             TVector<THashMap<const CStruct*, void*>> OtherReflected;
-            TVector<THashMap<uint32, void*>>         OtherRuntime;
             if (bMultiSelect)
             {
                 for (entt::entity Selected : SelectedEntities)
@@ -628,16 +574,6 @@ namespace Lumina
                         }
                     });
                     OtherReflected.push_back(Move(ReflectedMap));
-
-                    THashMap<uint32, void*> RuntimeMap;
-                    ECS::Utils::ForEachRuntimeComponent(Registry, Selected, [&](CEntityComponentType* Type, CStruct*, void* Data)
-                    {
-                        if (Type != nullptr)
-                        {
-                            RuntimeMap[Type->GetStorageId()] = Data;
-                        }
-                    });
-                    OtherRuntime.push_back(Move(RuntimeMap));
                 }
             }
 
@@ -672,34 +608,12 @@ namespace Lumina
                     Others.push_back(It->second);
                 }
 
-                Pending.push_back({ Component, Struct, Struct, nullptr, Struct->MakeDisplayName().c_str(), Move(Others) });
-            });
-
-            ECS::Utils::ForEachRuntimeComponent(Registry, Entity,
-                [&](CEntityComponentType* Type, CStruct* Layout, void* Data)
-            {
-                if (Type == nullptr)
-                {
-                    return;
-                }
-
-                TVector<void*> Others;
-                for (const THashMap<uint32, void*>& Map : OtherRuntime)
-                {
-                    auto It = Map.find(Type->GetStorageId());
-                    if (It == Map.end())
-                    {
-                        return;
-                    }
-                    Others.push_back(It->second);
-                }
-
-                Pending.push_back({ Data, Layout, nullptr, Type, Type->GetName().ToString(), Move(Others) });
+                Pending.push_back({ Component, Struct, Struct, Struct->MakeDisplayName().c_str(), Move(Others) });
             });
 
             eastl::sort(Pending.begin(), Pending.end(), [&](const FPendingRow& LHS, const FPendingRow& RHS)
             {
-                // Name first, Transform second, everything else (incl. runtime) alphabetical.
+                // Name first, Transform second, everything else alphabetical.
                 auto Priority = [](const FPendingRow& Row) -> uint32
                 {
                     if (Row.ReflectedType == SNameComponent::StaticStruct())      { return 0; }
@@ -724,90 +638,43 @@ namespace Lumina
             {
                 FComponentTableEntry Entry;
                 Entry.ReflectedType = Row.ReflectedType;
-                Entry.bRuntime      = (Row.RuntimeType != nullptr);
-                Entry.RuntimeStorageId = (Row.RuntimeType != nullptr) ? Row.RuntimeType->GetStorageId() : 0;
                 Entry.Title         = Row.Title;
 
-                if (Row.RuntimeType != nullptr)
+                // Prefab instances diff/reset against the matched prefab component; everything else
+                // falls back to the struct CDO (the 2-arg form).
+                void* PrefabDefault = nullptr;
+                if (FocusPrefabInstance != nullptr && FocusPrefabInstance->SourcePrefab != nullptr && Row.Layout != nullptr)
                 {
-                    // Runtime row: a field-less type has no value buffer, so leave Table null (the
-                    // header still draws, just with no body).
-                    if (Row.Data != nullptr && Row.Layout != nullptr)
-                    {
-                        Entry.Table = MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
+                    PrefabDefault = FocusPrefabInstance->SourcePrefab->ResolvePrefabComponentPtr(FocusPrefabInstance->StableID, Row.Layout);
+                }
 
-                        void* FocusData = Row.Data;
-                        TVector<void*> Others = Row.OtherInstances;
-                        Entry.Table->SetPostEditCallback([this, FocusData, Others](const FPropertyChangedEvent& Event)
+                Entry.Table = (PrefabDefault != nullptr)
+                    ? MakeUnique<FPropertyTable>(Row.Data, Row.Layout, PrefabDefault)
+                    : MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
+                Entry.Table->SetPreEditCallback([&](const FPropertyChangedEvent& Event)    { OnPrePropertyChangeEvent(Event); });
+                Entry.Table->SetPostEditCallback([&](const FPropertyChangedEvent& Event)   { OnPostPropertyChangeEvent(Event); MarkSceneDirty(); });
+                Entry.Table->SetStartEditCallback([&](const FPropertyChangedEvent& Event)  { BeginTransaction(); });
+                Entry.Table->SetFinishEditCallback([&](const FPropertyChangedEvent& Event) { EndTransaction(Event.PropertyName); });
+
+                // Multi-edit value compare; propagation is handled in OnPostPropertyChangeEvent, which
+                // also patches each entity so on_update (physics rebuild, etc.) fires.
+                if (!Row.OtherInstances.empty())
+                {
+                    void* FocusData = Row.Data;
+                    TVector<void*> Others = Row.OtherInstances;
+                    Entry.Table->ChangeEventCallbacks.IsMultiValueFn = [FocusData, Others](FProperty* Property) -> bool
+                    {
+                        for (void* Other : Others)
                         {
-                            // Multi-edit: copy the edited property to every other selected instance.
-                            if (Event.Property != nullptr)
+                            if (!Property->Identical_InContainer(FocusData, Other))
                             {
-                                for (void* Other : Others)
-                                {
-                                    Event.Property->CopyCompleteValue_InContainer(Other, FocusData);
-                                }
+                                return true;
                             }
-                            // Values live in the storage and serialize with the scene; just mark dirty.
-                            MarkSceneDirty();
-                        });
-                        if (!Others.empty())
-                        {
-                            Entry.Table->ChangeEventCallbacks.IsMultiValueFn = [FocusData, Others](FProperty* Property) -> bool
-                            {
-                                for (void* Other : Others)
-                                {
-                                    if (!Property->Identical_InContainer(FocusData, Other))
-                                    {
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            };
                         }
-                        Entry.Table->MarkDirty();
-                        Entry.BoundLayout = Row.Layout;
-                        Entry.BoundData   = Row.Data;
-                    }
+                        return false;
+                    };
                 }
-                else
-                {
-                    // Prefab instances diff/reset against the matched prefab component; everything else
-                    // falls back to the struct CDO (the 2-arg form).
-                    void* PrefabDefault = nullptr;
-                    if (FocusPrefabInstance != nullptr && FocusPrefabInstance->SourcePrefab != nullptr && Row.Layout != nullptr)
-                    {
-                        PrefabDefault = FocusPrefabInstance->SourcePrefab->ResolvePrefabComponentPtr(FocusPrefabInstance->StableID, Row.Layout);
-                    }
-
-                    Entry.Table = (PrefabDefault != nullptr)
-                        ? MakeUnique<FPropertyTable>(Row.Data, Row.Layout, PrefabDefault)
-                        : MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
-                    Entry.Table->SetPreEditCallback([&](const FPropertyChangedEvent& Event)    { OnPrePropertyChangeEvent(Event); });
-                    Entry.Table->SetPostEditCallback([&](const FPropertyChangedEvent& Event)   { OnPostPropertyChangeEvent(Event); MarkSceneDirty(); });
-                    Entry.Table->SetStartEditCallback([&](const FPropertyChangedEvent& Event)  { BeginTransaction(); });
-                    Entry.Table->SetFinishEditCallback([&](const FPropertyChangedEvent& Event) { EndTransaction(Event.PropertyName); });
-
-                    // Multi-edit value compare; propagation is handled in OnPostPropertyChangeEvent, which
-                    // also patches each entity so on_update (physics rebuild, etc.) fires.
-                    if (!Row.OtherInstances.empty())
-                    {
-                        void* FocusData = Row.Data;
-                        TVector<void*> Others = Row.OtherInstances;
-                        Entry.Table->ChangeEventCallbacks.IsMultiValueFn = [FocusData, Others](FProperty* Property) -> bool
-                        {
-                            for (void* Other : Others)
-                            {
-                                if (!Property->Identical_InContainer(FocusData, Other))
-                                {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        };
-                    }
-                    Entry.Table->MarkDirty();
-                }
+                Entry.Table->MarkDirty();
 
                 PropertyTables.emplace_back(Move(Entry));
             }
@@ -941,7 +808,7 @@ namespace Lumina
 
         if (bIsLockedPrefabChild)
         {
-            Display.TooltipSubtitle = FString("Prefab child #" + eastl::to_string(entt::to_integral(Entity)) + " — hierarchy locked");
+            Display.TooltipSubtitle = FString("Prefab child #" + eastl::to_string(entt::to_integral(Entity)) + ", hierarchy locked");
         }
         else if (bIsPrefabInstanceRoot)
         {
@@ -980,7 +847,7 @@ namespace Lumina
         Display.bAllowRenaming = !bIsLockedPrefabChild;
 
         // Per-entity script enable toggle: only shown when the entity carries a script.
-        if (Registry.any_of<SScriptComponent>(Entity))
+        if (Registry.any_of<SCSharpScriptComponent>(Entity))
         {
             Display.bShowSecondaryIcon = true;
             Display.SecondaryIconOn    = LE_ICON_SCRIPT_TEXT;
@@ -1228,7 +1095,7 @@ namespace Lumina
         return Targets;
     }
 
-    void FSceneEditorTool::ApplyAddComponentToTargets(const TVector<entt::entity>& Targets, entt::meta_type PickedMetaType, CEntityComponentType* PickedRuntime)
+    void FSceneEditorTool::ApplyAddComponentToTargets(const TVector<entt::entity>& Targets, entt::meta_type PickedMetaType)
     {
         using namespace entt::literals;
 
@@ -1241,7 +1108,7 @@ namespace Lumina
 
         // Resolve the reflected CStruct so an instance can record the add in its override ledger.
         CStruct* AddedStruct = nullptr;
-        if (PickedRuntime == nullptr && PickedMetaType)
+        if (PickedMetaType)
         {
             if (entt::meta_any S = ECS::Utils::InvokeMetaFunc(PickedMetaType, "static_struct"_hs))
             {
@@ -1252,14 +1119,10 @@ namespace Lumina
         BeginTransaction();
         for (entt::entity Target : Targets)
         {
-            // AddRuntimeComponent is idempotent; the reflected "emplace" uses emplace_or_replace for data
-            // components (would reset existing data) and plain emplace for tags (would assert if present),
-            // so skip targets that already hold the component.
-            if (PickedRuntime != nullptr)
-            {
-                ECS::Utils::AddRuntimeComponent(Registry, Target, PickedRuntime);
-            }
-            else if (!ECS::Utils::HasComponent(Registry, Target, PickedMetaType))
+            // The reflected "emplace" uses emplace_or_replace for data components (would reset existing
+            // data) and plain emplace for tags (would assert if present), so skip targets that already
+            // hold the component.
+            if (!ECS::Utils::HasComponent(Registry, Target, PickedMetaType))
             {
                 ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(Registry), Target, entt::forward_as_meta(entt::meta_any{}));
                 if (AddedStruct != nullptr)
@@ -1268,26 +1131,19 @@ namespace Lumina
                 }
             }
         }
-        EndTransaction(PickedRuntime != nullptr ? "Add Runtime Component" : "Add Component");
+        EndTransaction("Add Component");
 
         MarkSceneDirty();
         OutlinerListView.MarkTreeDirty();
         bDetailsDirty = true;
     }
 
-    bool FSceneEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct, CEntityComponentType*& OutRuntimeType)
+    bool FSceneEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct)
     {
-        OutRuntimeType = nullptr;
-
         struct FComponentEntry
         {
             entt::meta_type MetaType;
             CStruct*        Struct = nullptr;   // reflected component
-            // Data-authored type: listed straight from the asset registry (so it shows whether or
-            // not it is loaded) and loaded on pick, exactly like every other asset reference.
-            bool            bRuntime = false;
-            FGuid           RuntimeGuid;
-            FString         RuntimeName;
         };
 
         struct FComponentCategory
@@ -1347,28 +1203,6 @@ namespace Lumina
             FindOrAddCategory(CategoryName).Entries.push_back(NewEntry);
         }
 
-        // Runtime (data-authored) component types appear under "Data", enumerated from the asset
-        // registry (not GObjectArray) so unloaded ones still show; the pick loads on demand.
-        TVector<FAssetData*> RuntimeTypes = FAssetRegistry::Get().FindByPredicate([](const FAssetData& Data)
-        {
-            CClass* DataClass = FindObject<CClass>(Data.AssetClass);
-            return DataClass != nullptr && DataClass->IsChildOf(CEntityComponentType::StaticClass());
-        });
-
-        for (const FAssetData* Data : RuntimeTypes)
-        {
-            if (!Filter.PassFilter(Data->AssetName.c_str()))
-            {
-                continue;
-            }
-
-            FComponentEntry NewEntry;
-            NewEntry.bRuntime    = true;
-            NewEntry.RuntimeGuid = Data->AssetGUID;
-            NewEntry.RuntimeName = Data->AssetName.ToString();
-            FindOrAddCategory("Data").Entries.push_back(NewEntry);
-        }
-
         eastl::sort(Categories.begin(), Categories.end(), [](const FComponentCategory& LHS, const FComponentCategory& RHS)
         {
             // Push "General" to the bottom so categorized buckets surface first.
@@ -1386,7 +1220,7 @@ namespace Lumina
         {
             auto EntryName = [](const FComponentEntry& E) -> FString
             {
-                return E.bRuntime ? E.RuntimeName : E.Struct->GetName().ToString();
+                return E.Struct->GetName().ToString();
             };
             eastl::sort(Category.Entries.begin(), Category.Entries.end(), [&](const FComponentEntry& LHS, const FComponentEntry& RHS)
             {
@@ -1408,14 +1242,7 @@ namespace Lumina
             {
                 // Stable per-item ID across frames (the entry list is rebuilt every frame, so its
                 // address is not stable -- an unstable ID breaks click press/release matching).
-                if (Entry.bRuntime)
-                {
-                    ImGui::PushID(static_cast<int>(Entry.RuntimeGuid.Hash()));
-                }
-                else
-                {
-                    ImGui::PushID((void*)Entry.Struct);
-                }
+                ImGui::PushID((void*)Entry.Struct);
 
                 ImGui::PushStyleColor(ImGuiCol_Button, EditorColors::RowBg());
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorColors::RowBgHovered());
@@ -1425,19 +1252,11 @@ namespace Lumina
 
                 const float ButtonWidth = ImGui::GetContentRegionAvail().x;
 
-                FFixedString DisplayName = Entry.bRuntime ? FFixedString(Entry.RuntimeName.c_str()) : Entry.Struct->MakeDisplayName();
+                FFixedString DisplayName = Entry.Struct->MakeDisplayName();
                 if (ImGui::Button(DisplayName.c_str(), ImVec2(ButtonWidth, 0.0f)))
                 {
-                    if (Entry.bRuntime)
-                    {
-                        // Load on pick (returns the cached instance if already loaded).
-                        OutRuntimeType = LoadObject<CEntityComponentType>(Entry.RuntimeGuid);
-                    }
-                    else
-                    {
-                        OutMetaType = Entry.MetaType;
-                        OutStruct   = Entry.Struct;
-                    }
+                    OutMetaType = Entry.MetaType;
+                    OutStruct   = Entry.Struct;
                     bPicked = true;
                 }
 
@@ -2652,26 +2471,13 @@ namespace Lumina
 
                 entt::meta_type       PickedMetaType;
                 CStruct*              PickedStruct = nullptr;
-                CEntityComponentType* PickedRuntime = nullptr;
-                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct, PickedRuntime))
+                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct))
                 {
                     TVector<entt::entity> Targets = GetComponentEditTargets(Entity);
 
                     if (!Targets.empty())
                     {
-                        ApplyAddComponentToTargets(Targets, PickedMetaType, PickedRuntime);
-                    }
-                    else if (PickedRuntime != nullptr)
-                    {
-                        BeginTransaction();
-                        entt::entity Target = World->ConstructEntity("Entity", GetNewEntitySpawnTransform());
-                        ECS::Utils::AddRuntimeComponent(GetSceneRegistry(), Target, PickedRuntime);
-                        OnEntityCreatedInScene(Target);
-                        EndTransaction("Add Runtime Component");
-
-                        MarkSceneDirty();
-                        OutlinerListView.MarkTreeDirty();
-                        SetSingleSelectedEntity(Target);
+                        ApplyAddComponentToTargets(Targets, PickedMetaType);
                     }
                     else
                     {

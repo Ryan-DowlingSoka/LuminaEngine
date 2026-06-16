@@ -5,23 +5,11 @@
 #include "Containers/Name.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Core/Object/ObjectHandleTyped.h"
-#include "Scripting/Lua/Reference.h"
 #include "SimpleAnimationComponent.generated.h"
 
 namespace Lumina
 {
     class CAnimation;
-
-    /**
-     * Lua callbacks for one bound NotifyState (ranged notify). Any of the three
-     * refs may be empty; the animation system only invokes the ones that are set.
-     */
-    struct FNotifyStateBinding
-    {
-        Lua::FRef OnBegin;
-        Lua::FRef OnTick;
-        Lua::FRef OnEnd;
-    };
 
     REFLECT(Component, Category = "Animation")
     struct SSimpleAnimationComponent
@@ -68,9 +56,6 @@ namespace Lumina
         // CurrentTime). Cleared by the system after sampling.
         bool bDirty = true;
 
-        // AnimNotify runtime state (transient): mirrors the cached-FRef pattern on SScriptComponent --
-        // gameplay binds Lua callbacks by notify name; SAnimationSystem fires them on playhead crossings.
-
         // CurrentTime before this frame's advance, used to detect playhead crossings.
         float PreviousTime = 0.0f;
 
@@ -78,17 +63,9 @@ namespace Lumina
         // Tick fire only when true, so Stop()/seek don't re-fire events. End still fires on stop.
         bool bAdvancedThisFrame = false;
 
-        // Point-notify handlers, keyed by notify name. A name may carry many handlers.
-        THashMap<FName, TVector<Lua::FRef>> NotifyHandlers;
-
-        // Ranged NotifyState handlers (begin/tick/end), keyed by notify name.
-        THashMap<FName, TVector<FNotifyStateBinding>> NotifyStateHandlers;
-
         // Indices (into the active clip's NotifyStates) currently under the playhead.
         // Diffed each frame to drive Begin/End transitions; cleared on clip change.
         TVector<int32> ActiveNotifyStates;
-
-        bool HasNotifyBindings() const { return !NotifyHandlers.empty() || !NotifyStateHandlers.empty(); }
 
         /**
          * Fire-and-forget play. Resets time to 0, marks the clip dirty, and
@@ -150,50 +127,5 @@ namespace Lumina
         /** True while the component is actively advancing the animation. */
         FUNCTION(Script)
         bool IsPlaying() const { return bPlaying; }
-
-        /**
-         * Bind a Lua callback to a point notify by name. The handler fires once each
-         * time the playhead crosses a notify with this name on the active clip:
-         *
-         *   anim:BindNotify("Footstep", function(entity, name, time) ... end)
-         *
-         * Multiple callbacks may be bound to the same name. Bindings live on this
-         * component instance, so they are specific to this entity's playback.
-         */
-        FUNCTION(Script)
-        void BindNotify(FName NotifyName, Lua::FRef Callback)
-        {
-            if (Callback.IsInvokable())
-            {
-                NotifyHandlers[NotifyName].push_back(eastl::move(Callback));
-            }
-        }
-
-        /**
-         * Bind Lua callbacks to a ranged NotifyState by name. OnBegin fires when the
-         * playhead enters the range, OnTick every frame while inside (receiving the
-         * 0..1 alpha through the range), and OnEnd when it leaves (or the clip stops).
-         * Any callback may be nil:
-         *
-         *   anim:BindNotifyState("WeaponTrail", onBegin, onTick, onEnd)
-         */
-        FUNCTION(Script)
-        void BindNotifyState(FName NotifyName, Lua::FRef OnBegin, Lua::FRef OnTick, Lua::FRef OnEnd)
-        {
-            FNotifyStateBinding Binding;
-            Binding.OnBegin = eastl::move(OnBegin);
-            Binding.OnTick  = eastl::move(OnTick);
-            Binding.OnEnd   = eastl::move(OnEnd);
-            NotifyStateHandlers[NotifyName].push_back(eastl::move(Binding));
-        }
-
-        /** Remove every notify and notify-state binding on this component. */
-        FUNCTION(Script)
-        void ClearNotifyBindings()
-        {
-            NotifyHandlers.clear();
-            NotifyStateHandlers.clear();
-            ActiveNotifyStates.clear();
-        }
     };
 }

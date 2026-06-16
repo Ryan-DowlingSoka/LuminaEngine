@@ -9,8 +9,6 @@
 
 namespace Lumina
 {
-    // Forward decl breaks the EdGraphNode.h <-> EdNodeGraphPin.h include cycle; the full def is
-    // needed at the templated GetOwningNode<T>() call site and pulled in by the .cpp.
     class CEdGraphNode;
 
     REFLECT()

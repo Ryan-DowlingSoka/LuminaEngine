@@ -18,8 +18,8 @@ namespace Lumina
 
     namespace Threading
     {
-        constexpr size_t GCacheLineSize = std::hardware_destructive_interference_size;
-        #define ALIGN_FOR_FALSE_SHARING alignas(std::hardware_destructive_interference_size)
+        constexpr auto kCacheLineSize = std::hardware_destructive_interference_size;
+        #define CACHE_ALIGN alignas(std::hardware_destructive_interference_size)
 
         using ThreadID = uint64;
 

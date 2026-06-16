@@ -13,7 +13,6 @@
 #include "Core/Plugin/Plugin.h"
 #include "Core/Plugin/PluginManager.h"
 #include "Core/Serialization/Package/PackageSaver.h"
-#include "Cooker/Analyzers/LuauAssetScan.h"
 #include "Cooker/Analyzers/RmlUiAssetScan.h"
 #include "Cooker/CookDDC.h"
 #include "Cooker/Graph/CookGraph.h"
@@ -123,7 +122,7 @@ namespace Lumina
         }
 
         // Bundle every non-.lasset file under /Game + plugin content mounts (.lasset arrives via dep-graph traversal).
-        // Picks up loose files (.luau, .rml, .rcss, JSON, fonts) loaded by name at runtime with no asset-reflected refs.
+        // Picks up loose files (.rml, .rcss, JSON, fonts) loaded by name at runtime with no asset-reflected refs.
         size_t BundleLooseContent(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
@@ -141,7 +140,7 @@ namespace Lumina
                 });
             };
 
-            Walk("/Game");
+            Walk("/Game"); // /Game is the project root; walking it covers loose files under both Content/ and Scripts/.
             for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
             {
                 if (!Plugin->IsEnabled())          continue;
@@ -364,10 +363,11 @@ namespace Lumina
             }
         }
 
-        // Content roots scanned by both the UI and Luau analyzers below:
-        // /Game + every enabled plugin's mount.
+        // Content roots scanned by the UI analyzer below:
+        // /Game/Content + /Game/Scripts (project-root subdirs) + every enabled plugin's mount.
         TVector<FString> ContentRoots;
-        ContentRoots.emplace_back("/Game");
+        ContentRoots.emplace_back("/Game/Content");
+        ContentRoots.emplace_back("/Game/Scripts");
         for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
         {
             if (!Plugin->IsEnabled())        continue;
@@ -392,26 +392,6 @@ namespace Lumina
                 FCookRoot Root;
                 Root.Asset = Path;
                 Root.Chunk = FName("UI");
-                Graph.AddRoot(Root);
-            }
-        }
-
-        // Scan .luau for Asset.Hard/Soft/LoadAsync("…") call sites, adding each resolved path as an implicit Script cook root (same intent as the UI scan).
-        {
-            FLuauAssetScan::FResult ScriptScan = FLuauAssetScan::ScanRoots(
-                ContentRoots, FAssetRegistry::Get(), LogFunc);
-            eastl::sort(ScriptScan.AssetPaths.begin(), ScriptScan.AssetPaths.end());
-            if (ScriptScan.FilesScanned > 0)
-            {
-                Log(LogFunc, FString().sprintf(
-                    "  Script scan: %zu file(s), %zu candidate ref(s), %zu resolved -> implicit cook roots",
-                    ScriptScan.FilesScanned, ScriptScan.RawCandidates, ScriptScan.ResolvedRefs).c_str());
-            }
-            for (const FString& Path : ScriptScan.AssetPaths)
-            {
-                FCookRoot Root;
-                Root.Asset = Path;
-                Root.Chunk = FName("Script");
                 Graph.AddRoot(Root);
             }
         }

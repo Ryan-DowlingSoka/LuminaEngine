@@ -5,7 +5,6 @@
 // that touches it, so non-thread-safe shared state serializes correctly.
 namespace Lumina::SystemResource
 {
-    struct LuaVM {};            // touches the single-threaded Lua VM (scripts, anim notifies, ...)
     struct EventDispatcher {};  // dispatches entt events (the dispatcher is not thread-safe)
     struct EntityStructure {};  // does structural ECS changes (create/destroy/add/remove component)
     struct PhysicsQuery {};     // issues physics queries against the live scene

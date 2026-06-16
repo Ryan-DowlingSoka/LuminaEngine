@@ -1,7 +1,6 @@
 #include "ReflectedType.h"
 
 #include "Reflector/CodeGeneration/CodeWriter.h"
-#include "Reflector/CodeGeneration/LuaBindingEmitter.h"
 #include "Reflector/CodeGeneration/ReflectionNames.h"
 #include "Reflector/ReflectionCore/ReflectedHeader.h"
 #include "Reflector/ReflectionCore/ReflectedProject.h"
@@ -65,7 +64,6 @@ namespace Lumina::Reflection
 
             Writer.Linef("const Lumina::FClassParams %s::ClassParams = {", StaticsName.data());
             Writer.Linef("\t&%s::%s::StaticClass,", Class.Namespace.c_str(), Class.DisplayName.c_str());
-            Writer.Line("\t&SetupLuaBindings,");
 
             if (!Class.Props.empty())
             {
@@ -120,7 +118,6 @@ namespace Lumina::Reflection
             Writer.Line("static const Lumina::FPropertyParams* const PropPointers[];");
         }
 
-        LuaBindingEmitter::EmitForClass(Writer, *this);
         Writer.PopIndent();
         Writer.Line("};");
         Writer.Line();

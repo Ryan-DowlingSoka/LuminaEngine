@@ -19,7 +19,6 @@
 namespace Lumina
 {
     class CStaticMesh;
-    class CEntityComponentType;
     DECLARE_MULTICAST_DELEGATE(FOnGamePreview);
     
     // Base class for displaying and manipulating scenes.
@@ -73,8 +72,7 @@ namespace Lumina
         // Script context-menu helpers, shared between the outliner and viewport menus. The inline
         // assign/change dropdown is always offered; "Remove Script" only when one is present.
         void DrawScriptAttachMenuItems(entt::entity Entity);
-        void PushAttachNewScriptModal(entt::entity Entity);
-        void AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath);  // attaches or swaps
+        void AttachScriptToEntity(entt::entity Entity, const FString& ScriptClass);  // C# class name; attaches or swaps
         void RemoveScriptFromEntity(entt::entity Entity);
 
         // Refreshes the outliner when a script component is added/removed (the row's script toggle).

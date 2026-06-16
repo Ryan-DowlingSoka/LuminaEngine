@@ -2,7 +2,6 @@
 #include "Core/Math/Math.h"
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
-#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
 #include "Components/EditorEntityTags.h"
@@ -30,7 +29,7 @@
 #include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
 #include "Core/Math/Math.h"
-#include "Scripting/Lua/Scripting.h"
+#include "Scripting/DotNet/DotNetHost.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
@@ -56,7 +55,7 @@
 #include "world/entity/components/entitytags.h"
 #include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
-#include "World/Entity/Components/ScriptComponent.h"
+#include "World/Entity/Components/CSharpScriptComponent.h"
 #include "world/entity/components/skeletalmeshcomponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TagComponent.h"
@@ -1238,9 +1237,9 @@ namespace Lumina
         DrawHelpTextRow("Prefabs",
             "Right-click a selection > Create Prefab to author one; drag the asset back into the viewport "
             "or outliner to instantiate.");
-        DrawHelpTextRow("Lua / Scripts",
-            "Attach an ScriptComponent and point it at a .luau asset. Open Tools > Debug > Scripts Info "
-            "for a live API reference.");
+        DrawHelpTextRow("Scripts",
+            "Attach a C# script class to an entity from the right-click menu. The class name is matched "
+            "against the loaded EntityScript types; rebuild the game assembly to refresh the list.");
     }
 
     void FWorldEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
@@ -2527,13 +2526,12 @@ namespace Lumina
 
             if (ImGui::BeginChild("##ComponentsList", ImVec2(0, ListHeight), true))
             {
-                entt::meta_type       PickedMetaType;
-                CStruct*              PickedStruct = nullptr;
-                CEntityComponentType* PickedRuntime = nullptr;
-                if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct, PickedRuntime))
+                entt::meta_type PickedMetaType;
+                CStruct*        PickedStruct = nullptr;
+                if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct))
                 {
                     TVector<entt::entity> Targets = GetComponentEditTargets(Entity);
-                    ApplyAddComponentToTargets(Targets, PickedMetaType, PickedRuntime);
+                    ApplyAddComponentToTargets(Targets, PickedMetaType);
 
                     bComponentAdded = true;
                 }
@@ -2639,23 +2637,24 @@ namespace Lumina
             return;
         }
 
-        const bool bHasScript = Registry.all_of<SScriptComponent>(Entity);
+        const bool bHasScript = Registry.all_of<SCSharpScriptComponent>(Entity);
 
-        // Inline searchable dropdown of every script across all mounts (project, plugins, engine). Always
-        // offered -- it assigns a script, or swaps the one already on the entity for a quick change.
-        const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
+        // Inline searchable dropdown of every loaded C# EntityScript class. Always offered -- it assigns
+        // a script, or swaps the one already on the entity for a quick change.
+        TVector<FString> Types;
+        DotNet::GatherEntityScriptTypes(Types);
 
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(bHasScript ? LE_ICON_LANGUAGE_LUA " Change Script" : LE_ICON_LANGUAGE_LUA " Attach Script");
+        ImGui::TextUnformatted(bHasScript ? LE_ICON_LANGUAGE_CSHARP " Change Script" : LE_ICON_LANGUAGE_CSHARP " Attach Script");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(260.0f);
         const int32 Picked = ImGuiX::SearchableCombo("##AssignScript", bHasScript ? "Swap to..." : "Select a script...",
-            (int32)ScriptPaths.size(), INDEX_NONE,
-            [&ScriptPaths](int32 Index) { return ScriptPaths[Index]; }, LE_ICON_LANGUAGE_LUA);
+            (int32)Types.size(), INDEX_NONE,
+            [&Types](int32 Index) { return FFixedString(Types[Index].c_str(), Types[Index].size()); }, LE_ICON_LANGUAGE_CSHARP);
 
         if (Picked != INDEX_NONE)
         {
-            AttachScriptToEntity(Entity, FString(ScriptPaths[Picked].c_str()));
+            AttachScriptToEntity(Entity, Types[Picked]);
             ImGui::CloseCurrentPopup();
         }
 
@@ -2668,33 +2667,32 @@ namespace Lumina
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopStyleColor();
-            ImGuiX::TextTooltip("{}", "Remove the Script component from this entity.");
-        }
-        else
-        {
-            if (ImGui::MenuItem(LE_ICON_FILE_PLUS " Attach New Script..."))
-            {
-                PushAttachNewScriptModal(Entity);
-                ImGui::CloseCurrentPopup();
-            }
-            ImGuiX::TextTooltip("{}", "Create a new script file from the template and attach it to this entity.");
+            ImGuiX::TextTooltip("{}", "Remove the C# script component from this entity.");
         }
     }
 
-    void FWorldEditorTool::AttachScriptToEntity(entt::entity Entity, const FString& VirtualPath)
+    void FWorldEditorTool::AttachScriptToEntity(entt::entity Entity, const FString& ScriptClass)
     {
         FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity) || VirtualPath.empty())
+        if (!Registry.valid(Entity) || ScriptClass.empty())
         {
             return;
         }
 
-        const bool bHad = Registry.all_of<SScriptComponent>(Entity);
+        const bool bHad = Registry.all_of<SCSharpScriptComponent>(Entity);
 
         BeginTransaction();
-        // SetEntityScript get_or_emplaces the component, sets the path, and cleanly (re)attaches -- so this
-        // both attaches a first script and swaps an existing one (detaching the prior script).
-        World->SetEntityScript(Entity, FStringView(VirtualPath.c_str()));
+        // get_or_emplace the component, then reset its transient binding so SCSharpScriptSystem rebinds to
+        // the new class. This both attaches a first script and swaps an existing one.
+        SCSharpScriptComponent& Component = Registry.get_or_emplace<SCSharpScriptComponent>(Entity);
+        if (Component.Instance != nullptr && Component.Generation == DotNet::GetScriptGeneration())
+        {
+            DotNet::DestroyEntityScript(Component.Instance);
+        }
+        Component.Instance = nullptr;
+        Component.BindState = ECSharpBindState::Unbound;
+        Component.Generation = -1;
+        Component.ScriptClass = ScriptClass;
         EndTransaction(bHad ? "Change Script" : "Attach Script");
 
         if (World->GetPackage() != nullptr)
@@ -2702,20 +2700,20 @@ namespace Lumina
             World->GetPackage()->MarkDirty();
         }
         bDetailsDirty = true;
-        // on_construct<SScriptComponent> refreshes the outliner on a first attach; harmless to mark again.
+        // on_construct<SCSharpScriptComponent> refreshes the outliner on a first attach; harmless to mark again.
         OutlinerListView.MarkTreeDirty();
     }
 
     void FWorldEditorTool::RemoveScriptFromEntity(entt::entity Entity)
     {
         FEntityRegistry& Registry = World->GetEntityRegistry();
-        if (!Registry.valid(Entity) || !Registry.all_of<SScriptComponent>(Entity))
+        if (!Registry.valid(Entity) || !Registry.all_of<SCSharpScriptComponent>(Entity))
         {
             return;
         }
 
         BeginTransaction();
-        Registry.remove<SScriptComponent>(Entity); // on_destroy runs the clean detach + refreshes the outliner
+        Registry.remove<SCSharpScriptComponent>(Entity); // on_destroy refreshes the outliner
         EndTransaction("Remove Script");
 
         if (World->GetPackage() != nullptr)
@@ -2723,104 +2721,6 @@ namespace Lumina
             World->GetPackage()->MarkDirty();
         }
         bDetailsDirty = true;
-    }
-
-    void FWorldEditorTool::PushAttachNewScriptModal(entt::entity Entity)
-    {
-        ToolContext->PushModal("Attach New Script", ImVec2(560.0f, 240.0f), [this, Entity]() -> bool
-        {
-            FEntityRegistry& Registry = World->GetEntityRegistry();
-            if (!Registry.valid(Entity))
-            {
-                return true;
-            }
-
-            static FFixedString PathBuffer;
-            if (ImGui::IsWindowAppearing())
-            {
-                FFixedString FileName = "NewScript";
-                if (const SNameComponent* Name = Registry.try_get<SNameComponent>(Entity))
-                {
-                    if (Name->Name.c_str()[0] != '\0')
-                    {
-                        FileName = Name->Name.c_str();
-                    }
-                }
-                for (char& C : FileName)
-                {
-                    if (C == ' ') C = '_';
-                }
-                PathBuffer = "/Game/Scripts/";
-                PathBuffer.append(FileName.c_str());
-                PathBuffer.append(".luau");
-            }
-
-            ImGui::TextUnformatted("Create a new script and attach it to this entity.");
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            ImGui::TextUnformatted("Path:");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(-1.0f);
-            const bool bEnter = ImGui::InputText("##NewScriptPath", PathBuffer.data(), PathBuffer.max_size(),
-                ImGuiInputTextFlags_EnterReturnsTrue);
-
-            const FStringView PathView(PathBuffer.c_str());
-            const bool bUnderGame = VFS::IsUnderDirectory("/Game", PathView);
-            const bool bHasExt    = VFS::HasExtension(PathView, ".luau");
-            const bool bExists    = VFS::Exists(PathView);
-            const bool bValid     = bUnderGame && bHasExt;
-
-            ImGui::Spacing();
-
-            auto StatusLine = [](bool bOk, const char* Text)
-            {
-                const ImVec4 Color = bOk ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.45f, 0.40f, 1.0f);
-                ImGui::PushStyleColor(ImGuiCol_Text, Color);
-                ImGui::Bullet();
-                ImGui::SameLine();
-                ImGui::TextUnformatted(Text);
-                ImGui::PopStyleColor();
-            };
-
-            StatusLine(bValid, bValid ? "Script path/name is valid." : "Path must be under /Game/ and end with .luau.");
-            if (bValid)
-            {
-                StatusLine(!bExists, bExists ? "A script already exists here; it will be attached as-is."
-                                             : "Will create a new script file.");
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            constexpr float ButtonWidth = 110.0f;
-            const float AvailWidth = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX((AvailWidth - ButtonWidth * 2 - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
-
-            const bool bCreatePressed = ImGui::Button("Create", ImVec2(ButtonWidth, 0.0f)) || bEnter;
-            ImGui::SameLine();
-            const bool bCancelPressed = ImGui::Button("Cancel", ImVec2(ButtonWidth, 0.0f));
-
-            if (bCancelPressed)
-            {
-                return true;
-            }
-
-            if (bCreatePressed && bValid)
-            {
-                const FString Path(PathBuffer.c_str());
-                // Only write the template for a brand-new file; never clobber an existing script.
-                if (bExists || VFS::WriteFile(Path, LoadNewEntityScriptTemplate()))
-                {
-                    AttachScriptToEntity(Entity, Path);
-                }
-                return true;
-            }
-
-            return false;
-        });
     }
 
     CPackage* FWorldEditorTool::GetScenePackage() const
@@ -2866,7 +2766,7 @@ namespace Lumina
             if (ImGui::IsWindowAppearing())
             {
                 NameBuffer = "NewWorld";
-                DirBuffer = "/Game";
+                DirBuffer = "/Game/Content";
                 ErrorMessage.clear();
             }
 
@@ -3085,7 +2985,7 @@ namespace Lumina
             if (ImGui::IsWindowAppearing())
             {
                 NameBuffer = Req.DefaultName;
-                DirBuffer = "/Game";
+                DirBuffer = "/Game/Content";
                 ErrorMessage.clear();
             }
 
@@ -3581,8 +3481,8 @@ namespace Lumina
         ObservedRegistry->on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
         ObservedRegistry->on_construct<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
         ObservedRegistry->on_destroy<SNameComponent>().disconnect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
-        ObservedRegistry->on_construct<SScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
-        ObservedRegistry->on_destroy<SScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        ObservedRegistry->on_construct<SCSharpScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        ObservedRegistry->on_destroy<SCSharpScriptComponent>().disconnect<&FWorldEditorTool::OnEntityScriptChanged>(this);
         ObservedRegistry = nullptr;
     }
 
@@ -3600,9 +3500,9 @@ namespace Lumina
         // Hook on SNameComponent (not entt::entity) so we don't add an outliner row before the entity has a name.
         Registry.on_construct<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityConstructed>(this);
         Registry.on_destroy<SNameComponent>().connect<&FSceneEditorTool::OnOutlinerEntityDestroyed>(this);
-        // Add/remove of a Script component changes the row's script toggle; rebuild the outliner.
-        Registry.on_construct<SScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
-        Registry.on_destroy<SScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        // Add/remove of a script component changes the row's script toggle; rebuild the outliner.
+        Registry.on_construct<SCSharpScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
+        Registry.on_destroy<SCSharpScriptComponent>().connect<&FWorldEditorTool::OnEntityScriptChanged>(this);
         ObservedRegistry = &Registry;
     }
 
@@ -3921,9 +3821,6 @@ namespace Lumina
                 // Activate editor viewport first so FInputProcessor routes the mode change against the right context.
                 FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
 
-                // Drop PIE-leftover Lua action callbacks or they keep firing against editor input.
-                InputViewport->GetContext().ClearActionCallbacks();
-
                 InputViewport->GetContext().SetInputMode(EInputMode::Game);
 
                 // Route through FInputProcessor so ImGuiConfigFlags_NoMouse clears; direct context-field set would leave ImGui ignoring the mouse.
@@ -4044,7 +3941,6 @@ namespace Lumina
             if (InputViewport)
             {
                 FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
-                InputViewport->GetContext().ClearActionCallbacks();
                 InputViewport->GetContext().SetInputMode(EInputMode::Game);
                 FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
             }
@@ -4285,7 +4181,6 @@ namespace Lumina
         const ImVec4 Section   = EditorColors::SectionHeader();
         const ImVec4 AccentOn  = EditorColors::Success();    // enabled native system
         const ImVec4 AccentOff = EditorColors::TextMuted();  // disabled native system
-        const ImVec4 AccentLua = EditorColors::Accent();     // script system
 
         TVector<CWorld::FSystemInfo> Systems;
         World->GetAllSystems(Systems);
@@ -4299,9 +4194,6 @@ namespace Lumina
         {
             EnabledCount += Info.bEnabled ? 1 : 0;
         }
-
-        TVector<CWorld::FScriptSystemInfo> ScriptSystems;
-        World->GetScriptSystems(ScriptSystems);
 
         // Pinned search field with a leading magnifier.
         ImGui::AlignTextToFramePadding();
@@ -4375,45 +4267,6 @@ namespace Lumina
             if (!bAnyNative)
             {
                 EmptyState("No systems match the filter.");
-            }
-
-            //~ Script systems ---------------------------------------------------------------------------
-            ImGui::Spacing();
-            SectionHeader(LE_ICON_LANGUAGE_LUA, "SCRIPT",
-                ScriptSystems.empty() ? FString() : FString(eastl::to_string(ScriptSystems.size()).c_str()) + " assigned",
-                "Lua-authored ECS systems assigned to this world. They tick in the same pipeline as native systems and "
-                "save with the world. Add one below; edits hot-reload live.");
-
-            const TVector<FFixedString> ScriptPaths = Lua::GatherScriptPaths();
-            ImGui::SetNextItemWidth(-1.0f);
-            const int32 Picked = ImGuiX::SearchableCombo("##AddScriptSystem", LE_ICON_PLUS " Add script system...",
-                (int32)ScriptPaths.size(), INDEX_NONE,
-                [&ScriptPaths](int32 Index) { return ScriptPaths[Index]; }, LE_ICON_LANGUAGE_LUA);
-            if (Picked != INDEX_NONE)
-            {
-                World->AddScriptSystem(FStringView(ScriptPaths[Picked].c_str()));
-                MarkSceneDirty();
-            }
-            ImGui::Spacing();
-
-            if (ScriptSystems.empty())
-            {
-                EmptyState("None assigned yet -- add one above.");
-            }
-
-            for (const CWorld::FScriptSystemInfo& Info : ScriptSystems)
-            {
-                ImGui::PushID(Info.Path.c_str());
-                const char* Name = !Info.Name.IsNone() ? Info.Name.c_str() : Info.Path.c_str();
-                bool bTrash = false;
-                DrawSystemRow(LE_ICON_LANGUAGE_LUA, AccentLua, Name, SystemStageSummary(Info.Stages),
-                    false, true, Info.Path.c_str(), &bTrash);
-                if (bTrash)
-                {
-                    World->RemoveScriptSystem(FStringView(Info.Path.c_str()));
-                    MarkSceneDirty();
-                }
-                ImGui::PopID();
             }
         }
         ImGui::EndChild();

@@ -18,6 +18,5 @@ LuminaGameProject({
         "EA",
         "EnkiTS",
         "Tracy",
-        "Luau",
     },
 })

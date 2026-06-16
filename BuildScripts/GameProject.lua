@@ -13,7 +13,6 @@ local DefaultGameDependencies =
     "RPMalloc",
     "EA",
     "Tracy",
-    "Luau",
 }
 
 
@@ -95,7 +94,6 @@ local function SetupProject(Def)
         local AllLibDirs =
         {
             LuminaConfig.GetTargetDirectory(),
-            LuminaConfig.EnginePath("Engine/Source/ThirdParty/lua"),
         }
         for _, Dir in ipairs(Def.ExtraLibDirs or {}) do
             table.insert(AllLibDirs, Dir)

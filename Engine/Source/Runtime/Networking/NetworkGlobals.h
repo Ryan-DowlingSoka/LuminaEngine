@@ -25,7 +25,7 @@ namespace Lumina
         RUNTIME_API const TVector<FNetworkEvent>& GetFrameEvents();
 
         // Constructs a fresh backend transport (ENet today). Caller owns it. Used for per-world
-        // networking (a listen-server world and a client world each own one) — distinct from GNetwork.
+        // networking (a listen-server world and a client world each own one), distinct from GNetwork.
         RUNTIME_API INetworkTransport* CreateTransport();
     }
 }

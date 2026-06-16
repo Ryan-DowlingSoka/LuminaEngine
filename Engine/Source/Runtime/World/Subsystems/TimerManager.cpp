@@ -3,14 +3,8 @@
 
 #include <algorithm>
 
-#include "lua.h"
-#include "lualib.h"
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
-#include "Scripting/Lua/Async.h"
-#include "Scripting/Lua/Class.h"
-#include "Scripting/Lua/ScriptTypes.h"
-#include "Scripting/Lua/Stack.h"
 
 namespace Lumina
 {
@@ -19,32 +13,17 @@ namespace Lumina
         Clear();
     }
 
-    void FTimerManager::RegisterLuaModule(Lua::FRef& GlobalRef)
-    {
-        // Name must not collide with "TimerManager"; Luau caches GETIMPORT and would shadow the per-script userdata.
-        GlobalRef.NewClass<FTimerManager>("FTimerManager")
-            .AddFunction<&FTimerManager::Delay_Lua>("Delay")
-            .AddFunction<&FTimerManager::SetTimer_Lua>("SetTimer")
-            .AddFunction<&FTimerManager::SetEntityTimer_Lua>("SetEntityTimer")
-            .AddFunction<&FTimerManager::ClearTimer_Lua>("ClearTimer")
-            .AddFunction<&FTimerManager::IsTimerActive_Lua>("IsTimerActive")
-            .AddFunction<&FTimerManager::GetTimerRemaining_Lua>("GetTimerRemaining")
-            .AddFunction<&FTimerManager::PauseTimer_Lua>("PauseTimer")
-            .AddRawFunction("Wait", &FTimerManager::Wait_Lua)
-            .Register();
-    }
-
     FTimerHandle FTimerManager::SetTimer(float Rate, FTimerCallback Callback, bool bLoop, float FirstDelay)
     {
         FTimerHandle Out;
-        Out.Handle = CreateTimer(Rate, bLoop, FirstDelay, entt::null, eastl::move(Callback), Lua::FRef());
+        Out.Handle = CreateTimer(Rate, bLoop, FirstDelay, entt::null, eastl::move(Callback));
         return Out;
     }
 
     FTimerHandle FTimerManager::SetTimerForEntity(entt::entity Owner, float Rate, FTimerCallback Callback, bool bLoop, float FirstDelay)
     {
         FTimerHandle Out;
-        Out.Handle = CreateTimer(Rate, bLoop, FirstDelay, Owner, eastl::move(Callback), Lua::FRef());
+        Out.Handle = CreateTimer(Rate, bLoop, FirstDelay, Owner, eastl::move(Callback));
         return Out;
     }
 
@@ -196,7 +175,6 @@ namespace Lumina
 
             // Swap-out callbacks so re-entrant SetTimer/ClearTimer from within the callback is well-defined.
             FTimerCallback NativeCallback = eastl::move(Timer.NativeCallback);
-            Lua::FRef      LuaCallback    = eastl::move(Timer.LuaCallback);
             const bool     bLoop          = Timer.bLoop;
             const float    Rate           = Timer.Rate;
 
@@ -209,10 +187,6 @@ namespace Lumina
             {
                 NativeCallback();
             }
-            else if (LuaCallback.IsInvokable())
-            {
-                LuaCallback();
-            }
 
             if (bLoop && Registry.valid(Entity))
             {
@@ -220,7 +194,6 @@ namespace Lumina
                 if (!Live.bPendingDestroy)
                 {
                     Live.NativeCallback = eastl::move(NativeCallback);
-                    Live.LuaCallback    = eastl::move(LuaCallback);
                     Live.Remaining     += Rate;
                     if (Live.Remaining <= 0.0f)
                     {
@@ -242,13 +215,11 @@ namespace Lumina
         }
     }
 
-    entt::entity FTimerManager::CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback, Lua::FRef LuaCallback)
+    entt::entity FTimerManager::CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback)
     {
         Rate = std::max(Rate, 0.0f);
 
-        const bool bHasNative = static_cast<bool>(NativeCallback);
-        const bool bHasLua    = LuaCallback.IsInvokable();
-        if (!bHasNative && !bHasLua)
+        if (!static_cast<bool>(NativeCallback))
         {
             LOG_WARN("[TimerManager] SetTimer called with no invokable callback - ignored.");
             return entt::null;
@@ -261,84 +232,6 @@ namespace Lumina
         Timer.bLoop          = bLoop;
         Timer.Owner          = Owner;
         Timer.NativeCallback = eastl::move(NativeCallback);
-        Timer.LuaCallback    = eastl::move(LuaCallback);
         return Entity;
-    }
-
-    entt::entity FTimerManager::SetTimer_Lua(float Rate, Lua::FRef Callback, bool bLoop)
-    {
-        return CreateTimer(Rate, bLoop, -1.0f, entt::null, {}, eastl::move(Callback));
-    }
-
-    entt::entity FTimerManager::SetEntityTimer_Lua(entt::entity Owner, float Rate, Lua::FRef Callback, bool bLoop)
-    {
-        return CreateTimer(Rate, bLoop, -1.0f, Owner, {}, eastl::move(Callback));
-    }
-
-    entt::entity FTimerManager::Delay_Lua(float Delay, Lua::FRef Callback)
-    {
-        return CreateTimer(Delay, false, -1.0f, entt::null, {}, eastl::move(Callback));
-    }
-
-    void FTimerManager::ClearTimer_Lua(entt::entity Handle)
-    {
-        FTimerHandle Wrapped{ Handle };
-        ClearTimer(Wrapped);
-    }
-
-    bool FTimerManager::IsTimerActive_Lua(entt::entity Handle) const
-    {
-        return IsTimerActive(FTimerHandle{ Handle });
-    }
-
-    float FTimerManager::GetTimerRemaining_Lua(entt::entity Handle) const
-    {
-        return GetTimerRemaining(FTimerHandle{ Handle });
-    }
-
-    void FTimerManager::PauseTimer_Lua(entt::entity Handle, bool bPause)
-    {
-        SetTimerPaused(FTimerHandle{ Handle }, bPause);
-    }
-
-    int FTimerManager::WaitImpl(lua_State* L, float Seconds, FTimerManager* TimerManager)
-    {
-        if (TimerManager == nullptr)
-        {
-            luaL_errorL(L, "Wait: no timer manager for this script's world");
-        }
-
-        // Pins the coroutine and captures its owner; null if L isn't on a yieldable coroutine.
-        TSharedPtr<Lua::FYieldToken> Token = Lua::BeginYield(L);
-        if (!Token)
-        {
-            luaL_errorL(L, "Wait can only be called from a coroutine "
-                           "(use Task.Spawn, or call it from a script lifecycle/event hook).");
-        }
-
-        // Timer is tied to the owner entity, so ClearTimersForEntity cancels the wait on entity death:
-        // the timer (and its captured token) is dropped, releasing the pin without ever resuming.
-        TimerManager->CreateTimer(Seconds, /*bLoop=*/false, /*FirstDelay=*/-1.0f, Token->Owner,
-            [Token]() { Lua::ResumeYield(Token); },
-            Lua::FRef());
-
-        return lua_yield(L, 0);
-    }
-
-    int FTimerManager::Wait_Lua(lua_State* L)
-    {
-        // __namecall stack: [self][seconds]
-        FTimerManager* Self = Lua::TStack<FTimerManager*>::Get(L, 1);
-        if (Self == nullptr)
-        {
-            luaL_errorL(L, "TimerManager:Wait called with invalid self");
-        }
-
-        if (!lua_isnumber(L, 2))
-        {
-            luaL_typeerrorL(L, 2, "number");
-        }
-
-        return WaitImpl(L, static_cast<float>(lua_tonumber(L, 2)), Self);
     }
 }

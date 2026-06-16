@@ -7,7 +7,9 @@ namespace Lumina
 {
     // Payload for OnContact/OnOverlap; pushed to Lua as tagged userdata (one alloc, lazy metatable reads)
     // so many contacts/frame stay cheap. Fields are self-oriented: Entity/Velocity = self, Normal away from self.
-    REFLECT(Event)
+    // NoCSharp: the auto-generated opaque wrapper is useless here (the C# side needs it by value); LuminaSharp
+    // hand-writes a blittable `SCollisionEvent` value struct mirroring this layout instead.
+    REFLECT(Event, NoCSharp)
     struct SCollisionEvent
     {
         GENERATED_BODY()

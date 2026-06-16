@@ -167,7 +167,7 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
    bundled with Windows.
 
    If the download fails, manually download
-   [External.zip](https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&st=pw81jqsw&dl=0),
+   [External.zip](https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&dl=1),
    extract it into the `LuminaEngine/` folder, then run
    `GenerateProjectFiles.bat`.
 

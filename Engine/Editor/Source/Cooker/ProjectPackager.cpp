@@ -51,55 +51,75 @@ namespace Lumina
         // Mirror every non-.lasset /Game/ file under <OutDir>/Game/ for loose-files mode.
         size_t CopyLooseScripts(const FString& OutDir, const TFunction<void(FStringView)>& LogFunc)
         {
-            const std::filesystem::path ScriptsRoot = std::filesystem::path(OutDir.c_str()) / "Game";
-
             std::error_code Ec;
-            std::filesystem::create_directories(ScriptsRoot, Ec);
-
             size_t Count = 0;
-            VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& Info)
+
+            // Mirror the project root's loose (non-.lasset) files under <OutDir>/<TopName>/, preserving the
+            // top-level dir name so they re-resolve under the same alias at runtime. /Game is the project
+            // root, so this covers loose content (Content/.rml/.rcss/...) and C# scripts (Scripts/) alike.
+            struct FLooseRoot { const char* Alias; const char* Top; };
+            const FLooseRoot Roots[] = { { "/Game", "Game" } };
+
+            for (const FLooseRoot& Root : Roots)
             {
-                if (Info.IsDirectory())
-                {
-                    return;
-                }
+                const std::filesystem::path DstRoot = std::filesystem::path(OutDir.c_str()) / Root.Top;
+                std::filesystem::create_directories(DstRoot, Ec);
 
-                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
-                if (EndsWithCI(Vp, ".lasset"))
-                {
-                    return;
-                }
+                const FString Alias(Root.Alias);
+                const FString Prefix = Alias + "/";
 
-                TVector<uint8> Bytes;
-                if (!VFS::ReadFile(Bytes, Info.VirtualPath))
+                VFS::RecursiveDirectoryIterator(FStringView(Alias.c_str(), Alias.size()), [&](const VFS::FFileInfo& Info)
                 {
-                    return;
-                }
+                    if (Info.IsDirectory())
+                    {
+                        return;
+                    }
 
-                static constexpr FStringView Prefix = "/Game/";
-                if (Vp.size() <= Prefix.size())
-                {
-                    return;
-                }
-                FStringView Relative = Vp.substr(Prefix.size());
+                    FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                    if (EndsWithCI(Vp, ".lasset"))
+                    {
+                        return;
+                    }
 
-                std::filesystem::path Dst = ScriptsRoot / std::string(Relative.data(), Relative.size());
-                std::filesystem::create_directories(Dst.parent_path(), Ec);
+                    // C# build artifacts (generated project, obj/bin output) are never needed at
+                    // runtime, the C# host compiles .cs sources directly, so keep them out of the package.
+                    if (EndsWithCI(Vp, ".csproj")
+                        || Vp.find("/obj/") != FStringView::npos
+                        || Vp.find("/bin/") != FStringView::npos)
+                    {
+                        return;
+                    }
 
-                std::ofstream Out(Dst, std::ios::binary);
-                if (!Out)
-                {
-                    return;
-                }
-                Out.write(reinterpret_cast<const char*>(Bytes.data()), (std::streamsize)Bytes.size());
+                    if (Vp.size() <= Prefix.size())
+                    {
+                        return;
+                    }
+                    FStringView Relative = Vp.substr(Prefix.size());
 
-                ++Count;
-                if (LogFunc)
-                {
-                    LogFunc(FString().sprintf("  + Game/%.*s",
-                        (int)Relative.size(), Relative.data()).c_str());
-                }
-            });
+                    TVector<uint8> Bytes;
+                    if (!VFS::ReadFile(Bytes, Info.VirtualPath))
+                    {
+                        return;
+                    }
+
+                    std::filesystem::path Dst = DstRoot / std::string(Relative.data(), Relative.size());
+                    std::filesystem::create_directories(Dst.parent_path(), Ec);
+
+                    std::ofstream Out(Dst, std::ios::binary);
+                    if (!Out)
+                    {
+                        return;
+                    }
+                    Out.write(reinterpret_cast<const char*>(Bytes.data()), (std::streamsize)Bytes.size());
+
+                    ++Count;
+                    if (LogFunc)
+                    {
+                        LogFunc(FString().sprintf("  + %s/%.*s",
+                            Root.Top, (int)Relative.size(), Relative.data()).c_str());
+                    }
+                });
+            }
             return Count;
         }
 

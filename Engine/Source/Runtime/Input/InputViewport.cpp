@@ -382,14 +382,6 @@ namespace Lumina
         RawInput->EndFrame(DeltaSeconds);
     }
 
-    void FInputViewportRegistry::DispatchActions()
-    {
-        for (FInputViewport* V : Viewports)
-        {
-            V->GetContext().DispatchActionCallbacks();
-        }
-    }
-
     void FInputViewportRegistry::OnWindowFocusLost()
     {
         for (FInputViewport* V : Viewports)

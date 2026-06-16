@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "NetReplication.h"
 #include "NetWorldState.h"
-#include "NetRpc.h"
 #include "ScriptRepState.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Serialization/NetArchive.h"
@@ -12,17 +11,12 @@
 #include "Containers/Array.h"
 #include "Assets/AssetRef.h"
 #include "World/Entity/EntityUtils.h"
-#include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/NetworkComponent.h"
-#include "Scripting/Lua/ScriptTypes.h"
-#include "Scripting/Lua/Scripting.h"
 #include "Networking/INetworkTransport.h"
 #include "Log/Log.h"
 #include "entt/entt.hpp"
 #include "EASTL/sort.h"
-#include "lua.h"
-#include "lualib.h"
 
 namespace Lumina::Net
 {
@@ -94,77 +88,6 @@ namespace Lumina::Net
                 return T;
             }();
             return Table;
-        }
-
-        // Client, apply the script-rep block written by WriteEntityComponents: whitelisted writes into the live
-        // script table + optional OnRep_<Field>(old) hooks. Unknown/out-of-range indices (or no live script) are
-        // still consumed so the stream stays aligned -- only --@replicated fields are ever written (safety).
-        void ReadScriptRepBlock(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
-        {
-            uint16 Count = 0;
-            Ar << Count;
-            if (Count == 0 || Ar.HasError())
-            {
-                return;
-            }
-
-            SScriptComponent* SC = Registry.valid(Entity) ? Registry.try_get<SScriptComponent>(Entity) : nullptr;
-            Lua::FScript* Script = (SC && SC->Script) ? SC->Script.get() : nullptr;
-
-            // A lua_State is needed even with no live script, to consume (discard) values and stay aligned.
-            lua_State* L = Script ? Script->Reference.GetState() : Lua::FScriptingContext::Get().GetVM();
-            if (L == nullptr)
-            {
-                Ar.SetHasError(true);
-                return;
-            }
-            if (Script != nullptr)
-            {
-                Script->PublishThreadContext();
-            }
-
-            for (uint16 i = 0; i < Count && !Ar.HasError(); ++i)
-            {
-                const uint32 RepIndex   = ReadVarUInt(Ar);
-                const bool   bApplicable = (Script != nullptr) && (RepIndex < static_cast<uint32>(Script->ReplicatedFields.size()));
-
-                if (!bApplicable)
-                {
-                    Net::DeserializeLuaValue(L, Ar, 0); // consume + discard (unknown index / no live script)
-                    lua_pop(L, 1);
-                    continue;
-                }
-
-                const FName& FieldName = Script->ReplicatedFields[RepIndex].Name;
-
-                Script->Reference.Push();                        // [table]
-                const int TableIdx = lua_gettop(L);
-
-                lua_rawgetfield(L, TableIdx, FieldName.c_str());  // [table][old]
-                Net::DeserializeLuaValue(L, Ar, 0);         // [table][old][new]
-                lua_pushvalue(L, -1);                            // [table][old][new][new]
-                lua_rawsetfield(L, TableIdx, FieldName.c_str());  // [table][old][new](table[field] = new)
-
-                // OnRep_<Field>(self, old) if the script defines it (the script analog of native on_update).
-                const FFixedString HookName = FFixedString("OnRep_") + FieldName.c_str();
-                lua_rawgetfield(L, TableIdx, HookName.c_str());  // [table][old][new][hookOrNil]
-                if (lua_isfunction(L, -1))
-                {
-                    lua_pushvalue(L, TableIdx);                  // [..][hook][self]
-                    lua_pushvalue(L, TableIdx + 1);              // [..][hook][self][old]
-                    if (lua_pcall(L, 2, 0, 0) != LUA_OK)         // pops hook + self + old
-                    {
-                        LOG_ERROR("[Net] OnRep '{}' failed: {}", HookName.c_str(), lua_tostring(L, -1));
-                        lua_pop(L, 1);                           // error message
-                    }
-                }
-                else
-                {
-                    lua_pop(L, 1);                               // non-function (nil)
-                }
-
-                lua_pop(L, 3); // table, old, new
-            }
         }
 
         // Client, apply a replicated attachment: reparent Child under the entity owning ParentGuid. No-op when
@@ -368,7 +291,7 @@ namespace Lumina::Net
         return Out;
     }
 
-    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity, const FNetRepContext* Ctx, const TVector<FScriptRepFieldOut>* ScriptFields, const TVector<FComponentRepOut>* Components)
+    void WriteEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity, const TVector<FComponentRepOut>* Components)
     {
         LUMINA_PROFILE_SCOPE();
         // Component blocks precomputed by CollectComponentFields: [varint wire type id][changed-field bitmask
@@ -387,33 +310,6 @@ namespace Lumina::Net
             }
         }
 
-        // Script-rep block: --@replicated fields whose net condition passes Ctx. Always present (count 0 when
-        // there are none) so ReadEntityComponents can read it unconditionally -- this is what unifies script
-        // and native replication on the same wire path.
-        const FNetRepContext BroadcastCtx{};
-        const FNetRepContext& Rc = Ctx ? *Ctx : BroadcastCtx;
-        uint16 SCount = 0;
-        if (ScriptFields != nullptr)
-        {
-            for (const FScriptRepFieldOut& F : *ScriptFields)
-            {
-                if (RepFieldPasses(F.Cond, Rc)) { ++SCount; }
-            }
-        }
-        Ar << SCount;
-        if (ScriptFields != nullptr)
-        {
-            for (const FScriptRepFieldOut& F : *ScriptFields)
-            {
-                if (!RepFieldPasses(F.Cond, Rc)) { continue; }
-                WriteVarUInt(Ar, F.RepIndex);
-                if (!F.Bytes.empty())
-                {
-                    Ar.Serialize(const_cast<uint8*>(F.Bytes.data()), static_cast<int64>(F.Bytes.size()));
-                }
-            }
-        }
-        
         uint32 ParentGuid = 0;
         if (const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
             Rel && Rel->Parent != entt::null && ParentReplicates(Registry, Rel->Parent))
@@ -421,77 +317,6 @@ namespace Lumina::Net
             ParentGuid = Registry.get<SNetworkComponent>(Rel->Parent).NetGUID.Value;
         }
         WriteNetGuid(Ar, ParentGuid);
-    }
-
-    TVector<FScriptRepFieldOut> CollectScriptFields(entt::registry& Registry, entt::entity Entity,
-        FNetWorldState& State, bool bBaseline, FScriptRepState* DiffState)
-    {
-        LUMINA_PROFILE_SCOPE();
-        TVector<FScriptRepFieldOut> Out;
-
-        SScriptComponent* SC = Registry.valid(Entity) ? Registry.try_get<SScriptComponent>(Entity) : nullptr;
-        Lua::FScript* Script = (SC && SC->Script) ? SC->Script.get() : nullptr;
-        if (Script == nullptr || Script->ReplicatedFields.empty())
-        {
-            return Out;
-        }
-        lua_State* L = Script->Reference.GetState();
-        if (L == nullptr)
-        {
-            return Out;
-        }
-
-        const uint32 N = static_cast<uint32>(Script->ReplicatedFields.size());
-        if (DiffState != nullptr && DiffState->LastSent.size() != N)
-        {
-            DiffState->LastSent.clear();
-            DiffState->LastSent.resize(N);
-        }
-
-        Script->PublishThreadContext();
-        Script->Reference.Push();                  // [table]
-        const int TableIdx = lua_gettop(L);
-
-        // Reused across fields, entities, and ticks: every field serializes to compare against its baseline,
-        // but only CHANGED fields need a kept buffer. The common (unchanged) case now does zero heap allocs.
-        // Server-only path on the game thread, so a thread-local scratch is safe.
-        static thread_local TVector<uint8> Scratch;
-
-        for (uint32 i = 0; i < N; ++i)
-        {
-            const Lua::FScriptReplicatedField& Field = Script->ReplicatedFields[i];
-
-            // Serialize with the outgoing object/asset hooks bound so any
-            // CObject/asset ref mints a net-index that the existing export step flushes before this message.
-            lua_rawgetfield(L, TableIdx, Field.Name.c_str()); // [table][value]
-            Scratch.clear();
-            {
-                FNetArchive Writer(Scratch);
-                Net::BindWriters(Writer, State);
-                Net::SerializeLuaValue(L, -1, Writer, 0);
-            }
-            lua_pop(L, 1);                                     // [table]
-
-            const bool bChanged = bBaseline || DiffState == nullptr || (DiffState->LastSent[i] != Scratch);
-            if (!bChanged)
-            {
-                continue; // unchanged: baseline already current, nothing to send -- no copy, no alloc
-            }
-
-            if (DiffState != nullptr)
-            {
-                DiffState->LastSent[i].assign(Scratch.begin(), Scratch.end()); // seed (baseline) or update (diff)
-            }
-
-            FScriptRepFieldOut F;
-            F.RepIndex = i;
-            F.Cond     = Field.Condition;
-            F.Bytes.assign(Scratch.begin(), Scratch.end());
-            Out.push_back(eastl::move(F));
-        }
-
-        lua_pop(L, 1); // table
-        return Out;
     }
 
     void ReadEntityComponents(FNetArchive& Ar, entt::registry& Registry, entt::entity Entity)
@@ -575,10 +400,6 @@ namespace Lumina::Net
             }
             ECS::Utils::InvokeMetaFunc(Type, entt::hashed_string("patch"), entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Signal));
         }
-
-        // Script-rep block follows the native components on the wire. Read after the on_update pass so a
-        // replicated SScriptComponent has already (re)attached its live script for the field writes / OnRep.
-        ReadScriptRepBlock(Ar, Registry, Entity);
 
         // Attachment link (mirrors WriteEntityComponents): always read to stay aligned, then resolve + reparent.
         const uint32 ParentGuid = ReadNetGuid(Ar);

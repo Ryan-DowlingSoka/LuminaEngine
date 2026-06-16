@@ -42,6 +42,11 @@ namespace Lumina
         return RuntimeView;
     }
 
+    Physics::IPhysicsScene* FSystemContext::GetPhysicsScene() const
+    {
+        return World ? World->GetPhysicsScene() : nullptr;
+    }
+
     void FSystemContext::ActivateBody(uint32 BodyID)
     {
         World->PhysicsScene->ActivateBody(BodyID);

@@ -18,17 +18,11 @@
 #include "WorldTypes.h"
 #include "Core/Functional/FunctionRef.h"
 #include "Entity/Systems/EntitySystem.h"
-#include "Entity/Systems/LuaSystem.h"
-#include "Entity/Events/LuaEventBus.h"
-#include "Scripting/Lua/Reference.h"
-#include "World/Net/NetLuaInterface.h"
 #include "World.generated.h"
 
 
 namespace Lumina
 {
-    struct FScriptComponentPendingReady;
-    struct SScriptComponent;
     struct SDefaultWorldSettings;
     struct FLineBatcherComponent;
     struct FTriangleBatcherComponent;
@@ -49,10 +43,10 @@ namespace Lumina
         FVector4 Color = FVector4(1.0f);
     };
 
-    // Lua-facing facade for the World.Debug namespace. One instance lives on each CWorld and is reached
-    // as World.Debug (registered via RegisterWorldLuaSubsystem, exactly like World.Net). Screen-space
-    // debug text + world debug shapes; trailing args (thickness, depth-test, duration) are optional.
-    // Dev/Debug only -- the draws are no-ops in Shipping. Methods forward to this world's draw interface.
+    // C#-facing facade for the World.Debug namespace. One instance lives on each CWorld and is reached
+    // as World.Debug. Screen-space debug text + world debug shapes; trailing args (thickness, depth-test,
+    // duration) are optional. Dev/Debug only -- the draws are no-ops in Shipping. Methods forward to this
+    // world's draw interface.
     struct FWorldDebugInterface
     {
         CWorld* World = nullptr;
@@ -96,11 +90,20 @@ namespace Lumina
             FSystemFn  Startup = nullptr;
             FSystemFn  Teardown = nullptr;
             void*      Self = nullptr;
-            bool       bScript = false;
+        };
+
+        // One C#-authored system created for this world. Instance is a strong GCHandle (the FStageSlot
+        // Self); Generation is the C# script generation it was created under, so a hot reload can drop
+        // stale handles without touching a freed managed instance.
+        struct FManagedSystem
+        {
+            void*        Instance = nullptr;
+            EUpdateStage Stage = EUpdateStage::PrePhysics;
+            int32        Priority = 128;
+            int32        Generation = -1;
         };
 
         CWorld();
-        static void RegisterLuaModule(Lua::FRef& GlobalRef);
 
         //~ Begin CObject Interface
         void Serialize(FArchive& Ar) override;
@@ -121,7 +124,7 @@ namespace Lumina
         // Steps physics. Runs on the physics worker; pair with DispatchPhysicsEvents on the game thread post-join.
         void TickPhysics();
 
-        // Game-thread drain of physics events (Lua + entt::dispatcher).
+        // Game-thread drain of physics events (entt::dispatcher).
         void DispatchPhysicsEvents();
 
         // Game thread: read ECS to compute camera/post-process and populate the scene's
@@ -130,6 +133,7 @@ namespace Lumina
 
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
 
+        FUNCTION(Script)
         entt::entity SpawnPrefab(const FName& Path);
 
         /** Like SpawnPrefab(Path), but positions the spawned root at SpawnTransform and
@@ -147,23 +151,31 @@ namespace Lumina
         Physics::IPhysicsScene* GetPhysicsScene() const { return PhysicsScene.get(); }
         
         STransformComponent& GetEntityTransform(entt::entity Entity);
-        
+
+        FUNCTION(Script)
         FVector3 GetEntityLocation(entt::entity Entity);
-        
+
+        FUNCTION(Script)
         void SetEntityLocation(entt::entity Entity, FVector3 Location);
-        
+
+        FUNCTION(Script)
         void SetEntityRotation(entt::entity Entity, FQuat Rotation);
-        
+
+        FUNCTION(Script)
         FVector3 TranslateEntity(entt::entity Entity, FVector3 Translation);
-        
+
+        FUNCTION(Script)
         uint32 GetNumEntities() const;
         
         SDefaultWorldSettings& GetDefaultWorldSettings();
         
+        FUNCTION(Script)
         bool EntityHasTag(entt::entity Entity, const FName& Tag);
-        
+
+        FUNCTION(Script)
         entt::entity GetEntityByTag(const FName& Tag);
-        
+
+        FUNCTION(Script)
         entt::entity GetEntityByName(const FName& Name);
 
         TOptional<SRayResult> CastRay(const SRayCastSettings& Settings);
@@ -189,16 +201,14 @@ namespace Lumina
         /** Server-side count of currently connected clients; 0 on clients and standalone worlds. */
         NODISCARD int32 GetConnectedClientCount() const;
 
-        /** Lua-facing net query facade (World.Net). */
-        NODISCARD FNetLuaInterface* GetNetInterface() { return &NetInterface; }
-
-        /** Lua-facing debug-draw facade (World.Debug). */
+        /** C#-facing debug-draw facade (World.Debug). */
         NODISCARD FWorldDebugInterface* GetDebugInterface() { return &DebugInterface; }
         
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
         void DuplicateEntity(entt::entity& To, entt::entity From, const TFunctionRef<bool(entt::type_info)>& Callback);
         
+        FUNCTION(Script)
         void DestroyEntity(entt::entity Entity);
         
         void SetActiveCamera(entt::entity InEntity) const;
@@ -212,7 +222,10 @@ namespace Lumina
         
         void OnChangeCameraEvent(const FSwitchActiveCameraEvent& Event);
         
+        FUNCTION(Script)
         double GetWorldDeltaTime() const { return DeltaTime; }
+
+        FUNCTION(Script)
         double GetTimeSinceWorldCreation() const { return TimeSinceCreation; }
         
 
@@ -262,46 +275,15 @@ namespace Lumina
         // so it is safe to call mid-frame. Applies to native systems only.
         void SetSystemEnabled(FName System, bool bEnabled);
 
-        // One Lua-authored script system assigned to this world, as surfaced to the World Editor.
-        struct FScriptSystemInfo
-        {
-            FName                 Name;       // resolved system name (or file stem) once loaded
-            FString               Path;       // assigned .luau asset path (the stable identity)
-            TVector<EUpdateStage> Stages;     // stages it ticks in (empty until loaded)
-        };
-
-        // Enumerate the script systems assigned to this world (reflects the pending/intended set).
-        void GetScriptSystems(TVector<FScriptSystemInfo>& Out) const;
-
-        // Assign / unassign a Lua script system by asset path. Persists to SDefaultWorldSettings immediately
-        // and defers the live rebuild + Startup/Teardown to the next frame, so it is safe to call mid-frame.
-        void AddScriptSystem(FStringView Path);
-        void RemoveScriptSystem(FStringView Path);
-
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnTransformComponentConstruct(entt::registry& Registry, entt::entity Entity);
-        void OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity);
-        void OnScriptComponentUpdated(entt::registry& Registry, entt::entity Entity);
-        void SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
-        void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
-        void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
+        void OnCSharpScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnInputComponentConstruct(entt::registry& Registry, entt::entity Entity);
-        void OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
-        // Clean (re)bind: drop this component's current script binding (detach + clear FRefs/tags/subs) and
-        // re-run OnScriptComponentCreated from the component's CURRENT ScriptPath. Used by hot-reload AND by
-        // SetEntityScript / replicated script swaps. Safe whether or not a script is currently attached.
-        void ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
-
-        // Set (or change) the script on an entity by path: emplaces SScriptComponent if needed, sets the
-        // ScriptPath, and cleanly (re)attaches via ReloadScriptForComponent (detaching any prior script). The
-        // single clean entry point for switching an entity's script at runtime. On a server, MarkDirty the
-        // entity afterward to replicate the change to clients.
-        void SetEntityScript(entt::entity Entity, FStringView Path);
-
-        // Re-binds every script component whose ScriptPath matches Path. Wired to OnScriptLoaded.
-        void OnScriptSourceReloaded(FStringView Path);
+        // Set (or change) the C# script class on an entity by class name: emplaces SCSharpScriptComponent if
+        // needed and clears any prior binding so SCSharpScriptSystem rebinds (OnAttach/OnReady) next tick.
+        void SetEntityScript(entt::entity Entity, FStringView ScriptClass);
 
         void RegisterSystems();
         
@@ -346,29 +328,18 @@ namespace Lumina
         
         void CreateRenderer();
         void DestroyRenderer();
-        
-        void OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event);
 
-        void InitializeScriptEntities();
         void TickSystems(FSystemContext& Context);
+
+        // Tears down + frees this world's C# system instances (respecting the generation guard: a stale
+        // instance from a prior script generation is dropped, not destroyed, since managed already freed it).
+        void DestroyManagedSystems();
 
         // Applies a deferred enable/disable request (set via SetSystemEnabled): tears down newly-disabled
         // systems, rebuilds the stage lists honoring DisabledSystems, then starts up newly-enabled ones.
         // Called at the top of Update() so it never runs inside a system batch. No-op unless bSystemsDirty.
         void ApplyPendingSystemChanges();
 
-        // Drops script-system instances whose path is no longer assigned and loads instances for newly
-        // assigned paths. Called from RegisterSystems; does not run Startup/Teardown (lifecycle is driven
-        // by InitializeWorld/TeardownWorld and ApplyPendingSystemChanges).
-        void ReconcileScriptSystemInstances();
-
-        // Mirrors PendingScriptSystems into SDefaultWorldSettings so the assignment persists with the world.
-        void SyncScriptSystemSettings();
-
-        // Whether a script's lifecycle runs in this world. Editor worlds run only scripts defining
-        // OnEditorUpdate; every other world type runs all scripts.
-        bool IsScriptActiveInWorld(entt::entity Entity) const;
-    
     private:
         
         FEntityRegistry                                     RegistryPending;
@@ -388,25 +359,20 @@ namespace Lumina
         // Unique active systems in this world; owns Startup/Teardown lifecycle (one entry per system).
         TVector<FActiveSystem>                             ActiveSystems;
 
+        // C#-authored systems created for this world (one managed instance each), scheduled into the
+        // stage lists via the shared ManagedSystemUpdate shim. Destroyed on teardown / rebuild.
+        TVector<FManagedSystem>                            ManagedSystems;
+
+        // C# script generation the ManagedSystems were created under; a change (hot reload) triggers a
+        // RegisterSystems rebuild so stale GCHandle slots are never ticked. -1 = none created yet.
+        int32                                              ManagedSystemGeneration = -1;
+
         // Reflected systems disabled for this world, by name. DisabledSystems is the applied state used by
         // RegisterSystems; PendingDisabledSystems is the editor-requested next state. They diverge only
         // between a SetSystemEnabled call and the next ApplyPendingSystemChanges (which reconciles them).
         THashSet<FName>                                     DisabledSystems;
         THashSet<FName>                                     PendingDisabledSystems;
         bool                                                bSystemsDirty = false;
-
-        // Lua script systems assigned to this world, by asset path. ScriptSystems is the applied state;
-        // PendingScriptSystems is the editor-requested next state (mirrors the Disabled pending/applied
-        // pattern). ScriptSystemInstances owns one live, pointer-stable instance per applied path; it is
-        // reconciled against ScriptSystems during RegisterSystems. ScriptSystemsToReload queues hot-reloads.
-        TVector<FString>                                    ScriptSystems;
-        TVector<FString>                                    PendingScriptSystems;
-        TVector<TUniquePtr<FScriptSystemInstance>>          ScriptSystemInstances;
-        TVector<FString>                                    ScriptSystemsToReload;
-
-        // Subscription to FScriptingContext::OnScriptLoaded; re-binds matching SScriptComponents
-        // on reload. Populated in InitializeWorld, removed in TeardownWorld.
-        FDelegateHandle                                     ScriptReloadedHandle;
 
         FLineBatcherComponent*                              LineBatcherComponent;
         FTriangleBatcherComponent*                          TriangleBatcherComponent;
@@ -417,14 +383,9 @@ namespace Lumina
         // Render-target paint/clear requests; drained each Extract into the frame snapshot.
         TConcurrentQueue<FTexturePaintOp>                   RenderTargetPaintQueue;
 
-        // Debug-draw table captured against this CWorld, built once in InitializeWorld and shared by
-        // reference into each SScriptComponent's environment to avoid a per-entity table + C closure.
-        Lua::FRef                                           DrawInterfaceRef;
-
         FWorldContext*                                      OwningContext = nullptr;
 
-        // Lua-facing facades bound under World.Net / World.Debug; .World points back at this world.
-        FNetLuaInterface                                    NetInterface;
+        // C#-facing debug-draw facade bound under World.Debug; .World points back at this world.
         FWorldDebugInterface                                DebugInterface;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;

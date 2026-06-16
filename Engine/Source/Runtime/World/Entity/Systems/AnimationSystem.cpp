@@ -21,7 +21,7 @@
 namespace Lumina
 {
     FSystemAccess SAnimationSystem::Access = FSystemAccess{}
-        .Write<SSkeletalMeshComponent, STransformComponent, SystemResource::LuaVM>()
+        .Write<SSkeletalMeshComponent, STransformComponent>()
         .Read<SSimpleAnimationComponent, SAnimationGraphComponent, SBlackboardComponent>();
 
     // Skeletons not rendered within this window are treated as off-screen (a few frames of slack so brief
@@ -30,126 +30,6 @@ namespace Lumina
 
     namespace
     {
-        bool Contains(const TVector<int32>& Indices, int32 Value)
-        {
-            return eastl::any_of(Indices.begin(), Indices.end(), [Value] (int32 Index)
-            {
-                return Index == Value;
-            });
-        }
-
-        // Game thread only: Lua refs are not thread-safe.
-        void FireNotifies(entt::entity Entity, SSimpleAnimationComponent& Anim)
-        {
-            FAnimationResource* Res = Anim.Animation->GetAnimationResource();
-            if (Res == nullptr)
-            {
-                return;
-            }
-
-            const float Prev      = Anim.PreviousTime;
-            const float Cur       = Anim.CurrentTime;
-            const bool  bAdvanced = Anim.bAdvancedThisFrame;
-            const bool  bWrapped  = Cur < Prev; // looped past the end this frame
-
-            // Point notifies: fire once as the playhead crosses, playback only.
-            if (bAdvanced && !Anim.NotifyHandlers.empty())
-            {
-                for (const FAnimationNotify& Notify : Res->Notifies)
-                {
-                    auto It = Anim.NotifyHandlers.find(Notify.NotifyName);
-                    if (It == Anim.NotifyHandlers.end())
-                    {
-                        continue;
-                    }
-
-                    const bool bCrossed = bWrapped
-                        ? (Notify.Time > Prev || Notify.Time <= Cur)
-                        : (Notify.Time > Prev && Notify.Time <= Cur);
-
-                    if (bCrossed)
-                    {
-                        for (Lua::FRef& Callback : It->second)
-                        {
-                            if (Callback.IsInvokable())
-                            {
-                                std::ignore = Callback.Invoke(Entity, Notify.NotifyName, Notify.Time);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Notify states: diff the active set to drive Begin / Tick / End.
-            if (!Anim.NotifyStateHandlers.empty())
-            {
-                TVector<int32> NowActive;
-                for (int32 i = 0; i < (int32)Res->NotifyStates.size(); ++i)
-                {
-                    const FAnimationNotifyState& State = Res->NotifyStates[i];
-                    if (Anim.NotifyStateHandlers.find(State.NotifyName) == Anim.NotifyStateHandlers.end())
-                    {
-                        continue;
-                    }
-                    if (Cur >= State.StartTime && Cur < State.EndTime)
-                    {
-                        NowActive.push_back(i);
-                    }
-                }
-
-                for (int32 Idx : Anim.ActiveNotifyStates)
-                {
-                    if (Idx < 0 || Idx >= (int32)Res->NotifyStates.size() || Contains(NowActive, Idx))
-                    {
-                        continue;
-                    }
-                    const FAnimationNotifyState& State = Res->NotifyStates[Idx];
-                    auto It = Anim.NotifyStateHandlers.find(State.NotifyName);
-                    if (It == Anim.NotifyStateHandlers.end())
-                    {
-                        continue;
-                    }
-                    for (FNotifyStateBinding& Binding : It->second)
-                    {
-                        if (Binding.OnEnd.IsInvokable())
-                        {
-                            std::ignore = Binding.OnEnd.Invoke(Entity, State.NotifyName, State.EndTime);
-                        }
-                    }
-                }
-
-                // Begin (newly entered, playback only) + Tick (while inside, playback only).
-                for (int32 Idx : NowActive)
-                {
-                    const FAnimationNotifyState& State = Res->NotifyStates[Idx];
-                    auto It = Anim.NotifyStateHandlers.find(State.NotifyName);
-                    if (It == Anim.NotifyStateHandlers.end())
-                    {
-                        continue;
-                    }
-
-                    const bool  bWasActive = Contains(Anim.ActiveNotifyStates, Idx);
-                    const float Range      = State.EndTime - State.StartTime;
-                    float Alpha            = Range > 0.0f ? (Cur - State.StartTime) / Range : 0.0f;
-                    Alpha = Alpha < 0.0f ? 0.0f : (Alpha > 1.0f ? 1.0f : Alpha);
-
-                    for (FNotifyStateBinding& Binding : It->second)
-                    {
-                        if (!bWasActive && bAdvanced && Binding.OnBegin.IsInvokable())
-                        {
-                            std::ignore = Binding.OnBegin.Invoke(Entity, State.NotifyName, State.StartTime);
-                        }
-                        if (bAdvanced && Binding.OnTick.IsInvokable())
-                        {
-                            std::ignore = Binding.OnTick.Invoke(Entity, State.NotifyName, Alpha);
-                        }
-                    }
-                }
-
-                Anim.ActiveNotifyStates = eastl::move(NowActive);
-            }
-        }
-
         // One entity's single-clip pose evaluation (parallel-safe: touches only this entity's components).
         // Root-motion deltas are stashed on the component and applied serially after the dispatch joins.
         void EvaluateSimple(SSimpleAnimationComponent& Anim, SSkeletalMeshComponent& Mesh, float DeltaTime, double Now)
@@ -377,8 +257,7 @@ namespace Lumina
         }
 
         // Serial: applying root motion marks the transform dirty (a structural registry change, not
-        // ParallelFor-safe), and Lua notify refs are not thread-safe.
-        
+        // ParallelFor-safe).
         auto&& TransformStorage = SystemContext.GetStorage<STransformComponent>();
         for (size_t i = 0; i < SimpleHandle->size(); ++i)
         {
@@ -399,11 +278,6 @@ namespace Lumina
                 Delta.Scale    = FVector3(1.0f);
                 Transform.SetLocalTransform(Transform.LocalTransform * Delta);
                 Anim.PendingRootMotion.bHasMotion = false;
-            }
-
-            if (Anim.HasNotifyBindings() && Anim.Animation.IsValid())
-            {
-                FireNotifies(Entity, Anim);
             }
         }
     }

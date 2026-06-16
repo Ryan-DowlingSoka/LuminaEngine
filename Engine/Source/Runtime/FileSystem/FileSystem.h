@@ -44,7 +44,6 @@ namespace Lumina::VFS
     RUNTIME_API bool CreateDir(FStringView Path);
     RUNTIME_API bool IsUnderDirectory(FStringView Parent, FStringView Path);
     RUNTIME_API bool IsDirectory(FStringView Path);
-    RUNTIME_API bool IsLuaAsset(FStringView Path);
     RUNTIME_API bool IsLuminaAsset(FStringView Path);
     RUNTIME_API FStringView Parent(FStringView Path, bool bRemoveTrailingSlash = false);
 

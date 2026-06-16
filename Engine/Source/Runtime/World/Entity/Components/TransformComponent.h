@@ -12,7 +12,7 @@ namespace Lumina
 {
 
     REFLECT(Component, HideInComponentList)
-    struct RUNTIME_API ALIGN_FOR_FALSE_SHARING STransformComponent
+    struct RUNTIME_API CACHE_ALIGN STransformComponent
     {
         GENERATED_BODY()
     

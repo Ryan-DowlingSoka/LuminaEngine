@@ -18,8 +18,7 @@ namespace Lumina::VFS
         Hidden      = BIT(3),
 
         ReadOnly    = BIT(4),
-        
-        LuaFile     = BIT(5),
+
         LAssetFile  = BIT(6),
     };
     
@@ -50,7 +49,6 @@ namespace Lumina::VFS
         NODISCARD bool IsDirectory() const  { return EnumHasAllFlags(Flags, EFileFlags::Directory); }
         NODISCARD bool IsHidden() const     { return EnumHasAllFlags(Flags, EFileFlags::Hidden); }
         NODISCARD bool IsReadOnly() const   { return EnumHasAllFlags(Flags, EFileFlags::ReadOnly); }
-        NODISCARD bool IsLua() const        { return EnumHasAllFlags(Flags, EFileFlags::LuaFile); }
         NODISCARD bool IsLAsset() const     { return EnumHasAllFlags(Flags, EFileFlags::LAssetFile); }
 
     };

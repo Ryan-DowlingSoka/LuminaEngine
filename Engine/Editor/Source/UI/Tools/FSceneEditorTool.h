@@ -11,7 +11,6 @@ namespace Lumina
     class CStruct;
     class CStaticMesh;
     class CPackage;
-    class CEntityComponentType;
     struct FPropertyChangedEvent;
 
     // Shared base for ECS scene editors (world + prefab). A prefab is a mini-scene, so both
@@ -172,8 +171,8 @@ namespace Lumina
         TVector<entt::entity>               PendingOutlinerAdds;
 
         // --- Component details / property tables ---------------------------------------
-        // Canonical (world) model: one FPropertyTable row per component, supporting reflected
-        // and runtime components plus multi-edit across the whole selection.
+        // Canonical (world) model: one FPropertyTable row per reflected component, plus
+        // multi-edit across the whole selection.
 
         struct FComponentDestroyRequest
         {
@@ -184,17 +183,13 @@ namespace Lumina
         struct FComponentTableEntry
         {
             TUniquePtr<FPropertyTable> Table;
-            const CStruct*             ReflectedType = nullptr;  // reflected component CStruct; null if runtime
-            bool                       bRuntime = false;
-            uint32                     RuntimeStorageId = 0;
-            CStruct*                   BoundLayout = nullptr;
-            void*                      BoundData = nullptr;
+            const CStruct*             ReflectedType = nullptr;  // reflected component CStruct
             FString                    Title;                    // header label + sort key
         };
 
         // Rebuild PropertyTables for Entity (component intersection + multi-edit across the selection).
         void RebuildPropertyTables(entt::entity Entity);
-        // Draw every component row for Entity; also drains a deferred runtime-component removal.
+        // Draw every component row for Entity.
         void DrawComponentList(entt::entity Entity);
         void DrawComponentHeader(FComponentTableEntry& Entry, entt::entity Entity);
         // Remove a reflected component from Entity (marks details dirty for rebuild).
@@ -220,11 +215,11 @@ namespace Lumina
         // Entities a component-add targets: the whole selection when Entity is part of a
         // multi-selection, otherwise just Entity.
         TVector<entt::entity> GetComponentEditTargets(entt::entity Entity);
-        // Add the picked reflected/runtime component to every target (skips ones already holding it).
-        void ApplyAddComponentToTargets(const TVector<entt::entity>& Targets, entt::meta_type PickedMetaType, CEntityComponentType* PickedRuntime);
-        // Filterable, categorized list of addable components (reflected + data-authored runtime).
-        // Fills OutMetaType/OutStruct/OutRuntimeType and returns true on click.
-        bool DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct, CEntityComponentType*& OutRuntimeType);
+        // Add the picked reflected component to every target (skips ones already holding it).
+        void ApplyAddComponentToTargets(const TVector<entt::entity>& Targets, entt::meta_type PickedMetaType);
+        // Filterable, categorized list of addable reflected components.
+        // Fills OutMetaType/OutStruct and returns true on click.
+        bool DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct);
 
         // Hook: called right after a new entity is constructed in the scene (still inside the
         // create transaction). The prefab editor tags it with SPrefabComponent + parents it under root.
@@ -297,7 +292,6 @@ namespace Lumina
 
         TVector<FComponentTableEntry>    PropertyTables;
         TQueue<FComponentDestroyRequest> ComponentDestroyRequests;
-        CEntityComponentType*            PendingRuntimeRemove = nullptr;
         entt::entity                     DetailsEntity = entt::null;
         bool                             bDetailsDirty = false;
     };

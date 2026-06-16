@@ -12,7 +12,6 @@
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Event.h>
-#include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/Input.h>
 #include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Debugger.h>
@@ -28,7 +27,6 @@
 #include "Renderer/Format.h"
 #include "Renderer/RHI.h"
 #include "Renderer/RHITexture.h"
-#include "Scripting/Lua/Reference.h"
 #include <filesystem>
 #include "World/World.h"
 #include "World/Scene/RenderScene/RenderScene.h"
@@ -135,31 +133,6 @@ namespace Lumina::RmlUi
             std::chrono::steady_clock::time_point StartTime;
         };
 
-        class FLuaEventListener final : public Rml::EventListener
-        {
-        public:
-            FLuaEventListener(Lua::FRef Callback) : Cb(Move(Callback)) {}
-
-            void ProcessEvent(Rml::Event& /*Event*/) override
-            {
-                if (!Cb.IsInvokable())
-                {
-                    return;
-                }
-                // Stack-local copy: callback may destroy this listener (e.g. UI.UnloadDocument from a click handler).
-                Lua::FRef Local = Cb;
-                Local();
-            }
-
-            void OnDetach(Rml::Element* /*element*/) override
-            {
-                delete this;
-            }
-
-        private:
-            Lua::FRef Cb;
-        };
-
         // Editor preview context not bound to any world; tool owns the target image.
         struct FEditorEntry
         {
@@ -239,17 +212,6 @@ namespace Lumina::RmlUi
             }
 
             Rml::Debugger::SetVisible(State.bDebuggerVisible);
-        }
-
-        Rml::ElementDocument* FindDoc(FStringView Path)
-        {
-            FWorldUIContext* UI = ActiveUI();
-            if (UI == nullptr)
-            {
-                return nullptr;
-            }
-            auto It = UI->Documents.find(FString(Path.data(), Path.size()));
-            return (It != UI->Documents.end()) ? It->second : nullptr;
         }
 
         struct FWorldTarget { RHI::FTextureH Image = {}; FUIntVector2 Size{0, 0}; };
@@ -524,7 +486,7 @@ namespace Lumina::RmlUi
 
         UI->Context = Ctx;
 
-        // Newest world becomes active so Lua calls land there.
+        // Newest world becomes the active UI target.
         State.ActiveWorld = World;
         SyncDebuggerToActiveContext();
 
@@ -1203,229 +1165,4 @@ namespace Lumina::RmlUi
         }
     }
 
-    // `UI.*` Lua module on the active world's context.
-    namespace LuaApi
-    {
-        bool LoadDocument(FStringView Path)
-        {
-            FState& State = S();
-            FRecursiveScopeLock Lock(State.StateMutex);
-            FWorldUIContext* UI = ActiveUI();
-            if (!State.bInitialized || UI == nullptr || UI->Context == nullptr)
-            {
-                LOG_WARN("[RmlUi] UI.LoadDocument('{}') has no active world context yet.", FString(Path.data(), Path.size()).c_str());
-                return false;
-            }
-
-            const FString Key(Path.data(), Path.size());
-            if (UI->Documents.find(Key) != UI->Documents.end())
-            {
-                UI->Documents[Key]->Show();
-                LOG_INFO("[RmlUi] '{}' already loaded; re-shown.", Key.c_str());
-                return true;
-            }
-
-            Rml::ElementDocument* Doc = UI->Context->LoadDocument(Rml::String(Path.data(), Path.size()));
-            if (Doc == nullptr)
-            {
-                LOG_ERROR("[RmlUi] UI.LoadDocument: failed to load '{}'.", Key.c_str());
-                return false;
-            }
-            Doc->Show();
-            UI->Documents.emplace(Key, Doc);
-
-            const Rml::Vector2f DocSize = Doc->GetBox().GetSize();
-            const Rml::Vector2i CtxSize = UI->Context->GetDimensions();
-            LOG_INFO("[RmlUi] Loaded '{}' (doc box {}x{}, context {}x{}).",
-                     Key.c_str(), DocSize.x, DocSize.y, CtxSize.x, CtxSize.y);
-            return true;
-        }
-
-        void UnloadDocument(FStringView Path)
-        {
-            FState& State = S();
-            FRecursiveScopeLock Lock(State.StateMutex);
-            FWorldUIContext* UI = ActiveUI();
-            if (UI == nullptr || UI->Context == nullptr)
-            {
-                return;
-            }
-
-            const FString Key(Path.data(), Path.size());
-            auto It = UI->Documents.find(Key);
-            if (It == UI->Documents.end()) return;
-
-            // RmlUi defers destruction until ReleaseUnloadedDocuments; OnDetach fires then.
-            UI->Context->UnloadDocument(It->second);
-            UI->Documents.erase(It);
-        }
-
-        void Show(FStringView Path)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            if (auto* D = FindDoc(Path)) D->Show();
-        }
-        void Hide(FStringView Path)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            if (auto* D = FindDoc(Path)) D->Hide();
-        }
-        bool IsLoaded(FStringView Path)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            return FindDoc(Path) != nullptr;
-        }
-        bool IsVisible(FStringView Path)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            auto* D = FindDoc(Path); return D && D->IsVisible();
-        }
-
-        void SetText(FStringView Path, FStringView ElementId, FStringView Text)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            auto* Doc = FindDoc(Path);
-            if (Doc == nullptr) return;
-            Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size()));
-            if (El == nullptr) return;
-
-            const Rml::String NewText(Text.data(), Text.size());
-            
-            if (El->GetNumChildren() == 1)
-            {
-                Rml::Element* Child = El->GetChild(0);
-                if (Child != nullptr && Child->GetTagName() == "#text")
-                {
-                    static_cast<Rml::ElementText*>(Child)->SetText(NewText);
-                    return;
-                }
-            }
-
-            El->SetInnerRML(NewText);
-        }
-
-        void SetInnerRml(FStringView Path, FStringView ElementId, FStringView Rml_)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            auto* Doc = FindDoc(Path);
-            if (Doc == nullptr) return;
-            if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
-            {
-                El->SetInnerRML(Rml::String(Rml_.data(), Rml_.size()));
-            }
-        }
-
-        // Toggle a single class on the element without disturbing other classes.
-        // Pass true to add, false to remove.
-        void SetClass(FStringView Path, FStringView ElementId, FStringView ClassName, bool bActive)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            auto* Doc = FindDoc(Path);
-            if (Doc == nullptr) return;
-            if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
-            {
-                El->SetClass(Rml::String(ClassName.data(), ClassName.size()), bActive);
-            }
-        }
-
-        void SetDebuggerVisible(bool bVisible)
-        {
-            FState& State = S();
-            FRecursiveScopeLock Lock(State.StateMutex);
-            // Migrates with the active world while live; DestroyWorldUI resets it
-            // on host teardown so ending PIE doesn't leave it stuck on in the editor.
-            State.bDebuggerVisible = bVisible;
-            SyncDebuggerToActiveContext();
-            LOG_INFO("[RmlUi] Debugger {}.", bVisible ? "shown" : "hidden");
-        }
-
-        FString DescribeState()
-        {
-            FState& State = S();
-            FRecursiveScopeLock Lock(State.StateMutex);
-            if (!State.bInitialized) return FString("RmlUi not initialised.");
-
-            FWorldUIContext* UI = ActiveUI();
-            std::string Out;
-            Out.reserve(256);
-            if (UI == nullptr || UI->Context == nullptr)
-            {
-                Out += "RmlUi: no active world context.";
-                return FString(Out.c_str(), Out.size());
-            }
-
-            const Rml::Vector2i Sz = UI->Context->GetDimensions();
-            Out += "RmlUi active context: ";
-            Out += UI->Context->GetName();
-            Out += " size=";
-            Out += std::to_string(Sz.x);
-            Out += "x";
-            Out += std::to_string(Sz.y);
-            Out += " docs=";
-            Out += std::to_string(UI->Documents.size());
-            for (const auto& KV : UI->Documents)
-            {
-                Out += "\n    - ";
-                Out += KV.first.c_str();
-                if (KV.second != nullptr)
-                {
-                    const Rml::Vector2f Box = KV.second->GetBox().GetSize();
-                    Out += " (";
-                    Out += std::to_string(int(Box.x));
-                    Out += "x";
-                    Out += std::to_string(int(Box.y));
-                    Out += KV.second->IsVisible() ? ", visible)" : ", hidden)";
-                }
-            }
-            return FString(Out.c_str(), Out.size());
-        }
-
-        void OnEvent(FStringView Path, FStringView ElementId, FStringView EventName, Lua::FRef Callback)
-        {
-            FRecursiveScopeLock Lock(S().StateMutex);
-            FWorldUIContext* UI = ActiveUI();
-            if (UI == nullptr || UI->Context == nullptr) return;
-
-            auto It = UI->Documents.find(FString(Path.data(), Path.size()));
-            if (It == UI->Documents.end())
-            {
-                LOG_WARN("[RmlUi] UI.OnEvent: document '{}' not loaded.",
-                         FString(Path.data(), Path.size()).c_str());
-                return;
-            }
-            Rml::ElementDocument* Doc = It->second;
-
-            const Rml::String EventStr(EventName.data(), EventName.size());
-            Rml::Element* Target = ElementId.empty()
-                ? static_cast<Rml::Element*>(Doc)
-                : Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size()));
-            if (Target == nullptr)
-            {
-                LOG_WARN("[RmlUi] UI.OnEvent: element '{}' not found in '{}'.",
-                         FString(ElementId.data(), ElementId.size()).c_str(),
-                         FString(Path.data(), Path.size()).c_str());
-                return;
-            }
-
-            // Ownership transfers to RmlUi; listener self-deletes via OnDetach.
-            Target->AddEventListener(EventStr, new FLuaEventListener(Move(Callback)));
-        }
-    }
-
-    void RegisterLuaModule(Lua::FRef& GlobalsRef)
-    {
-        Lua::FRef UI = GlobalsRef.NewTable("UI");
-        UI.SetFunction<&LuaApi::LoadDocument>("LoadDocument");
-        UI.SetFunction<&LuaApi::UnloadDocument>("UnloadDocument");
-        UI.SetFunction<&LuaApi::Show>("Show");
-        UI.SetFunction<&LuaApi::Hide>("Hide");
-        UI.SetFunction<&LuaApi::IsLoaded>("IsLoaded");
-        UI.SetFunction<&LuaApi::IsVisible>("IsVisible");
-        UI.SetFunction<&LuaApi::SetText>("SetText");
-        UI.SetFunction<&LuaApi::SetInnerRml>("SetInnerRml");
-        UI.SetFunction<&LuaApi::SetClass>("SetClass");
-        UI.SetFunction<&LuaApi::OnEvent>("OnEvent");
-        UI.SetFunction<&LuaApi::SetDebuggerVisible>("SetDebuggerVisible");
-        UI.SetFunction<&LuaApi::DescribeState>("DescribeState");
-    }
 }

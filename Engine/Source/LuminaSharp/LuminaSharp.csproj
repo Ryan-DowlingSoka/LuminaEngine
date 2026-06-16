@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The engine's managed API assembly: its own C# project (NOT compiled into Runtime.dll).
+       FDotNetHost (native, in Runtime) loads the LuminaSharp.dll this builds. Surfaced in the
+       solution via premake `externalproject` so IDEs (Rider/VS) treat it as a real C# project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>LuminaSharp</AssemblyName>
+    <RootNamespace>LuminaSharp</RootNamespace>
+    <Deterministic>true</Deterministic>
+
+    <!-- premake (externalproject) flattens the C++ workspace's config+platform into the C# project's
+         Configuration and uses x64 as the Platform, so the .sln references e.g. "Development Editor|x64".
+         Declare those so an MSBuild sln build resolves; the output is identical for all (one managed DLL). -->
+    <Configurations>Debug Editor;Development Editor;Shipping Editor;Debug Game;Development Game;Shipping Game</Configurations>
+    <Platforms>x64</Platforms>
+
+    <!-- Build straight into the engine binaries where FDotNetHost looks (Binaries/<Out>/DotNet/Managed).
+         The managed DLL is platform-agnostic; Windows64 is the only RID bundled today. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>$(MSBuildProjectDirectory)\..\..\..\Binaries\Windows64\DotNet\Managed\</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- In-engine C# compilation. 4.13.0 is present in the local NuGet cache (offline-safe). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Source generator for native bindings ([NativeCall] -> delegate* glue). Analyzer-only: built first
+         as a build dependency, never linked into the managed DLL. -->
+    <ProjectReference Include="..\LuminaSharp.Generators\LuminaSharp.Generators.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Reflection-generated C# bindings (mirrored from reflected C++). Produced by the Reflector
+       into Intermediates/CSharpBindings; compiled in so scripts get a typed, code-completed API. -->
+  <ItemGroup>
+    <Compile Include="..\..\..\Intermediates\CSharpBindings\**\*.generated.cs">
+      <Link>Generated\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

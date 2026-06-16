@@ -7,8 +7,6 @@
 #include "Core/LuminaMacros.h"
 #include "Platform/GenericPlatform.h"
 
-// Forward-declare to avoid pulling in <lua.h>; only appears as pointer in typedefs below.
-extern "C" { struct lua_State; }
 
 
 namespace Lumina
@@ -128,6 +126,12 @@ namespace Lumina
         // Property participates in network replication (PROPERTY(Replicated)). Read by
         // CStruct::NetSerializeProperties; a flag test, not a metadata lookup.
         Replicated          = BIT(12),
+
+        //~ Script (C#) interop specifiers, independent of the editor flags above. Read by the Reflector's
+        //  C# binding emitter to shape the generated wrapper member, NOT the editor property grid.
+        ScriptReadOnly      = BIT(13), // C# wrapper emits a getter only (no setter), even if editor-editable.
+        ScriptWritable      = BIT(14), // C# wrapper emits a setter even if the property is editor ReadOnly/Const.
+        ScriptHidden        = BIT(15), // No C# wrapper member is emitted for this property at all.
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags);
@@ -349,7 +353,6 @@ namespace Lumina
     struct FClassParams
     {
         CClass*                         (*RegisterFunc)();
-        void                            (*LuaRegisterFn)(lua_State*);
 
         const FPropertyParams* const*   Params;
         uint32                          NumProperties;
@@ -362,7 +365,6 @@ namespace Lumina
     {
         CStruct*                        (*SuperFunc)();
         FStructOps*                     (*StructOpsFn)();
-        void                            (*LuaRegisterFn)(lua_State*);
         const char*                     Name;
         const FPropertyParams* const*   Params;
         uint32                          NumProperties;
@@ -381,7 +383,6 @@ namespace Lumina
     
     struct FEnumParams
     {
-        void                        (*LuaRegisterFn)(lua_State*);
         const char*                 Name;
         const FEnumeratorParam*     Params;
         int16                       NumParams;

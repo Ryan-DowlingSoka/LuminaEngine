@@ -35,7 +35,6 @@
 #include <Tools/Screenshot/ScreenshotCapture.h>
 #include <World/World.h>
 #include "implot.h"
-#include "lstate.h"
 #include "LuminaEditor.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
@@ -73,22 +72,21 @@
 #include "Properties/Customizations/CoreTypeCustomization.h"
 #include "Properties/Customizations/CustomPrimitiveDataCustomization.h"
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleParameterCustomization.h"
-#include "Properties/Customizations/ScriptComponentCustomization.h"
+#include "Properties/Customizations/CSharpScriptComponentCustomization.h"
 #include "Properties/Customizations/AssetRefPropertyCustomization.h"
+#include "World/Entity/Components/CSharpScriptComponent.h"
+#include "Scripting/DotNet/DotNetHost.h"
 #include "Renderer/CustomPrimitiveData.h"
 #include "Renderer/RenderDocImpl.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderThread.h"
 #include "Renderer/ShaderCompiler.h"
 #include "Renderer/ShaderLibrary.h"
-#include "Scripting/Lua/Scripting.h"
-#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ConsoleLogEditorTool.h"
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
 #include "Tools/EditorToolRegistry.h"
-#include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/TaskSystemProfilerEditorTool.h"
 #include "Tools/NetworkEditorTool.h"
@@ -109,7 +107,6 @@
 #include "Tools/Debug/SettingsEditorTool.h"
 #include "Settings/EditorSettings.h"
 #include "Config/EngineSettings.h"
-#include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
@@ -117,7 +114,6 @@
 #include "Tools/AssetEditors/AudioStream/AudioStreamEditorTool.h"
 #include "Tools/AssetEditors/PhysicsMaterial/PhysicsMaterialEditorTool.h"
 #include "Tools/AssetEditors/DataAsset/DataAssetSchemaEditorTool.h"
-#include "Tools/AssetEditors/EntityComponentType/EntityComponentTypeEditorTool.h"
 #include "Tools/AssetEditors/GeometryCollection/GeometryCollectionEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
@@ -127,7 +123,6 @@
 #include "Tools/AssetEditors/MeshEditor/SkeletonEditorTool.h"
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleSystemEditorTool.h"
 #include "Tools/AssetEditors/PrefabEditor/PrefabEditorTool.h"
-#include "Tools/AssetEditors/LuaEditor/LuaEditorTool.h"
 #include "Tools/AssetEditors/RmlUiEditor/RmlUiEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/AssetEditors/FontEditor/FontEditorTool.h"
@@ -448,9 +443,9 @@ namespace Lumina
         {
             return FTransformPropertyCustomization::MakeInstance();
         });
-        PropertyCustomizationRegistry->RegisterPropertyCustomization(SScriptComponent::StaticStruct()->GetName(), []
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(SCSharpScriptComponent::StaticStruct()->GetName(), []
         {
-           return FScriptComponentPropertyCustomization::MakeInstance();
+           return FCSharpScriptComponentPropertyCustomization::MakeInstance();
         });
 
         PropertyCustomizationRegistry->RegisterPropertyCustomization(FAssetRef::StaticStruct()->GetName(), []
@@ -628,6 +623,12 @@ namespace Lumina
             Screenshot::CaptureActiveWorld(Source);
         }
 
+        // Recompile + hot-swap all C# script assemblies (every Scripts/ across game, plugins, engine).
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F11))
+        {
+            DotNet::ReloadScripts();
+        }
+
 
         if (!FocusTargetWindowName.empty())
         {
@@ -774,34 +775,6 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
-        if (Debugger.IsPaused())
-        {
-            const FStringView Source = Debugger.GetPausedSource();
-            const FStringView Last(LuaDebuggerLastOpenedSource.c_str(), LuaDebuggerLastOpenedSource.size());
-            if (!Source.empty() && Source != Last)
-            {
-                // OpenFileEditor (not OpenScriptEditor) routes .lua in-engine; OpenScriptEditor shells to VS Code.
-                OpenFileEditor(Source);
-
-                // Use FocusTargetWindowName pipeline (runs in OnStartFrame); plain SetWindowFocus doesn't reliably raise docked tabs.
-                FString Key(Source.data(), Source.size());
-                auto Itr = ActiveFileTools.find(Key);
-                if (Itr != ActiveFileTools.end())
-                {
-                    FocusTargetWindowName = Itr->second->GetToolName();
-                }
-
-                LuaDebuggerLastOpenedSource.assign(Source.data(), Source.size());
-            }
-        }
-        else
-        {
-            // Reset on resume so the next pause, even on the same file,
-            // re-fires the focus.
-            LuaDebuggerLastOpenedSource.clear();
-        }
-
         for (FEditorTool* Tool : EditorTools)
         {
             if (Tool->HasWorld())
@@ -913,7 +886,6 @@ namespace Lumina
         Registry.RegisterAssetEditor<CDataAsset,          FDataAssetEditorTool>();
         Registry.RegisterAssetEditor<CPhysicsMaterial,    FPhysicsMaterialEditorTool>();
         Registry.RegisterAssetEditor<CAudioStream,        FAudioStreamEditorTool>();
-        Registry.RegisterAssetEditor<CEntityComponentType, FEntityComponentTypeEditorTool>();
         Registry.RegisterAssetEditor<CGeometryCollection, FGeometryCollectionEditorTool>();
         Registry.RegisterAssetEditor<CTexture,            FTextureEditorTool>();
         Registry.RegisterAssetEditor<CFont,               FFontEditorTool>();
@@ -925,7 +897,6 @@ namespace Lumina
 
         // File editors, keyed by extension (CObject-less, raw content).
         Registry.RegisterFileEditor<FRmlUiEditorTool>({ ".rml", ".rcss" });
-        Registry.RegisterFileEditor<FLuaEditorTool>({ ".lua", ".luau" });
     }
 
     void FEditorUI::OpenAssetEditor(const FGuid& AssetGUID)
@@ -986,17 +957,6 @@ namespace Lumina
         {
             const char* Name = Itr->second->GetToolName().c_str();
             ImGui::SetWindowFocus(Name);
-            return;
-        }
-
-        const FStringView Ext = VFS::Extension(VirtualPath);
-
-        // Lua scripts can be routed to the platform editor via a config toggle.
-        // Default is the in-engine FLuaEditorTool.
-        const bool bIsLuaScript = (Ext == ".lua" || Ext == ".luau");
-        if (bIsLuaScript && GetDefault<CLuaEditorSettings>()->bUsePlatformEditor)
-        {
-            Platform::LaunchURL(StringUtils::ToWideString(VirtualPath.data()).c_str());
             return;
         }
 
@@ -1928,12 +1888,12 @@ namespace Lumina
 
             // Footer: Save & Exit (blue), Discard & Exit (gold), Cancel (soft),
             // right-aligned so the primary action lands at the F-pattern target.
-            const float ButtonH    = 32.0f;
-            const float SaveW      = 150.0f;
-            const float DiscardW   = 150.0f;
-            const float CancelW    = 90.0f;
-            const float Gap        = 8.0f;
-            const float Total      = SaveW + DiscardW + CancelW + Gap * 2.0f;
+            constexpr float ButtonH    = 32.0f;
+            constexpr float SaveW      = 150.0f;
+            constexpr float DiscardW   = 150.0f;
+            constexpr float CancelW    = 90.0f;
+            constexpr float Gap        = 8.0f;
+            constexpr float Total      = SaveW + DiscardW + CancelW + Gap * 2.0f;
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
             ImGui::SetCursorPosX(ImGui::GetWindowWidth() - Total - 16.0f);
 
@@ -1945,7 +1905,10 @@ namespace Lumina
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.46f, 0.74f, 1.00f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f, 0.58f, 0.92f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.06f, 0.08f, 0.12f, 1.0f));
-            if (!bAnySelected) ImGui::BeginDisabled();
+            if (!bAnySelected)
+            {
+                ImGui::BeginDisabled();
+            }
             if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save && Exit", ImVec2(SaveW, ButtonH)))
             {
                 // Synchronous save loop; the dialog stays open this frame so failed
@@ -1953,17 +1916,26 @@ namespace Lumina
                 bool bAllOK = true;
                 for (size_t i = 0; i < Packages.size(); ++i)
                 {
-                    if (!Selection[i]) continue;
+                    if (!Selection[i])
+                    {
+                        continue;
+                    }
                     States[i] = ESaveState::Saving;
                     const bool bOK = CPackage::SavePackage(Packages[i], Packages[i]->GetPackagePath());
                     States[i] = bOK ? ESaveState::Success : ESaveState::Failed;
-                    if (!bOK) bAllOK = false;
+                    if (!bOK)
+                    {
+                        bAllOK = false;
+                    }
                 }
                 // Close (and proceed with exit) only if every selected save succeeded;
                 // a failure keeps the dialog up so the user can pick another action.
                 bShouldClose = bAllOK;
             }
-            if (!bAnySelected) ImGui::EndDisabled();
+            if (!bAnySelected)
+            {
+                ImGui::EndDisabled();
+            }
             ImGui::PopStyleColor(4);
             ImGui::SameLine(0.0f, Gap);
 
@@ -2059,6 +2031,13 @@ namespace Lumina
         if (ImGui::MenuItem(LE_ICON_ZIP_DISK " Save All", "Ctrl+Shift+S"))
         {
             // Save all action
+        }
+
+        ImGui::Separator();
+
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " Recompile C# Assemblies", "Shift+F11"))
+        {
+            DotNet::ReloadScripts();
         }
 
         ImGui::Separator();
@@ -2164,15 +2143,6 @@ namespace Lumina
             return;
         }
         
-        if (GEngine->HasLoadedProject())
-        {
-            if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Reload Project Module"))
-            {
-                const FStringView ModuleView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
-                GEngine->LoadProjectScript(FString(ModuleView.data(), ModuleView.size()));
-            }
-        }
-
         if (ImGui::MenuItem(LE_ICON_FOLDER_PLUS " New Project...", "Ctrl+N"))
         {
             NewProjectDialog();
@@ -2196,8 +2166,6 @@ namespace Lumina
         ImGui::Separator();
 
         DrawToolMenuItem<FAssetRegistryEditorTool>(LE_ICON_DATABASE " Asset Registry", this);
-        DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
-        DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
         DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
         DrawToolMenuItem<FNetworkEditorTool>(LE_ICON_LAN " Network", this);
@@ -2318,12 +2286,7 @@ namespace Lumina
             {
                 Platform::LaunchURL(TEXT("https://discord.gg/UhTmzB8UdY"));
             }
-            
-            if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Luau"))
-            {
-                Platform::LaunchURL(TEXT("https://luau.org/getting-started/"));
-            }
-            
+
             ImGui::EndMenu();
         }
     
@@ -2521,7 +2484,7 @@ namespace Lumina
             DrawProjectRow(
                 LE_ICON_CUBE,
                 "Blank Project (C++)",
-                "Empty C++ module + Lua scripting. F5 in the generated .sln launches the editor with the project loaded.",
+                "Empty C++ module + C# scripting. F5 in the generated .sln launches the editor with the project loaded.",
                 kProjDialogAccentBlue,
                 /*bCompact=*/false);
 

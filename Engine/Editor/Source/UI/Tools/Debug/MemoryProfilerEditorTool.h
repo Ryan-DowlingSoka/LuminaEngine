@@ -37,7 +37,6 @@ namespace Lumina
         void DrawOverviewTab();
         void DrawGPUTab();
         void DrawCPUTab();
-        void DrawScriptMemory();
 
         // GPU sub-panels.
         void DrawGPUHeaps();
@@ -53,16 +52,12 @@ namespace Lumina
         RHI::FGPUDeviceInfo     DeviceInfo;
         bool                    bDeviceInfoValid = false;
 
-        // Total bytes the Luau VM has allocated (whole shared global state across script threads).
-        size_t                  LuaBytes = 0;
-
         // Rolling timelines in MB, advanced once per refresh tick.
         TVector<float>          HistRSS;
         TVector<float>          HistCPUTracked;
         TVector<float>          HistMapped;     // rpmalloc's OS footprint (mapped bytes)
-        TVector<float>          HistExternal;   // RSS - mapped (driver / Luau / CRT)
+        TVector<float>          HistExternal;   // RSS - mapped (driver / CRT)
         TVector<float>          HistVRAM;
-        TVector<float>          HistLua;
 
         float                   RefreshTimer = 0.0f;
 

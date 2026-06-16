@@ -1,7 +1,6 @@
 #include "ReflectedType.h"
 
 #include "Reflector/CodeGeneration/CodeWriter.h"
-#include "Reflector/CodeGeneration/LuaBindingEmitter.h"
 #include "Reflector/CodeGeneration/ReflectionNames.h"
 #include "Reflector/ReflectionCore/ReflectedHeader.h"
 #include "Reflector/ReflectionCore/ReflectedProject.h"
@@ -73,17 +72,12 @@ namespace Lumina::Reflection
         Writer.Line("};");
         Writer.Line();
 
-        // Lua bindings setup.
-        LuaBindingEmitter::EmitForEnum(Writer, *this);
-
-        Writer.Line();
         Writer.Line("static const Lumina::FEnumParams EnumParams;");
         Writer.PopIndent();
         Writer.Line("};");
 
         // EnumParams definition.
         Writer.Linef("const Lumina::FEnumParams %s::EnumParams = {", Statics.c_str());
-        Writer.Line("\t&SetupLuaBindings,");
         Writer.Linef("\t\"%s\",", DisplayName.c_str());
         Writer.Line("\tEnumerators,");
         Writer.Append("\t(uint32)std::size(Enumerators)");

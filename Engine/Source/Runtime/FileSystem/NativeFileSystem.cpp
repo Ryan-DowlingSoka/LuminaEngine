@@ -305,12 +305,7 @@ namespace Lumina::VFS
             
 
             EFileFlags Flags = EFileFlags::None;
-            
-            if (Itr.path().extension() == ".lua" || Itr.path().extension() == ".luau")
-            {
-                Flags |= EFileFlags::LuaFile;
-            }
-            
+
             if (Itr.path().extension() == ".lasset")
             {
                 Flags |= EFileFlags::LAssetFile;
@@ -398,11 +393,6 @@ namespace Lumina::VFS
 
 
             EFileFlags Flags = EFileFlags::None;
-
-            if (Entry.path().extension() == ".lua" || Entry.path().extension() == ".luau")
-            {
-                Flags |= EFileFlags::LuaFile;
-            }
 
             if (Entry.path().extension() == ".lasset")
             {
