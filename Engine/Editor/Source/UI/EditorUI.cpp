@@ -59,6 +59,7 @@
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Config/Config.h"
 #include "Core/Application/Application.h"
+#include "Core/Module/ModuleManager.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/Object.h"
@@ -91,6 +92,7 @@
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
 #include "Tools/EditorToolRegistry.h"
+#include "Tools/ToolsMenuRegistry.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/TaskSystemProfilerEditorTool.h"
 #include "Tools/GameplayProfilerEditorTool.h"
@@ -419,6 +421,10 @@ namespace Lumina
 
         // Editor links its own ImGui copy; install allocator here because StartupModule never runs (editor links directly, not LoadModule'd).
         ImGuiX::InstallImGuiAllocator();
+
+        // Plugin DLLs each link their own ImGui copy too; hand the contexts to the module manager so it
+        // syncs every already-loaded plugin that opted in via LUMINA_MODULE_IMGUI() (and ones loaded later).
+        FModuleManager::Get().NotifyImGuiReady(Context, PlotContext);
 
         // Init ThumbnailManager before world load so engine primitive meshes are in the transient package before deserialization.
         (void)CThumbnailManager::Get();
@@ -2226,8 +2232,25 @@ namespace Lumina
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         DrawToolMenuItem<FPluginBrowserEditorTool>(LE_ICON_PUZZLE " Plugin Browser", this);
 
+        // Plugin-contributed standalone tools (see FToolsMenuRegistry). Section is hidden when empty.
+        if (!FToolsMenuRegistry::Get().IsEmpty())
+        {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "Plugins");
+            ImGui::Separator();
+
+            for (const FToolsMenuEntry& Entry : FToolsMenuRegistry::Get().GetEntries())
+            {
+                const bool bActive = Entry.IsActive ? Entry.IsActive() : false;
+                if (ImGui::MenuItem(Entry.Label.c_str(), nullptr, bActive) && Entry.OnToggle)
+                {
+                    Entry.OnToggle();
+                }
+            }
+        }
+
         ImGui::Spacing();
-        
+
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "ImGui Tools");
         ImGui::Separator();
         

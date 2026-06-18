@@ -120,9 +120,39 @@ namespace Lumina
 
         LOG_INFO("[Module Manager] - Successfully loaded module {}", ModuleName);
 
+        // If ImGui is already up (module loaded after the editor UI), sync this module's ImGui copy
+        // now. Otherwise NotifyImGuiReady will catch it once the context exists. No-op without the hook.
+        SyncModuleImGui(*ModuleInfo);
+
         FCoreDelegates::OnModuleLoaded.Broadcast(ModuleInfo);
 
         return ModuleInterface;
+    }
+
+    void FModuleManager::SyncModuleImGui(const FModuleInfo& ModuleInfo)
+    {
+        if (ModuleInfo.ModuleHandle == nullptr || ImGuiContextPtr == nullptr)
+        {
+            return;
+        }
+
+        using FSetupImGuiFunc = void (*)(void*, void*);
+        auto Setup = Platform::LumGetProcAddress<FSetupImGuiFunc>(ModuleInfo.ModuleHandle, "LuminaModuleSetupImGui");
+        if (Setup)
+        {
+            Setup(ImGuiContextPtr, ImPlotContextPtr);
+        }
+    }
+
+    void FModuleManager::NotifyImGuiReady(void* InImGuiContext, void* InImPlotContext)
+    {
+        ImGuiContextPtr  = InImGuiContext;
+        ImPlotContextPtr = InImPlotContext;
+
+        for (auto& Pair : ModuleHashMap)
+        {
+            SyncModuleImGui(Pair.second);
+        }
     }
 
     void FModuleManager::AddStaticModuleFactory(const FName& Name, ModuleInitFunc Factory)

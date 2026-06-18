@@ -58,10 +58,11 @@ namespace Lumina
         float       FocusOrbitDistance  = 5.0f;
     };
 
-    class FEditorTool : public IEventHandler
+    // EDITOR_API: exported so editor plugins can derive their own tools out-of-module.
+    class EDITOR_API FEditorTool : public IEventHandler
     {
     public:
-        
+
         friend class FEditorUI;
 
         constexpr static char const* const ViewportWindowName = "Viewport";

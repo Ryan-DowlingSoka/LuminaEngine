@@ -1,0 +1,21 @@
+{
+    "FormatVersion": 1,
+    "Name": "NsightPerf",
+    "Version": 1,
+    "VersionName": "0.1.0",
+    "Author": "Lumina Team",
+    "Description": "NVIDIA Nsight Perf SDK integration: a live GPU metrics HUD (periodic sampler) editor tool. Editor-only. Enable/disable per-project in your .lproject. Requires an NVIDIA GPU at runtime.",
+    "Category": "Profiling",
+    "EnabledByDefault": true,
+    "EditorOnly": true,
+    "ContainsContent": false,
+    "SupportedPlatforms": [],
+    "Dependencies": [],
+    "Modules": [
+        {
+            "Name": "NsightPerfEditor",
+            "Type": "Editor",
+            "LoadingPhase": "Core"
+        }
+    ]
+}

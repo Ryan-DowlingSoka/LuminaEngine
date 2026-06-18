@@ -25,7 +25,8 @@ namespace Lumina
 
 namespace Lumina
 {
-    class FEditorUI : public IDevelopmentToolUI, public IEditorToolContext
+    // EDITOR_API: exported so editor plugins can create/toggle tools via CreateTool/ToggleTool.
+    class EDITOR_API FEditorUI : public IDevelopmentToolUI, public IEditorToolContext
     {
     public:
 

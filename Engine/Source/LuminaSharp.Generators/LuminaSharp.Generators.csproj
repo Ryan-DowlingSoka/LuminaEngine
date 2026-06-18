@@ -17,6 +17,19 @@
          build that drives this through the analyzer ProjectReference resolves a matching configuration. -->
     <Configurations>Debug Editor;Development Editor;Shipping Editor;Debug Game;Development Game;Shipping Game</Configurations>
     <Platforms>x64</Platforms>
+
+    <!-- Config-INDEPENDENT output. This analyzer is referenced by LuminaSharp via an
+         `OutputItemType="Analyzer"` ProjectReference; the resolved analyzer path and the path this
+         actually builds to must agree. They don't agree by default: a solution build UNSETS the
+         parent config when building referenced projects, so this falls back to its SDK-default
+         `bin/Debug/...`, while a direct build (or a different MSBuild/SDK version) flows the engine
+         config and builds to `bin/<EngineConfig>/...`. The two diverge and LuminaSharp then fails
+         with CS0006 "metadata file ...LuminaSharp.Generators.dll could not be found" on a fresh clone
+         (stale bins mask it on machines that have built before). Pinning a single, config-agnostic
+         output path makes the build location and the resolved analyzer path always match. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <BaseOutputPath>$(MSBuildProjectDirectory)\bin\</BaseOutputPath>
+    <OutputPath>$(MSBuildProjectDirectory)\bin\</OutputPath>
   </PropertyGroup>
 
   <ItemGroup>

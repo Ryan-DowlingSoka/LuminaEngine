@@ -10,6 +10,7 @@
 #include "Renderer/RHI.h"
 #include "Renderer/RHICore.h"
 #include "Renderer/API/Vulkan/VulkanMacros.h"
+#include "Renderer/RHINative.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
 #include "Tools/Dialogs/Dialogs.h"
 
@@ -555,6 +556,10 @@ namespace Lumina::RHI
 
     static FDeviceImpl* GDevice;
 
+    // Native-access extension/feature injection requests, populated before CreateDevice runs
+    // (see Renderer/RHINative.h). Consumed once during device/instance creation.
+    static TVector<Native::FDeviceCreationRequest> GPendingDeviceRequests;
+
     // Resolve a GPUPtr (possibly interior) to its owning allocation. Caller holds MemoryMutex.
     static const FMemoryBlock* FindMemory(GPUPtr Ptr)
     {
@@ -701,6 +706,65 @@ namespace Lumina::RHI
         return Info;
     }
 
+    // Native escape hatch for backend-coupled tooling. Vulkan handles are handed out as opaque
+    // void* so no Vk types leak past this .cpp; callers reinterpret per the active backend. See
+    // Renderer/RHINative.h.
+    namespace Native
+    {
+        FNativeDeviceHandles GetNativeDeviceHandles()
+        {
+            FNativeDeviceHandles Handles;
+            Handles.Backend = EBackend::Vulkan;
+            if (GDevice == nullptr)
+            {
+                return Handles;
+            }
+
+            // Dispatchable Vk handles are pointers -> implicit to void*; PFNs need a reinterpret.
+            Handles.Instance            = GDevice->Instance;
+            Handles.PhysicalDevice      = GDevice->PhysicsDevice;
+            Handles.Device              = GDevice->Device;
+            Handles.GraphicsQueue       = GDevice->Queues[(uint32)EQueueType::Graphics];
+            Handles.GraphicsQueueFamily = GDevice->QueueFamilies[(uint32)EQueueType::Graphics];
+            Handles.GetInstanceProcAddr = reinterpret_cast<void*>(vkGetInstanceProcAddr);   // volk globals
+            Handles.GetDeviceProcAddr   = reinterpret_cast<void*>(vkGetDeviceProcAddr);
+            Handles.ApiVersion          = GDevice->Properties.apiVersion;
+            return Handles;
+        }
+
+        void* GetNativeCommandBuffer(FCmdListH CommandList)
+        {
+            if (GDevice == nullptr || !IsValid(CommandList))
+            {
+                return nullptr;
+            }
+            return GDevice->CommandLists[CommandList].CommandBuffer;
+        }
+
+        void RegisterDeviceCreationRequest(const FDeviceCreationRequest& Request)
+        {
+            GPendingDeviceRequests.push_back(Request);
+        }
+
+        // Same mutex Submit()/PresentSwapchain()/TickFrame() take, so a tool's external submit is
+        // serialized with the engine's. Tolerate a null device (no-op) for unbalanced edge cases.
+        void AcquireSubmitLock()
+        {
+            if (GDevice)
+            {
+                GDevice->SubmitMutex.lock();
+            }
+        }
+
+        void ReleaseSubmitLock()
+        {
+            if (GDevice)
+            {
+                GDevice->SubmitMutex.unlock();
+            }
+        }
+    }
+
     void HandleDeviceLost()
     {
         LOG_ERROR("[DeviceLost] Vulkan device lost.");
@@ -772,6 +836,55 @@ namespace Lumina::RHI
             if (DeviceDesc.bValidation || DeviceDesc.bDebugUtils)
             {
                 InstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            }
+
+            // Merge instance extensions requested by native-access clients (e.g. GPU profiler plugins).
+            // Validate each against what the loader actually advertises and skip unsupported/duplicate
+            // ones, so a bad request can never make vkCreateInstance fail. See RHINative.h.
+            if (!GPendingDeviceRequests.empty())
+            {
+                uint32 AvailCount = 0;
+                vkEnumerateInstanceExtensionProperties(nullptr, &AvailCount, nullptr);
+                TVector<VkExtensionProperties> Available(AvailCount);
+                vkEnumerateInstanceExtensionProperties(nullptr, &AvailCount, Available.data());
+
+                auto IsAvailable = [&](const char* Name)
+                {
+                    for (const VkExtensionProperties& Ext : Available)
+                    {
+                        if (strcmp(Ext.extensionName, Name) == 0)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                auto AppendUnique = [](TVector<const char*>& List, const char* Name)
+                {
+                    for (const char* Existing : List)
+                    {
+                        if (strcmp(Existing, Name) == 0)
+                        {
+                            return;
+                        }
+                    }
+                    List.push_back(Name);
+                };
+
+                for (const Native::FDeviceCreationRequest& Request : GPendingDeviceRequests)
+                {
+                    for (const char* Name : Request.InstanceExtensions)
+                    {
+                        if (IsAvailable(Name))
+                        {
+                            AppendUnique(InstanceExtensions, Name);
+                        }
+                        else
+                        {
+                            LOG_WARN("Skipping unsupported requested instance extension '{}'.", Name);
+                        }
+                    }
+                }
             }
 
             VkApplicationInfo AppInfo
@@ -943,6 +1056,28 @@ namespace Lumina::RHI
             {
                 EnableIfPresent(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
             }
+
+            // Device extensions requested by native-access clients (see Renderer/RHINative.h). Only
+            // enabled if the driver advertises them and they aren't already in the list.
+            for (const Native::FDeviceCreationRequest& Request : GPendingDeviceRequests)
+            {
+                for (const char* Name : Request.DeviceExtensions)
+                {
+                    bool bAlready = false;
+                    for (const char* Existing : GDevice->EnabledDeviceExtensions)
+                    {
+                        if (strcmp(Existing, Name) == 0)
+                        {
+                            bAlready = true;
+                            break;
+                        }
+                    }
+                    if (!bAlready && HasExtension(Name))
+                    {
+                        GDevice->EnabledDeviceExtensions.push_back(Name);
+                    }
+                }
+            }
         }
 
         // ---- Features ----
@@ -1047,6 +1182,24 @@ namespace Lumina::RHI
                 NvDiagnostics->pNext = FeatureChain;
                 FeatureChain = NvDiagnostics;
             }
+        }
+
+        // Splice native-access feature chains (caller-owned, valid for this scope) onto the head.
+        // Each request's chain is walked to its tail so the engine's chain stays linked behind it.
+        for (const Native::FDeviceCreationRequest& Request : GPendingDeviceRequests)
+        {
+            if (Request.DeviceCreatePNext == nullptr)
+            {
+                continue;
+            }
+            auto* Head = static_cast<VkBaseOutStructure*>(Request.DeviceCreatePNext);
+            VkBaseOutStructure* Tail = Head;
+            while (Tail->pNext != nullptr)
+            {
+                Tail = Tail->pNext;
+            }
+            Tail->pNext = static_cast<VkBaseOutStructure*>(FeatureChain);
+            FeatureChain = Head;
         }
 
         VkPhysicalDeviceFeatures2 Features2

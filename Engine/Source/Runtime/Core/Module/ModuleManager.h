@@ -109,7 +109,7 @@ namespace Lumina
     {
     public:
 
-        static FModuleManager& Get();
+        RUNTIME_API static FModuleManager& Get();
 
         // Load a module by DLL path; monolithic builds resolve via the static registry
         // (basename minus -<Config> suffix) with no filesystem touch.
@@ -130,10 +130,21 @@ namespace Lumina
         // surface a warning. Reset at the start of each LoadModule.
         RUNTIME_API const FString& GetLastLoadError() const { return LastLoadError; }
 
+        // ImGui is a StaticLib, so each module DLL has its own ImGui/ImPlot context + allocator globals.
+        // The editor calls this once its ImGui context exists (contexts passed as void* to keep this
+        // header ImGui-free); it stores them and syncs every already-loaded module that opted in via
+        // LUMINA_MODULE_IMGUI() (see ImGuiModule.h). Modules loaded later are synced at load time.
+        RUNTIME_API void NotifyImGuiReady(void* InImGuiContext, void* InImPlotContext);
+
 
     private:
 
         FModuleInfo* GetOrCreateModuleInfo(const FName& ModuleName);
+
+        // Call a loaded module's optional LuminaModuleSetupImGui export with the stored contexts.
+        // No-op for statically-linked modules (null handle), modules without the hook, or before
+        // NotifyImGuiReady has run.
+        void SyncModuleImGui(const FModuleInfo& ModuleInfo);
 
         // Static-registry lookup by bare name (no config suffix); nullptr if not registered.
         ModuleInitFunc FindStaticFactory(const FName& Name) const;
@@ -148,5 +159,10 @@ namespace Lumina
 
         // Reason the last LoadModule failed (ABI mismatch, etc.); see GetLastLoadError.
         FString LastLoadError;
+
+        // Engine ImGui/ImPlot contexts (opaque void* to keep ImGui out of this header), null until
+        // NotifyImGuiReady. Forwarded to each opted-in module's LuminaModuleSetupImGui export.
+        void* ImGuiContextPtr  = nullptr;
+        void* ImPlotContextPtr = nullptr;
     };
 }
