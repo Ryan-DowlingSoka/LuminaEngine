@@ -37,6 +37,11 @@ namespace Lumina
         /** Strength of the volumetric scattering contribution. */
         PROPERTY(Editable, Category = "Advanced")
         float VolumetricIntensity = 0.5f;
+
+        /** Soft source radius (fraction of the attenuation radius) for volumetric scattering; spreads the
+            near-light in-scatter so it doesn't concentrate into a pixelated hot spot. 0 = hard 1/d^2. */
+        PROPERTY(Editable, Category = "Advanced", ClampMin = 0.0f, ClampMax = 1.0f)
+        float VolumetricScatteringRadius = 0.1f;
     };
 
     REFLECT(Component, Category = "Lights")
@@ -88,6 +93,11 @@ namespace Lumina
         PROPERTY(Editable, Category = "Advanced")
         float VolumetricIntensity = 0.5f;
 
+        /** Soft source radius (fraction of the attenuation radius) for volumetric scattering; spreads the
+            near-light in-scatter so it doesn't concentrate into a pixelated hot spot. 0 = hard 1/d^2. */
+        PROPERTY(Editable, Category = "Advanced", ClampMin = 0.0f, ClampMax = 1.0f)
+        float VolumetricScatteringRadius = 0.1f;
+
         /** Index into the shadow map atlas, managed by the renderer. */
         int32 ShadowMapIndex = -1;
     };
@@ -102,7 +112,7 @@ namespace Lumina
         PROPERTY(Editable, Color, Category = "Light")
         FVector3 Color = FVector4(1.0f);
 
-        /** Normalized world-space direction the light travels (points away from the source). */
+        /** Normalized world-space direction pointing FROM the surface TOWARD the sun (the to-light vector). The default (0, 0.3, 0.8) places the sun above the horizon. */
         PROPERTY(Editable, Category = "Light")
         FVector3 Direction = FVector3(0.0f, 0.3f, 0.8f);
 

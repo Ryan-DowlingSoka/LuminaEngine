@@ -101,7 +101,9 @@ float4 FragmentMain(PSInput Input) : SV_Target0
         if (bHasSun)
         {
             FLight Sun = GetLightAt(0);
-            CosSun = dot(normalize(Sun.Direction), ToCam);
+            // Sun.Direction points toward the sun; negate for the travel-direction phase
+            // convention so CosSun = +1 when looking straight at the sun.
+            CosSun = dot(-normalize(Sun.Direction), ToCam);
             if (HasFlag(Sun.Flags, ELightFlags::Volumetric))
             {
                 Light += UnpackColor(Sun.Color).rgb * Sun.Intensity

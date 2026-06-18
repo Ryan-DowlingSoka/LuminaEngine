@@ -197,7 +197,7 @@ float4 FragmentMain(PSInput Input) : SV_Target0
     if (LightData().bHasSun != 0)
     {
         FLight Sun    = GetLightAt(0);
-        float3 L      = normalize(-GetSunDirection());   // surface -> sun
+        float3 L      = normalize(GetSunDirection());    // surface -> sun (to-light)
         float3 SunRad = GetLightColor(Sun).rgb * Sun.Intensity;
 
         // Blinn-Phong sun glint (cascade shadowing on water is a deferred enhancement).

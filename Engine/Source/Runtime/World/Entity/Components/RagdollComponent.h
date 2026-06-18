@@ -19,7 +19,6 @@ namespace Lumina
         Simulated,   // Full physics; the ragdoll bodies drive the bone pose.
     };
 
-    // NoLua placeholder for now: the handle isn't script-constructable; gameplay flips State.
     REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SRagdollComponent
     {

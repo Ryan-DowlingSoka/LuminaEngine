@@ -39,6 +39,25 @@ internal static class Serializer
         return Stream.ToArray();
     }
 
+    // ---- Buttons (managed -> native): [Button] method name + label + tooltip, flat ----
+
+    public static byte[] WriteButtons(TypeDescription Description)
+    {
+        using var Stream = new MemoryStream();
+        using var Writer = new BinaryWriter(Stream, Encoding.UTF8, leaveOpen: true);
+
+        Writer.Write(Description.Buttons.Count);
+        foreach (ScriptButton Button in Description.Buttons)
+        {
+            WriteString(Writer, Button.Method);
+            WriteString(Writer, Button.Label);
+            WriteString(Writer, Button.Tooltip);
+        }
+
+        Writer.Flush();
+        return Stream.ToArray();
+    }
+
     private static void WriteMeta(BinaryWriter Writer, PropertyAttribute? Meta, string? DerivedAssetType)
     {
         WriteString(Writer, Meta?.Category ?? "");

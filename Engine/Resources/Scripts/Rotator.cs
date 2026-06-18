@@ -13,6 +13,18 @@ public sealed class Rotator : EntityScript
 
     public override void OnUpdate(float DeltaTime)
     {
-        Registry.Get<STransformComponent>(Entity).AddYaw(DegreesPerSecond * DeltaTime);
+        Transform.AddYaw(DegreesPerSecond * DeltaTime);
+    }
+
+    [Button(Tooltip = "Flip the spin direction.")]
+    public void ReverseDirection()
+    {
+        DegreesPerSecond = -DegreesPerSecond;
+    }
+
+    [Button("Snap +90°")]
+    public void SnapQuarterTurn()
+    {
+        Transform.AddYaw(90.0f);
     }
 }

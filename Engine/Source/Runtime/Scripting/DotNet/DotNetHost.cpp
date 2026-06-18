@@ -132,6 +132,7 @@ namespace Lumina::DotNet
         typedef void  (CORECLR_DELEGATE_CALLTYPE* DispatchPerceptionFn)(void*, int32, const void*);
         typedef int32 (CORECLR_DELEGATE_CALLTYPE* GetCallbackFlagsFn)(void*);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* GetScriptSchemaFn)(const char*, int32, void*, void*);
+        typedef void  (CORECLR_DELEGATE_CALLTYPE* GetScriptButtonsFn)(const char*, int32, void*, void*);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* ApplyScriptPropertiesFn)(void*, const uint8*, int32);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* InvokeAssetCallbackFn)(void*, void*);
         typedef void* (CORECLR_DELEGATE_CALLTYPE* ManagedClassFindFn)(const char*, int32);
@@ -164,6 +165,7 @@ namespace Lumina::DotNet
             GetRuntimeDiagnosticsFn     GetRuntimeDiagnostics;
             GetCallbackFlagsFn          GetScriptCallbackFlags;
             GetScriptSchemaFn           GetScriptSchema;
+            GetScriptButtonsFn          GetScriptButtons;
             ManagedInvokeFn             Invoke;
             InvokeAssetCallbackFn       InvokeAssetCallback;
             LoadScriptsFn               LoadScripts;
@@ -746,6 +748,7 @@ namespace Lumina::DotNet
         LM_RESOLVE(GetRuntimeDiagnostics,  GetRuntimeDiagnosticsFn);
         LM_RESOLVE(GetScriptCallbackFlags, GetCallbackFlagsFn);
         LM_RESOLVE(GetScriptSchema,        GetScriptSchemaFn);
+        LM_RESOLVE(GetScriptButtons,       GetScriptButtonsFn);
         LM_RESOLVE(Invoke,                 ManagedInvokeFn);
         LM_RESOLVE(InvokeAssetCallback,    InvokeAssetCallbackFn);
         LM_RESOLVE(LoadScripts,            LoadScriptsFn);
@@ -1489,6 +1492,45 @@ namespace Lumina::DotNet
         GManaged.ApplyScriptProperties(Instance, Blob.data(), (int32)Blob.size());
     }
 
+    void GatherScriptButtons(FStringView ScriptClass, TVector<Scripting::FScriptButton>& OutButtons)
+    {
+        OutButtons.clear();
+        if (!bInitialized || GManaged.GetScriptButtons == nullptr || ScriptClass.empty())
+        {
+            return;
+        }
+
+        const FString Name(ScriptClass.data(), ScriptClass.size());
+        TVector<uint8> Blob;
+        GManaged.GetScriptButtons(Name.c_str(), (int32)Name.size(), reinterpret_cast<void*>(&LmSchemaBlobSink), &Blob);
+        if (Blob.empty())
+        {
+            return;
+        }
+
+        FBlobReader R{ Blob.data(), Blob.data() + Blob.size() };
+        const int32 Count = R.I32();
+        OutButtons.reserve(Count > 0 ? Count : 0);
+        for (int32 i = 0; i < Count; ++i)
+        {
+            Scripting::FScriptButton Button;
+            Button.Method = R.Str();
+            Button.Label = R.Str();
+            Button.Tooltip = R.Str();
+            OutButtons.push_back(eastl::move(Button));
+        }
+    }
+
+    bool InvokeScriptButton(void* Instance, FStringView Method)
+    {
+        if (!bInitialized || Instance == nullptr || Method.empty())
+        {
+            return false;
+        }
+        InvokeManaged(Instance, false, Method, {});
+        return true;
+    }
+
     bool IsInitialized()
     {
         return bInitialized;
@@ -1574,31 +1616,6 @@ LUMINA_DOTNET_EXPORT(int, RemoveComponent)(uint64 World, uint32 Entity, const vo
     return (R && O) ? O->Remove(*R, static_cast<entt::entity>(Entity)) : 0;
 }
 
-// Detached, engine-allocated default instance (the C# `new T()` path); free with DeleteComponent.
-LUMINA_DOTNET_EXPORT(void*, NewComponent)(const void* Ops)
-{
-    const auto* O = static_cast<const Lumina::FComponentOps*>(Ops);
-    return O ? O->New() : nullptr;
-}
-
-LUMINA_DOTNET_EXPORT(void, DeleteComponent)(const void* Ops, void* Instance)
-{
-    const auto* O = static_cast<const Lumina::FComponentOps*>(Ops);
-    if (O && Instance)
-    {
-        O->Delete(Instance);
-    }
-}
-
-// Emplaces a COPY of *Src onto the entity; on the ADD path on_construct fires AFTER the configured
-// value is in place. Returns the live component pointer.
-LUMINA_DOTNET_EXPORT(void*, EmplaceComponentCopy)(uint64 World, uint32 Entity, const void* Ops, void* Src)
-{
-    Lumina::FEntityRegistry* R = LmRegistryFromWorld(World);
-    const auto* O = static_cast<const Lumina::FComponentOps*>(Ops);
-    return (R && O && Src) ? O->EmplaceCopy(*R, static_cast<entt::entity>(Entity), Src) : nullptr;
-}
-
 // Registry signals: connect a managed listener (UnmanagedCallersOnly Thunk + GCHandle Ctx) to a component's
 // on_construct/on_destroy/on_update sink. Allocates the listener (its address is the disconnect key) and
 // returns it as an opaque subscription handle; null on failure. Kind matches EComponentSignal.
@@ -1648,6 +1665,22 @@ LUMINA_DOTNET_EXPORT(void, SetObjectPtr)(void* Member, void* Value)
     {
         *reinterpret_cast<Lumina::TObjectPtr<Lumina::CObject>*>(Member) = static_cast<Lumina::CObject*>(Value);
     }
+}
+
+// Weak-handle validity backing the managed NativeObject. GetHandle packs a live CObject*'s array handle
+// as (Generation << 32 | Index), Index = -1 if the object isn't array-tracked. Resolve returns the live
+// CObject* only if that (Index, Generation) still names a live, non-destroyed object, else null — so a
+// managed wrapper to a since-freed object throws on access instead of reading reclaimed memory.
+LUMINA_DOTNET_EXPORT(int64, ObjectGetHandle)(void* Object)
+{
+    const Lumina::FObjectHandle Handle(static_cast<Lumina::CObjectBase*>(static_cast<Lumina::CObject*>(Object)));
+    return (static_cast<int64>(static_cast<uint32>(Handle.Generation)) << 32)
+         | static_cast<int64>(static_cast<uint32>(Handle.Index));
+}
+
+LUMINA_DOTNET_EXPORT(void*, ObjectResolve)(int32 Index, int32 Generation)
+{
+    return Lumina::FObjectHandle(Index, Generation).Resolve();
 }
 
 // Synchronous (blocking) load by virtual path; returns the CObject* or null. Backs Asset.Load<T>.

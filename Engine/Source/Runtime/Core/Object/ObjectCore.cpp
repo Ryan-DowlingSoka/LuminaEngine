@@ -199,7 +199,7 @@ namespace Lumina
             return false;
         }
 
-        if (Obj->HasAnyFlag(OF_NeedsLoad))
+        if (Obj->HasAnyFlag(OF_NeedsLoad) || Obj->HasAnyFlag(OF_MarkedDestroy))
         {
             return false;
         }

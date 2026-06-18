@@ -2,160 +2,194 @@
 
 #include <format>
 #include "Core/Math/Matrix/MatrixMath.h"
-#include "Core/Object/ObjectMacros.h"
-#include "Transform.generated.h"
+#include "Core/Math/SIMD/VQuat1.h"
+
+// SIMD-backed transform.
 
 namespace Lumina
 {
-    REFLECT()
-    struct RUNTIME_API FTransform
+    #ifndef REFLECTION_PARSER
+
+    struct alignas(16) VTransform
     {
-        GENERATED_BODY()
-    
-		PROPERTY(Script, Editable)
-        FVector3 Location;
+        SIMD::VFloat4 Location;   // x, y, z, 0
+        SIMD::VFloat4 Rotation;   // x, y, z, w
+        SIMD::VFloat4 Scale;      // x, y, z, 1  (pad lane 1 so Inverse's 1/Scale never divides by 0)
 
-        PROPERTY(Script, Editable)
-        FQuat Rotation;
-
-        PROPERTY(Script, Editable)
-        FVector3 Scale;
-        
-        FTransform()
-            : Location(0.0f),
-              Rotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f)),
-              Scale(1.0f, 1.0f, 1.0f)
+        VTransform()
+            : Location(0.0f, 0.0f, 0.0f, 0.0f)
+            , Rotation(0.0f, 0.0f, 0.0f, 1.0f)
+            , Scale(1.0f, 1.0f, 1.0f, 1.0f)
         {}
 
-        FTransform(const FVector3& InPosition)
-            : Location(InPosition),
-              Rotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f)),
-              Scale(1.0f, 1.0f, 1.0f)
+        explicit VTransform(const FVector3& InLocation)
+            : Location(InLocation.x, InLocation.y, InLocation.z, 0.0f)
+            , Rotation(0.0f, 0.0f, 0.0f, 1.0f)
+            , Scale(1.0f, 1.0f, 1.0f, 1.0f)
         {}
 
-        FTransform(const FVector3& location, const FVector3& EulerAngles, const FVector3& scale)
-            : Location(location),
-              Rotation(FQuat(Math::Radians(EulerAngles))),
-              Scale(scale)
-        {
-        }
+        VTransform(const FVector3& InLocation, const FVector3& EulerAngles, const FVector3& InScale)
+            : Location(InLocation.x, InLocation.y, InLocation.z, 0.0f)
+            , Rotation(SIMD::LoadQuat(FQuat(Math::Radians(EulerAngles))))
+            , Scale(InScale.x, InScale.y, InScale.z, 1.0f)
+        {}
 
-        FTransform(const FMatrix4& InMatrix)
+        explicit VTransform(const FMatrix4& InMatrix)
         {
-            FVector3 Skew;
+            FVector3 S, L, Skew;
+            FQuat R;
             FVector4 Perspective;
-            Math::Decompose(InMatrix, Scale, Rotation, Location, Skew, Perspective);
+            Math::Decompose(InMatrix, S, R, L, Skew, Perspective);
+            Location = SIMD::VFloat4(L.x, L.y, L.z, 0.0f);
+            Rotation = SIMD::LoadQuat(R);
+            Scale    = SIMD::VFloat4(S.x, S.y, S.z, 1.0f);
         }
+        
+        FVector3 GetLocation() const { return ToVec3(Location); }
+        FQuat    GetRotation() const { FQuat Q; SIMD::StoreQuat(Q, Rotation); return Q; }
+        FVector3 GetScale()    const { return ToVec3(Scale); }
+
+        void SetLocation(const FVector3& V) { Location = SIMD::VFloat4(V.x, V.y, V.z, 0.0f); }
+        void SetRotation(const FQuat& Q)    { Rotation = SIMD::LoadQuat(Q); }
+        void SetScale(const FVector3& V)    { Scale = SIMD::VFloat4(V.x, V.y, V.z, 1.0f); }
 
         FMatrix4 GetMatrix() const
         {
-            // Direct TRS compose: scale rotation columns, drop in translation.
-            // Bit-identical to Translate*Rotate*Scale but avoids two 4x4 multiplies (hot path).
             using namespace SIMD;
-            const FMatrix4 Rot = Math::ToMatrix4(Rotation);
+            VFloat4 C0, C1, C2;
+            QuatToColumns(Rotation, C0, C1, C2);
 
             FMatrix4 M;
-            (VFloat4::Load(&Rot.Cols[0][0]) * VFloat4::Broadcast(Scale.x)).Store(&M.Cols[0][0]);
-            (VFloat4::Load(&Rot.Cols[1][0]) * VFloat4::Broadcast(Scale.y)).Store(&M.Cols[1][0]);
-            (VFloat4::Load(&Rot.Cols[2][0]) * VFloat4::Broadcast(Scale.z)).Store(&M.Cols[2][0]);
-            M.Cols[3] = FVector4(Location.x, Location.y, Location.z, 1.0f);
+            (C0 * SplatX(Scale)).Store(&M.Cols[0][0]);
+            (C1 * SplatY(Scale)).Store(&M.Cols[1][0]);
+            (C2 * SplatZ(Scale)).Store(&M.Cols[2][0]);
+
+            const VFloat4 LaneW = _mm_castsi128_ps(_mm_setr_epi32(0, 0, 0, -1));
+            Select(LaneW, VFloat4(1.0f), Location).Store(&M.Cols[3][0]);   // (Lx, Ly, Lz, 1)
             return M;
         }
-        
-        FORCEINLINE FVector3 GetForward() const
-        {
-            return Rotation * FVector3(0.0f, 0.0f, 1.0f);
-        }
 
-        FORCEINLINE FVector3 GetRight() const
-        {
-            return Rotation * FVector3(1.0f, 0.0f, 0.0f);
-        }
-
-        FORCEINLINE FVector3 GetUp() const
-        {
-            return Rotation * FVector3(0.0f, 1.0f, 0.0f);
-        }
+        FORCEINLINE FVector3 GetForward() const { return ToVec3(SIMD::QuatRotate(Rotation, SIMD::VFloat4(0.0f, 0.0f, 1.0f, 0.0f))); }
+        FORCEINLINE FVector3 GetRight()   const { return ToVec3(SIMD::QuatRotate(Rotation, SIMD::VFloat4(1.0f, 0.0f, 0.0f, 0.0f))); }
+        FORCEINLINE FVector3 GetUp()      const { return ToVec3(SIMD::QuatRotate(Rotation, SIMD::VFloat4(0.0f, 1.0f, 0.0f, 0.0f))); }
 
         FORCEINLINE void SetRotationFromEuler(const FVector3& EulerAngles)
         {
-            Rotation = FQuat(Math::Radians(EulerAngles));
+            Rotation = SIMD::LoadQuat(FQuat(Math::Radians(EulerAngles)));
         }
 
-        FORCEINLINE void Translate(const FVector3& Translation)
+        FORCEINLINE void Translate(const FVector3& T)
         {
-            Location += Translation;
-        }
-
-        FORCEINLINE void SetLocation(const FVector3& NewLocation)
-        {
-            Location = NewLocation;
+            Location += SIMD::VFloat4(T.x, T.y, T.z, 0.0f);
         }
 
         FORCEINLINE void Rotate(const FVector3& EulerAngles)
         {
-            FQuat AdditionalRotation = FQuat(Math::Radians(EulerAngles));
-            Rotation = AdditionalRotation * Rotation;
+            // Additional * Rotation (apply the new rotation on the outside), matching the scalar transform.
+            Rotation = SIMD::QuatMul(SIMD::LoadQuat(FQuat(Math::Radians(EulerAngles))), Rotation);
+        }
+        
+        FORCEINLINE void AddYawRadians(float Radians)   { ApplyAxisAngle(SIMD::VFloat4(0.0f, 1.0f, 0.0f, 0.0f), Radians); }
+        FORCEINLINE void AddPitchRadians(float Radians) { ApplyAxisAngle(SIMD::QuatRotate(Rotation, SIMD::VFloat4(1.0f, 0.0f, 0.0f, 0.0f)), Radians); }
+        FORCEINLINE void AddRollRadians(float Radians)  { ApplyAxisAngle(SIMD::QuatRotate(Rotation, SIMD::VFloat4(0.0f, 0.0f, 1.0f, 0.0f)), Radians); }
+
+        bool operator==(const VTransform& Other) const
+        {
+            // All lanes equal (pad lanes match by construction: Location.w=0, Scale.w=1 on both).
+            using namespace SIMD;
+            return All(CmpEq(Location, Other.Location))
+                && All(CmpEq(Rotation, Other.Rotation))
+                && All(CmpEq(Scale,    Other.Scale));
         }
 
-        FORCEINLINE void SetScale(const FVector3& ScaleFactors)
-        {
-            Scale *= ScaleFactors;
-        }
+        bool operator!=(const VTransform& Other) const { return !(*this == Other); }
 
-        bool operator==(const FTransform& Other) const
+        VTransform operator*(const VTransform& Other) const
         {
-            return Location == Other.Location &&
-                   Rotation == Other.Rotation &&
-                   Scale == Other.Scale;
-        }
-
-        bool operator!=(const FTransform& Other) const
-        {
-            return !(*this == Other);
-        }
-
-        FTransform operator*(const FTransform& Other) const
-        {
-            FTransform Result;
-            Result.Scale    = Scale * Other.Scale;
-            Result.Rotation = Rotation * Other.Rotation;
-            Result.Location = (Rotation * (Scale * Other.Location)) + Location;
+            using namespace SIMD;
+            VTransform Result;
+            Result.Scale    = Scale * Other.Scale;                                  // pad: 1*1 = 1
+            Result.Rotation = QuatMul(Rotation, Other.Rotation);
+            Result.Location = QuatRotate(Rotation, Scale * Other.Location) + Location;
             return Result;
         }
 
-        FTransform& operator*=(const FTransform& Other)
+        VTransform& operator*=(const VTransform& Other)
         {
             *this = operator*(Other);
             return *this;
         }
 
-        FTransform Inverse() const
+        VTransform Inverse() const
         {
-            FTransform Inv;
-            Inv.Scale       = 1.0f / Scale;
-            Inv.Rotation    = Math::Conjugate(Rotation);
-            Inv.Location    = Inv.Rotation * (Inv.Scale * (-Location));
+            using namespace SIMD;
+            VTransform Inv;
+            Inv.Scale    = Reciprocal(Scale);                                       // pad: 1/1 = 1 (never inf)
+            Inv.Rotation = QuatConjugate(Rotation);
+            Inv.Location = QuatRotate(Inv.Rotation, Inv.Scale * (-Location));
             return Inv;
         }
+
+    private:
+
+        // Rotation = normalize(axisAngle(Axis, Radians) * Rotation), entirely in registers.
+        FORCEINLINE void ApplyAxisAngle(SIMD::VFloat4 Axis, float Radians)
+        {
+            using namespace SIMD;
+            Rotation = QuatNormalize(QuatMul(QuatAngleAxis(Axis, Radians), Rotation));
+        }
+
+        static FVector3 ToVec3(SIMD::VFloat4 V)
+        {
+            alignas(16) float B[4];
+            V.StoreAligned(B);
+            return FVector3(B[0], B[1], B[2]);
+        }
+    };
+
+    using FTransform = VTransform;
+
+    #endif // !REFLECTION_PARSER
+}
+
+// Reflection-parser-only shim; ManualStub skips StaticStruct(), NoCSharp routes to the hand-written C#
+// mirror (LuminaSharp Math.cs), NoLua excludes it. The padded layout matches the real VTransform exactly
+// (Location@0, Rotation@16, Scale@32, 48 bytes / align 16), so reflected FVector3/FQuat properties land on
+// the VFloat4 lanes and the editor + by-name serialization keep the scalar TRS view.
+#ifdef REFLECTION_PARSER
+#ifndef REFLECT
+#define REFLECT(...)
+#define PROPERTY(...)
+#define FUNCTION(...)
+#define GENERATED_BODY(...)
+#endif
+namespace Lumina
+{
+    REFLECT(ManualStub, NoLua, NoCSharp)
+    struct alignas(16) FTransform
+    {
+        PROPERTY(Script, Editable) FVector3 Location;  // @0
+        float Pad0;                                    // @12
+        PROPERTY(Script, Editable) FQuat    Rotation;  // @16
+        PROPERTY(Script, Editable) FVector3 Scale;     // @32
+        float Pad1;                                    // @44
     };
 }
+#endif
 
 template <>
 struct std::formatter<Lumina::FTransform>
 {
-    constexpr auto parse(format_parse_context& ctx)
-    {
-        return ctx.begin();
-    }
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
 
     template <typename FormatContext>
-    auto format(const Lumina::FTransform& transform, FormatContext& ctx) const
+    auto format(const Lumina::FTransform& T, FormatContext& ctx) const
     {
-        return std::format_to(ctx.out(), 
+        const Lumina::FVector3 L = T.GetLocation();
+        const Lumina::FQuat    R = T.GetRotation();
+        const Lumina::FVector3 S = T.GetScale();
+        return std::format_to(ctx.out(),
             "Location: ({:.2f}, {:.2f}, {:.2f}) | Rotation: ({:.2f}, {:.2f}, {:.2f}, {:.2f}) | Scale: ({:.2f}, {:.2f}, {:.2f})",
-            transform.Location.x, transform.Location.y, transform.Location.z,
-            transform.Rotation.w, transform.Rotation.x, transform.Rotation.y, transform.Rotation.z,
-            transform.Scale.x, transform.Scale.y, transform.Scale.z);
+            L.x, L.y, L.z, R.w, R.x, R.y, R.z, S.x, S.y, S.z);
     }
 };

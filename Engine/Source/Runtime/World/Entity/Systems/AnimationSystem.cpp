@@ -273,9 +273,9 @@ namespace Lumina
             {
                 STransformComponent& Transform = TransformStorage.get(Entity);
                 FTransform Delta;
-                Delta.Location = Anim.PendingRootMotion.Translation;
-                Delta.Rotation = Anim.PendingRootMotion.Rotation;
-                Delta.Scale    = FVector3(1.0f);
+                Delta.SetLocation(Anim.PendingRootMotion.Translation);
+                Delta.SetRotation(Anim.PendingRootMotion.Rotation);
+                Delta.SetScale(FVector3(1.0f));
                 Transform.SetLocalTransform(Transform.LocalTransform * Delta);
                 Anim.PendingRootMotion.bHasMotion = false;
             }

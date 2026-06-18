@@ -74,6 +74,15 @@ namespace Lumina::Scripting
         bool IsValid() const { return !Fields.empty(); }
     };
 
+    // A [Button] method exposed on a script type: a parameterless method drawn as an inspector button and
+    // invoked by name on the live instance. Pure data; no VM coupling.
+    struct FScriptButton
+    {
+        FString Method;    ///< Reflected method name (the invoke key).
+        FString Label;     ///< Button text.
+        FString Tooltip;   ///< Optional hover help.
+    };
+
     struct FScriptPropertyEntry;
 
     // Tagged-union style per-instance value; self-serializing, schema-drift safe via reconcile.

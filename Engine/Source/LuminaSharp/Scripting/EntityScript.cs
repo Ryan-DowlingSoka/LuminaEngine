@@ -14,6 +14,22 @@ public abstract class EntityScript
     /// <summary>The world's component store (mirrors C++ FEntityRegistry / entt::registry).</summary>
     public EntityRegistry Registry => World.Registry;
 
+    private System.Threading.CancellationTokenSource? DestroyCts;
+
+    /// <summary>Cancelled when this script is detached/destroyed. Pass to <see cref="GameTask"/> calls so a
+    /// pending <c>await</c> stops cleanly when the entity goes away.</summary>
+    protected System.Threading.CancellationToken DestroyToken => (DestroyCts ??= new System.Threading.CancellationTokenSource()).Token;
+
+    internal void CancelDestroyToken()
+    {
+        if (DestroyCts != null)
+        {
+            DestroyCts.Cancel();
+            DestroyCts.Dispose();
+            DestroyCts = null;
+        }
+    }
+
     private Lumina.STransformComponent? CachedTransform;
 
     /// <summary>This entity's transform, resolved once and cached (every entity has one). Reusing the wrapper

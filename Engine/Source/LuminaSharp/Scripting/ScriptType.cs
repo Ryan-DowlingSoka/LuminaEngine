@@ -63,3 +63,17 @@ public sealed class ScriptProperty
     public Func<object, object?> Get { get; init; } = Instance => null;
     public Action<object, object?> Set { get; init; } = (Instance, Value) => { };
 }
+
+/// <summary>One [Button] method: a parameterless instance method surfaced as an inspector button. The
+/// method is invoked by name through the generic managed-invoke path, so no compiled invoker is cached.</summary>
+public sealed class ScriptButton
+{
+    /// <summary>The reflected method name (the invoke key).</summary>
+    public string Method { get; init; } = "";
+
+    /// <summary>Button text shown in the inspector.</summary>
+    public string Label { get; init; } = "";
+
+    /// <summary>Optional hover help.</summary>
+    public string Tooltip { get; init; } = "";
+}

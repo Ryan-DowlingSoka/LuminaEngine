@@ -118,8 +118,9 @@ namespace Lumina
         const STransformComponent& Transform    = Registry.get<STransformComponent>(Entity);
         FVector3 Forward                       = Transform.GetWorldRotationCached() * FViewVolume::ForwardAxis;
 
-        PDI->DrawCone(Transform.GetWorldLocationCached(), -Forward, Math::Radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
-        PDI->DrawCone(Transform.GetWorldLocationCached(), -Forward, Math::Radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
+        // Cone opens along the spot's aim (transform forward) -- the direction it lights, matching FLight::Direction = -aim (to-light).
+        PDI->DrawCone(Transform.GetWorldLocationCached(), Forward, Math::Radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
+        PDI->DrawCone(Transform.GetWorldLocationCached(), Forward, Math::Radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
     }
 
     CStruct* CComponentVisualizer_DirectionalLight::GetSupportedComponentType() const

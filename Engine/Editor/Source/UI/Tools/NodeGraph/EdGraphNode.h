@@ -33,7 +33,7 @@ namespace Lumina
         };
     }
 
-    REFLECT(NoLua)
+    REFLECT()
     class CEdGraphNode : public CObject
     {
         GENERATED_BODY()

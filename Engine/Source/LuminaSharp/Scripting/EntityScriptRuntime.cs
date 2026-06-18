@@ -57,7 +57,10 @@ internal sealed class EntityScriptRuntime
 
         try
         {
-            Script.OnAttach();
+            using (Game.Push(Script.World, Script.Entity))
+            {
+                Script.OnAttach();
+            }
         }
         catch (Exception Exception)
         {
@@ -76,22 +79,25 @@ internal sealed class EntityScriptRuntime
             return;
         }
 
-        try
+        using (Game.Push(Script.World, Script.Entity))
         {
-            Library.Describe(Script.GetType()).InjectRequiredComponents(Script);
-        }
-        catch (Exception Exception)
-        {
-            Native.Log(ELogLevel.Error, $"EntityScript [RequireComponent] injection threw: {Exception}");
-        }
+            try
+            {
+                Library.Describe(Script.GetType()).InjectRequiredComponents(Script);
+            }
+            catch (Exception Exception)
+            {
+                Native.Log(ELogLevel.Error, $"EntityScript [RequireComponent] injection threw: {Exception}");
+            }
 
-        try
-        {
-            Script.OnReady();
-        }
-        catch (Exception Exception)
-        {
-            Native.Log(ELogLevel.Error, $"EntityScript.OnReady threw: {Exception}");
+            try
+            {
+                Script.OnReady();
+            }
+            catch (Exception Exception)
+            {
+                Native.Log(ELogLevel.Error, $"EntityScript.OnReady threw: {Exception}");
+            }
         }
     }
 
@@ -115,7 +121,10 @@ internal sealed class EntityScriptRuntime
                 }
                 try
                 {
-                    Script.OnUpdate(DeltaTime);
+                    using (Game.Push(Script.World, Script.Entity))
+                    {
+                        Script.OnUpdate(DeltaTime);
+                    }
                 }
                 finally
                 {
@@ -144,12 +153,16 @@ internal sealed class EntityScriptRuntime
         {
             try
             {
-                Script.OnDetach();
+                using (Game.Push(Script.World, Script.Entity))
+                {
+                    Script.OnDetach();
+                }
             }
             catch (Exception Exception)
             {
                 Native.Log(ELogLevel.Error, $"EntityScript.OnDetach threw: {Exception}");
             }
+            Script.CancelDestroyToken();
         }
 
         LiveHandles.Remove(Handle);
@@ -171,6 +184,7 @@ internal sealed class EntityScriptRuntime
 
         try
         {
+            using var Scope = Game.Push(Script.World, Script.Entity);
             switch (Kind)
             {
                 case 0:
@@ -222,6 +236,7 @@ internal sealed class EntityScriptRuntime
 
         try
         {
+            using var Scope = Game.Push(Script.World, Script.Entity);
             switch (Kind)
             {
                 case 7:
@@ -252,6 +267,7 @@ internal sealed class EntityScriptRuntime
 
         try
         {
+            using var Scope = Game.Push(Script.World, Script.Entity);
             Script.OnInput(Event);
         }
         catch (Exception Exception)
@@ -285,6 +301,12 @@ internal sealed class EntityScriptRuntime
         return Description != null ? Serializer.WriteSchema(Description) : null;
     }
 
+    public byte[]? Buttons(string TypeName)
+    {
+        TypeDescription? Description = Library.GetEntityScript(TypeName);
+        return Description != null ? Serializer.WriteButtons(Description) : null;
+    }
+
     /// <summary>Frees every live handle (running OnDetach) so the collectible ALC can unload. Called on
     /// reload/shutdown before the old generation's context is torn down.</summary>
     public void FreeAll()
@@ -295,12 +317,16 @@ internal sealed class EntityScriptRuntime
             {
                 try
                 {
-                    Script.OnDetach();
+                    using (Game.Push(Script.World, Script.Entity))
+                    {
+                        Script.OnDetach();
+                    }
                 }
                 catch (Exception Exception)
                 {
                     Native.Log(ELogLevel.Error, $"EntityScript.OnDetach threw during unload: {Exception}");
                 }
+                Script.CancelDestroyToken();
             }
             if (Handle.IsAllocated)
             {

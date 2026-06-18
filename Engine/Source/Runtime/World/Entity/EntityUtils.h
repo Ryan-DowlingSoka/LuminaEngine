@@ -11,7 +11,8 @@
 namespace Lumina
 {
 	class CStruct;
-	struct FTransform;
+	struct VTransform;
+	using FTransform = VTransform;
 }
 
 namespace Lumina::ECS::Utils
@@ -55,16 +56,27 @@ namespace Lumina::ECS::Utils
 
 	RUNTIME_API void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity);
 
-	// Resolve every dirty transform + descendants. Scans the per-component bWorldDirty flag (gated by the
-	// signal), so writers never touch a shared pool. Hierarchy roots resolved top-down in parallel. Main thread.
+	// Resolve every dirty transform + descendants by draining the lock-free dirty queue (O(dirty), not a
+	// scan). Serialized by the state's resolve guard so concurrent boundary/lazy resolves never write the
+	// same WorldTransform; the per-entity work fans out via Task::ParallelFor for large sets.
 	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
 
-	// The registry-wide dirty signal, cached on each STransformComponent at Bind so setters raise it with one
-	// relaxed store and no registry lookup. Creates the state + bridge hook.
-	RUNTIME_API std::atomic<bool>* EnsureTransformDirtySignal(FEntityRegistry& Registry);
+	// Opaque per-registry transform dirty state (lock-free dirty queues + resolve guard). Lives in the
+	// registry context; cached on each STransformComponent at Bind so setters enqueue without a lookup.
+	struct FTransformDirtyState;
+	RUNTIME_API FTransformDirtyState* EnsureTransformDirtyState(FEntityRegistry& Registry);
 
-	// Tag the entity's body (if any) for the physics sync. Single-threaded.
+	// Enqueue an entity whose local transform changed (lock-free, any thread); raises the dirty signal.
+	// Dedup is the caller's bWorldDirty 0->1 guard. bQueueBody also enqueues it for the physics body
+	// re-sync; pass false for bodiless entities to skip that queue (and its drain) entirely.
+	RUNTIME_API void QueueDirtyTransform(FTransformDirtyState* State, entt::entity Entity, bool bQueueBody);
+
+	// Tag the entity's body (if any) for the physics sync. Single-threaded; for external (non-setter) paths.
 	RUNTIME_API void MarkPhysicsBodyDirtyIfBodied(FEntityRegistry& Registry, entt::entity Entity);
+
+	// Drain the lock-free body-dirty queue (setter-moved entities) and tag the bodied ones with
+	// FNeedsPhysicsBodyUpdate. Call once at the physics boundary, just before the body sync consumes the tags.
+	RUNTIME_API void FlushDirtyPhysicsBodies(FEntityRegistry& Registry);
 
 	// External (non-setter) dirtying; the bridge hook converts the tag to the component flag. Single-threaded.
 	// Per-frame gameplay uses the component setters instead (ParallelFor-safe).

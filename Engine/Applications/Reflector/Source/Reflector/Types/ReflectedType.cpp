@@ -41,6 +41,8 @@ namespace Lumina::Reflection
             case Fnv1aLike("float"):                    return EPropertyTypeFlags::Float;
             case Fnv1aLike("double"):                   return EPropertyTypeFlags::Double;
             case Fnv1aLike("entt::entity"):             return EPropertyTypeFlags::Int32;
+            case Fnv1aLike("Lumina::FEntity"):          return EPropertyTypeFlags::Int32;
+            case Fnv1aLike("FEntity"):                  return EPropertyTypeFlags::Int32;
             case Fnv1aLike("Lumina::CClass"):           return EPropertyTypeFlags::Class;
             case Fnv1aLike("Lumina::FName"):            return EPropertyTypeFlags::Name;
             case Fnv1aLike("Lumina::FString"):          return EPropertyTypeFlags::String;

@@ -62,3 +62,25 @@ public sealed class HideAttribute : Attribute
 public sealed class RequireComponentAttribute : Attribute
 {
 }
+
+/// <summary>Exposes a parameterless method as a clickable button in the script component's inspector.
+/// Clicking it invokes the method on the live script instance (only while the game is running). Methods
+/// taking arguments are ignored with a warning.</summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class ButtonAttribute : Attribute
+{
+    public ButtonAttribute()
+    {
+    }
+
+    public ButtonAttribute(string Label)
+    {
+        this.Label = Label;
+    }
+
+    /// <summary>Button text override (defaults to the method name).</summary>
+    public string? Label { get; set; }
+
+    /// <summary>Hover help.</summary>
+    public string? Tooltip { get; set; }
+}

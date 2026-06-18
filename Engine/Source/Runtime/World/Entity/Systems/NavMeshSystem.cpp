@@ -734,10 +734,11 @@ namespace Lumina
             if (const STransformComponent* X = Context.GetRegistry().try_get<STransformComponent>(Entity))
             {
                 const FTransform& WT = X->GetWorldTransform();
-                Comp.Runtime.WorldScale = FVector3(std::fabs(WT.Scale.x), std::fabs(WT.Scale.y), std::fabs(WT.Scale.z));
+                const FVector3 WS = WT.GetScale();
+                Comp.Runtime.WorldScale = FVector3(std::fabs(WS.x), std::fabs(WS.y), std::fabs(WS.z));
                 if (Context.GetWorldType() == EWorldType::Editor)
                 {
-                    Comp.Center = WT.Location;
+                    Comp.Center = WT.GetLocation();
                 }
             }
 
@@ -1105,7 +1106,7 @@ namespace Lumina
             SNavMeshComponent& Nav = Reg.get<SNavMeshComponent>(Entity);
             if (auto* Xform = Reg.try_get<STransformComponent>(Entity))
             {
-                Nav.Center = Xform->GetWorldTransform().Location;
+                Nav.Center = Xform->GetWorldTransform().GetLocation();
             }
         }
     }

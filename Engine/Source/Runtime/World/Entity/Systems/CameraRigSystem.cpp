@@ -50,9 +50,9 @@ namespace Lumina
         static void ApplyWorldPose(entt::registry& Registry, entt::entity Entity, const STransformComponent& Xform, const FVector3& Location, const FQuat& Rotation)
         {
             FTransform World;
-            World.Location = Location;
-            World.Rotation = Rotation;
-            World.Scale    = Xform.GetWorldScale();
+            World.SetLocation(Location);
+            World.SetRotation(Rotation);
+            World.SetScale(Xform.GetWorldScale());
             ECS::Utils::SetEntityWorldTransform(Registry, Entity, World);
         }
     }

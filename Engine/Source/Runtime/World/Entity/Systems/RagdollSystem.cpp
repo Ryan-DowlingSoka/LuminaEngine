@@ -122,12 +122,12 @@ namespace Lumina
                     Scene->GetRagdollRootTransform(*Ragdoll.Ragdoll, RootPos, RootRot);
 
                     FTransform World;
-                    World.Location = RootPos;
-                    World.Rotation = RootRot;
-                    World.Scale    = Transform.GetWorldScale();
+                    World.SetLocation(RootPos);
+                    World.SetRotation(RootRot);
+                    World.SetScale(Transform.GetWorldScale());
                     ECS::Utils::SetEntityWorldTransform(SystemContext.GetRegistry(), Entity, World);
 
-                    WorldToEntity = Math::Inverse(AnimPose::ComposeTRS(RootPos, RootRot, World.Scale));
+                    WorldToEntity = Math::Inverse(AnimPose::ComposeTRS(RootPos, RootRot, World.GetScale()));
                 }
                 else
                 {

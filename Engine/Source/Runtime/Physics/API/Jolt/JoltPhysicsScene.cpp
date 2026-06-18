@@ -370,8 +370,8 @@ namespace Lumina::Physics
                                             bool bFlipNormal)
         {
             SCollisionEvent Event;
-            Event.Entity      = static_cast<uint32>(entt::to_integral(SelfEntity));
-            Event.Other       = static_cast<uint32>(entt::to_integral(OtherEntity));
+            Event.Entity      = SelfEntity;
+            Event.Other       = OtherEntity;
             Event.BodyID      = SelfBodyID;
             Event.OtherBodyID = OtherBodyID;
             Event.Point       = Record.Point;
@@ -482,8 +482,8 @@ namespace Lumina::Physics
 
             // The activation callbacks ignore the event payload; carry the self entity for context.
             SCollisionEvent Event{};
-            Event.Entity = static_cast<uint32>(entt::to_integral(Record.Entity));
-            Event.Other  = 0xFFFFFFFFu;
+            Event.Entity = Record.Entity;
+            Event.Other  = entt::null;
             DotNet::DispatchScriptCollision(CsComp->Instance, Kind, &Event);
         }
     }
@@ -745,6 +745,8 @@ namespace Lumina::Physics
         LUMINA_PROFILE_SCOPE();
 
         entt::registry& Registry = World->GetEntityRegistry();
+        
+        ECS::Utils::FlushDirtyPhysicsBodies(Registry);
 
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
@@ -976,12 +978,16 @@ namespace Lumina::Physics
         BulkCreateRigidBodies(Registry);
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent>();
-        
+
         CharacterView.each([&] (entt::entity EntityID, SCharacterPhysicsComponent&)
         {
             OnCharacterComponentConstructed(Registry, EntityID);
         });
-        
+
+        // Seed the has-body hint for bodies that existed at play start (BulkCreateRigidBodies bypasses the
+        // on_construct hook). MarkDirty uses it to skip the DirtyBodies queue for bodiless entities.
+        Registry.view<SRigidBodyComponent, STransformComponent>().each([](SRigidBodyComponent&, STransformComponent& T) { T.SetHasPhysicsBody(true); });
+
         JoltSystem->OptimizeBroadPhase();
         
         Registry.on_construct<SCharacterPhysicsComponent>().connect<&FJoltPhysicsScene::OnCharacterComponentConstructed>(this);
@@ -2039,7 +2045,8 @@ namespace Lumina::Physics
 
         SCharacterPhysicsComponent& CharacterComponent = Registry.get<SCharacterPhysicsComponent>(Entity);
         STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);
-        
+        TransformComponent.SetHasPhysicsBody(true);   // setter MarkDirty now enqueues this entity for body re-sync
+
         auto Result = JPH::RotatedTranslatedShapeSettings(
             JPH::Vec3(0, 0, 0),
             JPH::Quat::sIdentity(),
@@ -2106,6 +2113,12 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::OnCharacterComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
+        // Clear the transform's has-body hint unless a rigid body still remains on the entity.
+        if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetHasPhysicsBody(Registry.any_of<SRigidBodyComponent>(Entity));
+        }
+
         // Drop the character from the char-vs-char registry before its CharacterVirtual is released (the
         // shared list holds raw pointers). The proxy set is the source of truth for membership, so this is
         // correct even if bCollideWithCharacters was toggled after construction.
@@ -2622,6 +2635,12 @@ namespace Lumina::Physics
     void FJoltPhysicsScene::OnRigidBodyComponentConstructed(entt::registry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Flag the transform so setter MarkDirty enqueues this entity for the body re-sync.
+        if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetHasPhysicsBody(true);
+        }
 
         // Inside a game-thread batch (e.g. fracture): collect and create together in EndBodyBatch.
         if (bBatchingBodies && !bStepInProgress.load(std::memory_order_acquire))
@@ -3944,6 +3963,12 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::OnRigidBodyComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
+        // Clear the transform's has-body hint unless a character body still remains on the entity.
+        if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetHasPhysicsBody(Registry.any_of<SCharacterPhysicsComponent>(Entity));
+        }
+
         SRigidBodyComponent& RigidBodyComponent = Registry.get<SRigidBodyComponent>(Entity);
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID(RigidBodyComponent.BodyID);

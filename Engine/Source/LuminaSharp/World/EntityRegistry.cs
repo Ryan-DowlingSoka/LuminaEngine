@@ -64,23 +64,16 @@ public readonly struct EntityRegistry
         return Wrapper<T>.Create(Pointer);
     }
 
-    /// <summary>Emplace the component as a COPY of a detached, pre-configured instance (`new T()`), so
-    /// on_construct hooks see the configured value. Returns the live wrapper; the caller still owns
-    /// (and disposes) <paramref name="Value"/>.</summary>
-    public T? Emplace<T>(Entity Entity, T Value) where T : NativeStruct
-    {
-        IntPtr Pointer = Native.EmplaceComponentCopy(WorldHandle, Entity.Id, ComponentOps<T>.Token, Value.Handle);
-        if (Pointer == IntPtr.Zero)
-        {
-            return null;
-        }
-        return Wrapper<T>.Create(Pointer);
-    }
-
     public bool Remove<T>(Entity Entity) where T : NativeStruct
     {
         return Native.RemoveComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token) != 0;
     }
+
+    /// <summary>Alias of <see cref="Emplace{T}(Entity)"/> (s&amp;box wording).</summary>
+    public T? Add<T>(Entity Entity) where T : NativeStruct => Emplace<T>(Entity);
+
+    /// <summary>The component of type T, adding a default one first if absent.</summary>
+    public T? GetOrAdd<T>(Entity Entity) where T : NativeStruct => TryGet<T>(Entity) ?? Emplace<T>(Entity);
 
     /// <summary>Get-or-emplace by a pre-resolved op-table token (zero on failure). For the [RequireComponent]
     /// injector, where the token is cached without a generic instantiation.</summary>
@@ -181,6 +174,9 @@ public readonly struct EntityRegistry
     {
         return new View<T1>(WorldHandle, ComponentOps<T1>.Token, Filter);
     }
+
+    /// <summary>Shorthand for <see cref="View{T1}"/>: iterate every entity that has a T component.</summary>
+    public View<T1> All<T1>(Exclude Filter = default) where T1 : NativeStruct => View<T1>(Filter);
 
     public View<T1, T2> View<T1, T2>(Exclude Filter = default)
         where T1 : NativeStruct

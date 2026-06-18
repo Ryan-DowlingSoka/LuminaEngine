@@ -90,10 +90,11 @@ namespace Lumina::Reflection::Visitor
         ReflectedEnum->LineNumber = ClangUtils::GetCursorLineNumber(Cursor);
         ReflectedEnum->GenerateMetadata(Macro.MacroContents);
 
-        // Record the underlying integer size so the C# emitter knows whether this enum can sit inside a
-        // blittable by-value struct mirror (only 4-byte enums match the int-backed generated C# enum).
+        // Record the underlying integer size + signedness so the C# emitter can give the generated enum a
+        // matching explicit backing type, letting it mirror by value inside a blittable struct at any width.
         const long long EnumSizeBytes = clang_Type_getSizeOf(clang_getEnumDeclIntegerType(Cursor));
         ReflectedEnum->UnderlyingSize = (EnumSizeBytes > 0) ? (uint32_t)EnumSizeBytes : 4;
+        ReflectedEnum->bUnsignedUnderlying = IntegerType->isUnsignedIntegerType();
 
         if (!Context->CurrentNamespace.empty())
         {

@@ -148,4 +148,10 @@ namespace Lumina
         static CStruct* Struct = StaticGetBaseStructureInternal("FQuat");
         return Struct;
     }
+
+    CStruct* TBaseStructure<FTransform>::Get()
+    {
+        static CStruct* Struct = StaticGetBaseStructureInternal("FTransform");
+        return Struct;
+    }
 }

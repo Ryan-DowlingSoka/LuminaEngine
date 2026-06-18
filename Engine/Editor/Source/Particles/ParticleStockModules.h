@@ -22,7 +22,7 @@ namespace Lumina
     // Spawn modules
 
     /** Places newborn particles by sampling an emitter shape and writing P.Position. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_SpawnLocation : public CParticleModule
     {
         GENERATED_BODY()
@@ -47,7 +47,7 @@ namespace Lumina
     };
 
     /** Sets the initial P.Velocity. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_InitialVelocity : public CParticleModule
     {
         GENERATED_BODY()
@@ -78,7 +78,7 @@ namespace Lumina
     };
 
     /** Sets the initial particle color. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_InitialColor : public CParticleModule
     {
         GENERATED_BODY()
@@ -95,7 +95,7 @@ namespace Lumina
     };
 
     /** Sets the initial particle size (random within a range). */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_InitialSize : public CParticleModule
     {
         GENERATED_BODY()
@@ -112,7 +112,7 @@ namespace Lumina
     };
 
     /** Sets how long newborn particles live (random within a range). */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_Lifetime : public CParticleModule
     {
         GENERATED_BODY()
@@ -129,7 +129,7 @@ namespace Lumina
     };
 
     /** Sets the initial rotation and rotation speed (random within ranges). */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_InitialRotation : public CParticleModule
     {
         GENERATED_BODY()
@@ -151,7 +151,7 @@ namespace Lumina
     // Update modules
 
     /** Accelerates particles by a constant gravity vector. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_GravityForce : public CParticleModule
     {
         GENERATED_BODY()
@@ -168,7 +168,7 @@ namespace Lumina
     };
 
     /** Exponentially damps velocity (framerate-independent). */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_Drag : public CParticleModule
     {
         GENERATED_BODY()
@@ -185,7 +185,7 @@ namespace Lumina
     };
 
     /** Adds turbulence via a cheap curl-noise field. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_CurlNoiseForce : public CParticleModule
     {
         GENERATED_BODY()
@@ -208,7 +208,7 @@ namespace Lumina
     };
 
     /** Blends color from Start to End over the particle's life. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_ColorOverLife : public CParticleModule
     {
         GENERATED_BODY()
@@ -228,7 +228,7 @@ namespace Lumina
     };
 
     /** Interpolates size from Start to End over the particle's life. */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_SizeOverLife : public CParticleModule
     {
         GENERATED_BODY()
@@ -251,7 +251,7 @@ namespace Lumina
      * Integrates velocity into position (and spin into rotation). Normally the last module in the
      * Update stack so all forces for the frame are accounted for first ("Solve Forces and Velocity").
      */
-    REFLECT(NoLua)
+    REFLECT()
     class CParticleModule_Integrate : public CParticleModule
     {
         GENERATED_BODY()

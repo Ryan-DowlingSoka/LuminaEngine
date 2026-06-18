@@ -369,9 +369,12 @@ namespace Lumina
 
         bool bReset = false;
         // Translation is always in meters; rotation (degrees) and scale stay unitless.
-        Merge(DrawAxisRow("T", LE_ICON_AXIS_ARROW, ImVec4(0.40f, 0.70f, 1.0f, 1.0f), "Translation (Location)", Math::ValuePtr(DisplayValue.Location), 0.01f, bReset, 0.0f, "%.3f m"));
+        // The SIMD transform has no scalar member to point at, so edit scalar buffers and write back.
+        FVector3 Translation = DisplayValue.GetLocation();
+        Merge(DrawAxisRow("T", LE_ICON_AXIS_ARROW, ImVec4(0.40f, 0.70f, 1.0f, 1.0f), "Translation (Location)", Math::ValuePtr(Translation), 0.01f, bReset, 0.0f, "%.3f m"));
+        DisplayValue.SetLocation(Translation);
 
-        FVector3 EulerRotation = Math::Degrees(Math::EulerAngles(DisplayValue.Rotation));
+        FVector3 EulerRotation = Math::Degrees(Math::EulerAngles(DisplayValue.GetRotation()));
         bool bRotationReset = false;
         const EPropertyChangeOp RotationOp = DrawAxisRow("R", LE_ICON_ROTATE_360, ImVec4(0.40f, 1.0f, 0.70f, 1.0f), "Rotation (Euler Angles)", Math::ValuePtr(EulerRotation), 0.1f, bRotationReset, 0.0f, "%.3f\xc2\xb0");
         if (RotationOp == EPropertyChangeOp::Updated || bRotationReset)
@@ -381,7 +384,9 @@ namespace Lumina
         Merge(RotationOp);
         bReset |= bRotationReset;
 
-        Merge(DrawAxisRow("S", LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT, ImVec4(1.0f, 0.70f, 0.40f, 1.0f), "Scale (multiplier)", Math::ValuePtr(DisplayValue.Scale), 0.01f, bReset, 1.0f, "%.3f\xc3\x97"));
+        FVector3 ScaleVec = DisplayValue.GetScale();
+        Merge(DrawAxisRow("S", LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT, ImVec4(1.0f, 0.70f, 0.40f, 1.0f), "Scale (multiplier)", Math::ValuePtr(ScaleVec), 0.01f, bReset, 1.0f, "%.3f\xc3\x97"));
+        DisplayValue.SetScale(ScaleVec);
 
         // A reset writes the value this frame: open the undo transaction now (Started),
         // commit it next frame (Finished), like the discrete object/array edits.

@@ -87,9 +87,13 @@ namespace Lumina::Reflection
         void AddConstant(const FConstant& Constant) { Constants.push_back(Constant); }
 
         eastl::vector<FConstant> Constants;
-        // Size in bytes of the enum's underlying integer type. The generated C# enum is int-backed (4), so
-        // only 4-byte enums can appear in a blittable by-value struct mirror; ComputeBlittableLayout checks this.
+        // Size in bytes of the enum's underlying integer type. The generated C# enum is emitted with a matching
+        // explicit backing type (byte/ushort/uint/ulong or the signed forms), so an enum of any width can sit
+        // inside a blittable by-value struct mirror; ComputeBlittableLayout uses this as the field size/align.
         uint32_t                 UnderlyingSize = 4;
+        // True when the underlying integer type is unsigned (uint8/uint16/...); selects the C# backing type's
+        // signedness. Default scoped enums (no fixed type) are int-backed, hence signed.
+        bool                     bUnsignedUnderlying = false;
     };
 
     class FReflectedStruct : public FReflectedType

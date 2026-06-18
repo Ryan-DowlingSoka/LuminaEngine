@@ -48,13 +48,6 @@ public static unsafe partial class Native
     [NativeCall] public static partial IntPtr EmplaceComponent(ulong World, uint Entity, IntPtr Ops);
     [NativeCall] public static partial int RemoveComponent(ulong World, uint Entity, IntPtr Ops);
 
-    // Detached construction: a default-constructed, engine-allocated component the C# side owns and
-    // frees, plus emplace-by-copy. Backs `new T()` + Registry.Emplace(entity, value).
-
-    [NativeCall] public static partial IntPtr NewComponent(IntPtr Ops);
-    [NativeCall] public static partial void DeleteComponent(IntPtr Ops, IntPtr Instance);
-    [NativeCall] public static partial IntPtr EmplaceComponentCopy(ulong World, uint Entity, IntPtr Ops, IntPtr Source);
-
     // Registry signals. Connect binds a managed thunk (+ GCHandle context) to a component's
     // on_construct/on_destroy/on_update sink and returns an opaque subscription handle; Disconnect releases
     // it. Patch fires on_update for an entity's component (the manual signal pulse). Kind: 0/1/2.
@@ -102,6 +95,12 @@ public static unsafe partial class Native
 
     /// <summary>A loaded object's asset path (registry reverse lookup), or "" if it has none.</summary>
     [NativeCall] public static partial string GetObjectPath(IntPtr Object);
+
+    // Weak-handle validity backing NativeObject. ObjectGetHandle packs a live CObject*'s (Index, Generation)
+    // as Generation<<32 | Index (Index = -1 if untracked); ObjectResolve returns the live pointer only if that
+    // handle still names a live, non-destroyed object, else zero. Pure reads -> SuppressGCTransition.
+    [NativeCall(SuppressGCTransition = true)] public static partial long ObjectGetHandle(IntPtr Object);
+    [NativeCall(SuppressGCTransition = true)] public static partial IntPtr ObjectResolve(int Index, int Generation);
 
     // Generic per-property-type accessors. The Reflector emits these for non-blittable properties
     // (FString/FName/object ref) with the property's FProperty* token (Prop) resolved once and cached;

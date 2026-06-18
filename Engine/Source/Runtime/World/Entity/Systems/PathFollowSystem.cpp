@@ -41,7 +41,7 @@ namespace Lumina
                 }
                 if (auto* T = Context.TryGet<STransformComponent>(Comp.TargetEntity))
                 {
-                    Comp.TargetLocation = T->WorldTransform.Location;
+                    Comp.TargetLocation = T->WorldTransform.GetLocation();
                 }
             }
             OutGoal = Comp.TargetLocation;
@@ -97,7 +97,7 @@ namespace Lumina
                 return;
             }
 
-            const FVector3 AgentPos = Xform.WorldTransform.Location;
+            const FVector3 AgentPos = Xform.WorldTransform.GetLocation();
 
             const bool bMovedTarget = Math::Length(Goal - Comp.PathSourceTarget) > Comp.RepathDistance;
             const bool bIntervalElapsed = Comp.TimeSinceLastPath > Comp.RepathInterval;

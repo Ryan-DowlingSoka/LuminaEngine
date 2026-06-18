@@ -3,79 +3,78 @@ using System;
 namespace LuminaSharp;
 
 /// <summary>
-/// Base for the generated opaque wrappers around native CObjects. Holds the native handle; the typed
-/// property/method API is added by the generated binding layer as it grows. Generated wrappers (in
-/// namespace Lumina) derive from this.
+/// Base for the generated opaque wrappers around native CObjects. Holds a WEAK handle (the CObject's
+/// object-array index + generation) rather than a bare pointer, so a wrapper to a since-destroyed object
+/// fails loudly instead of silently reading reclaimed memory: <see cref="IsValid"/> reports liveness (like
+/// Unity's <c>obj != null</c>), and every generated property/method accessor reads through
+/// <see cref="Handle"/>, which re-resolves and throws once the object is freed. Engine-constructed only —
+/// instances are handed out by the engine (Asset.Load, the generated getters, ...), never <c>new</c>'d by
+/// user code. CObjects don't move while alive, so re-resolving returns the same pointer; it's purely a
+/// generation-validated liveness gate.
 /// </summary>
 public class NativeObject
 {
-    internal IntPtr Handle;
+    private readonly IntPtr RawHandle;       // pointer captured at construction; the fallback when untracked
+    private readonly int ObjectIndex;        // GObjectArray slot, or -1 if the object isn't array-tracked
+    private readonly int ObjectGeneration;   // slot generation at capture; a free/reuse bumps it -> stale
 
     internal NativeObject(IntPtr Handle)
     {
-        this.Handle = Handle;
+        RawHandle = Handle;
+        long Packed = Native.ObjectGetHandle(Handle);
+        ObjectIndex = unchecked((int)Packed);
+        ObjectGeneration = (int)(Packed >> 32);
     }
 
-    protected NativeObject()
+    /// <summary>True while the native CObject this wraps is still alive (index + generation validated
+    /// against the object array). Mirrors Unity's <c>obj != null</c> — check it before using a reference
+    /// you've held across frames, asset unloads, or other structural changes.</summary>
+    public bool IsValid => ObjectIndex < 0
+        ? RawHandle != IntPtr.Zero
+        : Native.ObjectResolve(ObjectIndex, ObjectGeneration) != IntPtr.Zero;
+
+    /// <summary>The live native pointer. Throws <see cref="InvalidOperationException"/> if the object has
+    /// been destroyed; every generated accessor reads through here, so touching a dead reference fails
+    /// loudly rather than corrupting memory. (An object the array doesn't track falls back to the raw
+    /// pointer, preserving the old behavior.)</summary>
+    internal IntPtr Handle
     {
+        get
+        {
+            if (ObjectIndex < 0)
+            {
+                return RawHandle;
+            }
+            IntPtr Pointer = Native.ObjectResolve(ObjectIndex, ObjectGeneration);
+            if (Pointer == IntPtr.Zero)
+            {
+                throw new InvalidOperationException(
+                    "Use of a destroyed native object: the CObject this wrapper referenced has been freed. " +
+                    "Don't cache wrappers across frames or structural changes — re-fetch it (Asset.Load, the property, ...).");
+            }
+            return Pointer;
+        }
     }
 
-    /// <summary>Rebinds this wrapper to a different native instance without allocating. Used by the
-    /// View to reuse ONE wrapper per type across an iteration, reassigning the handle each step.</summary>
-    internal void SetHandle(IntPtr NewHandle)
+    /// <summary>Throws <see cref="InvalidOperationException"/> if the object has been destroyed.</summary>
+    public void ThrowIfInvalid()
     {
-        Handle = NewHandle;
+        _ = Handle;
     }
 }
 
 /// <summary>
 /// Base for the generated opaque wrappers around native structs that are NOT blittable (they hold
-/// FString/containers/smart-pointers, so they can't be mirrored by value). Blittable structs get a
-/// real [StructLayout(Sequential)] value type instead.
-///
-/// A wrapper is normally a VIEW: <see cref="Handle"/> points at a component living in the ECS (returned
-/// by Registry.Get/Emplace). A component wrapper can also be constructed detached (`new T()`), which
-/// allocates an engine-owned native instance; that one OWNS its memory and must be disposed (use
-/// `using`, or pass it to Registry.Emplace which copies it in). Disposing a view is a no-op.
+/// FString/containers/smart-pointers, so they can't be mirrored by value). A wrapper is a VIEW onto a
+/// component living in the ECS (returned by Registry.Get/Emplace/View); writes through it persist.
+/// Engine-constructed only.
 /// </summary>
-public class NativeStruct : IDisposable
+public class NativeStruct
 {
     internal IntPtr Handle;
-    internal bool Owned;    // true only for a detached `new T()` instance
-    internal IntPtr Ops;    // the component's op-table token (for the native deleter)
 
     internal NativeStruct(IntPtr Handle)
     {
         this.Handle = Handle;
-    }
-
-    protected NativeStruct()
-    {
-    }
-
-    /// <summary>Detached-construction ctor: allocates an engine-owned default instance of TypeName.</summary>
-    protected NativeStruct(string TypeName)
-    {
-        Ops = Native.FindComponentOps(TypeName);
-        Handle = Native.NewComponent(Ops);
-        Owned = Handle != IntPtr.Zero;
-    }
-
-    /// <summary>Rebinds this wrapper to a different live component without allocating. Used by the View
-    /// to reuse ONE wrapper per component type across an iteration, reassigning the handle each step.
-    /// Only valid on a non-owning VIEW wrapper.</summary>
-    internal void SetHandle(IntPtr NewHandle)
-    {
-        Handle = NewHandle;
-    }
-
-    public void Dispose()
-    {
-        if (Owned && Handle != IntPtr.Zero)
-        {
-            Native.DeleteComponent(Ops, Handle);
-            Handle = IntPtr.Zero;
-            Owned = false;
-        }
     }
 }

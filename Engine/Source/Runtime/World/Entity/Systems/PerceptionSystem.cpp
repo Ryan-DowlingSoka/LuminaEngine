@@ -139,7 +139,7 @@ namespace Lumina
                 {
                     continue;
                 }
-                const FVector3 Ear = Xf->WorldTransform.Location + Comp->EyeOffset;
+                const FVector3 Ear = Xf->WorldTransform.GetLocation() + Comp->EyeOffset;
                 const float Radius = Comp->HearingRadius * (Stim.Strength > 0.0f ? Stim.Strength : 1.0f);
                 if (Math::Length(Stim.Location - Ear) > Radius)
                 {
@@ -174,10 +174,10 @@ namespace Lumina
                 && (Cs->CallbackFlags & (1 << Kind)) != 0)
             {
                 SPerceptionEvent Payload;
-                Payload.Perceiver = (uint32)Perceiver;
-                Payload.Target    = (uint32)Target.Target;
+                Payload.Perceiver = Perceiver;
+                Payload.Target    = Target.Target;
                 Payload.Location  = Target.LastKnownLocation;
-                Payload.Sense     = (uint32)Target.ActiveSenses;
+                Payload.Sense     = (EAISenseChannel)Target.ActiveSenses;
                 Payload.Strength  = Target.LastStrength;
                 DotNet::DispatchScriptPerception(Cs->Instance, Kind, &Payload);
             }
@@ -252,7 +252,7 @@ namespace Lumina
                 const STransformComponent& Xf = SourceView.get<STransformComponent>(Src);
                 FPerceptionSource PS;
                 PS.Entity = Src;
-                PS.AimPoint = Xf.WorldTransform.Location + S.SightTargetOffset;
+                PS.AimPoint = Xf.WorldTransform.GetLocation() + S.SightTargetOffset;
                 PS.AffiliationTags = &S.AffiliationTags;
                 PS.BodyID = Context.GetEntityBodyID(Src);
                 PS.RegisteredSenses = (uint8)S.RegisteredSenses;
@@ -284,7 +284,7 @@ namespace Lumina
             SPerceptionComponent& Comp = View.get<SPerceptionComponent>(E);
             const STransformComponent& Xform = TransformStorage.get(E);
 
-            const FVector3 Loc = Xform.WorldTransform.Location;
+            const FVector3 Loc = Xform.WorldTransform.GetLocation();
             const FVector3 Eye = Loc + Comp.EyeOffset;
             const FVector3 Forward = Xform.WorldTransform.GetForward();
             Comp.LastEyeLocation = Eye;
@@ -352,8 +352,6 @@ namespace Lumina
                 SRayCastSettings Ray;
                 Ray.Start = Eye;
                 Ray.End = Src.AimPoint;
-                Ray.bDrawDebug = true;
-                Ray.DebugDuration = 0.2f;
                 Ray.LayerMask = Comp.SightBlockingMask;
                 Ray.IgnoreBodies.push_back(SelfBody);
                 const TOptional<SRayResult> Hit = Scene->CastRay(Ray);

@@ -20,7 +20,10 @@ public unsafe partial class CWorld
     public Perception Perception => new(WorldHandle);
     public GameplayMessageBus Messages => new(WorldHandle);
     public GameplayTags Tags => new(WorldHandle);
-    
+    public Audio Audio => new(WorldHandle);
+    public Timers Timers => new(WorldHandle);
+    public LuminaSharp.Animation Animation => new(WorldHandle);
+
     public float DeltaTime => (float)GetWorldDeltaTime();
     public double ElapsedTime => GetTimeSinceWorldCreation();
 
@@ -48,4 +51,11 @@ public unsafe partial class CWorld
         }
         return Spawned;
     }
+
+    /// <summary>Spawn the prefab at <paramref name="Path"/> (s&amp;box-style alias of <see cref="SpawnPrefab(string)"/>).</summary>
+    public Entity Spawn(string Path) => SpawnPrefab(Path);
+
+    /// <summary>Spawn and place the prefab at <paramref name="Path"/>.</summary>
+    public Entity Spawn(string Path, FVector3 Location, FQuat? Rotation = null, Entity? Parent = null)
+        => SpawnPrefab(Path, Location, Rotation, Parent);
 }

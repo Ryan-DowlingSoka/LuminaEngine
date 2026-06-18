@@ -10,7 +10,7 @@ namespace Lumina
     struct FScriptPropertyOverrides;
     struct FSystemContext;
     enum class EUpdateStage : uint8;
-    namespace Scripting { struct FScriptExportSchema; struct FScriptPropertyEntry; }
+    namespace Scripting { struct FScriptExportSchema; struct FScriptPropertyEntry; struct FScriptButton; }
 }
 
 // FDotNetHost embeds CoreCLR (via the bundled runtime under External/DotNet) and
@@ -116,6 +116,14 @@ int32 bRepeat, double MouseX, double MouseY, double DeltaX, double DeltaY, doubl
     // Builds the [Property] schema + default values for a C# script type (via managed reflection).
     // Scalar kinds (bool/int/double/string/vec2-4). Returns false if the type isn't loaded.
     RUNTIME_API bool GatherScriptSchema(FStringView ScriptClass, Scripting::FScriptExportSchema& OutSchema, TVector<Scripting::FScriptPropertyEntry>& OutDefaults);
+
+    // Gathers the [Button] methods exposed on a C# script type (via managed reflection). Empty if the type
+    // isn't loaded or declares no buttons.
+    RUNTIME_API void GatherScriptButtons(FStringView ScriptClass, TVector<Scripting::FScriptButton>& OutButtons);
+
+    // Invokes a parameterless [Button] method by name on a live script Instance. Returns false if scripting
+    // is down or Instance is null. The method runs synchronously on the calling (game) thread.
+    RUNTIME_API bool InvokeScriptButton(void* Instance, FStringView Method);
 
     // Applies per-instance override values onto a live script Instance via a recursive value blob
     // (supports nested structs + arrays; schema-drift fields are skipped). Call after CreateEntityScript

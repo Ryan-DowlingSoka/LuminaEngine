@@ -1,26 +1,26 @@
 #pragma once
 
 #include "Core/Object/ObjectMacros.h"
+#include "World/Entity/EntityHandle.h"
 #include "CollisionEvent.generated.h"
 
 namespace Lumina
 {
-    // Payload for OnContact/OnOverlap; pushed to Lua as tagged userdata (one alloc, lazy metatable reads)
-    // so many contacts/frame stay cheap. Fields are self-oriented: Entity/Velocity = self, Normal away from self.
-    // NoCSharp: the auto-generated opaque wrapper is useless here (the C# side needs it by value); LuminaSharp
-    // hand-writes a blittable `SCollisionEvent` value struct mirroring this layout instead.
-    REFLECT(Event, NoCSharp)
+    // Payload for OnContact/OnOverlap. Fields are self-oriented: Entity/Velocity = self, Normal away from self.
+    // Every field is blittable (entt::entity surfaces as the C# Entity handle), so the Reflector auto-generates
+    // the LuminaSharp SCollisionEvent value mirror + a native size assert — no hand-written mirror.
+    REFLECT(Event)
     struct SCollisionEvent
     {
         GENERATED_BODY()
 
         /** This script's entity. */
         PROPERTY(Script)
-        uint32 Entity = entt::null;
+        FEntity Entity = entt::null;
 
         /** The other body's entity. */
         PROPERTY(Script)
-        uint32 Other = entt::null;
+        FEntity Other = entt::null;
 
         /** This body's Jolt body id. */
         PROPERTY(Script)

@@ -100,7 +100,10 @@ internal sealed class EntitySystemRuntime
             }
             try
             {
-                System.OnUpdate(new SystemContext(Context));
+                using (Game.PushWorld(System.World))
+                {
+                    System.OnUpdate(new SystemContext(Context));
+                }
             }
             finally
             {
@@ -128,7 +131,10 @@ internal sealed class EntitySystemRuntime
         {
             try
             {
-                System.OnTeardown(default);
+                using (Game.PushWorld(System.World))
+                {
+                    System.OnTeardown(default);
+                }
             }
             catch (Exception Exception)
             {
@@ -152,7 +158,10 @@ internal sealed class EntitySystemRuntime
             {
                 try
                 {
-                    System.OnTeardown(default);
+                    using (Game.PushWorld(System.World))
+                    {
+                        System.OnTeardown(default);
+                    }
                 }
                 catch (Exception Exception)
                 {

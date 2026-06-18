@@ -1426,7 +1426,11 @@ namespace Lumina
             ImGui::PopStyleColor();
             ImGui::SameLine();
             ImGuiX::TextTooltip("Translation (Location)");
-            ImGui::DragFloat3("T", Math::ValuePtr(CameraTransform.WorldTransform.Location), 0.01f);
+            FVector3 CameraLocation = CameraTransform.GetWorldLocation();
+            if (ImGui::DragFloat3("T", Math::ValuePtr(CameraLocation), 0.01f))
+            {
+                CameraTransform.SetLocalLocation(CameraLocation);
+            }
 
             ImGui::PushStyleColor(ImGuiCol_Text, EditorColors::Success());
             ImGui::TextUnformatted(LE_ICON_ROTATE_360);

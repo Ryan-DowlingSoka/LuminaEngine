@@ -20,7 +20,7 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        // Excluded from the C# API: explicit opt-out (NoCSharp/NoLua) or a manually-registered stub
+        // Excluded from the C# API: explicit opt-out (NoCSharp/) or a manually-registered stub
         // (ManualStub, e.g. the math types) whose real layout the Reflector doesn't see, those are
         // hand-written in LuminaSharp instead.
         bool IsExcludedFromCSharp(const FReflectedType& Type)
@@ -28,7 +28,7 @@ namespace Lumina::Reflection
             return eastl::any_of(Type.Metadata.begin(), Type.Metadata.end(),
                 [](const FMetadataPair& Pair)
                 {
-                    return Pair.Key == "NoCSharp" || Pair.Key == "NoLua" || Pair.Key == "ManualStub";
+                    return Pair.Key == "NoCSharp" || Pair.Key == "ManualStub";
                 });
         }
 
@@ -36,6 +36,21 @@ namespace Lumina::Reflection
         {
             return eastl::any_of(Type.Metadata.begin(), Type.Metadata.end(),
                 [Key](const FMetadataPair& Pair) { return Pair.Key == Key; });
+        }
+
+        // The C# base type to back a generated enum with, matching the native underlying integer's width and
+        // signedness. Emitting it explicitly (e.g. `enum X : byte`) keeps a 1/2/8-byte enum the same size as
+        // its C++ source so it can live inside a blittable by-value struct mirror.
+        const char* CSharpEnumBackingType(const FReflectedEnum& Enum)
+        {
+            switch (Enum.UnderlyingSize)
+            {
+            case 1:  return Enum.bUnsignedUnderlying ? "byte"   : "sbyte";
+            case 2:  return Enum.bUnsignedUnderlying ? "ushort" : "short";
+            case 8:  return Enum.bUnsignedUnderlying ? "ulong"  : "long";
+            case 4:
+            default: return Enum.bUnsignedUnderlying ? "uint"   : "int";
+            }
         }
 
         // The module a type is defined in ("Runtime", "Editor", "Sandbox", ...). Drives both the
@@ -150,16 +165,16 @@ namespace Lumina::Reflection
                 }
                 else if (Kind == "Enum")
                 {
-                    // The generated C# enum is int-backed (4 bytes), so only a 4-byte underlying enum mirrors
-                    // by value correctly. A smaller/larger (or unknown) enum makes the struct non-blittable
-                    // here -> it stays an opaque wrapper instead of tripping the native size assert.
+                    // The generated C# enum carries an explicit backing type matching the native underlying
+                    // width (EmitForEnum), so a reflected enum mirrors by value at any size. Use that width as
+                    // the field's size/align; the auto-emitted static_assert(sizeof==N) keeps layout honest.
                     const FReflectedEnum* E = Db.GetReflectedType<FReflectedEnum>(FStringHash(Prop->TypeName));
-                    if (E == nullptr || E->UnderlyingSize != 4)
+                    if (E == nullptr)
                     {
                         return false;
                     }
-                    Size = 4;
-                    Align = 4;
+                    Size = (int)E->UnderlyingSize;
+                    Align = Size;
                 }
                 else if (Kind == "Struct")
                 {
@@ -204,9 +219,23 @@ namespace Lumina::Reflection
             return ComputeBlittableLayout(Struct, Db, OutSize, OutAlign, 0);
         }
 
+        // An entt::entity / FEntity field (the reflector classifies it as Int32, so it stays a 4-byte
+        // blittable mirror field) surfaces as the C# Entity handle — same mapping the function path uses.
+        bool IsEntityField(const FReflectedProperty& Prop)
+        {
+            return Prop.RawTypeName.find("entt::entity") != eastl::string::npos
+                || Prop.TypeName.find("entt::entity")    != eastl::string::npos
+                || Prop.RawTypeName.find("FEntity")      != eastl::string::npos
+                || Prop.TypeName.find("FEntity")         != eastl::string::npos;
+        }
+
         // The C# field type for a blittable struct member.
         eastl::string CSharpFieldType(FReflectedProperty& Prop)
         {
+            if (IsEntityField(Prop))
+            {
+                return "global::LuminaSharp.Entity";
+            }
             const eastl::string Kind = Prop.GetTypeName();
             eastl::string CSharp;
             int Size = 0;
@@ -1354,7 +1383,7 @@ namespace Lumina::Reflection
         bool bNs = false;
         OpenNamespace(Writer, Enum.Namespace, bNs);
 
-        Writer.Linef("public enum %s", Enum.DisplayName.c_str());
+        Writer.Linef("public enum %s : %s", Enum.DisplayName.c_str(), CSharpEnumBackingType(Enum));
         Writer.BeginBlock();
         for (const FReflectedEnum::FConstant& Constant : Enum.Constants)
         {
@@ -1478,13 +1507,6 @@ namespace Lumina::Reflection
             Writer.Linef("public unsafe partial class %s : %s", Struct.DisplayName.c_str(), Base.c_str());
             Writer.BeginBlock();
             Writer.Linef("internal %s(System.IntPtr handle) : base(handle) { }", Struct.DisplayName.c_str());
-            // Components support detached construction (`new T()` -> engine-allocated, disposable) so
-            // they can be built then Emplace(entity, value)'d. Only root components (NativeStruct base)
-            // get it; the detached ctor chains to NativeStruct(string).
-            if (HasMetadata(Struct, "Component") && Base == "global::LuminaSharp.NativeStruct")
-            {
-                Writer.Linef("public %s() : base(\"%s\") { }", Struct.DisplayName.c_str(), Struct.DisplayName.c_str());
-            }
             EmitProperties(Writer, Struct, Database);
             EmitFunctions(Writer, Struct, Database);
             Writer.EndBlock();
@@ -1540,7 +1562,7 @@ namespace Lumina::Reflection
             return; // only blittable value mirrors have a flat layout to validate
         }
 
-        Writer.Linef("static_assert(sizeof(%s) == %d, \"LuminaSharp: blittable C# mirror of %s has a size mismatch (non-reflected fields, or a non-int enum).\");",
+        Writer.Linef("static_assert(sizeof(%s) == %d, \"LuminaSharp: blittable C# mirror of %s has a size mismatch (likely a non-reflected field).\");",
             Struct.QualifiedName.c_str(), Size, Struct.DisplayName.c_str());
     }
 

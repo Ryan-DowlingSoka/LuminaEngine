@@ -172,6 +172,44 @@ namespace Lumina
             }
             return bChanged;
         }
+
+        // Draws a clickable button per [Button] method. Invoking a method is a runtime action on the live
+        // instance, not a serialized edit, so it doesn't participate in the property-change transaction.
+        // Buttons are disabled until the script is bound to a live instance (i.e. while the game runs).
+        void DrawScriptButtons(SCSharpScriptComponent* Component)
+        {
+            TVector<Scripting::FScriptButton> Buttons;
+            DotNet::GatherScriptButtons(FStringView(Component->ScriptClass.c_str(), Component->ScriptClass.size()), Buttons);
+            if (Buttons.empty())
+            {
+                return;
+            }
+
+            ImGui::SeparatorText("Script Actions");
+
+            const bool bHasInstance = Component->Instance != nullptr
+                && Component->Generation == DotNet::GetScriptGeneration();
+
+            ImGui::BeginDisabled(!bHasInstance);
+            for (const Scripting::FScriptButton& Button : Buttons)
+            {
+                FString Label = Button.Label + "##btn_" + Button.Method;
+                if (ImGui::Button(Label.c_str(), ImVec2(-FLT_MIN, 0.0f)))
+                {
+                    DotNet::InvokeScriptButton(Component->Instance, FStringView(Button.Method.c_str(), Button.Method.size()));
+                }
+                if (!Button.Tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                {
+                    ImGui::SetTooltip("%s", Button.Tooltip.c_str());
+                }
+            }
+            ImGui::EndDisabled();
+
+            if (!bHasInstance)
+            {
+                ImGui::TextDisabled("Buttons run while the game is playing.");
+            }
+        }
     }
 
     TSharedPtr<FCSharpScriptComponentPropertyCustomization> FCSharpScriptComponentPropertyCustomization::MakeInstance()
@@ -248,6 +286,11 @@ namespace Lumina
         if (!Component->ScriptClass.empty() && DrawScriptProperties(Component))
         {
             bWasChanged = true;
+        }
+
+        if (!Component->ScriptClass.empty())
+        {
+            DrawScriptButtons(Component);
         }
 
         ImGui::PopID();

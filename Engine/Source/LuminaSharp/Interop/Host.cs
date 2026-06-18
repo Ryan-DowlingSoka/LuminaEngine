@@ -110,7 +110,13 @@ public static unsafe partial class Host
             }
 
             Handle = ResolveModule(Name);
-            ModuleHandles[Name] = Handle;
+            // Only cache a SUCCESSFUL resolve. A miss can be transient -- e.g. a binding whose static
+            // initializer runs during early bootstrap, before ResolveModuleHandlePtr is wired -- so retry
+            // on the next call rather than poisoning every future lookup of this module with a zero handle.
+            if (Handle != IntPtr.Zero)
+            {
+                ModuleHandles[Name] = Handle;
+            }
             return Handle;
         }
     }
@@ -369,6 +375,32 @@ public static unsafe partial class Host
         try
         {
             byte[]? Blob = Scripts?.EntityScripts?.Schema(Interop.GetString(ScriptClass, ClassLength));
+            if (Blob == null || Sink == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var Add = (delegate* unmanaged[Stdcall]<IntPtr, byte*, int, void>)Sink;
+            fixed (byte* Bytes = Blob)
+            {
+                Add(Context, Bytes, Blob.Length);
+            }
+        }
+        catch (Exception Exception)
+        {
+            Interop.LogException(Exception);
+        }
+    }
+
+    /// <summary>Writes a script type's [Button] methods (method name + label + tooltip, flat) to a native
+    /// sink. sink(ctx, bytes, len) is called once. Drives the inspector's clickable action buttons.</summary>
+    [ManagedExport]
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    public static void GetScriptButtons(byte* ScriptClass, int ClassLength, IntPtr Sink, IntPtr Context)
+    {
+        try
+        {
+            byte[]? Blob = Scripts?.EntityScripts?.Buttons(Interop.GetString(ScriptClass, ClassLength));
             if (Blob == null || Sink == IntPtr.Zero)
             {
                 return;

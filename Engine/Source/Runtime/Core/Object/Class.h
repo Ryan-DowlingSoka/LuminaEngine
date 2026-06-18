@@ -13,7 +13,8 @@ namespace Lumina
 {
     class FProperty;
     class FNetArchive;
-    struct FTransform;
+    struct VTransform;
+    using FTransform = VTransform;
 }
 
 namespace Lumina
@@ -286,6 +287,11 @@ namespace Lumina
     };
 
     template<> struct TBaseStructure<FQuat>
+    {
+        static RUNTIME_API CStruct* Get();
+    };
+
+    template<> struct TBaseStructure<FTransform>
     {
         static RUNTIME_API CStruct* Get();
     };

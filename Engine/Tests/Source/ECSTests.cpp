@@ -106,9 +106,9 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
     auto B = Registry.create();
     auto C = Registry.create();
 
-    Registry.emplace<STransformComponent>(A).LocalTransform.Location = FVector3(10.f, 0.f, 0.f);
-    Registry.emplace<STransformComponent>(B).LocalTransform.Location = FVector3(5.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(C).LocalTransform.Location = FVector3(2.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(A).LocalTransform.SetLocation(FVector3(10.f, 0.f, 0.f));
+    Registry.emplace<STransformComponent>(B).LocalTransform.SetLocation(FVector3(5.f,  0.f, 0.f));
+    Registry.emplace<STransformComponent>(C).LocalTransform.SetLocation(FVector3(2.f,  0.f, 0.f));
 
     // AddToParent only links the relationship; ReparentEntity would
     // bake the (zeroed) cached world matrix into local transforms.
@@ -120,9 +120,9 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
     Registry.emplace<FNeedsTransformUpdate>(C);
     ECS::Utils::ResolveAllDirtyTransforms(Registry);
 
-    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(C).WorldTransform.Location.x, 17.f);
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(C).WorldTransform.GetLocation().x, 17.f);
 
-    Registry.get<STransformComponent>(A).LocalTransform.Location = FVector3(20.f, 0.f, 0.f);
+    Registry.get<STransformComponent>(A).LocalTransform.SetLocation(FVector3(20.f, 0.f, 0.f));
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
     // Lazy resolve via the grandchild: A is dirty, B/C clean. ResolveTransformChain
@@ -133,10 +133,10 @@ TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
     const STransformComponent& WorldB = Registry.get<STransformComponent>(B);
     const STransformComponent& WorldA = Registry.get<STransformComponent>(A);
 
-    EXPECT_FLOAT_EQ(WorldA.WorldTransform.Location.x, 20.f);
-    EXPECT_FLOAT_EQ(WorldB.WorldTransform.Location.x, 25.f);
-    EXPECT_FLOAT_EQ(WorldC.WorldTransform.Location.x, 27.f);
-    EXPECT_FLOAT_EQ(WorldC.WorldTransform.Location.x - WorldB.WorldTransform.Location.x, 2.f);
+    EXPECT_FLOAT_EQ(WorldA.WorldTransform.GetLocation().x, 20.f);
+    EXPECT_FLOAT_EQ(WorldB.WorldTransform.GetLocation().x, 25.f);
+    EXPECT_FLOAT_EQ(WorldC.WorldTransform.GetLocation().x, 27.f);
+    EXPECT_FLOAT_EQ(WorldC.WorldTransform.GetLocation().x - WorldB.WorldTransform.GetLocation().x, 2.f);
 }
 
 TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
@@ -148,10 +148,10 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     auto C = Registry.create();
     auto D = Registry.create();
 
-    Registry.emplace<STransformComponent>(A).LocalTransform.Location = FVector3(10.f, 0.f, 0.f);
-    Registry.emplace<STransformComponent>(B).LocalTransform.Location = FVector3(5.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(C).LocalTransform.Location = FVector3(2.f,  0.f, 0.f);
-    Registry.emplace<STransformComponent>(D).LocalTransform.Location = FVector3(0.f,  3.f, 0.f);
+    Registry.emplace<STransformComponent>(A).LocalTransform.SetLocation(FVector3(10.f, 0.f, 0.f));
+    Registry.emplace<STransformComponent>(B).LocalTransform.SetLocation(FVector3(5.f,  0.f, 0.f));
+    Registry.emplace<STransformComponent>(C).LocalTransform.SetLocation(FVector3(2.f,  0.f, 0.f));
+    Registry.emplace<STransformComponent>(D).LocalTransform.SetLocation(FVector3(0.f,  3.f, 0.f));
 
     ECS::Utils::AddToParent(Registry, B, A);
     ECS::Utils::AddToParent(Registry, C, B);
@@ -163,7 +163,7 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     Registry.emplace<FNeedsTransformUpdate>(D);
     ECS::Utils::ResolveAllDirtyTransforms(Registry);
 
-    Registry.get<STransformComponent>(A).LocalTransform.Location = FVector3(20.f, 0.f, 0.f);
+    Registry.get<STransformComponent>(A).LocalTransform.SetLocation(FVector3(20.f, 0.f, 0.f));
     Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
 
     // Resolving via C must also refresh sibling D, which isn't dirty itself and would
@@ -171,8 +171,8 @@ TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
     ECS::Utils::ResolveTransformChain(Registry, C);
     ECS::Utils::ResolveTransformChain(Registry, D);
 
-    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.Location.x, 20.f);
-    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.Location.y, 3.f);
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.GetLocation().x, 20.f);
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.GetLocation().y, 3.f);
 }
 
 TEST(ECSTests, Parent_Unparent)
@@ -205,8 +205,8 @@ TEST(ECSTests, LazyResolve_AfterCleanPhase_SeesUpdatedWorld)
 
     entt::entity Parent = Registry.create();
     entt::entity Child  = Registry.create();
-    Registry.emplace<STransformComponent>(Parent).LocalTransform.Location = FVector3(10.f, 0.f, 0.f);
-    Registry.emplace<STransformComponent>(Child).LocalTransform.Location  = FVector3(5.f, 0.f, 0.f);
+    Registry.emplace<STransformComponent>(Parent).LocalTransform.SetLocation(FVector3(10.f, 0.f, 0.f));
+    Registry.emplace<STransformComponent>(Child).LocalTransform.SetLocation(FVector3(5.f, 0.f, 0.f));
     ECS::Utils::AddToParent(Registry, Child, Parent);
 
     Registry.get<STransformComponent>(Parent).Bind(Registry, Parent);
@@ -255,12 +255,12 @@ namespace
         for (int r = 0; r < NumRoots; ++r)
         {
             entt::entity Root = Registry.create();
-            Registry.emplace<STransformComponent>(Root).LocalTransform.Location = FVector3((float)r, 0.f, 0.f);
+            Registry.emplace<STransformComponent>(Root).LocalTransform.SetLocation(FVector3((float)r, 0.f, 0.f));
             OutRoots.push_back(Root);
             for (int c = 0; c < ChildrenPerRoot; ++c)
             {
                 entt::entity Child = Registry.create();
-                Registry.emplace<STransformComponent>(Child).LocalTransform.Location = FVector3(0.f, 1.f, 0.f);
+                Registry.emplace<STransformComponent>(Child).LocalTransform.SetLocation(FVector3(0.f, 1.f, 0.f));
                 ECS::Utils::AddToParent(Registry, Child, Root);
             }
         }
@@ -274,7 +274,7 @@ namespace
         for (int d = 0; d < Depth; ++d)
         {
             entt::entity E = Registry.create();
-            Registry.emplace<STransformComponent>(E).LocalTransform.Location = FVector3(0.f, 1.f, 0.f);
+            Registry.emplace<STransformComponent>(E).LocalTransform.SetLocation(FVector3(0.f, 1.f, 0.f));
             if (Prev != entt::null)
             {
                 ECS::Utils::AddToParent(Registry, E, Prev);
@@ -309,7 +309,7 @@ TEST(ECSBench, Resolve_Wide_SingleDirtyRoot)
 
     // child world = root(0,0,0) * local(0,1,0)
     auto& Rel = Registry.get<FRelationshipComponent>(Roots[0]);
-    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(Rel.First).WorldTransform.Location.y, 1.f);
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(Rel.First).WorldTransform.GetLocation().y, 1.f);
 }
 
 // 1000 roots x 1000 children = ~1M entities; every root dirty (>1000 -> parallel path). The literal
@@ -383,7 +383,7 @@ TEST(ECSBench, ResolveChain_DeepChain_ViaLeaf)
         for (int d = 0; d < 4000; ++d)
         {
             entt::entity E = Registry.create();
-            Registry.emplace<STransformComponent>(E).LocalTransform.Location = FVector3(0.f, 1.f, 0.f);
+            Registry.emplace<STransformComponent>(E).LocalTransform.SetLocation(FVector3(0.f, 1.f, 0.f));
             if (Prev != entt::null)
             {
                 ECS::Utils::AddToParent(Registry, E, Prev);
@@ -417,11 +417,11 @@ TEST(ECSBench, ParallelReads_CleanTransforms)
         for (int r = 0; r < Roots; ++r)
         {
             entt::entity Root = Registry.create();
-            Registry.emplace<STransformComponent>(Root).LocalTransform.Location = FVector3((float)r, 0.f, 0.f);
+            Registry.emplace<STransformComponent>(Root).LocalTransform.SetLocation(FVector3((float)r, 0.f, 0.f));
             for (int c = 0; c < PerRoot; ++c)
             {
                 entt::entity Child = Registry.create();
-                Registry.emplace<STransformComponent>(Child).LocalTransform.Location = FVector3(0.f, 1.f, 0.f);
+                Registry.emplace<STransformComponent>(Child).LocalTransform.SetLocation(FVector3(0.f, 1.f, 0.f));
                 ECS::Utils::AddToParent(Registry, Child, Root);
                 Children.push_back(Child);
             }
@@ -466,4 +466,76 @@ TEST(ECSBench, ParallelReads_CleanTransforms)
         T.Stop();
     }
     EXPECT_GE(Sink.load(), 0ull);
+}
+
+// The Rotator-script per-frame cost, decomposed. The script calls AddYaw (setter math + MarkDirty), then
+// the frame boundary resolves + flushes physics bodies. Isolates each phase so we can see whether the
+// regression is the SIMD math (it isn't), the MarkDirty enqueue, or the resolve. Flat entities (no parent,
+// no physics body) -- exactly what a Rotator is -- so the DirtyBodies enqueue/flush is pure overhead here.
+TEST(ECSBench, DirtyPath_RotatorFrameCost)
+{
+    using Clock = std::chrono::steady_clock;
+    auto Ns = [](Clock::duration D) { return std::chrono::duration<double, std::nano>(D).count(); };
+
+    FEntityRegistry Registry{};
+    constexpr int N = 50000;
+    constexpr int Frames = 200;
+    const uint64 Ops = (uint64)N * Frames;
+
+    TVector<entt::entity> Ents;
+    Ents.reserve(N);
+    for (int i = 0; i < N; ++i)
+    {
+        entt::entity E = Registry.create();
+        Registry.emplace<STransformComponent>(E);
+        Ents.push_back(E);
+    }
+    for (entt::entity E : Ents)
+    {
+        Registry.get<STransformComponent>(E).Bind(Registry, E);
+    }
+
+    auto& Storage = Registry.storage<STransformComponent>();
+    volatile float Sink = 0.0f;
+
+    auto Report = [&](const char* Name, double TotalNs)
+    {
+        std::printf("[BENCH] %-40s %8.2f ms  (%6.2f ns/op)\n", Name, TotalNs / 1e6, TotalNs / (double)Ops);
+        std::fflush(stdout);
+    };
+
+    // A) Pure SIMD setter math: rotate the VTransform directly, no MarkDirty / no enqueue.
+    double MathNs = 0.0;
+    {
+        auto T0 = Clock::now();
+        for (int f = 0; f < Frames; ++f)
+            for (entt::entity E : Ents)
+                Storage.get(E).LocalTransform.AddYawRadians(0.01f);
+        MathNs = Ns(Clock::now() - T0);
+        Sink += Storage.get(Ents[0]).GetLocalRotation().w;
+        Report("setter math only (AddYawRadians)", MathNs);
+    }
+
+    // B) Realistic frame: AddYaw (math + MarkDirty), then resolve, then physics-body flush -- timed apart.
+    double DirtyNs = 0.0, ResolveNs = 0.0, FlushNs = 0.0;
+    for (int f = 0; f < Frames; ++f)
+    {
+        auto T0 = Clock::now();
+        for (entt::entity E : Ents) { Storage.get(E).AddYaw(0.5f); }
+        auto T1 = Clock::now();
+        ECS::Utils::ResolveAllDirtyTransforms(Registry);
+        auto T2 = Clock::now();
+        ECS::Utils::FlushDirtyPhysicsBodies(Registry);
+        auto T3 = Clock::now();
+        DirtyNs   += Ns(T1 - T0);
+        ResolveNs += Ns(T2 - T1);
+        FlushNs   += Ns(T3 - T2);
+        Sink += Storage.get(Ents[0]).GetWorldRotationCached().w;
+    }
+    Report("AddYaw + MarkDirty (2-queue enqueue)", DirtyNs);
+    Report("  -> MarkDirty/enqueue delta vs math", DirtyNs - MathNs);
+    Report("ResolveAllDirtyTransforms", ResolveNs);
+    Report("FlushDirtyPhysicsBodies (drain bodies)", FlushNs);
+
+    EXPECT_TRUE(std::isfinite((float)Sink));
 }

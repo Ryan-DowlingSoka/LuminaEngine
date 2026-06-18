@@ -10,7 +10,7 @@ namespace Lumina
 
 namespace Lumina
 {
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialGraphNode : public CEdGraphNode
     {
         GENERATED_BODY()

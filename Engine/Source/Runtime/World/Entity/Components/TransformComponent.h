@@ -28,120 +28,116 @@ namespace Lumina
         {}
     
         FUNCTION(Script)
-        FVector3 GetLocalLocation() const { return LocalTransform.Location; }
-    
+        FVector3 GetLocalLocation() const { return LocalTransform.GetLocation(); }
+
         FUNCTION(Script)
-        FQuat GetLocalRotation() const { return LocalTransform.Rotation; }
-    
+        FQuat GetLocalRotation() const { return LocalTransform.GetRotation(); }
+
         FUNCTION(Script)
-        FVector3 GetLocalScale()    const { return LocalTransform.Scale; }
-    
+        FVector3 GetLocalScale()    const { return LocalTransform.GetScale(); }
+
         FUNCTION(Script)
         FVector3 GetLocalRotationAsEuler() const
         {
-            return Math::Degrees(Math::EulerAngles(LocalTransform.Rotation));
+            return Math::Degrees(Math::EulerAngles(LocalTransform.GetRotation()));
         }
-    
+
         FUNCTION(Script)
         FVector3 SetLocalLocation(const FVector3& InLocation)
         {
-            LocalTransform.Location = InLocation;
+            LocalTransform.SetLocation(InLocation);
             MarkDirty();
-            return LocalTransform.Location;
+            return InLocation;
         }
-    
+
         FUNCTION(Script)
         FVector3 Translate(const FVector3& Delta)
         {
-            LocalTransform.Location += Delta;
+            LocalTransform.Translate(Delta);
             MarkDirty();
-            return LocalTransform.Location;
+            return LocalTransform.GetLocation();
         }
-    
+
         FUNCTION(Script)
         FQuat SetLocalRotation(const FQuat& InRotation)
         {
-            LocalTransform.Rotation = InRotation;
+            LocalTransform.SetRotation(InRotation);
             MarkDirty();
-            return LocalTransform.Rotation;
+            return InRotation;
         }
-    
+
         FUNCTION(Script)
         FVector3 SetLocalRotationFromEuler(const FVector3& EulerDegrees)
         {
-            LocalTransform.Rotation = FQuat(Math::Radians(EulerDegrees));
+            LocalTransform.SetRotationFromEuler(EulerDegrees);
             MarkDirty();
             return GetLocalRotationAsEuler();
         }
-    
+
         FUNCTION(Script)
         FVector3 AddLocalRotationFromEuler(const FVector3& EulerDegrees)
         {
-            LocalTransform.Rotation = FQuat(Math::Radians(EulerDegrees)) * LocalTransform.Rotation;
+            LocalTransform.Rotate(EulerDegrees);
             MarkDirty();
             return GetLocalRotationAsEuler();
         }
-    
+
         FUNCTION(Script)
         void AddYaw(float Degrees)
         {
-            FQuat YawQuat = Math::AngleAxis(Math::Radians(Degrees), FVector3(0.f, 1.f, 0.f));
-            LocalTransform.Rotation = Math::Normalize(YawQuat * LocalTransform.Rotation);
+            LocalTransform.AddYawRadians(Math::Radians(Degrees));
             MarkDirty();
         }
-    
+
         FUNCTION(Script)
         void AddPitch(float Degrees, float ClampMin = -89.9f, float ClampMax = 89.9f)
         {
-            float Clamped = Math::Clamp(Degrees, ClampMin, ClampMax);
-            FQuat PitchQuat = Math::AngleAxis(Math::Radians(Clamped), LocalTransform.GetRight());
-            LocalTransform.Rotation = Math::Normalize(PitchQuat * LocalTransform.Rotation);
+            LocalTransform.AddPitchRadians(Math::Radians(Math::Clamp(Degrees, ClampMin, ClampMax)));
             MarkDirty();
         }
-    
+
         FUNCTION(Script)
         void AddRoll(float Degrees)
         {
-            FQuat RollQuat = Math::AngleAxis(Math::Radians(Degrees), LocalTransform.GetForward());
-            LocalTransform.Rotation = Math::Normalize(RollQuat * LocalTransform.Rotation);
+            LocalTransform.AddRollRadians(Math::Radians(Degrees));
             MarkDirty();
         }
-    
+
         FUNCTION(Script)
         FVector3 SetLocalScale(const FVector3& InScale)
         {
-            LocalTransform.Scale = InScale;
+            LocalTransform.SetScale(InScale);
             MarkDirty();
-            return LocalTransform.Scale;
+            return InScale;
         }
-    
+
         // World getters opt out of SuppressGCTransition: a dirty-chain resolve can exceed the ~1us budget.
         FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldLocation() const
         {
             ResolveIfDirty();
-            return WorldTransform.Location;
+            return WorldTransform.GetLocation();
         }
 
         FUNCTION(Script, NoSuppressGCTransition)
         FQuat GetWorldRotation() const
         {
             ResolveIfDirty();
-            return WorldTransform.Rotation;
+            return WorldTransform.GetRotation();
         }
 
         FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldScale() const
         {
             ResolveIfDirty();
-            return WorldTransform.Scale;
+            return WorldTransform.GetScale();
         }
 
         FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldRotationAsEuler() const
         {
             ResolveIfDirty();
-            return Math::Degrees(Math::EulerAngles(WorldTransform.Rotation));
+            return Math::Degrees(Math::EulerAngles(WorldTransform.GetRotation()));
         }
 
         FUNCTION(Script, NoSuppressGCTransition)
@@ -158,17 +154,16 @@ namespace Lumina
             return WorldTransform;
         }
 
-        // Cached world transform WITHOUT a resolve.
-        const FVector3&   GetWorldLocationCached() const { return WorldTransform.Location; }
-        const FQuat&      GetWorldRotationCached() const { return WorldTransform.Rotation; }
-        const FVector3&   GetWorldScaleCached()    const { return WorldTransform.Scale; }
-        const FMatrix4&   GetWorldMatrixCached()   const { return CachedMatrix; }
+        // Cached world transform WITHOUT a resolve. By value (the SIMD transform has no scalar member to
+        // reference); CachedMatrix is still returned by const ref.
+        FVector3        GetWorldLocationCached() const { return WorldTransform.GetLocation(); }
+        FQuat           GetWorldRotationCached() const { return WorldTransform.GetRotation(); }
+        FVector3        GetWorldScaleCached()    const { return WorldTransform.GetScale(); }
+        const FMatrix4& GetWorldMatrixCached()   const { return CachedMatrix; }
 
         FUNCTION(Script, NoSuppressGCTransition)
         void SetWorldTransform(const FTransform& InTransform)
         {
-            // Convert to the parent-relative local transform; assigning WorldTransform directly
-            // would be discarded by the next ResolveIfDirty (world = parentWorld * local).
             if (Registry)
             {
                 ECS::Utils::SetEntityWorldTransform(*Registry, Entity, InTransform);
@@ -206,7 +201,8 @@ namespace Lumina
         FUNCTION(Script)
         float MaxScale() const
         {
-            return Math::Max(LocalTransform.Scale.x, Math::Max(LocalTransform.Scale.y, LocalTransform.Scale.z));
+            const FVector3 S = LocalTransform.GetScale();
+            return Math::Max(S.x, Math::Max(S.y, S.z));
         }
     
         FUNCTION(Script)
@@ -245,20 +241,20 @@ namespace Lumina
         {
             Registry = &InRegistry;
             Entity = InEntity;
-            WorldDirtySignal = ECS::Utils::EnsureTransformDirtySignal(InRegistry);
+            DirtyState = ECS::Utils::EnsureTransformDirtyState(InRegistry);
         }
         
         void SetRaw(const FVector3& Location, const FQuat& Rotation)
         {
-            LocalTransform.Location = Location;
-            LocalTransform.Rotation = Rotation;
+            LocalTransform.SetLocation(Location);
+            LocalTransform.SetRotation(Rotation);
         }
-        
+
         void SetRaw(const FVector3& Location, const FQuat& Rotation, const FVector3& Scale)
         {
-            LocalTransform.Location = Location;
-            LocalTransform.Rotation = Rotation;
-            LocalTransform.Scale    = Scale;
+            LocalTransform.SetLocation(Location);
+            LocalTransform.SetRotation(Rotation);
+            LocalTransform.SetScale(Scale);
         }
 
     public:
@@ -273,20 +269,25 @@ namespace Lumina
         // Set by setters, cleared by the resolver. Component-local so writes are ParallelFor-safe.
         mutable bool bWorldDirty = false;
 
+        // Maintained on the game thread by the physics on_construct/on_destroy hooks (and seeded at
+        // StartSimulate). MarkDirty reads it -- possibly from a worker fiber -- to skip the DirtyBodies
+        // enqueue for bodiless entities. A plain bool: a one-frame stale value at most over/under-queues a
+        // single body re-sync (self-healing), which is cheaper than a registry query on the setter path.
+        bool bHasPhysicsBody = false;
+        void SetHasPhysicsBody(bool bInHasBody) { bHasPhysicsBody = bInHasBody; }
+
     private:
 
-        // Writes only this component + a relaxed store through the cached signal: no registry mutation, so
-        // setters are safe to call concurrently across entities.
+        // Writes only this component + a lock-free enqueue into the dirty queue (no registry mutation), so
+        // setters are concurrency-safe across entities and stay SuppressGCTransition-clean. The bWorldDirty
+        // 0->1 transition is the dedup guard, so an entity is queued once per dirty episode. Bodiless
+        // entities skip the DirtyBodies queue (the common case: rotators, movers, animated transforms).
         void MarkDirty() const
         {
-            bWorldDirty = true;
-            if (WorldDirtySignal)
+            if (!bWorldDirty)
             {
-                WorldDirtySignal->store(true, std::memory_order_relaxed);
-            }
-            if (Registry)
-            {
-                ECS::Utils::MarkPhysicsBodyDirtyIfBodied(*Registry, Entity);
+                bWorldDirty = true;
+                ECS::Utils::QueueDirtyTransform(DirtyState, Entity, bHasPhysicsBody);
             }
         }
 
@@ -298,9 +299,9 @@ namespace Lumina
             }
         }
 
-        FEntityRegistry*    Registry = nullptr;
-        entt::entity        Entity   = entt::null;
-        std::atomic<bool>*  WorldDirtySignal = nullptr;
+        FEntityRegistry*              Registry = nullptr;
+        entt::entity                  Entity   = entt::null;
+        ECS::Utils::FTransformDirtyState* DirtyState = nullptr;
     };
     
 }

@@ -150,4 +150,21 @@ namespace Lumina
         PROPERTY(Editable, Color, Category = "Surfaces")
         FVector4 RowBgActive = FVector4(0.160f, 0.175f, 0.215f, 1.00f);
     };
+
+    // Per-project renderer quality settings; persists to the project's /Config/RendererSettings.json.
+    REFLECT(MinimalAPI, ConfigFile = "/Config/RendererSettings.json", DisplayName = "Rendering", Category = "Engine")
+    class CRendererSettings : public CDeveloperSettings
+    {
+        GENERATED_BODY()
+    public:
+
+        /** Volumetric fog froxel grid resolution multiplier (1.0 = 160x90x128). Higher is sharper but
+            costs more GPU; takes effect on viewport resize or editor restart. */
+        PROPERTY(Editable, Category = "Volumetric Fog", ClampMin = 0.25f, ClampMax = 2.0f, Delta = 0.05f)
+        float FroxelResolutionScale = 1.0f;
+
+        /** Supersample local (point/spot) light in-scatter 4x per froxel to reduce blockiness near lights. */
+        PROPERTY(Editable, Category = "Volumetric Fog")
+        bool bSupersampleVolumetricLights = true;
+    };
 }

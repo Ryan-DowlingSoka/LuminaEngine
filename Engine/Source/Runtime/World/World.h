@@ -42,11 +42,7 @@ namespace Lumina
         FString  Text;
         FVector4 Color = FVector4(1.0f);
     };
-
-    // C#-facing facade for the World.Debug namespace. One instance lives on each CWorld and is reached
-    // as World.Debug. Screen-space debug text + world debug shapes; trailing args (thickness, depth-test,
-    // duration) are optional. Dev/Debug only -- the draws are no-ops in Shipping. Methods forward to this
-    // world's draw interface.
+    
     struct FWorldDebugInterface
     {
         CWorld* World = nullptr;
@@ -131,6 +127,7 @@ namespace Lumina
         // per-frame state. Must run before any render-thread RenderView consumes it.
         void Extract();
 
+        FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
 
         FUNCTION(Script)

@@ -257,14 +257,14 @@ namespace Lumina
 #endif
 namespace Lumina
 {
-    REFLECT(ManualStub, NoLua)
+    REFLECT(ManualStub)
     struct FVector2
     {
         PROPERTY(Editable) float x;
         PROPERTY(Editable) float y;
     };
 
-    REFLECT(ManualStub, NoLua)
+    REFLECT(ManualStub)
     struct FVector3
     {
         PROPERTY(Editable) float x;
@@ -272,7 +272,7 @@ namespace Lumina
         PROPERTY(Editable) float z;
     };
 
-    REFLECT(ManualStub, NoLua)
+    REFLECT(ManualStub)
     struct FVector4
     {
         PROPERTY(Editable) float x;

@@ -7,7 +7,7 @@
 
 namespace Lumina
 {
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression : public CMaterialGraphNode
     {
         GENERATED_BODY()
@@ -23,7 +23,7 @@ namespace Lumina
         bool bDynamic = false;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Math : public CMaterialExpression
     {
         GENERATED_BODY()

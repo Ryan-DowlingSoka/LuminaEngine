@@ -329,13 +329,13 @@ namespace Lumina
         EntityRegistry.on_construct <SInputComponent>()             .connect<&ThisClass::OnInputComponentConstruct>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
 
-        std::atomic<bool>* DirtySignal = ECS::Utils::EnsureTransformDirtySignal(EntityRegistry);
+        ECS::Utils::FTransformDirtyState* DirtyState = ECS::Utils::EnsureTransformDirtyState(EntityRegistry);
         auto TransformView = EntityRegistry.view<STransformComponent>();
         TransformView.each([&](entt::entity Entity, STransformComponent& TransformComponent)
         {
             TransformComponent.Registry = &EntityRegistry;
             TransformComponent.Entity = Entity;
-            TransformComponent.WorldDirtySignal = DirtySignal;
+            TransformComponent.DirtyState = DirtyState;
         });
 
         // Bind loaded input components to this world so their queries resolve to this world's viewport
@@ -358,8 +358,8 @@ namespace Lumina
 
                 const entt::entity Fallback = EntityRegistry.create();
                 STransformComponent& Xf = EntityRegistry.emplace<STransformComponent>(Fallback);
-                Xf.LocalTransform.Location = FallbackPos;
-                Xf.LocalTransform.Rotation = Math::FindLookAtRotation(FVector3(0.0f), FallbackPos);
+                Xf.LocalTransform.SetLocation(FallbackPos);
+                Xf.LocalTransform.SetRotation(Math::FindLookAtRotation(FVector3(0.0f), FallbackPos));
 
                 SCameraComponent& Cam = EntityRegistry.emplace<SCameraComponent>(Fallback);
                 Cam.bAutoActivate = true;
@@ -598,14 +598,14 @@ namespace Lumina
             {
                 if (RB->BodyID != 0xFFFFFFFFu)
                 {
-                    OwnerTransform.Location = PhysicsScene->GetBodyPosition(RB->BodyID);
-                    OwnerTransform.Rotation = PhysicsScene->GetBodyRotation(RB->BodyID);
+                    OwnerTransform.SetLocation(PhysicsScene->GetBodyPosition(RB->BodyID));
+                    OwnerTransform.SetRotation(PhysicsScene->GetBodyRotation(RB->BodyID));
                     InheritedVelocity       = PhysicsScene->GetLinearVelocity(RB->BodyID);
                 }
             }
         }
 
-        const FVector3 OwnerScale = OwnerTransform.Scale;
+        const FVector3 OwnerScale = OwnerTransform.GetScale();
 
         const float LaunchSpeed = Strength > 0.0f ? Strength : Destructible->ExplosionStrength;
         const float SpinSpeed   = Destructible->SpinStrength;
@@ -724,11 +724,11 @@ namespace Lumina
 
                 // BuildPieceMesh recenters geometry to the piece centroid (natural pivot + CoM); place
                 // the entity at the centroid's world position so pieces reconstruct the object at t=0.
-                const FVector3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
+                const FVector3 WorldCenter = OwnerTransform.GetLocation() + OwnerTransform.GetRotation() * (OwnerTransform.GetScale() * Piece.Center);
                 FTransform PieceTransform;
-                PieceTransform.Location = WorldCenter;
-                PieceTransform.Rotation = OwnerTransform.Rotation;
-                PieceTransform.Scale    = OwnerTransform.Scale;
+                PieceTransform.SetLocation(WorldCenter);
+                PieceTransform.SetRotation(OwnerTransform.GetRotation());
+                PieceTransform.SetScale(OwnerTransform.GetScale());
 
                 const entt::entity Fragment = ConstructEntity("Fragment", PieceTransform);
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Fragment);
@@ -768,12 +768,12 @@ namespace Lumina
             for (int32 xi = 0; xi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++xi)
             {
                 const FVector3 CellLocalCenter = LocalBounds.Min + (FVector3(xi, yi, zi) + 0.5f) * LocalCell;
-                const FVector3 CellWorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerScale * CellLocalCenter);
+                const FVector3 CellWorldCenter = OwnerTransform.GetLocation() + OwnerTransform.GetRotation() * (OwnerScale * CellLocalCenter);
 
                 FTransform FragmentTransform;
-                FragmentTransform.Location = CellWorldCenter - OwnerTransform.Rotation * (FragScale * LocalCenter);
-                FragmentTransform.Rotation = OwnerTransform.Rotation;
-                FragmentTransform.Scale    = FragScale;
+                FragmentTransform.SetLocation(CellWorldCenter - OwnerTransform.GetRotation() * (FragScale * LocalCenter));
+                FragmentTransform.SetRotation(OwnerTransform.GetRotation());
+                FragmentTransform.SetScale(FragScale);
 
                 const entt::entity Fragment = ConstructEntity("Fragment", FragmentTransform);
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Fragment);
@@ -1177,9 +1177,7 @@ namespace Lumina
         FMemoryReader Reader(Data);
         FObjectProxyArchiver ReaderProxy(Reader, true);
         
-        // Inherit the source world's name so logs/profilers identify
-        // "NewWorld" rather than the auto-generated "CWorld_1".
-        CWorld* PIEWorld = NewObject<CWorld>(/*Package*/ nullptr, OwningWorld->GetName(), FGuid::New(), OF_Transient);
+        CWorld* PIEWorld = NewObject<CWorld>(nullptr, OwningWorld->GetName(), FGuid::New(), OF_Transient);
 
         PIEWorld->PreLoad();
         PIEWorld->Serialize(ReaderProxy);
@@ -1227,7 +1225,7 @@ namespace Lumina
         STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);
         TransformComponent.Registry = &EntityRegistry;
         TransformComponent.Entity = Entity;
-        TransformComponent.WorldDirtySignal = ECS::Utils::EnsureTransformDirtySignal(EntityRegistry);
+        TransformComponent.DirtyState = ECS::Utils::EnsureTransformDirtyState(EntityRegistry);
 
         Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
     }
@@ -1239,15 +1237,12 @@ namespace Lumina
 
     void CWorld::OnInputComponentConstruct(entt::registry& Registry, entt::entity Entity)
     {
-        // Bind the component to this world so its input queries resolve to this world's viewport.
         Registry.get<SInputComponent>(Entity).World = this;
     }
 
     void CWorld::OnCSharpScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
         SCSharpScriptComponent& Component = Registry.get<SCSharpScriptComponent>(Entity);
-        // Only destroy a live instance from the CURRENT generation. After a hot reload the managed side
-        // already freed the old generation's handles, so a stale Instance must not be touched.
         if (Component.Instance != nullptr && Component.Generation == DotNet::GetScriptGeneration())
         {
             DotNet::DestroyEntityScript(Component.Instance);
@@ -1281,14 +1276,10 @@ namespace Lumina
         Component.Generation = -1;
         Component.BindState = ECSharpBindState::Unbound;
         Component.CallbackFlags = 0;
-        // SCSharpScriptSystem rebinds (OnAttach/OnReady) next tick.
     }
 
     void CWorld::RegisterSystems()
     {
-        // RegisterSystems rebuilds the stage lists from scratch and may run on a deferred system change,
-        // so free any C# system instances created on a prior pass before we re-create them below (the
-        // stale FStageSlots are about to be cleared anyway).
         DestroyManagedSystems();
 
         for (int i = 0; i < (int)EUpdateStage::Max; ++i)
@@ -1299,15 +1290,11 @@ namespace Lumina
 
         for (const FNativeSystemDesc& Desc : FSystemRegistry::Get().GetNativeSystems())
         {
-            // Skip systems disabled for this world; they are never started or ticked. A stale disabled
-            // name (system since renamed/removed) simply matches nothing here.
             if (!Desc.Name.IsNone() && DisabledSystems.count(Desc.Name))
             {
                 continue;
             }
-
-            // Schedule a slot per enabled stage that actually has an Update; a null Update is never
-            // scheduled (a Startup/Teardown-only system still ticks in no stage).
+            
             bool bAnyStage = false;
             for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
             {
@@ -1323,7 +1310,6 @@ namespace Lumina
                 }
             }
 
-            // A system is "active" (owns Startup/Teardown) if it participates in at least one stage.
             if (bAnyStage)
             {
                 FActiveSystem& Active = ActiveSystems.emplace_back();
@@ -1334,10 +1320,7 @@ namespace Lumina
                 Active.Self     = nullptr;
             }
         }
-
-        // C#-authored systems: one managed instance per descriptor for THIS world, scheduled into its
-        // declared stage via the shared ManagedSystemUpdate shim (FStageSlot Self = the GCHandle). The
-        // managed instance carries no Access info, so it runs exclusive (serial), the safe default.
+        
         ManagedSystemGeneration = DotNet::IsInitialized() ? DotNet::GetScriptGeneration() : -1;
         if (DotNet::IsInitialized())
         {

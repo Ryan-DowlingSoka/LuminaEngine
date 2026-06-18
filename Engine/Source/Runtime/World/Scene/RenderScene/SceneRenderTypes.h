@@ -422,7 +422,7 @@ namespace Lumina
         FVector3        Position;
         uint32          Color;
 
-        FVector3        Direction;
+        FVector3        Direction;   // to-light: FROM surface TOWARD the light (sun & spot)
         float           Radius;
 
         float           Intensity;
@@ -433,7 +433,7 @@ namespace Lumina
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
 
         float           VolumetricIntensity;
-        float           _Pad0;
+        float           VolumetricScatteringRadius;   // soft-core source radius (fraction of Radius) for spot/point fog
     };
 
     static_assert(sizeof(FLight) == 64, "FLight hot struct must fit a cache line");
@@ -463,7 +463,7 @@ namespace Lumina
         uint32              bHasIBL{};
         uint32              Padding0[2];
 
-        FVector3           SunDirection{};
+        FVector3           SunDirection{};   // to-light: FROM surface TOWARD the sun (== Lights[0].Direction)
         uint32              bHasSun{};
 
         FVector4           CascadeSplits{};

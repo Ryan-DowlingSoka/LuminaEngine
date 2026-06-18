@@ -10,10 +10,8 @@
 namespace Lumina
 {
     struct FJoltCharacterHandle;
-
-    // NoLua: physics characters aren't script-creatable; the engine
-    // constructs them from the physics scene side.
-    REFLECT(Component, NoLua, Category = "Character")
+    
+    REFLECT(Component, Category = "Character")
     struct RUNTIME_API SCharacterPhysicsComponent
     {
         GENERATED_BODY()

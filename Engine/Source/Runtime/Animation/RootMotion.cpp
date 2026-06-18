@@ -18,9 +18,9 @@ namespace Lumina::RootMotion
             Animation->SampleBoneLocal(Time, Skeleton, RootIndex, T, R, S);
 
             FTransform Out;
-            Out.Location = T;
-            Out.Rotation = R;
-            Out.Scale    = FVector3(1.0f);
+            Out.SetLocation(T);
+            Out.SetRotation(R);
+            Out.SetScale(FVector3(1.0f));
             return Out;
         }
     }
@@ -86,7 +86,7 @@ namespace Lumina::RootMotion
         }
 
         FTransform Combined;
-        Combined.Scale = FVector3(1.0f);
+        Combined.SetScale(FVector3(1.0f));
 
         // Component-space (left/fixed-frame) delta D = M_cur * M_prev^-1. The entity then absorbs it as
         // E_new = E_prev * D, reproducing the root's world motion. Using the body-frame delta
@@ -112,8 +112,8 @@ namespace Lumina::RootMotion
             Combined = Cur * Prev.Inverse();
         }
 
-        Delta.Translation = Combined.Location;
-        Delta.Rotation    = Combined.Rotation;
+        Delta.Translation = Combined.GetLocation();
+        Delta.Rotation    = Combined.GetRotation();
         Delta.bHasMotion  = true;
         return Delta;
     }

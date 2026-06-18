@@ -266,6 +266,7 @@ internal sealed class TypeDescription
 
     public Type Type { get; }
     public IReadOnlyList<ScriptProperty> Properties { get; private set; } = Array.Empty<ScriptProperty>();
+    public IReadOnlyList<ScriptButton> Buttons { get; private set; } = Array.Empty<ScriptButton>();
     public int CollisionCallbackFlags { get; private set; }
     private IReadOnlyList<RequiredComponent> RequiredComponents = Array.Empty<RequiredComponent>();
 
@@ -277,8 +278,44 @@ internal sealed class TypeDescription
     public void Build(TypeLibrary Library)
     {
         Properties = Library.BuildMembers(Type, true, 0, new HashSet<Type>());
+        Buttons = ComputeButtons(Type);
         CollisionCallbackFlags = ComputeCollisionFlags(Type);
         RequiredComponents = ComputeRequiredComponents(Type);
+    }
+
+    // Discovers the [Button] methods: parameterless instance methods surfaced as inspector buttons,
+    // invoked by name at click time. Deduped by name (a virtual override would otherwise appear twice).
+    private static IReadOnlyList<ScriptButton> ComputeButtons(Type Type)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy;
+        List<ScriptButton>? Result = null;
+        HashSet<string>? Seen = null;
+
+        foreach (MethodInfo Method in Type.GetMethods(Flags))
+        {
+            ButtonAttribute? Meta = Method.GetCustomAttribute<ButtonAttribute>();
+            if (Meta == null)
+            {
+                continue;
+            }
+            if (Method.GetParameters().Length != 0 || Method.IsAbstract || Method.IsGenericMethodDefinition)
+            {
+                Native.Log(ELogLevel.Warn, $"[Button] {Type.Name}.{Method.Name}: only parameterless methods are supported.");
+                continue;
+            }
+            if (!(Seen ??= new HashSet<string>()).Add(Method.Name))
+            {
+                continue;
+            }
+            (Result ??= new List<ScriptButton>()).Add(new ScriptButton
+            {
+                Method = Method.Name,
+                Label = string.IsNullOrEmpty(Meta.Label) ? Method.Name : Meta.Label!,
+                Tooltip = Meta.Tooltip ?? "",
+            });
+        }
+
+        return (IReadOnlyList<ScriptButton>?)Result ?? Array.Empty<ScriptButton>();
     }
 
     /// <summary>Resolves each [RequireComponent] member (adding the component if missing) and assigns the

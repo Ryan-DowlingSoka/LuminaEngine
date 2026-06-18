@@ -111,6 +111,34 @@ public readonly unsafe partial struct Physics
         return Out;
     }
 
+    /// <summary>Closest hit, restricted to bodies whose collision layer intersects <paramref name="Mask"/>.</summary>
+    public RaycastHit? RaycastFiltered(FVector3 Origin, FVector3 Direction, float Distance, ECollisionProfiles Mask, Entity? Ignore = null)
+    {
+        FVector3 End = Origin + Direction.Normalized() * Distance;
+        RaycastHitWire Result = RaycastFilteredWire(Origin, End, Ignore?.Id ?? Entity.Null.Id, (uint)Mask);
+        if (Result.Hit == 0)
+        {
+            return null;
+        }
+        return new RaycastHit(new Entity(Result.Entity), Result.BodyId, Result.Point, Result.Normal, Result.Distance, Result.Fraction);
+    }
+
+    /// <summary>Every hit near-to-far, restricted by collision layer mask. See <see cref="RaycastAll"/>.</summary>
+    public RaycastHit[] RaycastAllFiltered(FVector3 Origin, FVector3 Direction, float Distance, ECollisionProfiles Mask, Entity? Ignore = null)
+    {
+        FVector3 End = Origin + Direction.Normalized() * Distance;
+        Span<RaycastHitWire> Buffer = stackalloc RaycastHitWire[MaxQueryResults];
+        int Count = RaycastAllFilteredRaw(Origin, End, Ignore?.Id ?? Entity.Null.Id, (uint)Mask, Buffer);
+
+        RaycastHit[] Out = new RaycastHit[Count];
+        for (int i = 0; i < Count; ++i)
+        {
+            RaycastHitWire W = Buffer[i];
+            Out[i] = new RaycastHit(new Entity(W.Entity), W.BodyId, W.Point, W.Normal, W.Distance, W.Fraction);
+        }
+        return Out;
+    }
+
     /// <summary>
     /// All distinct entities whose physics bodies CONTAIN <paramref name="Point"/> -- volume containment
     /// ("am I inside this trigger / water / zone") without sweeping a shape. Pass <paramref name="Ignore"/>
@@ -290,6 +318,10 @@ public readonly unsafe partial struct Physics
     private partial int SphereCastRaw(FVector3 Start, FVector3 End, float Radius, uint IgnoreId, Span<RaycastHitWire> Hits);
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_RaycastAll")]
     private partial int RaycastAllRaw(FVector3 Start, FVector3 End, uint IgnoreId, Span<RaycastHitWire> Hits);
+    [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_RaycastFiltered")]
+    private partial RaycastHitWire RaycastFilteredWire(FVector3 Start, FVector3 End, uint IgnoreId, uint LayerMask);
+    [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_RaycastAllFiltered")]
+    private partial int RaycastAllFilteredRaw(FVector3 Start, FVector3 End, uint IgnoreId, uint LayerMask, Span<RaycastHitWire> Hits);
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_OverlapPoint")]
     private partial int OverlapPointRaw(FVector3 Point, uint IgnoreId, Span<uint> Results);
 

@@ -419,7 +419,7 @@ struct FLight
     float3 Position;
     uint   Color;
 
-    float3 Direction;
+    float3 Direction;   // to-light: FROM surface TOWARD the light (sun & spot)
     float  Radius;
 
     float  Intensity;
@@ -431,7 +431,7 @@ struct FLight
 
     // Per-light scattering strength; only meaningful when Flags has ELightFlags::Volumetric.
     float  VolumetricIntensity;
-    float  _Pad0;
+    float  VolumetricScatteringRadius;   // soft-core source radius (fraction of Radius) for spot/point fog
 };
 
 // Cold shadow data, fetched only after a light is known to cast a shadow, so it stays out
@@ -447,7 +447,7 @@ struct FLightData
     uint   NumLights;
     uint   bHasIBL;       // 1 = environment IBL cubes valid; 0 = skylight-only flat ambient fallback
     uint   Padding[2];
-    float3 SunDirection;
+    float3 SunDirection;   // to-light: FROM surface TOWARD the sun (== Lights[0].Direction)
     uint   bHasSun;
     float4 CascadeSplits;
     float4 CascadeRadii;

@@ -58,7 +58,7 @@ public readonly unsafe struct View<T1>
                 {
                     for (int i = 0; i < Count; ++i)
                     {
-                        W0.SetHandle(P[i * N + 0]);
+                        W0.Handle = P[i * N + 0];
                         Body(new Entity(E[i]), W0);
                     }
                 }
@@ -99,7 +99,7 @@ public readonly unsafe struct View<T1>
             get
             {
                 int i = Index;
-                W0.SetHandle(Ptrs[i * N + 0]);
+                W0.Handle = Ptrs[i * N + 0];
                 return (new Entity(Entities[i]), W0);
             }
         }
@@ -195,8 +195,8 @@ public readonly unsafe struct View<T1, T2>
                 {
                     for (int i = 0; i < Count; ++i)
                     {
-                        W0.SetHandle(P[i * N + 0]);
-                        W1.SetHandle(P[i * N + 1]);
+                        W0.Handle = P[i * N + 0];
+                        W1.Handle = P[i * N + 1];
                         Body(new Entity(E[i]), W0, W1);
                     }
                 }
@@ -239,8 +239,8 @@ public readonly unsafe struct View<T1, T2>
             get
             {
                 int i = Index;
-                W0.SetHandle(Ptrs[i * N + 0]);
-                W1.SetHandle(Ptrs[i * N + 1]);
+                W0.Handle = Ptrs[i * N + 0];
+                W1.Handle = Ptrs[i * N + 1];
                 return (new Entity(Entities[i]), W0, W1);
             }
         }
@@ -340,9 +340,9 @@ public readonly unsafe struct View<T1, T2, T3>
                 {
                     for (int i = 0; i < Count; ++i)
                     {
-                        W0.SetHandle(P[i * N + 0]);
-                        W1.SetHandle(P[i * N + 1]);
-                        W2.SetHandle(P[i * N + 2]);
+                        W0.Handle = P[i * N + 0];
+                        W1.Handle = P[i * N + 1];
+                        W2.Handle = P[i * N + 2];
                         Body(new Entity(E[i]), W0, W1, W2);
                     }
                 }
@@ -387,9 +387,9 @@ public readonly unsafe struct View<T1, T2, T3>
             get
             {
                 int i = Index;
-                W0.SetHandle(Ptrs[i * N + 0]);
-                W1.SetHandle(Ptrs[i * N + 1]);
-                W2.SetHandle(Ptrs[i * N + 2]);
+                W0.Handle = Ptrs[i * N + 0];
+                W1.Handle = Ptrs[i * N + 1];
+                W2.Handle = Ptrs[i * N + 2];
                 return (new Entity(Entities[i]), W0, W1, W2);
             }
         }
@@ -493,10 +493,10 @@ public readonly unsafe struct View<T1, T2, T3, T4>
                 {
                     for (int i = 0; i < Count; ++i)
                     {
-                        W0.SetHandle(P[i * N + 0]);
-                        W1.SetHandle(P[i * N + 1]);
-                        W2.SetHandle(P[i * N + 2]);
-                        W3.SetHandle(P[i * N + 3]);
+                        W0.Handle = P[i * N + 0];
+                        W1.Handle = P[i * N + 1];
+                        W2.Handle = P[i * N + 2];
+                        W3.Handle = P[i * N + 3];
                         Body(new Entity(E[i]), W0, W1, W2, W3);
                     }
                 }
@@ -543,10 +543,10 @@ public readonly unsafe struct View<T1, T2, T3, T4>
             get
             {
                 int i = Index;
-                W0.SetHandle(Ptrs[i * N + 0]);
-                W1.SetHandle(Ptrs[i * N + 1]);
-                W2.SetHandle(Ptrs[i * N + 2]);
-                W3.SetHandle(Ptrs[i * N + 3]);
+                W0.Handle = Ptrs[i * N + 0];
+                W1.Handle = Ptrs[i * N + 1];
+                W2.Handle = Ptrs[i * N + 2];
+                W3.Handle = Ptrs[i * N + 3];
                 return (new Entity(Entities[i]), W0, W1, W2, W3);
             }
         }

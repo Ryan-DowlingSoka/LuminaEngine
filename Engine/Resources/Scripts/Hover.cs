@@ -21,6 +21,13 @@ public sealed class Hover : EntityScript
     public override void OnReady()
     {
         _Origin = Transform.GetLocalLocation();
+
+        var Rnd = new Random();
+        for (int i = 0; i < 20000; i++)
+        {
+            var NewEntity = World.DuplicateEntity(new Entity(6));
+            World.SetEntityLocation(NewEntity, new FVector3(Rnd.Next(-100, 100), 12, Rnd.Next(-100, 100)));
+        }
     }
 
     public override void OnUpdate(float DeltaTime)

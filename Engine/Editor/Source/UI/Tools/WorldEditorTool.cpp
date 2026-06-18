@@ -1546,7 +1546,7 @@ namespace Lumina
                         }
                         else
                         {
-                            FVector3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
+                            FVector3 PivotPosition = PivotTransformComponent.WorldTransform.GetLocation();
 
                             SelectionView.each([&](entt::entity Entity, STransformComponent& Transform)
                             {
@@ -1563,7 +1563,7 @@ namespace Lumina
 
                                     case ImGuizmo::ROTATE:
                                     {
-                                        FVector3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        FVector3 OffsetFromPivot = Transform.WorldTransform.GetLocation() - PivotPosition;
                                         FVector3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
                                         FVector3 NewWorldPos     = PivotPosition + RotatedOffset;
                                         FQuat NewWorldRot     = DeltaRotation * Transform.GetWorldRotation();
@@ -1592,7 +1592,7 @@ namespace Lumina
                                             }
                                         }
 
-                                        FVector3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        FVector3 OffsetFromPivot = Transform.WorldTransform.GetLocation() - PivotPosition;
                                         FVector3 ScaledOffset    = OffsetFromPivot * ClampedDeltaScale;
                                         FVector3 NewWorldPos     = PivotPosition + ScaledOffset;
                                         FQuat WorldRot        = Transform.GetWorldRotation();
@@ -4649,7 +4649,9 @@ namespace Lumina
             }
 
             FTransform NewWorld = Transform.GetWorldTransform();
-            NewWorld.Location.y = NewY;
+            FVector3 NewLoc = NewWorld.GetLocation();
+            NewLoc.y = NewY;
+            NewWorld.SetLocation(NewLoc);
 
             FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
             if (Rel != nullptr && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
@@ -4666,7 +4668,7 @@ namespace Lumina
             }
             else
             {
-                Transform.SetLocalLocation(NewWorld.Location);
+                Transform.SetLocalLocation(NewWorld.GetLocation());
             }
 
             bAnyMoved = true;
@@ -4839,9 +4841,9 @@ namespace Lumina
         }
 
         STransformComponent& Transform = Registry.get<STransformComponent>(EditorEntity);
-        Transform.SetLocalLocation(CameraBookmarks[Slot].Location);
-        Transform.SetLocalRotation(CameraBookmarks[Slot].Rotation);
-        Transform.SetLocalScale(CameraBookmarks[Slot].Scale);
+        Transform.SetLocalLocation(CameraBookmarks[Slot].GetLocation());
+        Transform.SetLocalRotation(CameraBookmarks[Slot].GetRotation());
+        Transform.SetLocalScale(CameraBookmarks[Slot].GetScale());
     }
 
     void FWorldEditorTool::DrawCursorWorldPositionOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera)

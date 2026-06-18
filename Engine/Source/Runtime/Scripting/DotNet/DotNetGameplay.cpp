@@ -50,17 +50,6 @@ struct FLmRayHit
 // entt::entity - see World.generated.{cpp,cs}. Only the not-yet-reflectable surface lives here.)
 //================================================================================================
 
-LUMINA_DOTNET_EXPORT(uint32, World_CreateEntity)(uint64 World, const char* Name, int32 Length)
-{
-    CWorld* W = AsWorld(World);
-    if (W == nullptr)
-    {
-        return ToId(entt::null);
-    }
-    const FName EntityName = (Length > 0) ? FName(Name, (size_t)Length) : FName("Entity");
-    return ToId(W->ConstructEntity(EntityName));
-}
-
 LUMINA_DOTNET_EXPORT(int32, World_IsValidEntity)(uint64 World, uint32 Entity)
 {
     CWorld* W = AsWorld(World);
@@ -514,6 +503,71 @@ LUMINA_DOTNET_EXPORT(int32, Physics_RaycastAll)(uint64 World, FVector3 Start, FV
     SRayCastSettings Settings;
     Settings.Start = Start;
     Settings.End   = End;
+    StageIgnore(S, IgnoreEntity, Settings.IgnoreBodies);
+
+    TVector<SRayResult> Hits = S->CastRayAll(Settings);
+
+    int32 Count = (int32)Hits.size();
+    if (Count > Max) { Count = Max; }
+    for (int32 i = 0; i < Count; ++i)
+    {
+        const SRayResult& R = Hits[i];
+        FLmRayHit& H = OutHits[i];
+        H.bHit     = 1;
+        H.Entity   = R.Entity;
+        H.BodyID   = R.BodyID;
+        H.Location = R.Location;
+        H.Normal   = R.Normal;
+        H.Distance = R.Distance;
+        H.Fraction = R.Fraction;
+    }
+    return Count;
+}
+
+// Closest hit, restricted to bodies whose collision layer intersects LayerMask (ECollisionProfiles bits).
+LUMINA_DOTNET_EXPORT(FLmRayHit, Physics_RaycastFiltered)(uint64 World, FVector3 Start, FVector3 End, uint32 IgnoreEntity, uint32 LayerMask)
+{
+    FLmRayHit Hit{};
+    Physics::IPhysicsScene* S = SceneOf(World);
+    if (S == nullptr)
+    {
+        return Hit;
+    }
+
+    SRayCastSettings Settings;
+    Settings.Start = Start;
+    Settings.End = End;
+    Settings.LayerMask = (Lumina::ECollisionProfiles)LayerMask;
+    StageIgnore(S, IgnoreEntity, Settings.IgnoreBodies);
+
+    TOptional<SRayResult> Result = S->CastRay(Settings);
+    if (Result.has_value())
+    {
+        const SRayResult& R = Result.value();
+        Hit.bHit     = 1;
+        Hit.Entity   = R.Entity;
+        Hit.BodyID   = R.BodyID;
+        Hit.Location = R.Location;
+        Hit.Normal   = R.Normal;
+        Hit.Distance = R.Distance;
+        Hit.Fraction = R.Fraction;
+    }
+    return Hit;
+}
+
+// Every hit near-to-far, restricted by collision layer mask. Returns the count written.
+LUMINA_DOTNET_EXPORT(int32, Physics_RaycastAllFiltered)(uint64 World, FVector3 Start, FVector3 End, uint32 IgnoreEntity, uint32 LayerMask, FLmRayHit* OutHits, int32 Max)
+{
+    Physics::IPhysicsScene* S = SceneOf(World);
+    if (S == nullptr || Max <= 0)
+    {
+        return 0;
+    }
+
+    SRayCastSettings Settings;
+    Settings.Start = Start;
+    Settings.End   = End;
+    Settings.LayerMask = (Lumina::ECollisionProfiles)LayerMask;
     StageIgnore(S, IgnoreEntity, Settings.IgnoreBodies);
 
     TVector<SRayResult> Hits = S->CastRayAll(Settings);

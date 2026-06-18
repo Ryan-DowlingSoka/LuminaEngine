@@ -134,7 +134,10 @@ newaction
         local StampTime = FileTime(StampFile)
         local LatestInput = FileTime(ReflectionDirectory) -- rebuilding the Reflector invalidates outputs
         if LatestInput == 0 then
-            Logger.Warning("Reflector binary not found at " .. ReflectionDirectory .. " - running build will produce it.")
+            Logger.Error("Reflector binary not found at " .. ReflectionDirectory)
+            Logger.Error("This means the Reflector project FAILED to build - scroll up to the 'Reflector.vcxproj -- FAILED' errors above; the reflection step itself is fine.")
+            Logger.Error("Fresh clone? Run Setup.bat (downloads External/LLVM) and verify LUMINA_DIR points at this engine root.")
+            os.exit(1)
         end
 
         if StampTime > 0 then

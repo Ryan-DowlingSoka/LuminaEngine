@@ -20,7 +20,7 @@ struct FPushConstants
     // Pointer placed after the array so its 8-byte alignment lands on a multiple of 8 (offset 96).
     ConstBufferPointer<FExponentialHeightFogParams> Fog;  // fog params (transient device address)
     uint   ScatterUAV;   // bindless 3D UAV index of the froxel scatter volume
-    uint   _Pad0;
+    uint   bSupersampleLocal;   // 1 = 4x supersample local light in-scatter per froxel
 };
 FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
 
@@ -70,13 +70,15 @@ float SampleSunShadow(FLight Light, float3 WorldPos)
 // positions and average. Soft god-ray edges without temporal accumulation.
 float SampleSunShadowAA(FLight Sun, uint3 Coord)
 {
-    const float2 Offs[4] = { float2(0.25, 0.25), float2(0.75, 0.25),
-                             float2(0.25, 0.75), float2(0.75, 0.75) };
+    // 4 taps stratified across XY AND the slab's depth (Z) -- averaging the shadow over depth smooths
+    // the exponential-Z slab stepping in shadow shafts deterministically (no grain), same 4-tap cost.
+    const float3 Offs[4] = { float3(0.25, 0.25, 0.2), float3(0.75, 0.25, 0.4),
+                             float3(0.25, 0.75, 0.6), float3(0.75, 0.75, 0.8) };
     float S = 0.0;
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        S += SampleSunShadow(Sun, FroxelToWorld(Coord, float3(Offs[i], 0.5)));
+        S += SampleSunShadow(Sun, FroxelToWorld(Coord, Offs[i]));
     }
     return S * 0.25;
 }
@@ -98,6 +100,57 @@ float SampleSpotShadow(FLight Light, float3 WorldPos)
     float2 UV  = saturate(P.xy * 0.5 + 0.5);
     float2 AUV = Tile.AtlasUVOffset + UV * Tile.AtlasUVScale;
     return ShadowAtlas().SampleCmpLevelZero(AUV, P.z - 0.0005);
+}
+
+// In-scatter from the opted-in local point/spot lights at one world position. Pulled out of
+// ComputeMain so it can be supersampled at several sub-froxel positions (the near-light core and
+// cone edge are far higher frequency than the froxel grid).
+float3 LocalLightsInScatter(float3 WorldPos, float3 ToCam, float G)
+{
+    float3 InScatter = float3(0.0);
+    uint NumLocal = min(Pass().NumLocalVolumetric, (uint)FROXEL_MAX_LOCAL_LIGHTS);
+    for (uint li = 0; li < NumLocal; ++li)
+    {
+        FLight L    = GetLightAt(Pass().LocalLightIndices[li]);
+        float3 ToL  = L.Position - WorldPos;
+        float  Dist = length(ToL);
+        if (Dist > L.Radius)
+        {
+            continue;
+        }
+        float3 Ldir  = ToL / max(Dist, 1e-4);
+        // Soft-core 1/d^2: a finite source radius caps the apex peak so the near-light glow spreads
+        // over several froxels instead of a single pixelated spike. Per-light (VolumetricScatteringRadius).
+        float  R0    = L.Radius * L.VolumetricScatteringRadius;
+        float  Atten = 1.0 / max(Dist * Dist + R0 * R0, 1e-6);
+        float  DistR = Dist / L.Radius;
+        Atten *= 1.0 - smoothstep(clamp(L.Falloff, 0.0, 1.0), 1.0, DistR);
+
+        float Cone = 1.0;
+        if (HasFlag(L.Flags, ELightFlags::Spot))
+        {
+            float3 SF    = normalize(L.Direction);   // to-light (surface->spot)
+            float  CosAt = dot(SF, Ldir);
+            Cone = saturate((CosAt - L.Angles.y) / max(L.Angles.x - L.Angles.y, 1e-3));
+            if (Cone <= 0.0)
+            {
+                continue;
+            }
+        }
+
+        float Shadow = 1.0;
+        if (L.ShadowDataIndex != INDEX_NONE && HasFlag(L.Flags, ELightFlags::Spot))
+        {
+            Shadow = SampleSpotShadow(L, WorldPos);
+        }
+
+        // Ldir points toward the light; the photon travels the other way, so negate
+        // to match the sun's travel-direction phase convention.
+        float  Phase = Fog_Phase(dot(-Ldir, ToCam), G);
+        float3 LC    = UnpackColor(L.Color).rgb;
+        InScatter += LC * L.Intensity * Atten * Cone * Phase * Shadow * L.VolumetricIntensity;
+    }
+    return InScatter;
 }
 
 [shader("compute")]
@@ -130,8 +183,8 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         }
     }
 
-    // Sample the slice center. The apply-pass screen-space depth dither + 128 Z slices
-    // keep banding down without per-frame jitter (which needs temporal accumulation).
+    // Sample the slice center. Sun-shadow shafts are debanded by Z-stratified taps in
+    // SampleSunShadowAA (averaging, not dither) so the smooth fog stays grain-free.
     FExponentialHeightFogParams uFog = Pass().Fog.get();
 
     float3 WorldPos = FroxelToWorld(DispatchID, float3(0.5, 0.5, 0.5));
@@ -142,7 +195,9 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     // Sun-facing albedo tint applies whenever a directional light exists, independent of whether
     // it casts volumetric shafts; both this pass and the analytic far fog use the same albedo.
     bool bHasSun = GetNumLights() > 0 && HasFlag(GetLightAt(0).Flags, ELightFlags::Directional);
-    float CosSun = bHasSun ? dot(normalize(GetLightAt(0).Direction), ToCam) : -1.0;
+    // Light.Direction points from the surface toward the sun; the phase/tint want the photon
+    // travel direction, so negate to get CosSun = +1 when looking straight at the sun.
+    float CosSun = bHasSun ? dot(-normalize(GetLightAt(0).Direction), ToCam) : -1.0;
 
     // Extinction from the exp-height profile (clamped so it can't explode below base),
     // ramped in past FogStartDistance.
@@ -167,45 +222,29 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
         InScatter += SunColor * Sun.Intensity * Phase * Shadow * Sun.VolumetricIntensity;
     }
 
-    // Opted-in local point/spot lights.
-    uint NumLocal = min(Pass().NumLocalVolumetric, (uint)FROXEL_MAX_LOCAL_LIGHTS);
-    for (uint li = 0; li < NumLocal; ++li)
+    // Opted-in local point/spot lights. A single center sample aliases the bright near-light core
+    // and cone edge into froxel-sized blocks, so (when enabled) supersample at 4 sub-froxel XY
+    // positions and average -- the froxel stores the volume average, not a spike.
+    if (Pass().NumLocalVolumetric != 0)
     {
-        FLight L    = GetLightAt(Pass().LocalLightIndices[li]);
-        float3 ToL  = L.Position - WorldPos;
-        float  Dist = length(ToL);
-        if (Dist > L.Radius)
+        if (Pass().bSupersampleLocal != 0)
         {
-            continue;
-        }
-        float3 Ldir  = ToL / max(Dist, 1e-4);
-        float  Atten = 1.0 / max(Dist * Dist, 1e-4);
-        float  DistR = Dist / L.Radius;
-        Atten *= 1.0 - smoothstep(clamp(L.Falloff, 0.0, 1.0), 1.0, DistR);
-
-        float Cone = 1.0;
-        if (HasFlag(L.Flags, ELightFlags::Spot))
-        {
-            float3 SF    = normalize(L.Direction);
-            float  CosAt = dot(SF, -Ldir);
-            Cone = saturate((CosAt - L.Angles.y) / max(L.Angles.x - L.Angles.y, 1e-3));
-            if (Cone <= 0.0)
+            const float2 Offs[4] = { float2(0.25, 0.25), float2(0.75, 0.25),
+                                     float2(0.25, 0.75), float2(0.75, 0.75) };
+            float3 LocalSum = float3(0.0);
+            [unroll]
+            for (int s = 0; s < 4; ++s)
             {
-                continue;
+                float3 SubPos   = FroxelToWorld(DispatchID, float3(Offs[s], 0.5));
+                float3 SubToCam = normalize(GetCameraPosition() - SubPos);
+                LocalSum += LocalLightsInScatter(SubPos, SubToCam, G);
             }
+            InScatter += LocalSum * 0.25;
         }
-
-        float Shadow = 1.0;
-        if (L.ShadowDataIndex != INDEX_NONE && HasFlag(L.Flags, ELightFlags::Spot))
+        else
         {
-            Shadow = SampleSpotShadow(L, WorldPos);
+            InScatter += LocalLightsInScatter(WorldPos, ToCam, G);
         }
-
-        // Ldir points toward the light; the photon travels the other way, so
-        // negate to match the sun's travel-direction phase convention.
-        float  Phase = Fog_Phase(dot(-Ldir, ToCam), G);
-        float3 LC    = UnpackColor(L.Color).rgb;
-        InScatter += LC * L.Intensity * Atten * Cone * Phase * Shadow * L.VolumetricIntensity;
     }
 
     float3 Scatter = SigmaS * InScatter * Intensity;

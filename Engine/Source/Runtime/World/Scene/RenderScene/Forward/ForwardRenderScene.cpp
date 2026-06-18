@@ -5,6 +5,7 @@
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
+#include "Config/EngineSettings.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Windows/Window.h"
 #include "Memory/MemoryTracking.h"
@@ -1447,7 +1448,7 @@ namespace Lumina
 
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = BillboardComponent.Texture->GetResourceID();
-                    Billboard.Position              = TransformStorage.get(Entity).WorldTransform.Location;
+                    Billboard.Position              = TransformStorage.get(Entity).WorldTransform.GetLocation();
                     Billboard.Size                  = BillboardComponent.Scale;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 });
@@ -1473,39 +1474,39 @@ namespace Lumina
                         {
                             return;
                         }
-                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::CameraIcon, FColor::White);
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.GetLocation(), ENamedImage::CameraIcon, FColor::White);
                     });
 
                     CharacterView.each([&](entt::entity Entity, SCharacterControllerComponent&)
                     {
-                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::CharacterIcon, FColor::White);
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.GetLocation(), ENamedImage::CharacterIcon, FColor::White);
                     });
 
                     PointLightView.each([&](entt::entity Entity, const SPointLightComponent& Light)
                     {
-                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::PointLightIcon, FVector4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.GetLocation(), ENamedImage::PointLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
                     SpotLightView.each([&](entt::entity Entity, const SSpotLightComponent& Light)
                     {
-                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::SpotLightIcon, FVector4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.GetLocation(), ENamedImage::SpotLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
                     DirectionalView.each([&](entt::entity Entity, const SDirectionalLightComponent& Light)
                     {
                         const auto& Transform = Registry.get<STransformComponent>(Entity);
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::DirectionalLightIcon, FVector4(Light.Color, 1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.GetLocation(), ENamedImage::DirectionalLightIcon, FVector4(Light.Color, 1.0f));
                     });
 
                     SkyLightView.each([&](entt::entity Entity, const SSkyLightComponent&)
                     {
                         const auto& Transform = Registry.get<STransformComponent>(Entity);
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, FVector4(1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.GetLocation(), ENamedImage::SkyLightIcon, FVector4(1.0f));
                     });
 
                     ParticleView.each([&](entt::entity Entity, const SParticleSystemComponent&)
                     {
-                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.Location, ENamedImage::ParticleSystemIcon, FVector4(1.0f));
+                        EmplaceVisualizer(Entity, TransformStorage.get(Entity).WorldTransform.GetLocation(), ENamedImage::ParticleSystemIcon, FVector4(1.0f));
                     });
                 }
                 #endif
@@ -1971,7 +1972,7 @@ namespace Lumina
                     float BaseHeight = Fog.FogBaseHeight;
                     if (const STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
                     {
-                        BaseHeight += Transform->WorldTransform.Location.y;
+                        BaseHeight += Transform->WorldTransform.GetLocation().y;
                     }
 
                     FExponentialHeightFogParams& P = Frame.Volumetrics.FogParams;
@@ -2247,7 +2248,7 @@ namespace Lumina
         R.PixelShader           = Material->GetPixelShader();
         R.DepthVertexShader     = nullptr;
         R.ShadowVertexShader    = nullptr;
-        if (CMaterial* ConcreteMaterial = Material->GetMaterial(); ConcreteMaterial && ConcreteMaterial->UsesWorldPositionOffset())
+        if (CMaterial* ConcreteMaterial = Material->GetMaterial(); ConcreteMaterial->UsesWorldPositionOffset())
         {
             R.DepthVertexShader  = ConcreteMaterial->GetDepthPrepassVertexShader();
             R.ShadowVertexShader = ConcreteMaterial->GetShadowVertexShader();
@@ -3117,7 +3118,7 @@ namespace Lumina
                 continue;
             }
             const STransformComponent&  Transform = PointView.get<STransformComponent>(Entity);
-            const FVector3 Position = Transform.WorldTransform.Location;
+            const FVector3 Position = Transform.WorldTransform.GetLocation();
             const float     Radius   = Light.Attenuation;
             if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
             {
@@ -3135,7 +3136,7 @@ namespace Lumina
                 continue;
             }
             const STransformComponent& Transform = SpotView.get<STransformComponent>(Entity);
-            const FVector3 Position = Transform.WorldTransform.Location;
+            const FVector3 Position = Transform.WorldTransform.GetLocation();
             const float     Radius   = Light.Attenuation;
             if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
             {
@@ -3165,12 +3166,13 @@ namespace Lumina
         Light.Color                 = PackColor(FVector4(PointLight.LightColor, 1.0));
         Light.Intensity             = PointLight.Intensity;
         Light.Radius                = PointLight.Attenuation;
-        Light.Position              = TransformComponent.WorldTransform.Location;
+        Light.Position              = TransformComponent.WorldTransform.GetLocation();
         Light.ShadowDataIndex       = INDEX_NONE;
         if (PointLight.bVolumetric)
         {
             Light.Flags             |= ELightFlags::Volumetric;
             Light.VolumetricIntensity = PointLight.VolumetricIntensity;
+            Light.VolumetricScatteringRadius = PointLight.VolumetricScatteringRadius;
         }
 
         if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
@@ -3225,8 +3227,10 @@ namespace Lumina
 
         FLight Light                = {};
         Light.Flags                 = ELightFlags::Spot;
-        Light.Position              = TransformComponent.WorldTransform.Location;
-        Light.Direction             = Math::Normalize(UpdatedForward);
+        Light.Position              = TransformComponent.WorldTransform.GetLocation();
+        // Store the to-light direction (surface->spot), matching the sun/directional convention so
+        // the shader cone test dot(Direction, L) peaks on the beam axis. -UpdatedForward = aim reversed.
+        Light.Direction             = Math::Normalize(-UpdatedForward);
         Light.Falloff               = SpotLight.Falloff;
         Light.Color                 = PackColor(FVector4(SpotLight.LightColor, 1.0));
         Light.Intensity             = SpotLight.Intensity;
@@ -3237,6 +3241,7 @@ namespace Lumina
         {
             Light.Flags             |= ELightFlags::Volumetric;
             Light.VolumetricIntensity = SpotLight.VolumetricIntensity;
+            Light.VolumetricScatteringRadius = SpotLight.VolumetricScatteringRadius;
         }
 
         if (SpotLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
@@ -3252,7 +3257,7 @@ namespace Lumina
             Req.DesiredPixels   = DesiredPixels;
             Req.DistanceToCamera = Dist;
             Req.Position        = Light.Position;
-            Req.Direction       = -UpdatedForward;
+            Req.Direction       = UpdatedForward;   // shadow camera looks along the aim (where the spot lights)
             Req.Up              = UpdatedUp;
             Req.Attenuation     = SpotLight.Attenuation;
             Req.OuterFOVDegrees = OuterDegrees;
@@ -7169,7 +7174,8 @@ namespace Lumina
             uint32 LocalLightIndices[GFroxelMaxLocalLights];
             uint64 FogAddr;             // fog params UBO (transient device address) -- offset 96, 8-aligned
             uint32 ScatterUAV;          // bindless 3D UAV index of the scatter volume
-            uint32 _Pad0;
+            uint32 bSupersampleLocal;   // 1 = 4x supersample local light in-scatter per froxel
+
         };
         static_assert(sizeof(FFroxelInjectPushConstants) <= 128, "Froxel inject PC must fit 128B");
 
@@ -7249,23 +7255,28 @@ namespace Lumina
         FFroxelInjectPushConstants PC = {};
         PC.FogAddr            = RHI::Core::CopyTransient(Frame.Volumetrics.FogParams);
         PC.ScatterUAV         = (uint32)Scatter.GetMipUAVIndex(0);
-        PC.GridSize[0]        = GFroxelGridX;
-        PC.GridSize[1]        = GFroxelGridY;
-        PC.GridSize[2]        = GFroxelGridZ;
+        PC.GridSize[0]        = FroxelGridSize.x;
+        PC.GridSize[1]        = FroxelGridSize.y;
+        PC.GridSize[2]        = FroxelGridSize.z;
         PC.NearPlane          = Math::Max(SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange           = FogRange;
         PC.bSunVolumetric     = bSunVolumetric ? 1u : 0u;
         PC.NumLocalVolumetric = NumLocal;
         PC.Time               = SceneGlobalData.Time;
+        PC.bSupersampleLocal  = 1u;
+        if (const CRendererSettings* RS = GetDefault<CRendererSettings>())
+        {
+            PC.bSupersampleLocal = RS->bSupersampleVolumetricLights ? 1u : 0u;
+        }
         for (uint32 i = 0; i < NumLocal; ++i)
         {
             PC.LocalLightIndices[i] = LocalIndices[i];
         }
 
         RHI::CmdDispatch(CL, MakeArgs(PC),
-                         RenderUtils::GetGroupCount(GFroxelGridX, 4),
-                         RenderUtils::GetGroupCount(GFroxelGridY, 4),
-                         RenderUtils::GetGroupCount(GFroxelGridZ, 4));
+                         RenderUtils::GetGroupCount(FroxelGridSize.x, 4),
+                         RenderUtils::GetGroupCount(FroxelGridSize.y, 4),
+                         RenderUtils::GetGroupCount(FroxelGridSize.z, 4));
 
         // Integrate reads the scatter volume next.
         RHI::CmdBarrier(CL, RHI::EStageFlags::Compute, RHI::EStageFlags::Compute);
@@ -7295,9 +7306,9 @@ namespace Lumina
         const float FogRange = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
 
         FFroxelIntegratePushConstants PC = {};
-        PC.GridSize[0]    = GFroxelGridX;
-        PC.GridSize[1]    = GFroxelGridY;
-        PC.GridSize[2]    = GFroxelGridZ;
+        PC.GridSize[0]    = FroxelGridSize.x;
+        PC.GridSize[1]    = FroxelGridSize.y;
+        PC.GridSize[2]    = FroxelGridSize.z;
         PC.NearPlane      = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange       = FogRange;
         PC.ScatterSRV     = (uint32)Scatter.GetResourceID();
@@ -7305,8 +7316,8 @@ namespace Lumina
 
         // One thread per (x,y) column; each marches the full Z range.
         RHI::CmdDispatch(CL, MakeArgs(PC),
-                         RenderUtils::GetGroupCount(GFroxelGridX, 8),
-                         RenderUtils::GetGroupCount(GFroxelGridY, 8),
+                         RenderUtils::GetGroupCount(FroxelGridSize.x, 8),
+                         RenderUtils::GetGroupCount(FroxelGridSize.y, 8),
                          1u);
 
         Barriers::ComputeToAll(CL);
@@ -7368,7 +7379,7 @@ namespace Lumina
         PC.FogAddr         = RHI::Core::CopyTransient(Frame.Volumetrics.FogParams);
         PC.DepthIndex      = (uint32)SceneDepth.GetResourceID();
         PC.IntegratedIndex = (uint32)Integrated.GetResourceID();
-        PC.GridZ           = GFroxelGridZ;
+        PC.GridZ           = FroxelGridSize.z;
         PC.NearPlane       = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange        = Math::Clamp(Frame.Volumetrics.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
         PC.bVolumetric     = (Frame.Volumetrics.bVolumetricFog && CVarVolFogEnabled.GetValue()) ? 1u : 0u;
@@ -8896,9 +8907,20 @@ namespace Lumina
         {
             // Froxel fog volumes: fixed 3D grid (swapchain-independent). RGBA16F = (in-scatter, a) where a is
             // extinction (Scatter) or transmittance (Integrated). Storage for the UAVs, sampled to apply.
+            // Resolution = base * CRendererSettings::FroxelResolutionScale, cached so the dispatches match.
+            float FroxelScale = 1.0f;
+            if (const CRendererSettings* RS = GetDefault<CRendererSettings>())
+            {
+                FroxelScale = Math::Clamp(RS->FroxelResolutionScale, 0.25f, 2.0f);
+            }
+            FroxelGridSize = FUIntVector3(
+                Math::Max(1u, (uint32)(GFroxelGridX * FroxelScale + 0.5f)),
+                Math::Max(1u, (uint32)(GFroxelGridY * FroxelScale + 0.5f)),
+                Math::Max(1u, (uint32)(GFroxelGridZ * FroxelScale + 0.5f)));
+
             RHI::FTextureDesc FroxelDesc;
             FroxelDesc.Type      = RHI::ETextureType::Tex3D;
-            FroxelDesc.Dimension = FUIntVector3(GFroxelGridX, GFroxelGridY, GFroxelGridZ);
+            FroxelDesc.Dimension = FroxelGridSize;
             FroxelDesc.Format    = EFormat::RGBA16_FLOAT;
             FroxelDesc.Usage     = RHI::EImageUsageFlags::Sampled | RHI::EImageUsageFlags::Storage;
             View.Images[(int)ENamedImage::FroxelScatter]    = CreateSceneImage(FroxelDesc, true, true);

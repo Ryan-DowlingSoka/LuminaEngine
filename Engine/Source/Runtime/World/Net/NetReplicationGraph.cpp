@@ -104,9 +104,9 @@ namespace Lumina::NetGraph
                     }
                     else
                     {
-                        Pos   = T.WorldTransform.Location;
-                        Rot   = T.WorldTransform.Rotation;
-                        Scale = T.WorldTransform.Scale;
+                        Pos   = T.WorldTransform.GetLocation();
+                        Rot   = T.WorldTransform.GetRotation();
+                        Scale = T.WorldTransform.GetScale();
                     }
 
                     const NetQuantize::FQuantizedVector QPos   = NetQuantize::FQuantizedVector::FromVector(Pos);

@@ -11,6 +11,9 @@
 #include "Components/CSharpScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
+#include "Memory/MemoryConcurrentQueue.h"
+#include "TaskSystem/FiberSync.h"
+#include "TaskSystem/Scheduler/JobScheduler.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectArray.h"
@@ -388,9 +391,9 @@ namespace Lumina::ECS::Utils
             FQuat    Rotation;
             FVector4 Perspective;
             Math::Decompose(NewLocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
-            NewLocalTransform.Location = Translation;
-            NewLocalTransform.Rotation = Rotation;
-            NewLocalTransform.Scale    = Scale;
+            NewLocalTransform.SetLocation(Translation);
+            NewLocalTransform.SetRotation(Rotation);
+            NewLocalTransform.SetScale(Scale);
         }
 
         RemoveFromParent(Registry, Child);
@@ -645,47 +648,138 @@ namespace Lumina::ECS::Utils
     
     struct CACHE_ALIGN FTransformDirtyState
     {
-        std::atomic<bool> bAnyDirty{ true };
+        // entt::entity is a trivially-copyable uint32; the lock-free queue lets setters on any thread
+        // (worker fibers, the physics thread) enqueue without a lock, so they stay SuppressGCTransition-safe.
+        using FDirtyQueue = moodycamel::ConcurrentQueue<entt::entity, Memory::FTrackedConcurrentQueueTraits>;
+
+        std::atomic<bool> bAnyDirty{ true };  // cheap gate: skip the drain when nothing is dirty
+        FDirtyQueue       DirtyTransforms;     // entities whose local transform changed (drained at resolve)
+        FDirtyQueue       DirtyBodies;         // setter-moved entities to re-sync to physics (drained pre-sync)
+        FFiberMutex       ResolveGuard;        // one resolver writes WorldTransform at a time (fiber-aware)
+
+        // Per-thread-slot producer tokens: skip moodycamel's per-enqueue implicit-producer hash lookup on
+        // the hot setter path. Indexed by Jobs::GetWorkerIndex() -- one slot per thread, so a given token is
+        // never used concurrently (the same invariant the job scheduler's own tokens rely on). Sized once at
+        // construction; left empty if the scheduler isn't up yet, in which case enqueue falls back to implicit.
+        TVector<moodycamel::ProducerToken> TransformTokens;
+        TVector<moodycamel::ProducerToken> BodyTokens;
+
+        // Resolve scratch, reused across calls (ResolveAllDirtyTransforms holds ResolveGuard, so single
+        // owner). DrainScratch is the raw bulk-dequeued id list; HierBySlot collects the rare hierarchical
+        // entities per worker slot during the parallel filter (so the filter itself parallelizes).
+        TVector<entt::entity>          DrainScratch;
+        TVector<TVector<entt::entity>> HierBySlot;
+
+        FTransformDirtyState()
+        {
+            const uint32 Slots = Jobs::IsInitialized() ? Jobs::GetNumThreadSlots() : 1;
+            HierBySlot.resize(Slots);
+
+            if (!Jobs::IsInitialized())
+            {
+                return;   // tokens stay empty -> implicit-producer fallback (always safe)
+            }
+            TransformTokens.reserve(Slots);
+            BodyTokens.reserve(Slots);
+            for (uint32 i = 0; i < Slots; ++i)
+            {
+                TransformTokens.emplace_back(DirtyTransforms);
+                BodyTokens.emplace_back(DirtyBodies);
+            }
+        }
     };
-    
+
+    // on_construct<FNeedsTransformUpdate>: external dirtying (editor/net/prefab/serialize, or a tag emplaced
+    // before the hook connected) folds into the same lock-free queue the setters use, so the next resolve
+    // drains it. bWorldDirty is the dedup guard (enqueue once per dirty episode).
     static void OnTransformDirtied(FTransformDirtyState* State, FEntityRegistry& Registry, entt::entity Entity)
     {
-        State->bAnyDirty.store(true, std::memory_order_release);
         if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
         {
-            Transform->bWorldDirty = true;
+            if (!Transform->bWorldDirty)
+            {
+                Transform->bWorldDirty = true;
+                State->DirtyTransforms.enqueue(Entity);
+            }
         }
+        State->bAnyDirty.store(true, std::memory_order_release);
     }
 
-    static FTransformDirtyState* FindTransformDirtyState(FEntityRegistry& Registry)
+    FTransformDirtyState* EnsureTransformDirtyState(FEntityRegistry& Registry)
     {
         if (TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>())
         {
             return Holder->get();
         }
-        return nullptr;
-    }
-    
-    static FTransformDirtyState& EnsureTransformDirtyState(FEntityRegistry& Registry)
-    {
-        if (TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>())
-        {
-            return *Holder->get();
-        }
 
         FTransformDirtyState& State = *Registry.ctx().emplace<TUniquePtr<FTransformDirtyState>>(MakeUnique<FTransformDirtyState>());
         Registry.on_construct<FNeedsTransformUpdate>().connect<&OnTransformDirtied>(&State);
-        return State;
-    }
-    
-    std::atomic<bool>* EnsureTransformDirtySignal(FEntityRegistry& Registry)
-    {
-        return &EnsureTransformDirtyState(Registry).bAnyDirty;
+        return &State;
     }
 
-    // Recompute world = parentWorld * local for every descendant of Root.
-    template<typename TTransformStorage>
-    static void PropagateTransformsToDescendants(FEntityRegistry& Registry, TTransformStorage& TransformStorage, entt::entity Root, bool bClearDirty)
+    void QueueDirtyTransform(FTransformDirtyState* State, entt::entity Entity, bool bQueueBody)
+    {
+        if (State == nullptr)
+        {
+            return;
+        }
+
+        // Fast path: this thread's slot token (no implicit-producer hash lookup). The slot guard skips
+        // GetWorkerIndex() when tokens are unset (scheduler not up), and the implicit enqueue below is the
+        // always-safe fallback for any unexpected slot -- mixing explicit/implicit on one queue is allowed.
+        if (!State->TransformTokens.empty())
+        {
+            const uint32 Slot = Jobs::GetWorkerIndex();
+            if (Slot < State->TransformTokens.size())
+            {
+                State->DirtyTransforms.enqueue(State->TransformTokens[Slot], Entity);
+                if (bQueueBody)   // only bodied entities need the physics re-sync; skip the queue + drain otherwise
+                {
+                    State->DirtyBodies.enqueue(State->BodyTokens[Slot], Entity);
+                }
+                State->bAnyDirty.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+
+        State->DirtyTransforms.enqueue(Entity);
+        if (bQueueBody)
+        {
+            State->DirtyBodies.enqueue(Entity);
+        }
+        State->bAnyDirty.store(true, std::memory_order_relaxed);
+    }
+
+    void FlushDirtyPhysicsBodies(FEntityRegistry& Registry)
+    {
+        TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>();
+        FTransformDirtyState* State = Holder ? Holder->get() : nullptr;
+        if (State == nullptr)
+        {
+            return;   // no dirty state yet -> no setter has moved anything, so no body to re-sync
+        }
+
+        // Drain the lock-free queue of setter-moved entities and tag the bodied ones for the physics sync.
+        // Single-threaded (the physics boundary); the emplace is the deferred, batched MarkPhysicsBodyDirtyIfBodied.
+        entt::entity Batch[128];
+        std::size_t Count;
+        while ((Count = State->DirtyBodies.try_dequeue_bulk(Batch, 128)) != 0)
+        {
+            for (std::size_t i = 0; i < Count; ++i)
+            {
+                const entt::entity E = Batch[i];
+                if (Registry.valid(E) && Registry.any_of<SRigidBodyComponent, SCharacterPhysicsComponent>(E))
+                {
+                    Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(E);
+                }
+            }
+        }
+    }
+
+    // Recompute world = parentWorld * local for every descendant of Root. Walks the child links via the
+    // cached relationship storage (no per-node try_get through the registry's type map).
+    template<typename TTransformStorage, typename TRelStorage>
+    static void PropagateTransformsToDescendants(TTransformStorage& TransformStorage, TRelStorage& RelStorage, entt::entity Root, bool bClearDirty)
     {
         TFixedVector<entt::entity, 64> Stack;
         Stack.push_back(Root);
@@ -695,11 +789,18 @@ namespace Lumina::ECS::Utils
             const entt::entity Parent = Stack.back();
             Stack.pop_back();
 
-            const FTransform ParentWorld = TransformStorage.get(Parent).WorldTransform;
-            ForEachChild(Registry, Parent, [&](entt::entity Child)
+            if (!RelStorage.contains(Parent))
             {
-                STransformComponent& ChildTransform = TransformStorage.get(Child);
+                continue;
+            }
 
+            const FTransform ParentWorld = TransformStorage.get(Parent).WorldTransform;
+            entt::entity Child = RelStorage.get(Parent).First;
+            while (Child != entt::null)
+            {
+                const entt::entity Next = RelStorage.contains(Child) ? RelStorage.get(Child).Next : entt::null;
+
+                STransformComponent& ChildTransform = TransformStorage.get(Child);
                 ChildTransform.WorldTransform = ParentWorld * ChildTransform.LocalTransform;
                 ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
 
@@ -709,22 +810,25 @@ namespace Lumina::ECS::Utils
                 }
 
                 Stack.push_back(Child);
-            });
+                Child = Next;
+            }
         }
     }
 
     void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        if (const FTransformDirtyState* DirtyState = FindTransformDirtyState(Registry))
+
+        FTransformDirtyState& DirtyState = *EnsureTransformDirtyState(Registry);
+        if (!DirtyState.bAnyDirty.load(std::memory_order_acquire))
         {
-            if (!DirtyState->bAnyDirty.load(std::memory_order_acquire))
-            {
-                return;
-            }
+            return;
         }
-        
+
+        // Serialize against the boundary / physics-thread resolvers so a shared ancestor's WorldTransform is
+        // never written concurrently. Fiber-aware: parks the fiber instead of spinning a core if contended.
+        FFiberScopeLock ResolveLock(DirtyState.ResolveGuard);
+
         TFixedVector<entt::entity, 64> AncestorChain;
         int32 TopmostDirtyIndex = -1;
 
@@ -780,135 +884,164 @@ namespace Lumina::ECS::Utils
         }
 
         // Propagate to the full subtree. Compute-only (no flag clearing), so no lock needed.
-        PropagateTransformsToDescendants(Registry, XFormStorage, AncestorChain[TopmostDirtyIndex], /*bClearDirty*/ false);
+        PropagateTransformsToDescendants(XFormStorage, RelStorage, AncestorChain[TopmostDirtyIndex], /*bClearDirty*/ false);
     }
 
     void ResolveAllDirtyTransforms(FEntityRegistry& Registry)
     {
         LUMINA_PROFILE_SCOPE();
 
-        FTransformDirtyState& DirtyState = EnsureTransformDirtyState(Registry);
+        FTransformDirtyState& DirtyState = *EnsureTransformDirtyState(Registry);
+        FFiberScopeLock ResolveLock(DirtyState.ResolveGuard);   // one resolver writes WorldTransform at a time
+
         auto& TransformStorage = Registry.storage<STransformComponent>();
-        
-        bool bPendingTags = false;
+        auto& RelStorage       = Registry.storage<FRelationshipComponent>();   // cached: avoids per-entity try_get
+
+        // Fold any external FNeedsTransformUpdate tags (editor/net/prefab/serialize, or tags emplaced before
+        // the on_construct hook connected) into the dirty queue. bWorldDirty dedups vs already-queued ones.
         for (entt::entity Tagged : Registry.view<FNeedsTransformUpdate>())
         {
             if (TransformStorage.contains(Tagged))
             {
-                TransformStorage.get(Tagged).bWorldDirty = true;
-                bPendingTags = true;
+                STransformComponent& Xf = TransformStorage.get(Tagged);
+                if (!Xf.bWorldDirty)
+                {
+                    Xf.bWorldDirty = true;
+                    DirtyState.DirtyTransforms.enqueue(Tagged);
+                    DirtyState.bAnyDirty.store(true, std::memory_order_relaxed);  // ensure the drain runs
+                }
+            }
+        }
+        Registry.clear<FNeedsTransformUpdate>();
+
+        if (!DirtyState.bAnyDirty.load(std::memory_order_acquire))
+        {
+            return;
+        }
+        
+        // Bulk-dequeue the raw dirty ids (serial but cheap -- just copies uint32s, no per-entity registry
+        // work). The expensive per-entity filter + flat resolve then runs in parallel, so the whole drain
+        // scales across workers instead of bottlenecking one thread (which it did before).
+        TVector<entt::entity>& Raw = DirtyState.DrainScratch;
+        Raw.clear();
+        {
+            entt::entity Batch[256];
+            std::size_t Count;
+            while ((Count = DirtyState.DirtyTransforms.try_dequeue_bulk(Batch, 256)) != 0)
+            {
+                Raw.insert(Raw.end(), Batch, Batch + Count);
             }
         }
 
-        // bAnyDirty (or a pending tag) gates the scan; nothing dirty -> nothing to do.
-        if (!bPendingTags && !DirtyState.bAnyDirty.load(std::memory_order_acquire))
+        DirtyState.bAnyDirty.store(false, std::memory_order_release);
+
+        if (Raw.empty())
         {
             return;
         }
 
-        // Hierarchical: resolve only topmost-dirty roots top-down, so parallel subtrees stay disjoint.
+        for (TVector<entt::entity>& Slot : DirtyState.HierBySlot)
         {
-            auto HierView = Registry.view<STransformComponent, FRelationshipComponent>();
-
-            TFixedVector<entt::entity, 100> DirtyEntities;
-            for (auto Entity : HierView)
+            Slot.clear();
+        }
+        
+        auto Filter = [&](uint32 Index)
+        {
+            const entt::entity E = Raw[Index];
+            if (!TransformStorage.contains(E))
             {
-                if (HierView.get<STransformComponent>(Entity).bWorldDirty)
-                {
-                    DirtyEntities.push_back(Entity);
-                }
+                return;
             }
-
-            if (!DirtyEntities.empty())
+            STransformComponent& T = TransformStorage.get(E);
+            if (!T.bWorldDirty)
             {
-                auto ResolveOne = [&](uint32 Index)
-                {
-                    entt::entity DirtyEntity = DirtyEntities[Index];
+                return;
+            }
+            if (RelStorage.contains(E))
+            {
+                uint32 Slot = Jobs::GetWorkerIndex();
+                if (Slot >= DirtyState.HierBySlot.size()) { Slot = 0; }
+                DirtyState.HierBySlot[Slot].push_back(E);
+                return;
+            }
+            T.WorldTransform = T.LocalTransform;
+            T.CachedMatrix   = T.WorldTransform.GetMatrix();
+            T.bWorldDirty    = false;
+        };
 
-                    auto& DirtyTransform    = HierView.get<STransformComponent>(DirtyEntity);
-                    auto& DirtyRelationship = HierView.get<FRelationshipComponent>(DirtyEntity);
-
-                    const bool bHasParent = DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent);
-
-                    // Parent dirty too -> its descent covers this subtree. (Flags are cleared after the pass.)
-                    if (bHasParent && TransformStorage.contains(DirtyRelationship.Parent)
-                        && TransformStorage.get(DirtyRelationship.Parent).bWorldDirty)
-                    {
-                        return;
-                    }
-
-                    if (bHasParent)
-                    {
-                        const FTransform& ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform;
-                        DirtyTransform.WorldTransform = ParentWorld * DirtyTransform.LocalTransform;
-                    }
-                    else
-                    {
-                        DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
-                    }
-
-                    DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
-
-                    PropagateTransformsToDescendants(Registry, TransformStorage, DirtyEntity, /*bClearDirty*/ false);
-                };
-
-                if (DirtyEntities.size() > 1000)
-                {
-                    Task::ParallelFor((uint32)DirtyEntities.size(), ResolveOne);
-                }
-                else
-                {
-                    for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
-                    {
-                        ResolveOne(i);
-                    }
-                }
-
-                // Clear flags after the pass (keeps the parent-dirty read above stable).
-                for (entt::entity Resolved : DirtyEntities)
-                {
-                    TransformStorage.get(Resolved).bWorldDirty = false;
-                }
+        if (Raw.size() > 1000)
+        {
+            Task::ParallelFor((uint32)Raw.size(), Filter);
+        }
+        else
+        {
+            for (uint32 i = 0; i < (uint32)Raw.size(); ++i)
+            {
+                Filter(i);
             }
         }
 
-        // Flat (no relationship): world == local. Resolve + clear inline (no parent, so safe during the pass).
+        // Gather the (rare) hierarchical entities from the per-slot buffers.
+        TFixedVector<entt::entity, 64> HierEntities;
+        for (const TVector<entt::entity>& Slot : DirtyState.HierBySlot)
         {
-            auto FlatView   = Registry.view<STransformComponent>(entt::exclude<FRelationshipComponent>);
-            auto FlatHandle = FlatView.handle();
-
-            auto ResolveFlat = [&](uint32 Index)
+            for (entt::entity E : Slot)
             {
-                entt::entity Entity = (*FlatHandle)[Index];
-                if (!FlatView.contains(Entity))
-                {
-                    return; // hierarchical (handled above) or a tombstone hole
-                }
-                STransformComponent& Transform = FlatView.get<STransformComponent>(Entity);
-                if (!Transform.bWorldDirty)
-                {
-                    return;
-                }
-                Transform.WorldTransform = Transform.LocalTransform;
-                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
-                Transform.bWorldDirty    = false;
-            };
+                HierEntities.push_back(E);
+            }
+        }
 
-            if (FlatHandle->size() > 1000)
+        if (HierEntities.empty())
+        {
+            return;
+        }
+
+        auto ResolveHier = [&](uint32 Index)
+        {
+            const entt::entity DirtyEntity = HierEntities[Index];
+            STransformComponent& DirtyTransform = TransformStorage.get(DirtyEntity);
+
+            const FRelationshipComponent& Rel = RelStorage.get(DirtyEntity);
+            const bool bHasParent = Rel.Parent != entt::null && Registry.valid(Rel.Parent) && TransformStorage.contains(Rel.Parent);
+
+            if (bHasParent && TransformStorage.get(Rel.Parent).bWorldDirty)
             {
-                Task::ParallelFor((uint32)FlatHandle->size(), ResolveFlat);
+                return;
+            }
+
+            if (bHasParent)
+            {
+                const FTransform& ParentWorld = TransformStorage.get(Rel.Parent).WorldTransform;
+                DirtyTransform.WorldTransform = ParentWorld * DirtyTransform.LocalTransform;
             }
             else
             {
-                for (uint32 i = 0; i < (uint32)FlatHandle->size(); ++i)
-                {
-                    ResolveFlat(i);
-                }
+                DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
+            }
+
+            DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
+            PropagateTransformsToDescendants(TransformStorage, RelStorage, DirtyEntity, /*bClearDirty*/ false);
+        };
+
+        if (HierEntities.size() > 1000)
+        {
+            Task::ParallelFor((uint32)HierEntities.size(), ResolveHier);
+        }
+        else
+        {
+            for (uint32 i = 0; i < (uint32)HierEntities.size(); ++i)
+            {
+                ResolveHier(i);
             }
         }
 
-        Registry.clear<FNeedsTransformUpdate>();
-        DirtyState.bAnyDirty.store(false, std::memory_order_release);
+        for (entt::entity Resolved : HierEntities)
+        {
+            if (TransformStorage.contains(Resolved))
+            {
+                TransformStorage.get(Resolved).bWorldDirty = false;
+            }
+        }
     }
 
     // --- Entity transform accessors ---
@@ -1069,9 +1202,9 @@ namespace Lumina::ECS::Utils
         Math::Decompose(LocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
 
         FTransform NewLocal;
-        NewLocal.Location = Translation;
-        NewLocal.Rotation = Rotation;
-        NewLocal.Scale    = Scale;
+        NewLocal.SetLocation(Translation);
+        NewLocal.SetRotation(Rotation);
+        NewLocal.SetScale(Scale);
         Transform->SetLocalTransform(NewLocal);
     }
 

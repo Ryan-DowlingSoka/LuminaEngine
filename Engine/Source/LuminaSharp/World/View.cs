@@ -28,9 +28,9 @@ public readonly struct Exclude
 
 /// <summary>
 /// Builds one fresh component wrapper per type for a single View iteration, via its generated
-/// <c>(IntPtr)</c> ctor (handle 0). The View rebinds the wrapper's handle each step with
-/// <see cref="NativeStruct.SetHandle"/>, so there is NO per-element allocation -- one wrapper services the
-/// whole iteration. A fresh wrapper per Each/foreach call keeps nested and parallel iterations independent.
+/// <c>(IntPtr)</c> ctor (handle 0). The View rebinds the wrapper's internal handle field each step, so
+/// there is NO per-element allocation -- one wrapper services the whole iteration. A fresh wrapper per
+/// Each/foreach call keeps nested and parallel iterations independent.
 /// </summary>
 internal static class ViewWrapper<T> where T : NativeStruct
 {

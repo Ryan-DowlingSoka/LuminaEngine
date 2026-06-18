@@ -128,7 +128,7 @@ namespace Lumina
 #endif
 namespace Lumina
 {
-    REFLECT(ManualStub, NoLua)
+    REFLECT(ManualStub)
     struct FQuat
     {
         PROPERTY(Editable) float x;

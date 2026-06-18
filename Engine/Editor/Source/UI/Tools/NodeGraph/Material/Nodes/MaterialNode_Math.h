@@ -6,7 +6,7 @@ namespace Lumina
 {
     // Binary math operations (A op B)
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Addition : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -18,7 +18,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Subtraction : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -30,7 +30,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Multiplication : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -42,7 +42,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Division : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -54,7 +54,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Power : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -66,7 +66,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Mod : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -78,7 +78,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Min : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -90,7 +90,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Max : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -102,7 +102,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Step : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -114,7 +114,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Atan2 : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -128,7 +128,7 @@ namespace Lumina
 
     // Unary math operations
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Sin : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -140,7 +140,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Cosin : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -152,7 +152,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Tan : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -164,7 +164,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Asin : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -176,7 +176,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Acos : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -188,7 +188,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Atan : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -200,7 +200,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Sinh : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -212,7 +212,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Cosh : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -224,7 +224,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Tanh : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -236,7 +236,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Sqrt : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -248,7 +248,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Rsqrt : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -260,7 +260,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Log : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -272,7 +272,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Log2 : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -284,7 +284,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Log10 : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -296,7 +296,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Exp : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -308,7 +308,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Exp2 : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -320,7 +320,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Sign : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -332,7 +332,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_OneMinus : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -344,7 +344,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Reciprocal : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -356,7 +356,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Round : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -368,7 +368,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Truncate : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -380,7 +380,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Negate : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -392,7 +392,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Square : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -404,7 +404,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_DegreesToRadians : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -416,7 +416,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_RadiansToDegrees : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -428,7 +428,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Floor : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -440,7 +440,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Fract : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -452,7 +452,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Ceil : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -464,7 +464,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Abs : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -476,7 +476,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Saturate : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -490,7 +490,7 @@ namespace Lumina
 
     // Ternary
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Lerp : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -508,7 +508,7 @@ namespace Lumina
         CMaterialInput* C = nullptr;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Clamp : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -522,7 +522,7 @@ namespace Lumina
         CMaterialInput* X = nullptr;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_SmoothStep : public CMaterialExpression_Math
     {
         GENERATED_BODY()
@@ -540,7 +540,7 @@ namespace Lumina
         float X = 0.5f;
     };
 
-    REFLECT(NoLua)
+    REFLECT()
     class CMaterialExpression_Remap : public CMaterialExpression
     {
         GENERATED_BODY()

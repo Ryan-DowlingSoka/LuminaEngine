@@ -680,7 +680,11 @@ namespace Lumina
         
         FSceneRenderStats                       RenderStats;
         FSceneRenderSettings                    RenderSettings;
-        
+
+        // Froxel volume dimensions; set from CRendererSettings::FroxelResolutionScale at image creation
+        // and reused by the inject/integrate/apply dispatches so they always match the allocated textures.
+        FUIntVector3                            FroxelGridSize = FUIntVector3(160, 90, 128);
+
         FEnvironmentParams                      LastIBLEnvironmentParams = {};
         int32                                   LastIBLEnvironmentMapID  = -1;
         FVector3                               LastIBLSunDirection      = FVector3(0.0f);

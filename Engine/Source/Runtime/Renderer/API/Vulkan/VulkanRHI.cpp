@@ -16,6 +16,10 @@
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
+// GPU timing for Tracy. Self-stubs to no-ops when Tracy is inactive; all usage below
+// is additionally guarded by TRACY_ENABLE so it compiles out cleanly in non-profiled builds.
+#include "tracy/TracyVulkan.hpp"
+
 namespace Lumina
 {
     struct FormatMapping
@@ -451,6 +455,16 @@ namespace Lumina::RHI
     struct FDepthStencilState : FDepthStencilDesc {};
     
     
+#if defined(TRACY_ENABLE)
+    // Shared GPU profiling context (one query pool / timeline for every queue). Created at
+    // device init, drained once per frame in PresentSwapchain. Null until init completes.
+    static tracy::VkCtx* GTracyGPUContext = nullptr;
+
+    // Max marker nesting tracked per command list. Marker brackets are balanced and shallow
+    // (RenderView > pass), so 16 is generous; deeper markers still emit debug labels, just no GPU zone.
+    static constexpr uint32 kMaxGPUZoneDepth = 16;
+#endif
+
     struct FCommandList
     {
         VkCommandBuffer CommandBuffer;
@@ -458,6 +472,13 @@ namespace Lumina::RHI
         GPUPtr          CurrentIndexBuffer;
         VkIndexType     CurrentIndexType;
         EQueueType      Queue;
+
+#if defined(TRACY_ENABLE)
+        // Stack of live GPU zones (placement-constructed tracy::VkCtxScope) opened by CmdBeginMarker
+        // and closed by CmdEndMarker. Recording is single-threaded per list, so no lock is needed.
+        alignas(tracy::VkCtxScope) uint8 GPUZoneStack[kMaxGPUZoneDepth * sizeof(tracy::VkCtxScope)];
+        uint32 GPUZoneDepth = 0;
+#endif
     };
 
     struct FSwapchain
@@ -1298,6 +1319,29 @@ namespace Lumina::RHI
         };
         VK_CHECK(vkCreateCommandPool(*GDevice, &TransientPoolInfo, nullptr, &GDevice->TransientPool));
 
+#if defined(TRACY_ENABLE)
+        // Tracy GPU context: calibrates against the graphics queue with a one-shot command buffer,
+        // then owns its own timestamp query pool. Non-calibrated (DEVICE time domain) keeps it
+        // extension-free; timestamps still resolve via the device's timestampPeriod.
+        {
+            VkCommandBufferAllocateInfo TracyAllocInfo
+            {
+                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool        = GDevice->TransientPool,
+                .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1
+            };
+            VkCommandBuffer TracyCmd = VK_NULL_HANDLE;
+            VK_CHECK(vkAllocateCommandBuffers(*GDevice, &TracyAllocInfo, &TracyCmd));
+
+            GTracyGPUContext = TracyVkContext(GDevice->PhysicsDevice, GDevice->Device,
+                GDevice->Queues[(uint32)EQueueType::Graphics], TracyCmd);
+            TracyVkContextName(GTracyGPUContext, "Graphics", 8);
+
+            vkFreeCommandBuffers(*GDevice, GDevice->TransientPool, 1, &TracyCmd);
+        }
+#endif
+
         GDevice->Semaphores.SetDtor([](FSemaphore* Semaphore)
         {
             vkDestroySemaphore(*GDevice, *Semaphore, nullptr);
@@ -1388,6 +1432,14 @@ namespace Lumina::RHI
     void FreeDevice()
     {
         vkDeviceWaitIdle(*GDevice);
+
+#if defined(TRACY_ENABLE)
+        if (GTracyGPUContext)
+        {
+            TracyVkDestroy(GTracyGPUContext);
+            GTracyGPUContext = nullptr;
+        }
+#endif
 
         if (!GDevice->PendingTransient.empty())
         {
@@ -2604,6 +2656,14 @@ namespace Lumina::RHI
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
 
+#if defined(TRACY_ENABLE)
+        // Drain available GPU timestamps and reset their queries on this frame's final buffer.
+        if (GTracyGPUContext)
+        {
+            TracyVkCollect(GTracyGPUContext, CL.CommandBuffer);
+        }
+#endif
+
         vkEndCommandBuffer(CL.CommandBuffer);
 
         VkSemaphore PresentSem = SC.PresentSemaphores[SC.CurrentImageIndex];
@@ -2674,6 +2734,9 @@ namespace Lumina::RHI
                 FCommandList& CommandList = GDevice->CommandLists[Reused];
                 CommandList.CurrentIndexBuffer = 0;
                 CommandList.CurrentIndexType = VK_INDEX_TYPE_UINT32;
+#if defined(TRACY_ENABLE)
+                CommandList.GPUZoneDepth = 0;
+#endif
 
                 VK_CHECK(vkResetCommandPool(*GDevice, CommandList.Pool, 0));
                 vkBeginCommandBuffer(CommandList.CommandBuffer, &BeginInfo);
@@ -3597,30 +3660,55 @@ namespace Lumina::RHI
 
     void CmdBeginMarker(FCmdListH CL, const char* Name)
     {
-        if (vkCmdBeginDebugUtilsLabelEXT == nullptr)
+        FCommandList& List = GDevice->CommandLists[CL];
+
+        if (vkCmdBeginDebugUtilsLabelEXT != nullptr)
         {
-            return;
+            VkDebugUtilsLabelEXT Label
+            {
+                .sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+                .pNext      = nullptr,
+                .pLabelName = Name,
+                .color      = { 0.0f, 0.0f, 0.0f, 0.0f }
+            };
+
+            vkCmdBeginDebugUtilsLabelEXT(List.CommandBuffer, &Label);
         }
 
-        VkDebugUtilsLabelEXT Label
+#if defined(TRACY_ENABLE)
+        // Open a GPU zone bracketing the same region as the debug label. The scope writes a
+        // begin timestamp now and an end timestamp when destroyed in CmdEndMarker. Depth is
+        // tracked even past the cap so begin/end stay balanced; only in-range zones are emitted.
+        if (GTracyGPUContext != nullptr && List.GPUZoneDepth < kMaxGPUZoneDepth)
         {
-            .sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-            .pNext      = nullptr,
-            .pLabelName = Name,
-            .color      = { 0.0f, 0.0f, 0.0f, 0.0f }
-        };
-
-        vkCmdBeginDebugUtilsLabelEXT(GDevice->CommandLists[CL].CommandBuffer, &Label);
+            void* Slot = &List.GPUZoneStack[List.GPUZoneDepth * sizeof(tracy::VkCtxScope)];
+            new (Slot) tracy::VkCtxScope(GTracyGPUContext, 0u, __FILE__, sizeof(__FILE__) - 1,
+                "GPUMarker", 9, Name, strlen(Name), List.CommandBuffer, true);
+        }
+        ++List.GPUZoneDepth;
+#endif
     }
 
     void CmdEndMarker(FCmdListH CL)
     {
-        if (vkCmdEndDebugUtilsLabelEXT == nullptr)
-        {
-            return;
-        }
+        FCommandList& List = GDevice->CommandLists[CL];
 
-        vkCmdEndDebugUtilsLabelEXT(GDevice->CommandLists[CL].CommandBuffer);
+#if defined(TRACY_ENABLE)
+        if (List.GPUZoneDepth > 0)
+        {
+            --List.GPUZoneDepth;
+            if (GTracyGPUContext != nullptr && List.GPUZoneDepth < kMaxGPUZoneDepth)
+            {
+                void* Slot = &List.GPUZoneStack[List.GPUZoneDepth * sizeof(tracy::VkCtxScope)];
+                reinterpret_cast<tracy::VkCtxScope*>(Slot)->~VkCtxScope();
+            }
+        }
+#endif
+
+        if (vkCmdEndDebugUtilsLabelEXT != nullptr)
+        {
+            vkCmdEndDebugUtilsLabelEXT(List.CommandBuffer);
+        }
     }
 
 }
