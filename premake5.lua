@@ -27,8 +27,10 @@ LuminaWorkspaceSettings({
     group "Engine"
 		include "Engine/Source/Runtime"
         include "Engine/Editor"
-        include "Engine/Sandbox"
 	group ""
+    -- Sandbox is a STANDALONE game project (LuminaGameProject), not an engine module: it has its own
+    -- Sandbox.sln via Engine/Sandbox/GenerateProject.bat and links the pre-built engine, exactly like a
+    -- user's template project. So it is intentionally NOT included in the engine workspace here.
 
     -- The engine's managed C# API assembly as its own first-class C# project. premake can't generate
     -- an SDK-style net10 csproj (its C# support is legacy), so we author the .csproj and surface it

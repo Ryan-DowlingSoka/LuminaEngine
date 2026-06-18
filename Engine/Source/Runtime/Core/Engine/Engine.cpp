@@ -13,6 +13,7 @@
 #include "Core/Plugin/PluginManager.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Profiler/CPUProfiler.h"
+#include "Core/Profiler/GameplayProfiler.h"
 #include "Core/Profiler/Profile.h"
 #if USING(WITH_EDITOR)
 #include "TaskSystem/Scheduler/JobProfiler.h"
@@ -51,7 +52,9 @@
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectCore.h"
 
-#define SANDBOX_PROJECT_ID "C9396E54-2E00-4874-B051-FCD1792359AC"
+#if WITH_EDITOR
+#include "Tools/UI/ImGui/ImGuiX.h"   // editor toast for a refused project module (NotifyError)
+#endif
 
 namespace Lumina
 {
@@ -335,6 +338,7 @@ namespace Lumina
         UpdateContext.MarkFrameStart(Platform::GetTime());
 
         FCPUProfiler::Get().BeginFrame();
+        FGameplayProfiler::Get().BeginFrame();
 #if USING(WITH_EDITOR)
         FJobProfiler::Get().BeginFrame();
 #endif
@@ -478,6 +482,7 @@ namespace Lumina
         }
         
         FCPUProfiler::Get().EndFrame();
+        FGameplayProfiler::Get().EndFrame();
 #if USING(WITH_EDITOR)
         FJobProfiler::Get().EndFrame();
 #endif
@@ -591,7 +596,6 @@ namespace Lumina
             return;
         }
 
-        FGuid ProjectID                 = FGuid::FromString(Data["ProjectID"].get<std::string>().c_str());
         ProjectPath                     .assign_convert(VFS::Parent(Paths::Normalize(Path)));
         ProjectName                     = Data["Name"].get<std::string>().c_str();
 
@@ -683,20 +687,11 @@ namespace Lumina
             }
         }
         
-        FFixedString DLLPath;
-        
-        // Sandbox stores its binaries elsewhere; normal projects use the standard bin path.
-        if (ProjectID == FGuid::FromString(SANDBOX_PROJECT_ID))
-        {
-            DLLPath = Paths::Combine(Paths::GetEngineInstallDirectory(), "Binaries", LUMINA_PLATFORM_NAME, ProjectName);
-        }
-        else
-        {
-            DLLPath = Paths::Combine(ProjectPath, "Binaries", LUMINA_PLATFORM_NAME, ProjectName);
-        }
-        
+        // The project's C++ module DLL lives in its OWN Binaries, exactly like a template project:
+        // <Project>/Binaries/<Platform>/<Name>-<Config>.dll.
+        FFixedString DLLPath = Paths::Combine(ProjectPath, "Binaries", LUMINA_PLATFORM_NAME, ProjectName);
         DLLPath.append("-").append(LUMINA_CONFIGURATION_NAME).append(LUMINA_SHAREDLIB_EXT_NAME);
-        
+
         if (Paths::Exists(DLLPath))
         {
             if (IModuleInterface* Module = FModuleManager::Get().LoadModule(DLLPath))
@@ -705,7 +700,24 @@ namespace Lumina
             }
             else
             {
-                LOG_INFO("No project module found");
+                // LoadModule refused/failed. An ABI mismatch (e.g. a project DLL built in the wrong
+                // configuration or platform, which would corrupt memory) records a reason -- report it
+                // loudly and warn in the editor so it isn't mistaken for a missing module. We deliberately
+                // never load an ABI-incompatible DLL.
+                const FString& LoadError = FModuleManager::Get().GetLastLoadError();
+                if (!LoadError.empty())
+                {
+                    LOG_ERROR("Project module '{}' was not loaded: {}", ProjectName, LoadError);
+#if WITH_EDITOR
+                    ImGuiX::Notifications::NotifyError(
+                        "Project '{}' code was not loaded: {}. Rebuild the project for this engine (matching configuration/platform).",
+                        ProjectName, LoadError);
+#endif
+                }
+                else
+                {
+                    LOG_INFO("No project module found");
+                }
             }
         }
 
@@ -714,9 +726,6 @@ namespace Lumina
         ProcessNewlyLoadedCObjects();
 
         FAssetRegistry::Get().RunInitialDiscovery();
-
-        const FStringView ModuleView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
-        LoadProjectScript(FString(ModuleView.data(), ModuleView.size()));
 
         // Must run after GConfig->LoadPath but before any OnReady script body.
         FInputActionMap::Get().RebuildFromSettings();
@@ -1216,12 +1225,6 @@ namespace Lumina
             LOG_DISPLAY("FEngine::LoadCookedRuntime: asset discovery complete.");
         }
 
-        const FStringView ScriptView = GetDefault<CProjectSettings>()->LuaModuleFile.ResolvePath();
-        if (!ScriptView.empty())
-        {
-            LoadProjectScript(FString(ScriptView.data(), ScriptView.size()));
-        }
-
         FInputActionMap::Get().RebuildFromSettings();
 
         // Project DLL: cooker stashes Project.Name in config to resolve "<Name>-<Config>.dll" next to the exe.
@@ -1261,10 +1264,6 @@ namespace Lumina
 
         GameInstance->Shutdown();
         GameInstance = nullptr;
-    }
-
-    void FEngine::LoadProjectScript(FStringView Path)
-    {
     }
 
     FFixedString FEngine::GetProjectContentDirectory() const

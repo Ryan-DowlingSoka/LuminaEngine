@@ -3,9 +3,7 @@ using System;
 namespace LuminaSharp;
 
 /// <summary>
-/// Exposes a script field/property to the editor (and saves it), the C# analog of Lua's
-/// <c>--@export(...)</c> and S&amp;Box's <c>[Property]</c>. The native side reflects these off the loaded
-/// script type to drive the inspector and per-instance serialization.
+/// Exposes a script field/property to the editor (and saves it).
 /// </summary>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, AllowMultiple = false)]
 public sealed class PropertyAttribute : Attribute
@@ -44,9 +42,7 @@ public sealed class PropertyAttribute : Attribute
 }
 
 /// <summary>
-/// Persists a field/property with the entity without exposing it in the inspector, the C# analog of
-/// S&amp;Box's <c>[Serialize]</c>. (A <c>[Property]</c> field is serialized too; use this for
-/// saved-but-hidden state.)
+/// Persists a field/property with the entity without exposing it in the inspector.
 /// </summary>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, AllowMultiple = false)]
 public sealed class SerializeAttribute : Attribute
@@ -56,5 +52,13 @@ public sealed class SerializeAttribute : Attribute
 /// <summary>Marks a field/property as never serialized or shown, even if otherwise eligible.</summary>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, AllowMultiple = false)]
 public sealed class HideAttribute : Attribute
+{
+}
+
+/// <summary>Resolves a component-wrapper field/property (a <see cref="NativeStruct"/> subclass) and caches it
+/// on the script before <see cref="EntityScript.OnReady"/>, adding the component if missing. Caching the handle
+/// skips the per-frame Registry.Get; valid until the component is removed.</summary>
+[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, AllowMultiple = false)]
+public sealed class RequireComponentAttribute : Attribute
 {
 }

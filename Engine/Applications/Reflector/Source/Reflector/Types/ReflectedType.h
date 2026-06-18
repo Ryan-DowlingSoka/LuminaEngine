@@ -56,6 +56,10 @@ namespace Lumina::Reflection
         eastl::string                                           Namespace;
         uint32_t                                                GeneratedBodyLineNumber = 0;
         uint32_t                                                LineNumber = 0;
+        // True if the type has a non-static data member with NO PROPERTY() macro. Such state is invisible to
+        // the reflector, so the type's reflected layout is incomplete and it must NOT be mirrored by value in
+        // C# (a flat by-value struct would be the wrong size). Set by the struct field visitor.
+        bool                                                    bHasUnreflectedFields = false;
         EType                                                   Type = EType::Structure;
     };
 
@@ -83,6 +87,9 @@ namespace Lumina::Reflection
         void AddConstant(const FConstant& Constant) { Constants.push_back(Constant); }
 
         eastl::vector<FConstant> Constants;
+        // Size in bytes of the enum's underlying integer type. The generated C# enum is int-backed (4), so
+        // only 4-byte enums can appear in a blittable by-value struct mirror; ComputeBlittableLayout checks this.
+        uint32_t                 UnderlyingSize = 4;
     };
 
     class FReflectedStruct : public FReflectedType

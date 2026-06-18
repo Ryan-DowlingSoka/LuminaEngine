@@ -95,6 +95,11 @@ function LuminaPluginModule(Def)
     }
     includedirs { path.join(Plugin.PluginRoot, "Source", Def.Name) }
 
+    -- Route this module's generated C# bindings into the plugin's Scripts/Generated so the per-plugin script
+    -- gather compiles them into the plugin's OWN assembly (not LuminaSharp.dll), and a disabled plugin
+    -- contributes nothing to the engine assembly.
+    csharpbindingsdir(path.join(Plugin.PluginRoot, "Scripts", "Generated"))
+
     -- Output the module DLL under the plugin's Binaries/<Platform>/, matching FPlugin::ResolveModuleBinaryPath.
     targetdir(path.join(Plugin.PluginRoot, "Binaries", LuminaConfig.OutputDirectory))
     objdir   (path.join(Plugin.PluginRoot, "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"))

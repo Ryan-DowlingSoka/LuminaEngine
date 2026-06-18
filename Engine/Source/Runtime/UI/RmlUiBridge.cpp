@@ -12,6 +12,7 @@
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Event.h>
+#include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/Input.h>
 #include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Debugger.h>
@@ -56,6 +57,11 @@ namespace Lumina::RmlUi
 
     static TConsoleVar<int32> CVarWidgetDormancyFrames("UI.Widget.DormancyFrames", 4,
         "Frames of unchanged output before a world-space widget stops ticking; 0 = always tick.");
+
+    // RmlUi has no implicit default font: an element whose cascade never sets 'font-family' renders nothing
+    // ("No font face defined"). The bridge registers the engine font under this family and sets it on every
+    // context's root element, so all documents inherit it unless they specify their own font-family.
+    static constexpr const char* GDefaultUIFontFamily = "Lumina";
 
     namespace
     {
@@ -144,6 +150,52 @@ namespace Lumina::RmlUi
             FVector4             ClearColor{0.10f, 0.10f, 0.12f, 1.0f};
         };
 
+        // Bridges one RmlUi element event to a managed callback (LuminaSharp World.UI). Owned by the bridge
+        // (FState::UIListeners), reaped when the world's UI is destroyed. RmlUi does NOT delete listeners on
+        // element destruction -- it only calls OnDetach -- so we track bAttached to avoid touching a freed
+        // element if RemoveElementEventListener is called after the element is already gone.
+        class FManagedUIListener final : public Rml::EventListener
+        {
+        public:
+            FManagedUIListener(FManagedUIEventThunk InThunk, void* InContext, CWorld* InWorld, Rml::String InType)
+                : Thunk(InThunk), Context(InContext), World(InWorld), Type(Move(InType)) {}
+
+            void ProcessEvent(Rml::Event& Event) override
+            {
+                if (Thunk == nullptr)
+                {
+                    return;
+                }
+                FUIEventData Data{};
+                Data.Id             = (int32)Event.GetId();
+                Data.Phase          = (int32)Event.GetPhase();
+                Data.CurrentElement = Event.GetCurrentElement();
+                Data.TargetElement  = Event.GetTargetElement();
+                Data.MouseX         = Event.GetParameter<float>("mouse_x", 0.0f);
+                Data.MouseY         = Event.GetParameter<float>("mouse_y", 0.0f);
+                Data.MouseButton    = Event.GetParameter<int>("button", -1);
+                Data.KeyIdentifier  = Event.GetParameter<int>("key_identifier", 0);
+                int32 Mods = 0;
+                if (Event.GetParameter<bool>("ctrl_key",  false)) Mods |= 0x1;
+                if (Event.GetParameter<bool>("shift_key", false)) Mods |= 0x2;
+                if (Event.GetParameter<bool>("alt_key",   false)) Mods |= 0x4;
+                if (Event.GetParameter<bool>("meta_key",  false)) Mods |= 0x8;
+                Data.Modifiers = Mods;
+
+                Thunk(Context, &Data);
+            }
+
+            void OnAttach(Rml::Element* InElement) override { Element = InElement; bAttached = true; }
+            void OnDetach(Rml::Element*) override           { bAttached = false; }
+
+            FManagedUIEventThunk Thunk     = nullptr;
+            void*                Context   = nullptr;
+            CWorld*              World     = nullptr;
+            Rml::String          Type;
+            Rml::Element*        Element   = nullptr;
+            bool                 bAttached = false;
+        };
+
         struct FState
         {
             TUniquePtr<FLuminaSystemInterface>  System;
@@ -161,6 +213,14 @@ namespace Lumina::RmlUi
             bool                                bInitialized = false;
 
             uint32                              WidgetRenderCursor = 0;
+
+            // Script-registered UI event listeners (World.UI). Owned here; reaped per-world on DestroyWorldUI
+            // and en masse on Shutdown. Small N (a handful per screen), so linear scan on add/remove is fine.
+            TVector<FManagedUIListener*>        UIListeners;
+
+            // Backing bytes for the default UI font. RmlUi's memory LoadFontFace references this buffer for the
+            // face's lifetime (it does not copy), so it must outlive the font engine -- kept here until Shutdown.
+            TVector<uint8>                      DefaultFontData;
 
             // Recursive: Update may fire event callbacks that re-enter the bridge on the same thread.
             FRecursiveMutex                     StateMutex;
@@ -251,6 +311,21 @@ namespace Lumina::RmlUi
             return Ec ? 0 : (int64)Time.time_since_epoch().count();
         }
 
+        // Establish the engine default font on a freshly created context: set GDefaultUIFontFamily on the
+        // root element, which every document/element in the context inherits unless it sets its own
+        // 'font-family'. Without this, RmlUi warns "No font face defined" and the text is invisible.
+        void ApplyDefaultFontFamily(Rml::Context* Ctx)
+        {
+            if (Ctx == nullptr)
+            {
+                return;
+            }
+            if (Rml::Element* Root = Ctx->GetRootElement())
+            {
+                Root->SetProperty("font-family", GDefaultUIFontFamily);
+            }
+        }
+
         void DestroyWidgetRuntime(FWidgetRuntime& E)
         {
             if (E.Context != nullptr)
@@ -290,6 +365,7 @@ namespace Lumina::RmlUi
                 LOG_ERROR("[RmlUi] CreateContext failed for widget {}.", NameBuf);
                 return;
             }
+            ApplyDefaultFontFamily(E.Context);
 
             E.Target = RHI::Textures::Create(RHI::FTexture2DDesc
             {
@@ -331,6 +407,30 @@ namespace Lumina::RmlUi
                 }
             }
             LOG_INFO("[RmlUi] UI hot-reload: restyled all documents across {} context(s).", NumContexts);
+        }
+
+        // Detach + delete every script UI listener bound to this world. Callers hold StateMutex. Safe whether
+        // or not the elements still exist: a destroyed element already fired OnDetach (bAttached == false).
+        void ReapWorldUIListeners(FState& State, CWorld* World)
+        {
+            for (size_t i = 0; i < State.UIListeners.size(); )
+            {
+                FManagedUIListener* L = State.UIListeners[i];
+                if (L->World == World)
+                {
+                    if (L->bAttached && L->Element != nullptr)
+                    {
+                        L->Element->RemoveEventListener(L->Type, L, false);
+                    }
+                    State.UIListeners[i] = State.UIListeners.back();
+                    State.UIListeners.pop_back();
+                    delete L;
+                }
+                else
+                {
+                    ++i;
+                }
+            }
         }
 
         void OnContentFileModified(FStringView VirtualPath)
@@ -394,9 +494,25 @@ namespace Lumina::RmlUi
             return false;
         }
 
-        if (!Rml::LoadFontFace("/Engine/Resources/UI/Fonts/LatoLatin-Regular.ttf", true /*fallback_face*/))
+        // Register the default UI font under GDefaultUIFontFamily (from memory, so we control the family name).
+        // ApplyDefaultFontFamily then sets it on each context root, giving every document a working font
+        // without authoring 'font-family'. The byte buffer is kept in State for the font face's lifetime.
+        constexpr const char* DefaultFontPath = "/Engine/Resources/UI/Fonts/LatoLatin-Regular.ttf";
+        if (VFS::ReadFile(State.DefaultFontData, DefaultFontPath) && !State.DefaultFontData.empty())
         {
-            LOG_WARN("[RmlUi] Default font LatoLatin-Regular.ttf failed to load; text may not render.");
+            const Rml::Span<const Rml::byte> FontSpan(State.DefaultFontData.data(), State.DefaultFontData.size());
+            if (!Rml::LoadFontFace(FontSpan, GDefaultUIFontFamily, Rml::Style::FontStyle::Normal,
+                    Rml::Style::FontWeight::Auto, true /*fallback_face*/))
+            {
+                LOG_WARN("[RmlUi] Default UI font failed to register as '{}'; text may not render.", GDefaultUIFontFamily);
+            }
+        }
+        else
+        {
+            // Couldn't read the bytes: fall back to a path load so glyphs still exist (its family is derived
+            // from the file metadata, so the GDefaultUIFontFamily default won't resolve -- author font-family).
+            LOG_WARN("[RmlUi] Could not read default UI font '{}'; falling back to path load.", DefaultFontPath);
+            Rml::LoadFontFace(DefaultFontPath, true /*fallback_face*/);
         }
 
         // Monospace face for digit-heavy HUDs (speedometer, RPM, etc.). Optional;
@@ -439,6 +555,17 @@ namespace Lumina::RmlUi
         // Widget contexts (owned by SWidgetComponent.Runtime) are torn down with their worlds
         // via the on_destroy hook; Rml::Shutdown drops any that outlive their world here.
         Rml::Shutdown();
+
+        // All contexts are gone; free any script UI listeners that outlived their world.
+        for (FManagedUIListener* L : State.UIListeners)
+        {
+            delete L;
+        }
+        State.UIListeners.clear();
+
+        // Font faces are destroyed; the default-font bytes RmlUi referenced are now safe to release.
+        State.DefaultFontData.clear();
+        State.DefaultFontData.shrink_to_fit();
 
         State.EditorContexts.clear();
         State.ActiveWorld = nullptr;
@@ -485,6 +612,7 @@ namespace Lumina::RmlUi
         }
 
         UI->Context = Ctx;
+        ApplyDefaultFontFamily(Ctx);
 
         // Newest world becomes the active UI target.
         State.ActiveWorld = World;
@@ -513,6 +641,7 @@ namespace Lumina::RmlUi
         // is dangling, so just drop it without touching Rml.
         if (!State.bInitialized)
         {
+            ReapWorldUIListeners(State, World);
             UI->Context = nullptr;
             UI->Documents.clear();
             if (State.ActiveWorld == World)
@@ -535,6 +664,8 @@ namespace Lumina::RmlUi
             Rml::RemoveContext(UI->Context->GetName());
             UI->Context = nullptr;
         }
+        // Elements are gone now (RemoveContext fired OnDetach); free the script listener objects.
+        ReapWorldUIListeners(State, World);
         UI->Documents.clear();
 
         if (State.ActiveWorld == World)
@@ -769,9 +900,9 @@ namespace Lumina::RmlUi
 
             // Renderer composites with LoadOp=Load, so clear the RT to transparent first.
             const float Transparent[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-            RHI::CmdBarrier(CmdList, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::Barriers::AllToTransfer(CmdList);
             RHI::CmdClearTexture(CmdList, Job.Target, Transparent);
-            RHI::CmdBarrier(CmdList, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
+            RHI::Barriers::TransferToAll(CmdList);
 
             State.Renderer->EndFrame();
             State.Renderer->NoteTargetStable(Job.Target, false);      // just changed -> reset
@@ -854,9 +985,9 @@ namespace Lumina::RmlUi
             }
             // Renderer uses LoadOp=Load; clear here so editor can composite its own background under a transparent canvas.
             const float Clear[4] = { E->ClearColor.x, E->ClearColor.y, E->ClearColor.z, E->ClearColor.w };
-            RHI::CmdBarrier(CmdList, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
+            RHI::Barriers::AllToTransfer(CmdList);
             RHI::CmdClearTexture(CmdList, E->Target, Clear);
-            RHI::CmdBarrier(CmdList, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
+            RHI::Barriers::TransferToAll(CmdList);
 
             State.Renderer->BeginFrame(CmdList, E->Target, E->Size);
             E->Context->Render();
@@ -1001,6 +1132,8 @@ namespace Lumina::RmlUi
             LOG_ERROR("[RmlUi] CreateEditorContext failed for name '{}'.", Name);
             return nullptr;
         }
+
+        ApplyDefaultFontFamily(Ctx);
 
         TUniquePtr<FEditorEntry> Entry = MakeUnique<FEditorEntry>();
         Entry->Context = Ctx;
@@ -1162,6 +1295,285 @@ namespace Lumina::RmlUi
         {
             Entry->Context->UnloadDocument(Entry->Document);
             Entry->Document = nullptr;
+        }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    // Scripting surface implementation (World.UI). All take the bridge lock; handles are raw
+    // Rml::ElementDocument* / Rml::Element*. Game thread only.
+    //--------------------------------------------------------------------------------------------
+
+    namespace
+    {
+        Rml::Element*         AsElement (void* P) { return static_cast<Rml::Element*>(P); }
+        Rml::ElementDocument* AsDocument(void* P) { return static_cast<Rml::ElementDocument*>(P); }
+        Rml::String           ToRml(FStringView V) { return Rml::String(V.data(), V.size()); }
+    }
+
+    void* LoadScreenDocument(CWorld* World, FStringView VirtualPath)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr || VirtualPath.empty())
+        {
+            return nullptr;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return nullptr;
+        }
+        Rml::ElementDocument* Doc = UI->Context->LoadDocument(ToRml(VirtualPath));
+        if (Doc == nullptr)
+        {
+            LOG_WARN("[RmlUi] World.UI.LoadDocument failed for '{}'.", FString(VirtualPath.data(), VirtualPath.size()).c_str());
+        }
+        return Doc;
+    }
+
+    void* LoadScreenDocumentFromMemory(CWorld* World, FStringView Body, FStringView SourceUrl)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr || Body.empty())
+        {
+            return nullptr;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return nullptr;
+        }
+        return UI->Context->LoadDocumentFromMemory(ToRml(Body), ToRml(SourceUrl));
+    }
+
+    void UnloadScreenDocument(CWorld* World, void* Document)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr || Document == nullptr)
+        {
+            return;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI != nullptr && UI->Context != nullptr)
+        {
+            UI->Context->UnloadDocument(AsDocument(Document));
+        }
+    }
+
+    void ShowDocument(void* Document, bool bModal, bool bAutoFocus)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Document != nullptr)
+        {
+            AsDocument(Document)->Show(bModal     ? Rml::ModalFlag::Modal : Rml::ModalFlag::None,
+                                       bAutoFocus ? Rml::FocusFlag::Auto  : Rml::FocusFlag::None);
+        }
+    }
+
+    void HideDocument(void* Document)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Document != nullptr)
+        {
+            AsDocument(Document)->Hide();
+        }
+    }
+
+    void PullDocumentToFront(void* Document)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Document != nullptr)
+        {
+            AsDocument(Document)->PullToFront();
+        }
+    }
+
+    void* GetDocumentRoot(void* Document)
+    {
+        // The ElementDocument IS the root element of its tree; hand it back as an Element handle.
+        return Document;
+    }
+
+    void* DocumentGetElementById(void* Document, FStringView Id)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Document == nullptr || Id.empty())
+        {
+            return nullptr;
+        }
+        return AsDocument(Document)->GetElementById(ToRml(Id));
+    }
+
+    void* ElementQuerySelector(void* Element, FStringView Selector)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Element == nullptr || Selector.empty())
+        {
+            return nullptr;
+        }
+        return AsElement(Element)->QuerySelector(ToRml(Selector));
+    }
+
+    void ElementSetInnerRml(void* Element, FStringView Rml)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr)
+        {
+            AsElement(Element)->SetInnerRML(ToRml(Rml));
+        }
+    }
+
+    FString ElementGetInnerRml(void* Element)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Element == nullptr)
+        {
+            return FString();
+        }
+        const Rml::String Value = AsElement(Element)->GetInnerRML();
+        return FString(Value.c_str(), Value.size());
+    }
+
+    void ElementSetAttribute(void* Element, FStringView Name, FStringView Value)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr && !Name.empty())
+        {
+            AsElement(Element)->SetAttribute(ToRml(Name), ToRml(Value));
+        }
+    }
+
+    FString ElementGetAttribute(void* Element, FStringView Name)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Element == nullptr || Name.empty())
+        {
+            return FString();
+        }
+        const Rml::String Value = AsElement(Element)->GetAttribute<Rml::String>(ToRml(Name), Rml::String());
+        return FString(Value.c_str(), Value.size());
+    }
+
+    void ElementSetProperty(void* Element, FStringView Name, FStringView Value)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr && !Name.empty())
+        {
+            AsElement(Element)->SetProperty(ToRml(Name), ToRml(Value));
+        }
+    }
+
+    void ElementRemoveProperty(void* Element, FStringView Name)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr && !Name.empty())
+        {
+            AsElement(Element)->RemoveProperty(ToRml(Name));
+        }
+    }
+
+    void ElementSetClass(void* Element, FStringView Class, bool bActive)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr && !Class.empty())
+        {
+            AsElement(Element)->SetClass(ToRml(Class), bActive);
+        }
+    }
+
+    bool ElementIsClassSet(void* Element, FStringView Class)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Element == nullptr || Class.empty())
+        {
+            return false;
+        }
+        return AsElement(Element)->IsClassSet(ToRml(Class));
+    }
+
+    void ElementFocus(void* Element)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr)
+        {
+            AsElement(Element)->Focus();
+        }
+    }
+
+    void ElementBlur(void* Element)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr)
+        {
+            AsElement(Element)->Blur();
+        }
+    }
+
+    void ElementClick(void* Element)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (State.bInitialized && Element != nullptr)
+        {
+            AsElement(Element)->Click();
+        }
+    }
+
+    void* AddElementEventListener(CWorld* World, void* Element, FStringView EventType, FManagedUIEventThunk Thunk, void* Context)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Element == nullptr || Thunk == nullptr || EventType.empty())
+        {
+            return nullptr;
+        }
+        FManagedUIListener* Listener = new FManagedUIListener(Thunk, Context, World, ToRml(EventType));
+        AsElement(Element)->AddEventListener(Listener->Type, Listener, false);
+        State.UIListeners.push_back(Listener);
+        return Listener;
+    }
+
+    void RemoveElementEventListener(CWorld* World, void* Listener)
+    {
+        (void)World;   // listeners are found by identity; world is kept for API symmetry with the connect call.
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (Listener == nullptr)
+        {
+            return;
+        }
+        FManagedUIListener* L = static_cast<FManagedUIListener*>(Listener);
+        for (size_t i = 0; i < State.UIListeners.size(); ++i)
+        {
+            if (State.UIListeners[i] != L)
+            {
+                continue;
+            }
+            if (L->bAttached && L->Element != nullptr)
+            {
+                L->Element->RemoveEventListener(L->Type, L, false);
+            }
+            State.UIListeners[i] = State.UIListeners.back();
+            State.UIListeners.pop_back();
+            delete L;
+            return;
         }
     }
 

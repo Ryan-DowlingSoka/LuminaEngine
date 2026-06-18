@@ -240,6 +240,45 @@ namespace Lumina
         bool bFinishPending = false;
     };
 
+    // TSubclassOf<T> picker: searchable dropdown over every CClass that is MetaClass (T) or derived.
+    // Stores the chosen CClass* directly (the TSubclassOf member is a single CClass* at offset 0).
+    class FClassPropertyCustomization : public IPropertyTypeCustomization
+    {
+    public:
+
+        static TSharedPtr<FClassPropertyCustomization> MakeInstance()
+        {
+            return MakeShared<FClassPropertyCustomization>();
+        }
+
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
+
+    private:
+
+        CClass* Value = nullptr;
+    };
+
+    // TSubStructOf<T> picker: the struct analog of FClassPropertyCustomization.
+    class FSubStructPropertyCustomization : public IPropertyTypeCustomization
+    {
+    public:
+
+        static TSharedPtr<FSubStructPropertyCustomization> MakeInstance()
+        {
+            return MakeShared<FSubStructPropertyCustomization>();
+        }
+
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
+
+    private:
+
+        CStruct* Value = nullptr;
+    };
+
     class FEnumPropertyCustomization : public IPropertyTypeCustomization
     {
     public:

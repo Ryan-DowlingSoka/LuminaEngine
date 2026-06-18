@@ -78,6 +78,15 @@ internal sealed class EntityScriptRuntime
 
         try
         {
+            Library.Describe(Script.GetType()).InjectRequiredComponents(Script);
+        }
+        catch (Exception Exception)
+        {
+            Native.Log(ELogLevel.Error, $"EntityScript [RequireComponent] injection threw: {Exception}");
+        }
+
+        try
+        {
             Script.OnReady();
         }
         catch (Exception Exception)
@@ -90,6 +99,7 @@ internal sealed class EntityScriptRuntime
     /// dispatch over the handle array native hands us.</summary>
     public unsafe void Update(IntPtr* Handles, int Count, float DeltaTime)
     {
+        bool Profiling = Profiler.Enabled;
         for (int Index = 0; Index < Count; Index++)
         {
             if (Resolve(Handles[Index]) is not EntityScript Script)
@@ -99,7 +109,21 @@ internal sealed class EntityScriptRuntime
 
             try
             {
-                Script.OnUpdate(DeltaTime);
+                if (Profiling)
+                {
+                    Profiler.Begin(Script.GetType().Name);
+                }
+                try
+                {
+                    Script.OnUpdate(DeltaTime);
+                }
+                finally
+                {
+                    if (Profiling)
+                    {
+                        Profiler.End();
+                    }
+                }
             }
             catch (Exception Exception)
             {
@@ -135,8 +159,9 @@ internal sealed class EntityScriptRuntime
         }
     }
 
-    // Collision dispatch. Kind: 0=ContactBegin, 1=ContactEnd, 2=OverlapBegin, 3=OverlapEnd (the bit
-    // (1<<kind) must match the native callback-flag check).
+    // Collision + activation dispatch. Kind: 0=ContactBegin, 1=ContactEnd, 2=OverlapBegin, 3=OverlapEnd,
+    // 5=Wake, 6=Sleep (the bit (1<<kind) must match the native callback-flag check; 4 is OnInput). The
+    // activation kinds ignore Event (the body, not a contact, is the subject).
     public void Dispatch(IntPtr Handle, int Kind, in Lumina.SCollisionEvent Event)
     {
         if (Resolve(Handle) is not EntityScript Script)
@@ -168,11 +193,52 @@ internal sealed class EntityScriptRuntime
                     Script.OnOverlapEnd(Event);
                     break;
                 }
+                case 5:
+                {
+                    Script.OnWake();
+                    break;
+                }
+                case 6:
+                {
+                    Script.OnSleep();
+                    break;
+                }
             }
         }
         catch (Exception Exception)
         {
             Native.Log(ELogLevel.Error, $"EntityScript collision callback threw: {Exception}");
+        }
+    }
+
+    // AI perception dispatch. Kind: 7=OnTargetPerceived, 8=OnTargetLost (the bit (1<<kind) must match the
+    // native callback-flag check in SPerceptionSystem). The payload is the self-oriented SPerceptionEvent.
+    public void DispatchPerception(IntPtr Handle, int Kind, in Lumina.SPerceptionEvent Event)
+    {
+        if (Resolve(Handle) is not EntityScript Script)
+        {
+            return;
+        }
+
+        try
+        {
+            switch (Kind)
+            {
+                case 7:
+                {
+                    Script.OnTargetPerceived(Event);
+                    break;
+                }
+                case 8:
+                {
+                    Script.OnTargetLost(Event);
+                    break;
+                }
+            }
+        }
+        catch (Exception Exception)
+        {
+            Native.Log(ELogLevel.Error, $"EntityScript perception callback threw: {Exception}");
         }
     }
 

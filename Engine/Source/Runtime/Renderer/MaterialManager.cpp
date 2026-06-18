@@ -65,11 +65,11 @@ namespace Lumina::RHI
             Copy = *InUniforms;
         }
 
-        // Render thread: the staged copy submits on the graphics queue after any
-        // in-flight frame that still reads the old slot contents.
+        // Render thread: queued onto the per-frame upload ring, copied at the next
+        // BeginFrame after any in-flight frame still reading the old slot has retired.
         ENQUEUE_RENDER_COMMAND(UpdateMaterialUniforms)([this, Index, Copy]
         {
-            Core::Upload(MaterialBuffer + Index * sizeof(FMaterialUniforms), &Copy, sizeof(FMaterialUniforms));
+            UploadBuffer(MaterialBuffer + Index * sizeof(FMaterialUniforms), &Copy, sizeof(FMaterialUniforms));
         });
     }
 }

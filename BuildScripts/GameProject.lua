@@ -31,19 +31,26 @@ local function SetupProject(Def)
         if LuminaDirForBat then
             local EnsureBat = '"' .. path.translate(path.join(LuminaDirForBat, "BuildScripts", "EnsureEngineBuilt.bat"), "\\") .. '"'
 
-            -- Pass $(Platform) so an Editor/Game game build triggers the matching-platform engine build; without it, packaged Game builds fall back to unlinkable Editor libs.
-            filter "configurations:Debug"
-                prebuildcommands { EnsureBat .. ' Debug "$(Platform)"' }
-            filter "configurations:Development"
-                prebuildcommands { EnsureBat .. ' Development "$(Platform)"' }
-            filter "configurations:Shipping"
-                prebuildcommands { EnsureBat .. ' Shipping "$(Platform)"' }
+            -- Build the matching-platform engine libs before this project so it can link. Editor/Game are
+            -- premake PLATFORMS, but with architecture x86_64 premake folds them into the MSBuild configuration
+            -- name ("Development Editor") and the project's $(Platform) is just "x64" -- so we can't pass
+            -- $(Platform) to EnsureEngineBuilt (it needs Editor/Game). Instead scope per (config, platform) and
+            -- emit the literal token into each config's prebuild.
+            for _, Cfg in ipairs({ "Debug", "Development", "Shipping" }) do
+                for _, Plat in ipairs({ "Editor", "Game" }) do
+                    filter { "configurations:" .. Cfg, "platforms:" .. Plat }
+                        prebuildcommands { EnsureBat .. ' ' .. Cfg .. ' ' .. Plat }
+                end
+            end
             filter {}
         end
 
         -- Run the project-local ReflectionRunner.bat so premake generates this project's own ReflectionUnity.gen.cpp scoped to its headers.
         if Def.Reflection then
             enablereflection "true"
+            -- Route the game module's generated C# bindings into the game's Scripts/Generated so they compile
+            -- into the Game script assembly (not LuminaSharp.dll), mirroring the plugin routing.
+            csharpbindingsdir(path.join(_MAIN_SCRIPT_DIR, "Game", "Scripts", "Generated"))
             prebuildcommands
             {
                 "\"%{wks.location}\\Tools\\ReflectionRunner.bat\""

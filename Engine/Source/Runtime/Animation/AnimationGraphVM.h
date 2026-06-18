@@ -92,6 +92,34 @@ namespace Lumina
         Sign,        // -1 / 0 / 1
     };
 
+    // One channel's inertialization record (Bollo 2018): the offset decays along Direction from magnitude
+    // X0 (with initial velocity V0) to zero over the transition. Rotation: Direction = axis, X0 = angle
+    // (rad); translation/scale: Direction = unit offset, X0 = length.
+    struct FInertChannel
+    {
+        FVector3 Direction = FVector3(0.0f);
+        float    X0 = 0.0f;
+        float    V0 = 0.0f;
+    };
+
+    // Per-state-machine inertialization. At a transition seam the offset between the last shown pose and the
+    // new target is captured (with its velocity) and decayed to zero over the transition's BlendDuration,
+    // added onto the freshly-evaluated target each frame. Pop-free (C1-continuous) and only the target state
+    // contributes; replaces the old two-state cross-fade. PrevOutput/PrevPrevOutput hold the 2-frame output
+    // history the velocity estimate needs (so interrupts re-inertialize from the actual shown pose).
+    struct FAnimInertializer
+    {
+        bool  bActive  = false;
+        float Elapsed  = 0.0f;
+        float Duration = 0.0f;
+        TVector<FInertChannel> Rot;
+        TVector<FInertChannel> Trans;
+        TVector<FInertChannel> Scale;
+        FPose PrevOutput;
+        FPose PrevPrevOutput;
+        int32 HistoryCount = 0; // 0/1/2 - velocity is only estimated once 2 frames of history exist
+    };
+
     // Per-instance mutable execution state. Persists across frames so playback
     // clocks keep advancing; owned by SAnimationGraphComponent.
     struct FAnimGraphVMState
@@ -100,6 +128,7 @@ namespace Lumina
         TVector<FPose> PoseRegisters;
         TVector<float> StateSlots;     // persistent playback clocks
         TVector<float> Parameters;     // current parameter values (editor / Lua driven)
+        TVector<FAnimInertializer> Inertializers; // per state machine; transition smoothing state
 
         // Graph this state was sized against; the VM re-initializes the state
         // when the component's graph asset changes underneath it.

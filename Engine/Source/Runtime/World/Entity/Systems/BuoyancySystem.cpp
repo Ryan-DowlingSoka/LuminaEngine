@@ -49,12 +49,30 @@ namespace Lumina
         return Y;
     }
 
+    // Outward water-surface normal at (WorldX, WorldZ), from the Gerstner height gradient (central
+    // differences). Lets a floating body tilt with the wave slope rather than only bobbing vertically.
+    static FVector3 WaterGerstnerNormal(const SWaterComponent& W, float WorldX, float WorldZ, float Time)
+    {
+        constexpr float Eps = 0.5f;
+        const float HxL = WaterGerstnerHeight(W, WorldX - Eps, WorldZ, Time);
+        const float HxR = WaterGerstnerHeight(W, WorldX + Eps, WorldZ, Time);
+        const float HzL = WaterGerstnerHeight(W, WorldX, WorldZ - Eps, Time);
+        const float HzR = WaterGerstnerHeight(W, WorldX, WorldZ + Eps, Time);
+        const float dHdx = (HxR - HxL) / (2.0f * Eps);
+        const float dHdz = (HzR - HzL) / (2.0f * Eps);
+        return Math::Normalize(FVector3(-dHdx, 1.0f, -dHdz));
+    }
+
     void SBuoyancySystem::Update(const FSystemContext& Context) noexcept
     {
         LUMINA_PROFILE_SCOPE();
 
-        const float Time    = (float)Context.GetTime();
-        constexpr float Gravity = 981.0f;
+        const float Time = (float)Context.GetTime();
+        const float Dt   = (float)Context.GetDeltaTime();
+        if (Dt <= 0.0f)
+        {
+            return;
+        }
 
         // Snapshot the buoyant water planes (center + half extent + mean surface Y + component for the waves).
         struct FWaterPlane { const SWaterComponent* W; float Cx; float Cz; float HX; float HZ; float SurfaceY; };
@@ -85,8 +103,8 @@ namespace Lumina
                 }
 
                 const FVector3 BodyPos = Context.GetBodyPosition(Entity);
-                const FQuat    BodyRot = Context.GetBodyRotation(Entity);
 
+                // Pick the highest water plane this body is over in XZ.
                 const FWaterPlane* Plane = nullptr;
                 for (int p = 0; p < NumPlanes; ++p)
                 {
@@ -104,30 +122,14 @@ namespace Lumina
                     return;
                 }
 
-                const float Mass = Math::Max(RB.Mass, 0.001f);
-                const float R    = Math::Max(B.FloatRadius, 0.0f);
-                const FVector3 LocalPoints[4] =
-                {
-                    FVector3( R, 0.0f,  R), FVector3(-R, 0.0f,  R),
-                    FVector3( R, 0.0f, -R), FVector3(-R, 0.0f, -R),
-                };
+                // Sample the wave surface under the body; Jolt derives the submerged volume from the body's
+                // real collider against this surface plane (so float depth + self-righting are shape-accurate).
+                const float SurfaceY = Plane->SurfaceY + WaterGerstnerHeight(*Plane->W, BodyPos.x, BodyPos.z, Time);
+                const FVector3 SurfacePos(BodyPos.x, SurfaceY, BodyPos.z);
+                const FVector3 SurfaceNormal = WaterGerstnerNormal(*Plane->W, BodyPos.x, BodyPos.z, Time);
 
-                for (int i = 0; i < 4; ++i)
-                {
-                    const FVector3 Point = BodyPos + BodyRot * LocalPoints[i];
-
-                    float WaterY = Plane->SurfaceY + WaterGerstnerHeight(*Plane->W, Point.x, Point.z, Time);
-                    float Frac   = Math::Clamp((WaterY - Point.y) / Math::Max(B.SubmergeDepth, 0.01f), 0.0f, 1.0f);
-                    if (Frac <= 0.0f)
-                    {
-                        continue;
-                    }
-
-                    FVector3 Lift = FVector3(0.0f, 1.0f, 0.0f) * (Mass * Gravity * B.Buoyancy * Frac * 0.25f);
-                    FVector3 Vel  = Context.GetVelocityAtPoint(Entity, Point);
-                    FVector3 Drag = Vel * (-B.LinearDrag * Mass * Frac * 0.25f);
-                    Context.AddForceAtPosition(Entity, Lift + Drag, Point);
-                }
+                Context.ApplyBuoyancyImpulse(Entity, SurfacePos, SurfaceNormal,
+                    B.Buoyancy, B.LinearDrag, B.AngularDrag, FVector3(0.0f), Dt);
             });
     }
 }

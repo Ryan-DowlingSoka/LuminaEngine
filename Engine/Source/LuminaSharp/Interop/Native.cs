@@ -41,8 +41,10 @@ public static unsafe partial class Native
     // reused; the get/has/emplace/remove calls take it plus the world + entity.
 
     [NativeCall] public static partial IntPtr FindComponentOps(string TypeName);
-    [NativeCall] public static partial IntPtr GetComponent(ulong World, uint Entity, IntPtr Ops);
-    [NativeCall] public static partial int HasComponent(ulong World, uint Entity, IntPtr Ops);
+    // Pure reads (try_get / any_of): non-blocking, no managed re-entry -> SuppressGCTransition.
+    [NativeCall(SuppressGCTransition = true)] public static partial IntPtr GetComponent(ulong World, uint Entity, IntPtr Ops);
+    [NativeCall(SuppressGCTransition = true)] public static partial int HasComponent(ulong World, uint Entity, IntPtr Ops);
+    // Emplace/Remove fire on_construct/on_destroy, which can re-enter managed (signal trampolines) -> not safe.
     [NativeCall] public static partial IntPtr EmplaceComponent(ulong World, uint Entity, IntPtr Ops);
     [NativeCall] public static partial int RemoveComponent(ulong World, uint Entity, IntPtr Ops);
 
@@ -52,6 +54,14 @@ public static unsafe partial class Native
     [NativeCall] public static partial IntPtr NewComponent(IntPtr Ops);
     [NativeCall] public static partial void DeleteComponent(IntPtr Ops, IntPtr Instance);
     [NativeCall] public static partial IntPtr EmplaceComponentCopy(ulong World, uint Entity, IntPtr Ops, IntPtr Source);
+
+    // Registry signals. Connect binds a managed thunk (+ GCHandle context) to a component's
+    // on_construct/on_destroy/on_update sink and returns an opaque subscription handle; Disconnect releases
+    // it. Patch fires on_update for an entity's component (the manual signal pulse). Kind: 0/1/2.
+
+    [NativeCall] public static partial IntPtr RegistryConnect(ulong World, IntPtr Ops, int Kind, IntPtr Thunk, IntPtr Context);
+    [NativeCall] public static partial void RegistryDisconnect(ulong World, IntPtr Ops, int Kind, IntPtr Handle);
+    [NativeCall] public static partial void RegistryPatch(ulong World, uint Entity, IntPtr Ops);
 
     // Script-to-script: the managed GCHandle (as IntPtr) of the EntityScript bound to an entity, or 0.
     // Resolve with GCHandle.FromIntPtr(...).Target. Backs Registry.GetScript<T>.
@@ -90,108 +100,20 @@ public static unsafe partial class Native
     [NativeCall] public static partial bool AssetExists(string Path);
     [NativeCall] public static partial void LoadObjectAsync(string Path, IntPtr Callback);
 
-    /// <summary>A loaded object's asset path (registry reverse lookup), or "" if it has none. Hand-written:
-    /// the native side fills a caller buffer and returns a length, which the [NativeCall] shapes don't cover.</summary>
-    public static string GetObjectPath(IntPtr Object)
-    {
-        if (Object == IntPtr.Zero)
-        {
-            return string.Empty;
-        }
-
-        Span<byte> Buffer = stackalloc byte[1024];
-        fixed (byte* Pointer = Buffer)
-        {
-            int Length = Object_GetPath(Object, Pointer, Buffer.Length);
-            if (Length <= 0)
-            {
-                return string.Empty;
-            }
-            return Interop.GetString(Pointer, Length < Buffer.Length ? Length : Buffer.Length);
-        }
-    }
-
-    private static readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, int, int> Object_GetPath =
-        (delegate* unmanaged[Cdecl]<IntPtr, byte*, int, int>)NativeBindings.Resolve(Host.NativeLibrary, "LuminaSharp_GetObjectPath");
+    /// <summary>A loaded object's asset path (registry reverse lookup), or "" if it has none.</summary>
+    [NativeCall] public static partial string GetObjectPath(IntPtr Object);
 
     // Generic per-property-type accessors. The Reflector emits these for non-blittable properties
     // (FString/FName/object ref) with the property's FProperty* token (Prop) resolved once and cached;
     // C is the container (the live component/object handle). Blittable properties never reach here -- they
     // read/write native memory directly at the property's offset.
 
-    /// <summary>Reads the FString property at the cached token, into a managed string. Two-pass
-    /// (length-then-copy), mirroring <see cref="GetObjectPath"/>.</summary>
-    public static string PropGetString(IntPtr C, IntPtr Prop)
-    {
-        return PropGetBuffered(C, Prop, Prop_GetString);
-    }
+    // String get = generated two-pass buffer ABI; string set / object ref = generated string/pointer args.
 
-    public static void PropSetString(IntPtr C, IntPtr Prop, string Value)
-    {
-        PropSetUtf8(C, Prop, Value, Prop_SetString);
-    }
-
-    /// <summary>Reads the FName property at the cached token, into a managed string.</summary>
-    public static string PropGetName(IntPtr C, IntPtr Prop)
-    {
-        return PropGetBuffered(C, Prop, Prop_GetName);
-    }
-
-    public static void PropSetName(IntPtr C, IntPtr Prop, string Value)
-    {
-        PropSetUtf8(C, Prop, Value, Prop_SetName);
-    }
-
+    [NativeCall] public static partial string PropGetString(IntPtr C, IntPtr Prop);
+    [NativeCall] public static partial void PropSetString(IntPtr C, IntPtr Prop, string Value);
+    [NativeCall] public static partial string PropGetName(IntPtr C, IntPtr Prop);
+    [NativeCall] public static partial void PropSetName(IntPtr C, IntPtr Prop, string Value);
     [NativeCall] public static partial IntPtr PropGetObject(IntPtr C, IntPtr Prop);
     [NativeCall] public static partial void PropSetObject(IntPtr C, IntPtr Prop, IntPtr Object);
-
-    // Shared get/set marshalling for the FString/FName accessors (same shape, different native export).
-    private static string PropGetBuffered(IntPtr C, IntPtr Prop, delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, int> Get)
-    {
-        if (C == IntPtr.Zero || Prop == IntPtr.Zero)
-        {
-            return string.Empty;
-        }
-
-        int Length = Get(C, Prop, null, 0);
-        if (Length <= 0)
-        {
-            return string.Empty;
-        }
-
-        byte[] Buffer = new byte[Length];
-        fixed (byte* Pointer = Buffer)
-        {
-            int Written = Get(C, Prop, Pointer, Length);
-            return Interop.GetString(Pointer, Written < Length ? Written : Length);
-        }
-    }
-
-    private static void PropSetUtf8(IntPtr C, IntPtr Prop, string Value, delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, void> Set)
-    {
-        if (C == IntPtr.Zero || Prop == IntPtr.Zero)
-        {
-            return;
-        }
-
-        Span<byte> Scratch = stackalloc byte[256];
-        Interop.FInteropString Encoded = new(Value ?? string.Empty, Scratch);
-        try
-        {
-            Set(C, Prop, Encoded.Pointer, Encoded.Length);
-        }
-        finally
-        {
-            Encoded.Free();
-        }
-    }
-
-    private static readonly delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, int> Prop_GetString =
-        (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, int>)NativeBindings.Resolve(Host.NativeLibrary, "LuminaSharp_PropGetString");
-    private static readonly delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, void> Prop_SetString =
-        (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, void>)NativeBindings.Resolve(Host.NativeLibrary, "LuminaSharp_PropSetString");
-    private static readonly delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, int> Prop_GetName =
-        (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, int>)NativeBindings.Resolve(Host.NativeLibrary, "LuminaSharp_PropGetName");
-    private static readonly delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, void> Prop_SetName =
-        (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte*, int, void>)NativeBindings.Resolve(Host.NativeLibrary, "LuminaSharp_PropSetName");
 }

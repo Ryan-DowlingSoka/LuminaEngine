@@ -13,6 +13,7 @@
 #include "Reflector/ReflectionCore/ReflectionMacro.h"
 #include "Reflector/Types/Functions/ReflectedFunction.h"
 #include "Reflector/Types/Properties/ReflectedArrayProperty.h"
+#include "Reflector/Types/Properties/ReflectedClassProperty.h"
 #include "Reflector/Types/Properties/ReflectedEnumProperty.h"
 #include "Reflector/Types/Properties/ReflectedNumericProperty.h"
 #include "Reflector/Types/Properties/ReflectedObjectProperty.h"
@@ -20,6 +21,7 @@
 #include "Reflector/Types/Properties/ReflectedSoftObjectProperty.h"
 #include "Reflector/Types/Properties/ReflectedStringProperty.h"
 #include "Reflector/Types/Properties/ReflectedStructProperty.h"
+#include "Reflector/Types/Properties/ReflectedSubStructProperty.h"
 
 namespace Lumina::Reflection::Visitor
 {
@@ -384,6 +386,46 @@ namespace Lumina::Reflection::Visitor
 			NewProperty = CreateProperty<FReflectedObjectProperty>(ParamFieldInfo.value());
 		}
 		break;
+		case EPropertyTypeFlags::Class:
+		{
+			// TSubclassOf<T>: T is the base-class filter. Reflect against it so the emitted
+			// Construct_CClass_<T>() symbol resolves.
+			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
+			eastl::optional<FFieldInfo> ParamFieldInfo;
+			if (ArgType.kind != CXType_Invalid)
+			{
+				ParamFieldInfo = CreateSubFieldInfo(Context, ArgType, FieldInfo);
+			}
+			if (!ParamFieldInfo.has_value())
+			{
+				ParamFieldInfo = FieldInfo;
+				ParamFieldInfo->TypeName = "Lumina::CObject";
+			}
+
+			ParamFieldInfo->Name = FieldInfo.Name;
+
+			NewProperty = CreateProperty<FReflectedClassProperty>(ParamFieldInfo.value());
+		}
+		break;
+		case EPropertyTypeFlags::SubStruct:
+		{
+			// TSubStructOf<T>: T is the base-struct filter; reflect against it for Construct_CStruct_<T>().
+			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
+			eastl::optional<FFieldInfo> ParamFieldInfo;
+			if (ArgType.kind != CXType_Invalid)
+			{
+				ParamFieldInfo = CreateSubFieldInfo(Context, ArgType, FieldInfo);
+			}
+			if (!ParamFieldInfo.has_value())
+			{
+				return false;
+			}
+
+			ParamFieldInfo->Name = FieldInfo.Name;
+
+			NewProperty = CreateProperty<FReflectedSubStructProperty>(ParamFieldInfo.value());
+		}
+		break;
 		case EPropertyTypeFlags::SoftObject:
 		{
 			// FSoftObjectPath has no template arg (target defaults to CObject, accepts any asset);
@@ -564,6 +606,9 @@ namespace Lumina::Reflection::Visitor
 			FReflectionMacro Macro;
 			if (!Context->TryFindMacroForCursor(Context->ReflectedHeader->HeaderPath, Cursor, Macro))
 			{
+				// A non-static data member with no PROPERTY() macro: hidden state the reflector can't see.
+				// Marks the type as not fully reflected, so the C# emitter won't mirror it by value.
+				Type->bHasUnreflectedFields = true;
 				return CXChildVisit_Continue;
 			}
 
@@ -678,6 +723,85 @@ namespace Lumina::Reflection::Visitor
 		Context->ReflectionDatabase.AddReflectedType(ReflectedStruct);
 
 		return CXChildVisit_Recurse;
+	}
+
+	// A namespace-scope free function tagged with SCRIPT_EXPORT. Builds an FReflectedFunction (no owning
+	// type) carrying the fully-qualified C++ name (the thunk's call target) and the target C# class, then
+	// registers it under the header. Mirrors CreateFunctionForType's arg/return extraction.
+	CXChildVisitResult VisitFunction(CXCursor Cursor, CXCursor Parent, FClangParserContext* Context)
+	{
+		FReflectionMacro Macro;
+		if (!Context->TryFindMacroForCursor(Context->ReflectedHeader->HeaderPath, Cursor, Macro))
+		{
+			return CXChildVisit_Continue;
+		}
+		if (Macro.Type != EReflectionMacro::ScriptExport)
+		{
+			// Not ours (a stray REFLECT/FUNCTION above an unrelated free function); put it back for its owner.
+			Context->AddReflectedMacro(eastl::move(Macro));
+			return CXChildVisit_Continue;
+		}
+
+		auto NewFunction = eastl::make_unique<FReflectedFunction>();
+		NewFunction->bFreeFunction = true;
+		NewFunction->Name = ClangUtils::GetCursorSpelling(Cursor);
+
+		// Fully-qualified C++ name by walking the semantic namespace parents (CurrentNamespace has no
+		// separators, so it can't be used to form a :: path).
+		eastl::string Qualified = NewFunction->Name;
+		for (CXCursor P = clang_getCursorSemanticParent(Cursor);
+			 !clang_Cursor_isNull(P) && clang_getCursorKind(P) == CXCursor_Namespace;
+			 P = clang_getCursorSemanticParent(P))
+		{
+			Qualified = ClangUtils::GetCursorSpelling(P) + "::" + Qualified;
+		}
+		NewFunction->QualifiedName = Qualified;
+
+		NewFunction->GenerateMetadata(Macro.MacroContents);
+		for (const FMetadataPair& Meta : NewFunction->Metadata)
+		{
+			if (Meta.Key == "Class")
+			{
+				eastl::string Value = Meta.Value;
+				if (Value.size() >= 2 && Value.front() == '"' && Value.back() == '"')
+				{
+					Value = Value.substr(1, Value.size() - 2);
+				}
+				NewFunction->CSharpTarget = eastl::move(Value);
+				break;
+			}
+		}
+
+		const int NumArgs = clang_Cursor_getNumArguments(Cursor);
+		for (int i = 0; i < NumArgs; ++i)
+		{
+			CXCursor ArgCursor = clang_Cursor_getArgument(Cursor, i);
+			eastl::string ArgName = ClangUtils::GetCursorSpelling(ArgCursor);
+			CXType FieldType = clang_getCursorType(ArgCursor);
+			auto Field = CreateFuncField(Context, FieldType);
+			if (Field.has_value() && Field->Flags != EPropertyTypeFlags::None)
+			{
+				Field->OwningCursor = ArgCursor;
+				Field->Name = eastl::move(ArgName);
+				NewFunction->AddArgument(eastl::move(Field.value()));
+			}
+			else
+			{
+				NewFunction->bHasOmittedArgs = true;
+				LRT_WARNING(ArgCursor, Reflection::EDiagId::FunctionFieldFailed,
+					"Argument '%s' of SCRIPT_EXPORT function '%s' has an unsupported type and will block its C# binding.",
+					ArgName.c_str(), NewFunction->Name.c_str());
+			}
+		}
+
+		CXType ResultType = clang_getResultType(clang_getCursorType(Cursor));
+		if (ResultType.kind != CXType_Void)
+		{
+			NewFunction->Return = CreateFuncField(Context, ResultType);
+		}
+
+		Context->ReflectionDatabase.AddFreeFunction(Context->ReflectedHeader, NewFunction.release());
+		return CXChildVisit_Continue;
 	}
 
 	CXChildVisitResult VisitClass(CXCursor Cursor, CXCursor Parent, FClangParserContext* Context)

@@ -1,4 +1,5 @@
-﻿#pragma once
+#pragma once
+#include <atomic>
 #include "Components/RelationshipComponent.h"
 #include "Containers/Array.h"
 #include "Containers/Name.h"
@@ -15,107 +16,89 @@ namespace Lumina
 
 namespace Lumina::ECS::Utils
 {
+	//-------------------------------------------------------------------------
+	// Serialization
+	//-------------------------------------------------------------------------
+
 	RUNTIME_API bool SerializeEntity(FArchive& Ar, FEntityRegistry& Registry, entt::entity& Entity);
 	RUNTIME_API bool SerializeRegistry(FArchive& Ar, FEntityRegistry& Registry);
-	RUNTIME_API bool EntityHasTag(const FName& Tag, FEntityRegistry& Registry, entt::entity Entity);
+
+	//-------------------------------------------------------------------------
+	// Hierarchy
+	//-------------------------------------------------------------------------
+
 	RUNTIME_API void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent, bool bPreserveWorld = true);
-	RUNTIME_API void DestroyEntityHierarchy(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API void DetachImmediateChildren(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API void RemoveFromParent(FEntityRegistry& Registry, entt::entity Child);
 	RUNTIME_API void AddToParent(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent);
+	RUNTIME_API void RemoveFromParent(FEntityRegistry& Registry, entt::entity Child);
 	RUNTIME_API bool IsDescendantOf(FEntityRegistry& Registry, entt::entity Potential, entt::entity Ancestor);
 	RUNTIME_API bool IsChild(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API bool IsParent(FEntityRegistry& Registry, entt::entity Entity);
 
-	// Immediate parent, or entt::null when the entity is a root / has no relationship component.
-	RUNTIME_API entt::entity GetParent(FEntityRegistry& Registry, entt::entity Entity);
-
 	// Walk up the parent chain to the topmost ancestor; returns Entity itself when it has no parent.
 	RUNTIME_API entt::entity GetRootEntity(FEntityRegistry& Registry, entt::entity Entity);
 
-	// Immediate parent up to the root, nearest first. Does not include Entity.
-	RUNTIME_API void CollectAncestors(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutAncestors);
-
-	// First direct child whose SNameComponent matches Name, or entt::null. Scoped to Parent's children.
-	RUNTIME_API entt::entity FindChildByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name);
-
-	// As FindChildByName but searches the whole subtree depth-first (pre-order, nearest first).
-	RUNTIME_API entt::entity FindDescendantByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name);
-
-	// Next/previous entry in the parent's sibling list, or entt::null at the ends / when parentless.
-	RUNTIME_API entt::entity GetNextSibling(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API entt::entity GetPrevSibling(FEntityRegistry& Registry, entt::entity Entity);
-
-	// Other children of this entity's parent, excluding Entity itself. Empty when parentless.
-	RUNTIME_API void CollectSiblings(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutSiblings);
 	RUNTIME_API size_t GetChildCount(FEntityRegistry& Registry, entt::entity Parent);
-	RUNTIME_API size_t GetSiblingIndex(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API void CollectDescendants(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutDescendants);
 	RUNTIME_API void CollectChildren(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutChildren);
-	RUNTIME_API bool HasComponent(FEntityRegistry& Registry, entt::entity Entity, entt::meta_type Type);
+	RUNTIME_API void CollectDescendants(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutDescendants);
+
+	//-------------------------------------------------------------------------
+	// Lifetime
+	//-------------------------------------------------------------------------
+
+	RUNTIME_API void DestroyEntity(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API void DestroyEntityHierarchy(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API void DetachImmediateChildren(FEntityRegistry& Registry, entt::entity Entity);
+
+	//-------------------------------------------------------------------------
+	// Transform resolve
+	//-------------------------------------------------------------------------
+
 	RUNTIME_API void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity);
 
-	// Bulk-resolve every FNeedsTransformUpdate entity + descendants, then clear the pool (O(dirty)). Lets a
-	// system read WorldTransform lock-free in a ParallelFor after one main-thread call. Main thread only.
+	// Resolve every dirty transform + descendants. Scans the per-component bWorldDirty flag (gated by the
+	// signal), so writers never touch a shared pool. Hierarchy roots resolved top-down in parallel. Main thread.
 	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
 
-	// Single mutex guarding the FNeedsTransformUpdate pool + cached matrices during a chain resolve;
-	// taken by ResolveTransformChain and MarkDirty. Off-main emplace<FNeedsTransformUpdate> must take it too.
-	RUNTIME_API FRecursiveMutex& GetTransformResolveMutex();
+	// The registry-wide dirty signal, cached on each STransformComponent at Bind so setters raise it with one
+	// relaxed store and no registry lookup. Creates the state + bridge hook.
+	RUNTIME_API std::atomic<bool>* EnsureTransformDirtySignal(FEntityRegistry& Registry);
 
-	// Tag a transform dirty: always sets FNeedsTransformUpdate; sets FNeedsPhysicsBodyUpdate only when the
-	// entity owns a body, so non-physics entities (cameras, lights) don't churn the physics-sync pool.
+	// Tag the entity's body (if any) for the physics sync. Single-threaded.
+	RUNTIME_API void MarkPhysicsBodyDirtyIfBodied(FEntityRegistry& Registry, entt::entity Entity);
+
+	// External (non-setter) dirtying; the bridge hook converts the tag to the component flag. Single-threaded.
+	// Per-frame gameplay uses the component setters instead (ParallelFor-safe).
 	RUNTIME_API void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity);
-	
-	RUNTIME_API FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API FQuat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);
+
+	//-------------------------------------------------------------------------
+	// Entity transform accessors
+	//-------------------------------------------------------------------------
+
+	RUNTIME_API FQuat    GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API FVector3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity);
-
-	RUNTIME_API void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Location);
-	RUNTIME_API void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const FQuat& Rotation);
-	RUNTIME_API void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Scale);
-	
-	RUNTIME_API bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity);
-	
-	RUNTIME_API FVector3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Translation);
-	
-	RUNTIME_API entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity);
-
-	// Remap every reflected "Entity"-tagged uint32 field (nested structs too) through Map. FRelationshipComponent
-	// links are NOT touched here. Unmapped ids stay put when bClearUnmapped is false, else reset to null.
-	RUNTIME_API void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped);
+	RUNTIME_API void     SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Scale);
 
 	// Set an entity's world transform by converting to the parent-relative local that resolves back to it.
 	// The single source of truth for world->local conversion; writing WorldTransform directly is discarded next resolve.
 	RUNTIME_API void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform);
 
-	RUNTIME_API FVector3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From);
-	
-	RUNTIME_API void DestroyEntity(FEntityRegistry& Registry, entt::entity Entity);
+	//-------------------------------------------------------------------------
+	// Reflection / queries
+	//-------------------------------------------------------------------------
+
+	RUNTIME_API bool EntityHasTag(const FName& Tag, FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API bool HasComponent(FEntityRegistry& Registry, entt::entity Entity, entt::meta_type Type);
+
+	// Remap every reflected "Entity"-tagged uint32 field (nested structs too) through Map. FRelationshipComponent
+	// links are NOT touched here. Unmapped ids stay put when bClearUnmapped is false, else reset to null.
+	RUNTIME_API void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped);
 
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(FStringView Name);
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(const CStruct* Type);
 
-	
-	template<typename... Ts, typename TFunc, typename... TArgs>
-	void ParallelForEach(FEntityRegistry& Registry, TFunc&& Function, TArgs&&... Args)
-	{
-		auto View = Registry.view<Ts...>(eastl::forward<TArgs>(Args)...);
-		const auto* Entities = View.handle();
-
-		Task::ParallelFor((uint32)Entities->size(), [&](uint32 Index)
-		{
-			entt::entity EntityID = (*Entities)[Index];
-
-			if (View.contains(EntityID))
-			{
-				std::apply([&](auto&... Components)
-				{
-					Function(EntityID, Components...);
-				}, View.get(EntityID));
-			}
-		});
-	}
+	//-------------------------------------------------------------------------
+	// Templates: meta invoke + component / hierarchy iteration
+	//-------------------------------------------------------------------------
 
 	template<typename ... TArgs>
 	entt::meta_any InvokeMetaFunc(const entt::meta_type& MetaType, entt::id_type FunctionID, TArgs&&... Args)
@@ -188,27 +171,6 @@ namespace Lumina::ECS::Utils
 			eastl::invoke(Func, Child);
 			ForEachDescendant(Registry, Child, Func);
 		});
-	}
-
-	template<typename TFunc>
-	void ForEachDescendantReverse(entt::registry& Registry, entt::entity Parent, TFunc&& Func)
-	{
-		ForEachChild(Registry, Parent, [&](entt::entity Child)
-		{
-			ForEachDescendantReverse(Registry, Child, Func);
-			eastl::invoke(Func, Child);
-		});
-	}
-
-	template<typename TFunc>
-	void ForEachAncestor(entt::registry& Registry, entt::entity Entity, TFunc&& Func)
-	{
-		FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-		while (Relationship && Relationship->Parent != entt::null)
-		{
-			eastl::invoke(Func, Relationship->Parent);
-			Relationship = Registry.try_get<FRelationshipComponent>(Relationship->Parent);
-		}
 	}
 
 	inline FArchive& operator << (FArchive& Ar, entt::entity& Entity)

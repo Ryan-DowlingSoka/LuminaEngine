@@ -98,4 +98,66 @@ namespace Lumina::RmlUi
     /** SourceUrl resolves relative includes. Previous document unloads either way; returns false on parse failure. */
     RUNTIME_API bool            ReplaceEditorContextDocument(Rml::Context* Context, FStringView Body, FStringView SourceUrl);
     RUNTIME_API void            ClearEditorContextDocument(Rml::Context* Context);
+
+    //--------------------------------------------------------------------------------------------
+    // Scripting surface: screen documents + element manipulation + event listeners.
+    //
+    // These drive a world's own full-screen Rml::Context (the HUD/menu context input is already
+    // forwarded to, see FInputViewport) -- distinct from world-space SWidgetComponents and editor
+    // previews. Every call takes the bridge StateMutex, so it is safe on the game thread against the
+    // render thread's RenderWorldUI. Documents/elements cross as opaque handles (Rml::ElementDocument*
+    // / Rml::Element* as void*); they are valid while the owning document is loaded. Backs LuminaSharp's
+    // World.UI facade (LuminaSharp_UI_* exports in DotNetGameplay.cpp).
+    //--------------------------------------------------------------------------------------------
+
+    // Blittable payload handed to a managed UI event callback; mirrors LuminaSharp's UIEventData.
+    struct FUIEventData
+    {
+        int32 Id;              // Rml::EventId
+        int32 Phase;           // Rml::EventPhase (1=Capture, 2=Target, 4=Bubble)
+        void* CurrentElement;  // element the listener is attached to
+        void* TargetElement;   // deepest element the event originated on
+        float MouseX;          // "mouse_x" parameter (context space), 0 if absent
+        float MouseY;          // "mouse_y" parameter, 0 if absent
+        int32 MouseButton;     // "button" parameter, -1 if absent
+        int32 KeyIdentifier;   // "key_identifier" parameter (Rml::Input::KeyIdentifier), 0 if absent
+        int32 Modifiers;       // bit0 ctrl, bit1 shift, bit2 alt, bit3 meta
+        int32 Pad;             // keep size/alignment deterministic across the boundary (48 bytes)
+    };
+
+    using FManagedUIEventThunk = void (*)(void* Context, const FUIEventData* Event);
+
+    // Screen documents (loaded into the world's own context). LoadScreenDocument returns the
+    // Rml::ElementDocument* as a handle (hidden until ShowDocument); null on parse/load failure.
+    RUNTIME_API void* LoadScreenDocument(CWorld* World, FStringView VirtualPath);
+    RUNTIME_API void* LoadScreenDocumentFromMemory(CWorld* World, FStringView Body, FStringView SourceUrl);
+    RUNTIME_API void  UnloadScreenDocument(CWorld* World, void* Document);
+    RUNTIME_API void  ShowDocument(void* Document, bool bModal, bool bAutoFocus);
+    RUNTIME_API void  HideDocument(void* Document);
+    RUNTIME_API void  PullDocumentToFront(void* Document);
+    RUNTIME_API void* GetDocumentRoot(void* Document);   // the document's body element
+
+    // Element queries.
+    RUNTIME_API void* DocumentGetElementById(void* Document, FStringView Id);
+    RUNTIME_API void* ElementQuerySelector(void* Element, FStringView Selector);
+
+    // Element mutation.
+    RUNTIME_API void    ElementSetInnerRml(void* Element, FStringView Rml);
+    RUNTIME_API FString ElementGetInnerRml(void* Element);
+    RUNTIME_API void    ElementSetAttribute(void* Element, FStringView Name, FStringView Value);
+    RUNTIME_API FString ElementGetAttribute(void* Element, FStringView Name);
+    RUNTIME_API void    ElementSetProperty(void* Element, FStringView Name, FStringView Value);   // a CSS property
+    RUNTIME_API void    ElementRemoveProperty(void* Element, FStringView Name);
+    RUNTIME_API void    ElementSetClass(void* Element, FStringView Class, bool bActive);
+    RUNTIME_API bool    ElementIsClassSet(void* Element, FStringView Class);
+    RUNTIME_API void    ElementFocus(void* Element);
+    RUNTIME_API void    ElementBlur(void* Element);
+    RUNTIME_API void    ElementClick(void* Element);
+
+    // Event listeners. Add binds a managed thunk (+ GCHandle context) to one element's event and returns
+    // an opaque listener handle (null on failure); Remove detaches + frees it. Listeners are owned by the
+    // bridge and reaped when the world's UI is destroyed, so a missed Remove never dangles -- it leaks the
+    // managed GCHandle, exactly like a registry signal.
+    RUNTIME_API void* AddElementEventListener(CWorld* World, void* Element, FStringView EventType, FManagedUIEventThunk Thunk, void* Context);
+    RUNTIME_API void  RemoveElementEventListener(CWorld* World, void* Listener);
 }

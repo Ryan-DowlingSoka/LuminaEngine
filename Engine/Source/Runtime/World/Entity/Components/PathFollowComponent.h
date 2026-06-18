@@ -24,7 +24,7 @@ namespace Lumina
     {
         GENERATED_BODY()
 
-        //~ Begin Lua-facing API. Designed so a script can drive an AI with
+        //~ Begin script-facing API. Designed so a script can drive an AI with
         //  three lines: SetTargetLocation, IsFollowing, IsAtDestination.
 
         /** Set a static world-space goal. Triggers a fresh path request next tick. */
@@ -85,7 +85,7 @@ namespace Lumina
             return PathCorners[CurrentCorner];
         }
 
-        //~ End Lua-facing API.
+        //~ End script-facing API.
 
         /** Distance below which the agent considers a corner "reached" and advances. */
         PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.05f)

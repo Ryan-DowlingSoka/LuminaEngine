@@ -12,8 +12,10 @@
 #include "Core/Math/Math.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
+#include "Core/Reflection/Type/Properties/ClassProperty.h"
 #include "Core/Reflection/Type/Properties/EnumProperty.h"
 #include "Core/Reflection/Type/Properties/ObjectProperty.h"
+#include "Core/Reflection/Type/Properties/SubStructProperty.h"
 #include "Core/Reflection/Type/Properties/SoftObjectProperty.h"
 #include "Core/Reflection/Type/Properties/OptionalProperty.h"
 #include "Core/Reflection/Type/Properties/StringProperty.h"
@@ -381,6 +383,7 @@ namespace Lumina
             NewFProperty<FSoftObjectProperty, FSoftObjectPropertyParams>(FieldOwner, Param);
             break;
         case EPropertyTypeFlags::Class:
+            NewFProperty<FClassProperty, FClassPropertyParams>(FieldOwner, Param);
             break;
         case EPropertyTypeFlags::Name:
             NewFProperty<FNameProperty, FNamePropertyParams>(FieldOwner, Param);
@@ -390,6 +393,9 @@ namespace Lumina
             break;
         case EPropertyTypeFlags::Struct:
             NewFProperty<FStructProperty, FStructPropertyParams>(FieldOwner, Param);
+            break;
+        case EPropertyTypeFlags::SubStruct:
+            NewFProperty<FSubStructProperty, FSubStructPropertyParams>(FieldOwner, Param);
             break;
         case EPropertyTypeFlags::Enum:
             {

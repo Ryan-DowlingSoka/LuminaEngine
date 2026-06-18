@@ -3,7 +3,7 @@
   Development. Named "Launch Editor" (no suffix) so it sorts alphabetically
   before "Launch Editor (Debug)" AND has a higher AUTO_SELECT_PRIORITY so
   Rider picks this one by default. Keeps build config and editor exe in
-  sync (both Development) — picking the wrong one is the easiest way to
+  sync (both Development), picking the wrong one is the easiest way to
   end up with a Development DLL trying to load into a Debug editor.
 -->
 <component name="ProjectRunConfigurationManager">

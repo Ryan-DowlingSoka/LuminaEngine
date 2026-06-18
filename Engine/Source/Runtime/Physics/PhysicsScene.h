@@ -28,6 +28,38 @@ namespace Lumina::Physics
         uint32                      CollisionGroupID = 0;           // Unique per ragdoll for parent/child self-collision filtering.
     };
 
+    // Runtime motor drive mode for a powered Hinge/Slider constraint.
+    enum class EConstraintMotorMode : uint8
+    {
+        Off      = 0,   // Motor disabled (joint is free / friction only).
+        Velocity = 1,   // Drive toward a target velocity (rad/s hinge, m/s slider).
+        Position = 2,   // Drive toward a target position (rad hinge, m slider) via the motor spring.
+    };
+
+    // Jolt-free description of one constraint, built by gameplay/editor code and resolved by the scene.
+    // World-space frames; a body set to entt::null is treated as "fixed to the world".
+    struct FConstraintDesc
+    {
+        EPhysicsConstraintType  Type        = EPhysicsConstraintType::Point;
+        entt::entity            BodyA       = entt::null;            // entt::null => world anchor (parent).
+        entt::entity            BodyB       = entt::null;            // The constrained (child) body.
+        FVector3                Anchor      = FVector3(0.0f);        // World pivot (Point/Hinge/Slider/Cone).
+        FVector3                Axis        = FVector3(0.0f, 1.0f, 0.0f); // Hinge/Cone axis or Slider direction (world).
+        FVector3                AnchorB     = FVector3(0.0f);        // Distance: second attach point (Anchor is the first).
+        float                   MinLimit    = 0.0f;                  // Hinge angle (rad) / Slider pos (m) / Distance min.
+        float                   MaxLimit    = 0.0f;                  // Hinge angle (rad) / Slider pos (m) / Distance max.
+        float                   HalfConeAngle = 0.0f;               // Cone half-angle (rad).
+        bool                    bHasLimits  = false;                 // When false, the joint is unlimited on its free axis.
+        float                   LimitFrequency = 0.0f;               // Soft-limit spring (0 = hard limit).
+        float                   LimitDamping   = 0.0f;
+        float                   MaxFriction    = 0.0f;               // Hinge friction torque (N m) / Slider friction force (N).
+        float                   MotorFrequency = 0.0f;               // Position-motor spring (0 = stiff default).
+        float                   MotorDamping   = 0.0f;
+        float                   MotorForceLimit  = 0.0f;             // Slider motor max force (N), 0 = unlimited.
+        float                   MotorTorqueLimit = 0.0f;             // Hinge motor max torque (N m), 0 = unlimited.
+        float                   BreakForce  = 0.0f;                  // Disable the joint when applied force exceeds this (N). 0 = unbreakable.
+    };
+
     class IPhysicsScene
     {
     public:
@@ -45,11 +77,28 @@ namespace Lumina::Physics
         virtual void DeactivateBody(uint32 BodyID) = 0;
         virtual void ActivateBody(uint32 BodyID) = 0;
         virtual void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType) = 0;
+
+        // Whether the body is awake (active) vs asleep (at rest). Default false so non-Jolt backends compile.
+        virtual bool IsBodyActive(uint32 BodyID) { return false; }
         
         virtual uint32 GetEntityBodyID(entt::entity Entity) = 0;
         
         virtual TOptional<SRayResult> CastRay(const SRayCastSettings& Settings) = 0;
         virtual TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) = 0;
+
+        // Every body the ray crosses, sorted near-to-far (penetrating bullets, all-targets line traces).
+        // Empty if nothing was hit. Default: no backend.
+        virtual TVector<SRayResult> CastRayAll(const SRayCastSettings& Settings) { return {}; }
+
+        // Distinct entities whose bodies CONTAIN the world-space point (volume containment / "am I inside X",
+        // trigger tests without a sweep). Results appended to OutEntities, de-duplicated. Default: no backend.
+        virtual void CollidePoint(const FVector3& Point, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) {}
+
+        // Overlap queries: gather the DISTINCT entities whose bodies intersect the shape (AI perception,
+        // triggers, area-of-effect). Entities are de-duplicated; IgnoreBodies excludes specific bodies (e.g.
+        // the querier's own). Results are appended to OutEntities. Game thread only.
+        virtual void OverlapSphere(const FVector3& Center, float Radius, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) = 0;
+        virtual void OverlapBox(const FVector3& Center, const FVector3& HalfExtents, const FQuat& Rotation, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) = 0;
         
         virtual void OnImpulseEvent(const SImpulseEvent& Impulse) = 0;
         virtual void OnForceEvent(const SForceEvent& Force) = 0;
@@ -60,7 +109,18 @@ namespace Lumina::Physics
         virtual void OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event) = 0;
         virtual void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) = 0;
         virtual void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) = 0;
-        
+
+        // Shape-accurate buoyancy: applies Jolt's submerged-volume buoyancy + linear/angular drag impulse for
+        // this frame. The caller supplies the fluid surface point + normal (e.g. sampled from the rendered
+        // Gerstner waves), so the fluid plane follows the wave surface instead of being flat. Buoyancy is the
+        // fluid/body density ratio: 1 = neutral, >1 floats. No-op without a dynamic body. Default: no backend.
+        virtual void ApplyBuoyancyImpulse(entt::entity Entity, const FVector3& SurfacePosition, const FVector3& SurfaceNormal,
+            float Buoyancy, float LinearDrag, float AngularDrag, const FVector3& FluidVelocity, float DeltaTime) {}
+
+        // Conveyor belt / moving surface: objects resting on this body's surface are dragged at this
+        // world-space velocity (linear m/s, angular rad/s). Zero clears it. Default: no backend.
+        virtual void SetSurfaceVelocity(entt::entity Entity, const FVector3& Linear, const FVector3& Angular) {}
+
         virtual FVector3 GetVelocityAtPoint(uint32 BodyID, const FVector3& Point) = 0;
         virtual FVector3 GetLinearVelocity(uint32 BodyID) = 0;
         virtual FVector3 GetAngularVelocity(uint32 BodyID) = 0;
@@ -95,6 +155,20 @@ namespace Lumina::Physics
 
         // Monotonic unique id for the next ragdoll's self-collision group.
         virtual uint32 AllocateRagdollGroupID() = 0;
+
+        // Constraints / joints. Create returns an opaque non-zero handle (0 == failure); the caller stores it
+        // to drive motors, query break state, or destroy the joint. Must be called outside the physics step
+        // (gameplay/PrePhysics is fine), mirroring CreateRagdoll. Default no-op so non-Jolt backends compile.
+        virtual uint32 CreateConstraint(const FConstraintDesc& Desc) { return 0; }
+        virtual void DestroyConstraint(uint32 ConstraintID) {}
+        virtual void SetConstraintEnabled(uint32 ConstraintID, bool bEnabled) {}
+        // Drive a Hinge/Slider motor. Target is rad/s|m/s for Velocity, rad|m for Position; ignored for Off.
+        virtual void SetConstraintMotor(uint32 ConstraintID, EConstraintMotorMode Mode, float Target) {}
+        // True once a breakable joint's applied force exceeded its BreakForce (the joint is then disabled).
+        virtual bool IsConstraintBroken(uint32 ConstraintID) { return false; }
+        // Current value of a powered joint: a Hinge's angle (radians) or a Slider's position (meters). 0 for
+        // joints without a single driven scalar (Fixed/Point/Distance/Cone).
+        virtual float GetConstraintValue(uint32 ConstraintID) { return 0.0f; }
 
         void AddForce(entt::entity E, const FVector3& Force)                   { SForceEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Force = Force; OnForceEvent(Ev); }
         void AddImpulse(entt::entity E, const FVector3& Impulse)               { SImpulseEvent Ev; Ev.BodyID = GetEntityBodyID(E); Ev.Impulse = Impulse; OnImpulseEvent(Ev); }

@@ -34,6 +34,8 @@
 #include <Renderer/Shader.h>
 #include <Tools/Screenshot/ScreenshotCapture.h>
 #include <World/World.h>
+#include "Config/EngineSettings.h"
+#include "Input/Key.h"
 #include "implot.h"
 #include "LuminaEditor.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
@@ -74,6 +76,8 @@
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleParameterCustomization.h"
 #include "Properties/Customizations/CSharpScriptComponentCustomization.h"
 #include "Properties/Customizations/AssetRefPropertyCustomization.h"
+#include "Properties/Customizations/GameplayTagPropertyCustomization.h"
+#include "GameplayTags/GameplayTag.h"
 #include "World/Entity/Components/CSharpScriptComponent.h"
 #include "Scripting/DotNet/DotNetHost.h"
 #include "Renderer/CustomPrimitiveData.h"
@@ -89,6 +93,7 @@
 #include "Tools/EditorToolRegistry.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/TaskSystemProfilerEditorTool.h"
+#include "Tools/GameplayProfilerEditorTool.h"
 #include "Tools/NetworkEditorTool.h"
 #include "Tools/PluginBrowserEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
@@ -101,6 +106,7 @@
 #include "Tools/Debug/AssetRegistryEditorTool.h"
 #include "Tools/Debug/ConsoleVariableEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
+#include "Tools/Debug/ScriptDiagnosticsEditorTool.h"
 #include "Tools/Debug/TextureHeapEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
@@ -467,7 +473,12 @@ namespace Lumina
         {
            return FKeyPropertyCustomization::MakeInstance();
         });
-        
+
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(FGameplayTag::StaticStruct()->GetName(), []
+        {
+           return FGameplayTagPropertyCustomization::MakeInstance();
+        });
+
         EditorWindowClass.ClassId                       = ImHashStr("EditorWindowClass");
         EditorWindowClass.DockingAllowUnclassed         = false;
         EditorWindowClass.ViewportFlagsOverrideSet      = ImGuiViewportFlags_NoAutoMerge;
@@ -609,7 +620,20 @@ namespace Lumina
         
         
         ImGui::End();
-        
+
+        // One-time startup notices, raised on the first live UI frame so the toasts actually render (boot
+        // itself is pre-UI, so a modal can't show there). Debug builds warn about the perf hit.
+        static bool bStartupNoticesShown = false;
+        if (!bStartupNoticesShown)
+        {
+            bStartupNoticesShown = true;
+#if defined(LE_DEBUG)
+            LOG_DISPLAY("Running a DEBUG build -- performance is greatly reduced; use Development for normal work.");
+            ImGuiX::Notifications::NotifyWarning(
+                "Debug build: performance is greatly reduced. Build in Development for normal editing and play.");
+#endif
+        }
+
         if (ImGui::IsKeyPressed(ImGuiKey_F5))
         {
             CMaterial::CreateDefaultMaterial();
@@ -623,10 +647,34 @@ namespace Lumina
             Screenshot::CaptureActiveWorld(Source);
         }
 
-        // Recompile + hot-swap all C# script assemblies (every Scripts/ across game, plugins, engine).
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F11))
+        // Recompile + hot-swap all C# script assemblies (every Scripts/ across game, plugins, engine). The
+        // chord is rebindable in Editor Settings > General > Hotkeys (default Ctrl+Shift+R).
         {
-            DotNet::ReloadScripts();
+            // EKey holds GLFW keycodes, which run contiguously for letters / digits / function keys -- the
+            // realistic hotkey set -- so they map onto the matching ImGuiKey ranges by offset.
+            auto EKeyToImGuiKey = [](EKey Key) -> ImGuiKey
+            {
+                const int Code = (int)Key;
+                if (Key >= EKey::A  && Key <= EKey::Z)   { return (ImGuiKey)(ImGuiKey_A  + (Code - (int)EKey::A)); }
+                if (Key >= EKey::D0 && Key <= EKey::D9)  { return (ImGuiKey)(ImGuiKey_0  + (Code - (int)EKey::D0)); }
+                if (Key >= EKey::F1 && Key <= EKey::F12) { return (ImGuiKey)(ImGuiKey_F1 + (Code - (int)EKey::F1)); }
+                return ImGuiKey_None;
+            };
+
+            const SKey& Bind = GetDefault<CEditorSettings>()->ReloadScriptsHotkey;
+            const ImGuiKey ReloadKey = Bind.IsKeyboard() ? EKeyToImGuiKey(Bind.Key) : ImGuiKey_None;
+            if (ReloadKey != ImGuiKey_None)
+            {
+                ImGuiKeyChord Chord = ReloadKey;
+                if (Bind.bCtrl)  { Chord |= ImGuiMod_Ctrl; }
+                if (Bind.bShift) { Chord |= ImGuiMod_Shift; }
+                if (Bind.bAlt)   { Chord |= ImGuiMod_Alt; }
+
+                if (ImGui::IsKeyChordPressed(Chord))
+                {
+                    DotNet::ReloadScripts();
+                }
+            }
         }
 
 
@@ -2168,10 +2216,12 @@ namespace Lumina
         DrawToolMenuItem<FAssetRegistryEditorTool>(LE_ICON_DATABASE " Asset Registry", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
         DrawToolMenuItem<FTaskSystemProfilerEditorTool>(LE_ICON_CHART_TIMELINE " Task System", this);
+        DrawToolMenuItem<FGameplayProfilerEditorTool>(LE_ICON_GAUGE " Gameplay Profiler", this);
         DrawToolMenuItem<FNetworkEditorTool>(LE_ICON_LAN " Network", this);
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
         DrawToolMenuItem<FTextureHeapEditorTool>(LE_ICON_IMAGE_ALBUM " Texture Heap", this);
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
+        DrawToolMenuItem<FScriptDiagnosticsEditorTool>(LE_ICON_LANGUAGE_CSHARP " C# Diagnostics", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         DrawToolMenuItem<FPluginBrowserEditorTool>(LE_ICON_PUZZLE " Plugin Browser", this);

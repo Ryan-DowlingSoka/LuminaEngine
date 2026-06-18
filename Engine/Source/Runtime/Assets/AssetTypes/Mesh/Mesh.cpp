@@ -153,7 +153,7 @@ namespace Lumina
             auto CreateAndUpload = [](const void* Data, uint64 Size) -> RHI::GPUPtr
             {
                 const RHI::GPUPtr Memory = RHI::Malloc(Size, RHI::kDefaultAlign, RHI::EMemoryType::GPUOnly);
-                RHI::Core::Upload(Memory, Data, Size);
+                RHI::UploadBuffer(Memory, Data, Size);
                 return Memory;
             };
 

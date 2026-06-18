@@ -12,7 +12,7 @@ LuminaPluginModule({
     ModuleDependencies = { "Runtime" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy",
+        "ImGui", "RPMalloc", "EA", "Tracy",
     },
 })
 
@@ -24,6 +24,6 @@ LuminaPluginModule({
     ModuleDependencies = { "Runtime", "$RUNTIMEMODULE" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy",
+        "ImGui", "RPMalloc", "EA", "Tracy",
     },
 })

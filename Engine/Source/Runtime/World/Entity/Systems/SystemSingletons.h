@@ -23,6 +23,25 @@ namespace Lumina
         bool                            bHasPostProcess = false;
     };
 
+    // One live additive camera shake. Applied to the RENDERED view each frame (not the camera entity
+    // transform), so several shakes sum and none permanently move the camera. Oscillation is sine-per-axis
+    // with seeded phase/frequency variation so axes don't move in lockstep.
+    struct FCameraShakeInstance
+    {
+        FVector3    LocationAmplitude = FVector3(0.0f);  // max local-space offset per axis (world units)
+        FVector3    RotationAmplitude = FVector3(0.0f);  // max rotation per axis, degrees (X pitch, Y yaw, Z roll)
+        float       Frequency         = 10.0f;           // oscillation rate (Hz)
+        float       Duration          = 0.5f;            // seconds; <= 0 loops until stopped
+        float       BlendInTime       = 0.05f;
+        float       BlendOutTime      = 0.2f;
+        float       Elapsed           = 0.0f;
+        uint32      Handle            = 0;
+        float       LocPhase[3]       = { 0.0f, 0.0f, 0.0f };
+        float       RotPhase[3]       = { 0.0f, 0.0f, 0.0f };
+        float       LocFreqMul[3]     = { 1.0f, 1.0f, 1.0f };
+        float       RotFreqMul[3]     = { 1.0f, 1.0f, 1.0f };
+    };
+
     // Active-camera selection + cinematic blend, owned and ticked entirely by SCameraSystem. A non-zero
     // blend snapshots the displayed view and eases to the new camera over Duration; the resolved view is
     // stored back here each frame as the source for the next blend.
@@ -44,6 +63,10 @@ namespace Lumina
 
         entt::entity            ActiveCameraEntity = entt::null;
         FBlendState             Blend;
+
+        // Live additive shakes summed into the rendered view each frame; handles let callers stop them.
+        TVector<FCameraShakeInstance>   Shakes;
+        uint32                          NextShakeHandle = 1;
 
         // Last fully resolved (post-blend) view; the source for the next blend's snapshot.
         FVector3                LastViewPosition = FVector3(0.0f);

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace LuminaSharp;
@@ -81,7 +82,74 @@ public readonly struct EntityRegistry
         return Native.RemoveComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token) != 0;
     }
 
-    /// <summary>The C# script of type T on the entity — its concrete <see cref="EntityScript"/> subclass —
+    /// <summary>Get-or-emplace by a pre-resolved op-table token (zero on failure). For the [RequireComponent]
+    /// injector, where the token is cached without a generic instantiation.</summary>
+    internal IntPtr EmplaceRaw(Entity Entity, IntPtr Token)
+    {
+        return Token == IntPtr.Zero ? IntPtr.Zero : Native.EmplaceComponent(WorldHandle, Entity.Id, Token);
+    }
+
+    // Registry signals (the entt on_construct/on_destroy/on_update hooks). Subscribe to a component's
+    // lifecycle and get the entity each time one fires; Dispose the returned subscription to unsubscribe.
+    // Build your OWN events by declaring a component as a signal channel: Emplace it to raise OnConstruct,
+    // Remove it to raise OnDestroy, and Patch it to pulse OnUpdate (carry data in the component's fields).
+
+    /// <summary>Fires when a <typeparamref name="T"/> component is added to an entity.</summary>
+    public RegistrySubscription OnConstruct<T>(Action<Entity> Callback) where T : NativeStruct
+        => Subscribe(ComponentOps<T>.Token, 0, Callback);
+
+    /// <summary>Fires when a <typeparamref name="T"/> component is removed from an entity (or its entity destroyed).</summary>
+    public RegistrySubscription OnDestroy<T>(Action<Entity> Callback) where T : NativeStruct
+        => Subscribe(ComponentOps<T>.Token, 1, Callback);
+
+    /// <summary>Fires when a <typeparamref name="T"/> component is patched/replaced (see <see cref="Patch{T}"/>).</summary>
+    public RegistrySubscription OnUpdate<T>(Action<Entity> Callback) where T : NativeStruct
+        => Subscribe(ComponentOps<T>.Token, 2, Callback);
+
+    /// <summary>Pulses the <c>on_update</c> signal for an entity's <typeparamref name="T"/> component, so
+    /// <see cref="OnUpdate{T}"/> listeners run. No-op for a tag component or if the entity lacks T. Mutate
+    /// the component first (via <see cref="Get{T}"/>), then Patch to notify.</summary>
+    public void Patch<T>(Entity Entity) where T : NativeStruct
+        => Native.RegistryPatch(WorldHandle, Entity.Id, ComponentOps<T>.Token);
+
+    private RegistrySubscription Subscribe(IntPtr Token, int Kind, Action<Entity> Callback)
+    {
+        if (Token == IntPtr.Zero || Callback == null)
+        {
+            return RegistrySubscription.Empty;
+        }
+
+        GCHandle Handle = GCHandle.Alloc(Callback);
+        IntPtr Listener = Native.RegistryConnect(WorldHandle, Token, Kind, SignalThunkPtr, GCHandle.ToIntPtr(Handle));
+        if (Listener == IntPtr.Zero)
+        {
+            Handle.Free();
+            return RegistrySubscription.Empty;
+        }
+        return new RegistrySubscription(WorldHandle, Token, Kind, Listener, Handle);
+    }
+
+    // Native signal trampoline: resolve the GCHandle context back to the managed callback and invoke it.
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void SignalThunk(IntPtr Context, uint Entity)
+    {
+        try
+        {
+            if (GCHandle.FromIntPtr(Context).Target is Action<Entity> Body)
+            {
+                Body(new Entity(Entity));
+            }
+        }
+        catch (Exception Exception)
+        {
+            Interop.LogException(Exception);
+        }
+    }
+
+    private static readonly unsafe IntPtr SignalThunkPtr =
+        (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, uint, void>)&SignalThunk;
+
+    /// <summary>The C# script of type T on the entity, its concrete <see cref="EntityScript"/> subclass,
     /// or null if the entity has no script or it isn't a T. The returned instance is the LIVE managed
     /// object; call its public methods directly, exactly like a C++ component reference (no marshalling).
     /// Re-fetch per use rather than caching across frames: GetScript itself is always safe (it returns null

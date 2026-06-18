@@ -16,10 +16,13 @@ namespace LuminaSharp.Generators;
 /// call, minus the boilerplate. Used by both hand-written engine bindings (static, on <c>Native</c>) and the
 /// Reflector's generated wrappers (instance methods that pass the object <c>Handle</c>).
 ///
-/// Marshalling (mirrors the Reflector's C++ thunk ABI): string -&gt; (byte*, int) UTF-8; bool -&gt; byte
+/// Marshalling (mirrors the Reflector's C++ thunk ABI): string arg -&gt; (byte*, int) UTF-8; bool -&gt; byte
 /// (the thunk uses unsigned char; reading the low byte is also correct for int-returning hand exports);
-/// enum -&gt; int; LuminaSharp.Entity -&gt; uint (the entt id); everything else (numerics, blittable value
-/// structs) passes by value. Instance methods prepend the object Handle as the first native argument.
+/// enum -&gt; int; LuminaSharp.Entity -&gt; uint (the entt id); Span&lt;T&gt;/ReadOnlySpan&lt;T&gt; arg -&gt;
+/// (T* pinned, int Length); everything else (numerics, blittable value structs) passes by value. A `string`
+/// RETURN uses the engine two-pass buffer ABI: the native export takes a trailing (byte* buffer, int capacity)
+/// and returns the byte length (the generator calls it once with (null, 0) to size, then into an exact buffer).
+/// Instance methods prepend the object Handle as the first native argument.
 /// Defaults: module "LuminaNative", entry point "LuminaSharp_{MethodName}".
 /// </summary>
 [Generator]
@@ -45,6 +48,10 @@ namespace LuminaSharp
         public NativeCallAttribute(string entryPoint) { EntryPoint = entryPoint; }
         public string? Module { get; set; }
         public string? EntryPoint { get; set; }
+
+        /// <summary>Skip the GC-mode switch on the call. Only valid for a short, non-blocking native leaf that
+        /// never re-enters managed, blocks, or runs long; otherwise it can stall or deadlock the GC.</summary>
+        public bool SuppressGCTransition { get; set; }
     }
 }
 ";
@@ -81,6 +88,7 @@ namespace LuminaSharp
         // Read [NativeCall] module + entry point (ctor arg or named); apply the conventional defaults.
         string? module = null;
         string? entry = null;
+        bool suppressGCTransition = false;
         AttributeData attr = ctx.Attributes[0];
         if (attr.ConstructorArguments.Length == 1 && attr.ConstructorArguments[0].Value is string ctorEntry)
         {
@@ -96,6 +104,10 @@ namespace LuminaSharp
             {
                 entry = e;
             }
+            else if (named.Key == "SuppressGCTransition" && named.Value.Value is bool s)
+            {
+                suppressGCTransition = s;
+            }
         }
         module ??= DefaultModule;
         entry ??= "LuminaSharp_" + method.Name;
@@ -105,6 +117,7 @@ namespace LuminaSharp
         var nativeTypes = new List<string>();
         var callArgs = new List<string>();
         var stringParams = new List<(int Index, string Name)>();
+        var spanParams = new List<(int Index, string Name, string Elem)>();
         var sigParams = new List<string>();
 
         // Instance methods route through the object's native Handle as the first thunk argument (the
@@ -128,6 +141,25 @@ namespace LuminaSharp
             string name = p.Name;
             string typeFq = p.Type.ToDisplayString(fq);
             sigParams.Add($"{typeFq} {name}");
+
+            // Span<T>/ReadOnlySpan<T> -> (T* pinned, int Length). Pinned in the generated body with `fixed`.
+            if (TryGetSpanElement(p.Type, fq, out string spanElem))
+            {
+                nativeTypes.Add($"{spanElem}*");
+                nativeTypes.Add("int");
+                callArgs.Add($"__sp{i}");
+                callArgs.Add($"{name}.Length");
+                spanParams.Add((i, name, spanElem));
+                continue;
+            }
+
+            // Wrapper arg (NativeObject/NativeStruct subclass) -> the engine handle (IntPtr), zero for null.
+            if (IsNativeRef(p.Type))
+            {
+                nativeTypes.Add("global::System.IntPtr");
+                callArgs.Add($"({name} is null ? global::System.IntPtr.Zero : {name}.Handle)");
+                continue;
+            }
 
             switch (Classify(p.Type, typeFq))
             {
@@ -157,14 +189,25 @@ namespace LuminaSharp
             }
         }
 
-        // Return shape: native delegate* return type + a function that wraps the raw call expression.
+        // Return shape. A `string` return uses the engine two-pass buffer ABI: the native export takes a
+        // trailing (byte* buffer, int capacity) and returns the byte length; the body sizes with (null, 0)
+        // then copies into an exact buffer. Everything else appends one native return type + a wrap().
         string retCs;
-        System.Func<string, string> wrap;
+        System.Func<string, string> wrap = call => call;
+        bool stringReturn = false;
+        bool nativeRefReturn = false;
+        string nativeRefRetType = string.Empty;
         if (method.ReturnsVoid)
         {
             retCs = "void";
             nativeTypes.Add("void");
-            wrap = call => call; // unused for void
+        }
+        else if (IsNativeRef(method.ReturnType))
+        {
+            nativeRefRetType = method.ReturnType.ToDisplayString(fq);
+            retCs = nativeRefRetType + "?";
+            nativeRefReturn = true;
+            nativeTypes.Add("global::System.IntPtr");
         }
         else
         {
@@ -172,6 +215,12 @@ namespace LuminaSharp
             retCs = retFq;
             switch (Classify(method.ReturnType, retFq))
             {
+                case Kind.String:
+                    stringReturn = true;
+                    nativeTypes.Add("byte*");   // trailing caller buffer
+                    nativeTypes.Add("int");     // trailing buffer capacity
+                    nativeTypes.Add("int");     // returned byte length
+                    break;
                 case Kind.Bool:
                     nativeTypes.Add("byte");
                     wrap = call => $"{call} != 0";
@@ -186,14 +235,14 @@ namespace LuminaSharp
                     break;
                 default:
                     nativeTypes.Add(retFq);
-                    wrap = call => call;
                     break;
             }
         }
 
-        string delegateType = $"delegate* unmanaged[Cdecl]<{string.Join(", ", nativeTypes)}>";
+        string callConv = suppressGCTransition ? "Cdecl, SuppressGCTransition" : "Cdecl";
+        string delegateType = $"delegate* unmanaged[{callConv}]<{string.Join(", ", nativeTypes)}>";
         string field = $"__nc_{method.Name}";
-        string callExpr = $"{field}({string.Join(", ", callArgs)})";
+        string coreArgs = string.Join(", ", callArgs);
         string staticMod = method.IsStatic ? " static" : string.Empty;
         string acc = Accessibility(method.DeclaredAccessibility);
         string sig = $"{acc}{staticMod} partial {retCs} {method.Name}({string.Join(", ", sigParams)})";
@@ -204,43 +253,98 @@ namespace LuminaSharp
           .Append(module).Append("\", \"").Append(entry).Append("\");\n");
         sb.Append("        ").Append(sig).Append('\n');
 
-        // Body. With string args we pin/encode each (allocation-free when it fits the stack scratch) and
-        // free in a finally; otherwise an expression body suffices.
-        if (stringParams.Count == 0)
+        static string Pad(int n) => new string(' ', n);
+
+        // The native call itself (params already marshalled into coreArgs; span pointers pinned in scope).
+        string CoreBody(int indent)
+        {
+            string pad = Pad(indent);
+            if (stringReturn)
+            {
+                string prefix = callArgs.Count > 0 ? coreArgs + ", " : string.Empty;
+                return pad + "int __len = " + field + "(" + prefix + "null, 0);\n"
+                     + pad + "if (__len <= 0) { return string.Empty; }\n"
+                     + pad + "byte[] __buf = new byte[__len];\n"
+                     + pad + "fixed (byte* __bp = __buf)\n" + pad + "{\n"
+                     + pad + "    int __w = " + field + "(" + prefix + "__bp, __len);\n"
+                     + pad + "    return global::LuminaSharp.Interop.GetString(__bp, __w < __len ? __w : __len);\n"
+                     + pad + "}\n";
+            }
+            if (nativeRefReturn)
+            {
+                return pad + "global::System.IntPtr __p = " + field + "(" + coreArgs + ");\n"
+                     + pad + "return __p == global::System.IntPtr.Zero ? null : new " + nativeRefRetType + "(__p);\n";
+            }
+            if (method.ReturnsVoid)
+            {
+                return pad + field + "(" + coreArgs + ");\n";
+            }
+            return pad + "return " + wrap($"{field}({coreArgs})") + ";\n";
+        }
+
+        bool hasStrings = stringParams.Count > 0;
+        bool hasSpans = spanParams.Count > 0;
+
+        // Trivial shape (no marshalling fixups, plain return): expression body / one-liner.
+        if (!hasStrings && !hasSpans && !stringReturn && !nativeRefReturn)
         {
             if (method.ReturnsVoid)
             {
-                sb.Append("        {\n            ").Append(callExpr).Append(";\n        }\n");
+                sb.Append("        {\n").Append(CoreBody(12)).Append("        }\n");
             }
             else
             {
-                sb.Append("            => ").Append(wrap(callExpr)).Append(";\n");
+                sb.Append("            => ").Append(wrap($"{field}({coreArgs})")).Append(";\n");
             }
         }
         else
         {
             sb.Append("        {\n");
+            int indent = 12;
+
+            // String args: encode UTF-8 into stack scratch (allocation-free when it fits), free in finally.
             foreach ((int idx, string name) in stringParams)
             {
-                sb.Append("            global::System.Span<byte> __sb").Append(idx).Append(" = stackalloc byte[256];\n");
-                sb.Append("            global::LuminaSharp.Interop.FInteropString __enc").Append(idx)
+                sb.Append(Pad(indent)).Append("global::System.Span<byte> __sb").Append(idx).Append(" = stackalloc byte[256];\n");
+                sb.Append(Pad(indent)).Append("global::LuminaSharp.Interop.FInteropString __enc").Append(idx)
                   .Append(" = new(").Append(name).Append(", __sb").Append(idx).Append(");\n");
             }
-            sb.Append("            try\n            {\n");
-            if (method.ReturnsVoid)
+
+            if (hasStrings)
             {
-                sb.Append("                ").Append(callExpr).Append(";\n");
+                sb.Append(Pad(indent)).Append("try\n").Append(Pad(indent)).Append("{\n");
+                indent += 4;
+            }
+
+            // Span args: stacked `fixed` pins wrapping the call.
+            foreach ((int idx, string name, string elem) in spanParams)
+            {
+                sb.Append(Pad(indent)).Append("fixed (").Append(elem).Append("* __sp").Append(idx)
+                  .Append(" = ").Append(name).Append(")\n");
+            }
+            if (hasSpans)
+            {
+                sb.Append(Pad(indent)).Append("{\n");
+                sb.Append(CoreBody(indent + 4));
+                sb.Append(Pad(indent)).Append("}\n");
             }
             else
             {
-                sb.Append("                return ").Append(wrap(callExpr)).Append(";\n");
+                sb.Append(CoreBody(indent));
             }
-            sb.Append("            }\n            finally\n            {\n");
-            foreach ((int idx, string _) in stringParams)
+
+            if (hasStrings)
             {
-                sb.Append("                __enc").Append(idx).Append(".Free();\n");
+                indent -= 4;
+                sb.Append(Pad(indent)).Append("}\n").Append(Pad(indent)).Append("finally\n").Append(Pad(indent)).Append("{\n");
+                foreach ((int idx, string _) in stringParams)
+                {
+                    sb.Append(Pad(indent + 4)).Append("__enc").Append(idx).Append(".Free();\n");
+                }
+                sb.Append(Pad(indent)).Append("}\n");
             }
-            sb.Append("            }\n        }\n");
+
+            sb.Append("        }\n");
         }
 
         string ns = type.ContainingNamespace.IsGlobalNamespace
@@ -312,6 +416,39 @@ namespace LuminaSharp
             }
         }
         return null;
+    }
+
+    // A C# wrapper over a native handle: a class deriving LuminaSharp.NativeObject / NativeStruct (the
+    // Reflector's opaque wrappers + the facades). Such a type marshals as its `Handle` (an arg) or is
+    // reconstructed from a returned handle. Blittable value-mirror structs are NOT native refs (no base).
+    private static bool IsNativeRef(ITypeSymbol type)
+    {
+        for (INamedTypeSymbol? t = type as INamedTypeSymbol; t != null; t = t.BaseType)
+        {
+            if ((t.Name == "NativeObject" || t.Name == "NativeStruct")
+                && t.ContainingNamespace?.ToDisplayString() == "LuminaSharp")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Span<T>/ReadOnlySpan<T> -> (T* pinned, int Length). T must be unmanaged (the generated `fixed` pin
+    // enforces it at compile time). Returns the fully-qualified element type, or false for non-span types.
+    private static bool TryGetSpanElement(ITypeSymbol type, SymbolDisplayFormat fq, out string elementFq)
+    {
+        elementFq = string.Empty;
+        if (type is INamedTypeSymbol named && named.IsGenericType && named.TypeArguments.Length == 1)
+        {
+            string unbound = named.ConstructedFrom.ToDisplayString();
+            if (unbound == "System.Span<T>" || unbound == "System.ReadOnlySpan<T>")
+            {
+                elementFq = named.TypeArguments[0].ToDisplayString(fq);
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Kind Classify(ITypeSymbol type, string fqName)

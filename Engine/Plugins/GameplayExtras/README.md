@@ -2,11 +2,11 @@
 
 Optional gameplay-flavored components that aren't core engine functionality.
 Anything that lives here can be disabled per-project via the `.lproject`
-`Plugins` array — Runtime itself never depends on it.
+`Plugins` array, Runtime itself never depends on it.
 
 ## Currently bundled
 
-- `SHealthComponent` (`Components/HealthComponent.h`) — health + max health
+- `SHealthComponent` (`Components/HealthComponent.h`), health + max health
   + optional regen. Reflected Lua API: `ApplyDamage(float)`, `GiveHealth(float)`.
 
 ## How to disable for a project

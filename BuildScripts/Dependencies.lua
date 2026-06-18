@@ -1,8 +1,18 @@
-premake.api.register 
+premake.api.register
 {
     name    = "enablereflection",
     scope   = "project",
     kind    = "boolean",
+}
+
+-- Destination for this project's generated C# bindings (.generated.cs). Empty/unset = the engine default
+-- (Intermediates/CSharpBindings -> LuminaSharp.dll). A plugin/game module sets it to its Scripts/Generated
+-- so the per-plugin gather compiles the bindings into the plugin's OWN assembly.
+premake.api.register
+{
+    name    = "csharpbindingsdir",
+    scope   = "project",
+    kind    = "string",
 }
 
 LuminaConfig = LuminaConfig or {}

@@ -34,8 +34,6 @@ namespace Lumina
     class CWorld;
     class FNavMesh;
 
-    namespace Lua { class FRef; }
-
     /** Navigation helpers; each function dispatches to the first ready SNavMeshComponent. */
     namespace Nav
     {
@@ -47,6 +45,11 @@ namespace Lumina
         RUNTIME_API bool Raycast(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FVector3& HitOut);
 
         RUNTIME_API bool IsReady(CWorld* World);
+
+        /** Flag every navmesh volume in the world for an async rebuild (consumed next tick). Returns the
+         *  number of volumes flagged. The script-facing "rebuild navigation" entry point. */
+        RUNTIME_API int32 RequestRebuild(CWorld* World);
+
         RUNTIME_API bool FindPath(CWorld* World, const FVector3& Start, const FVector3& End, FNavPath& Out);
         RUNTIME_API bool ProjectPoint(CWorld* World, const FVector3& Point, const FVector3& Extents, FVector3& Out);
         RUNTIME_API bool Raycast(CWorld* World, const FVector3& Start, const FVector3& End, FVector3& OutHit);

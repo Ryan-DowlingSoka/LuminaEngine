@@ -63,4 +63,17 @@ namespace Lumina
         Kinematic,
         Dynamic,
     };
+
+    /** Joint type for SPhysicsConstraintComponent / World.Physics constraints. Order is the wire contract
+        shared with the C# Physics facade and the native FConstraintDesc switch -- append only. */
+    REFLECT()
+    enum class RUNTIME_API EPhysicsConstraintType : uint8
+    {
+        Fixed,      // Weld: removes all 6 DOF (compound props, breakable welds).
+        Point,      // Ball-and-socket: removes 3 translation DOF (ropes, chains).
+        Distance,   // Keeps two points a fixed/ranged distance apart (rope length cap, stiff spring).
+        Hinge,      // Single rotation axis with optional limits + motor (doors, wheels, levers).
+        Slider,     // Single translation axis with optional limits + motor (pistons, drawers, lifts).
+        Cone,       // Swing-limited ball-socket (twist axis stays within a cone).
+    };
 }

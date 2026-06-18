@@ -15,15 +15,38 @@ namespace Lumina
         Ready = 2,      // OnReady run; ticking
     };
 
-    // Attaches a C# EntityScript to an entity. The
-    // SCSharpScriptSystem instantiates the managed type named by ScriptClass and ticks it. Instance is a
-    // strong GCHandle to the managed object (the only link; no managed lookup table); Instance/Generation
-    // /BindState are a transient binding (not serialized) and rebind automatically when the script
-    // generation changes (hot reload).
+    // Attaches a C# EntityScript to an entity.
     REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SCSharpScriptComponent
     {
         GENERATED_BODY()
+
+        SCSharpScriptComponent() = default;
+
+        // Duplicating a script entity must NOT share the source's managed binding.
+        SCSharpScriptComponent(const SCSharpScriptComponent& Other)
+            : ScriptClass(Other.ScriptClass)
+            , PropertyOverrides(Other.PropertyOverrides)
+        {
+        }
+
+        SCSharpScriptComponent& operator=(const SCSharpScriptComponent& Other)
+        {
+            if (this != &Other)
+            {
+                ScriptClass       = Other.ScriptClass;
+                PropertyOverrides = Other.PropertyOverrides;
+                Instance          = nullptr;
+                Generation        = -1;
+                BindState         = ECSharpBindState::Unbound;
+                CallbackFlags     = 0;
+            }
+            return *this;
+        }
+
+        // Move transfers the binding (ownership), so it is the default memberwise move.
+        SCSharpScriptComponent(SCSharpScriptComponent&&) noexcept            = default;
+        SCSharpScriptComponent& operator=(SCSharpScriptComponent&&) noexcept = default;
 
         // Full C# type name to run on this entity, e.g. "Game.HelloScript".
         PROPERTY(Editable, Category = "Script")

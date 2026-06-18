@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include "Core/Math/Math.h"
 #include "Core/Threading/Thread.h"
 #include "DirtyComponent.h"
@@ -10,8 +11,9 @@
 
 namespace Lumina
 {
-
-    REFLECT(Component, HideInComponentList)
+    
+    // ScriptFastCalls: local accessors are bound SuppressGCTransition. World getters opt out (they resolve).
+    REFLECT(Component, HideInComponentList, ScriptFastCalls)
     struct RUNTIME_API CACHE_ALIGN STransformComponent
     {
         GENERATED_BODY()
@@ -113,42 +115,43 @@ namespace Lumina
             return LocalTransform.Scale;
         }
     
-        FUNCTION(Script)
+        // World getters opt out of SuppressGCTransition: a dirty-chain resolve can exceed the ~1us budget.
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldLocation() const
         {
             ResolveIfDirty();
             return WorldTransform.Location;
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FQuat GetWorldRotation() const
         {
             ResolveIfDirty();
             return WorldTransform.Rotation;
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldScale() const
         {
             ResolveIfDirty();
             return WorldTransform.Scale;
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetWorldRotationAsEuler() const
         {
             ResolveIfDirty();
             return Math::Degrees(Math::EulerAngles(WorldTransform.Rotation));
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FMatrix4 GetWorldMatrix() const
         {
             ResolveIfDirty();
             return CachedMatrix;
         }
-        
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         const FTransform& GetWorldTransform() const
         {
             ResolveIfDirty();
@@ -161,7 +164,7 @@ namespace Lumina
         const FVector3&   GetWorldScaleCached()    const { return WorldTransform.Scale; }
         const FMatrix4&   GetWorldMatrixCached()   const { return CachedMatrix; }
 
-        FUNCTION(Script)
+        FUNCTION(Script, NoSuppressGCTransition)
         void SetWorldTransform(const FTransform& InTransform)
         {
             // Convert to the parent-relative local transform; assigning WorldTransform directly
@@ -179,21 +182,21 @@ namespace Lumina
             MarkDirty();
         }
     
-        FUNCTION(Script)
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetForward() const
         {
             ResolveIfDirty();
             return LocalTransform.GetForward();
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetRight()   const
         {
             ResolveIfDirty();
             return LocalTransform.GetRight();
         }
-    
-        FUNCTION(Script)
+
+        FUNCTION(Script, NoSuppressGCTransition)
         FVector3 GetUp()      const
         {
             ResolveIfDirty();
@@ -242,6 +245,7 @@ namespace Lumina
         {
             Registry = &InRegistry;
             Entity = InEntity;
+            WorldDirtySignal = ECS::Utils::EnsureTransformDirtySignal(InRegistry);
         }
         
         void SetRaw(const FVector3& Location, const FQuat& Rotation)
@@ -262,34 +266,41 @@ namespace Lumina
         /** Local-space transform relative to the entity's parent (or world if no parent). */
         PROPERTY(Editable, Category = "Transform")
         FTransform LocalTransform;
-    
+
         FTransform WorldTransform;
         FMatrix4  CachedMatrix = FMatrix4(1.f);
-    
+
+        // Set by setters, cleared by the resolver. Component-local so writes are ParallelFor-safe.
+        mutable bool bWorldDirty = false;
+
     private:
-        
+
+        // Writes only this component + a relaxed store through the cached signal: no registry mutation, so
+        // setters are safe to call concurrently across entities.
         void MarkDirty() const
         {
-            if (!Registry)
+            bWorldDirty = true;
+            if (WorldDirtySignal)
             {
-                return;
+                WorldDirtySignal->store(true, std::memory_order_relaxed);
             }
-
-            ECS::Utils::MarkTransformDirty(*Registry, Entity);
+            if (Registry)
+            {
+                ECS::Utils::MarkPhysicsBodyDirtyIfBodied(*Registry, Entity);
+            }
         }
 
         void ResolveIfDirty() const
         {
-            // No pre-check: ResolveTransformChain does the all_of check + locking, so a stale read
-            // can't fire a chain resolve on already-clean data.
             if (Registry)
             {
                 ECS::Utils::ResolveTransformChain(*Registry, Entity);
             }
         }
-    
+
         FEntityRegistry*    Registry = nullptr;
         entt::entity        Entity   = entt::null;
+        std::atomic<bool>*  WorldDirtySignal = nullptr;
     };
     
 }

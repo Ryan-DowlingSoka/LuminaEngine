@@ -71,6 +71,13 @@ int main(int argc, char* argv[])
         // works without per-call slash/case fixups.
         ReflectedProject->Path = Lumina::ClangUtils::NormalizeHeaderPath(eastl::move(ProjectPath));
 
+        // Optional: a plugin/game module routes its C# bindings into its own Scripts/Generated dir.
+        if (Project.contains("CSharpBindingsDir") && !Project["CSharpBindingsDir"].get<std::string>().empty())
+        {
+            eastl::string CSharpDir = Project["CSharpBindingsDir"].get<std::string>().c_str();
+            ReflectedProject->CSharpBindingsDir = Lumina::ClangUtils::NormalizeHeaderPath(eastl::move(CSharpDir));
+        }
+
         for (const auto& IncludeDirJson : Project["IncludeDirs"])
         {
             eastl::string IncludeDir = IncludeDirJson.get<std::string>().c_str();

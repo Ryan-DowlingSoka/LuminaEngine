@@ -8,6 +8,7 @@ namespace Lumina::Reflection
         Function,
         Reflect,
         GeneratedBody,
+        ScriptExport,
         Size,
     };
 
@@ -19,6 +20,7 @@ namespace Lumina::Reflection
             case EReflectionMacro::Function:            return "FUNCTION";
             case EReflectionMacro::Reflect:             return "REFLECT";
             case EReflectionMacro::GeneratedBody:       return "GENERATED_BODY";
+            case EReflectionMacro::ScriptExport:        return "SCRIPT_EXPORT";
             default:                                    return "NONE";
         }
     }

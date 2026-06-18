@@ -1640,6 +1640,16 @@ namespace Lumina
                                 }
                             });
                         }
+
+                        // The gizmo writes LocalTransform via MarkDirty, whose cached dirty-signal can fail to
+                        // raise the registry's bAnyDirty flag in a duplicated (Simulate/PIE) world -- leaving the
+                        // edit unresolved (so e.g. AI perception/path-follow keeps reading the old position) until
+                        // something else moves. Tag the edited entities so the resolve runs reliably, matching the
+                        // FNeedsTransformUpdate path physics uses.
+                        for (entt::entity Selected : SelectionView)
+                        {
+                            World->GetEntityRegistry().emplace_or_replace<FNeedsTransformUpdate>(Selected);
+                        }
                     }
                     else if (bImGuizmoUsedOnce)
                     {

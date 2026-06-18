@@ -169,7 +169,7 @@ namespace Lumina
                     CC->AddMovementInput(Move);
                 }
             }
-            
+
             if (!Comp.bDrawDebugPath || Comp.CornerCount == 0)
             {
                 return;

@@ -6,7 +6,7 @@
 
 using namespace Lumina;
 
-IMPLEMENT_MODULE(FSandboxModule, "SandboxModule");
+IMPLEMENT_MODULE(FSandboxModule, "Sandbox");
 
 void FSandboxModule::StartupModule()
 {

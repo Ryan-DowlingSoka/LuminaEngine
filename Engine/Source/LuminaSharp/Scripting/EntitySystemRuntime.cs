@@ -26,6 +26,9 @@ internal sealed class EntitySystemRuntime
         this.Library = Library;
     }
 
+    /// <summary>Number of discovered [EntitySystem] types in this generation (for editor diagnostics).</summary>
+    public int TypeCount => Library.EntitySystemTypes.Count;
+
     /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority).
     /// sink(ctx, utf8Name, byteLen, stage, priority) is called once per type.</summary>
     public unsafe void Enumerate(IntPtr Sink, IntPtr Context)
@@ -88,9 +91,24 @@ internal sealed class EntitySystemRuntime
             return;
         }
 
+        bool Profiling = Profiler.Enabled;
         try
         {
-            System.OnUpdate(new SystemContext(Context));
+            if (Profiling)
+            {
+                Profiler.Begin(System.GetType().Name);
+            }
+            try
+            {
+                System.OnUpdate(new SystemContext(Context));
+            }
+            finally
+            {
+                if (Profiling)
+                {
+                    Profiler.End();
+                }
+            }
         }
         catch (Exception Exception)
         {

@@ -1,12 +1,8 @@
 {
     "ProjectSettings": {
         "CookRoots": [],
-        "EditorStartupMap": "/Game/Backrooms.lasset",
+        "EditorStartupMap": "/Game/Content/NewWorld.lasset",
         "GameInstanceClass": "",
-        "GameStartupMap": "/Game/Backrooms.lasset",
-        "LuaModuleFile": {
-            "Guid": "",
-            "Path": ""
-        }
+        "GameStartupMap": "/Game/Content/NewWorld.lasset"
     }
 }

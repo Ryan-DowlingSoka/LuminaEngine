@@ -50,7 +50,8 @@ newaction
         ProjectFiles[prj.name] = {
             Path = prj.basedir,
             Files = {},
-            IncludeDirs = {}
+            IncludeDirs = {},
+            CSharpBindingsDir = prj.csharpbindingsdir or ""
         }
         
         for Config in p.project.eachconfig(prj) do
@@ -94,10 +95,11 @@ newaction
     
         for Name, ProjectData in pairs(ProjectFiles) do
             table.insert(Data.Projects, {
-                Name        = Name,
-                IncludeDirs = ProjectData.IncludeDirs,
-                Files       = ProjectData.Files,
-                Path        = ProjectData.Path
+                Name             = Name,
+                IncludeDirs      = ProjectData.IncludeDirs,
+                Files            = ProjectData.Files,
+                Path             = ProjectData.Path,
+                CSharpBindingsDir = ProjectData.CSharpBindingsDir
             })
         end
     

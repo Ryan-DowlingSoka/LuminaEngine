@@ -26,13 +26,27 @@
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
+#include "Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h"
+#include "Jolt/Physics/Collision/Shape/TaperedCylinderShape.h"
+#include "Jolt/Physics/Collision/Shape/PlaneShape.h"
+#include "Jolt/Physics/Collision/CollideShape.h"
+#include "Jolt/Physics/Collision/CollidePointResult.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
 #include "Jolt/Physics/Collision/Shape/HeightFieldShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
+#include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 #include "JoltRagdollHandle.h"
 #include <Jolt/Skeleton/Skeleton.h>
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
+#include <Jolt/Physics/Constraints/FixedConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/SliderConstraint.h>
+#include <Jolt/Physics/Constraints/ConeConstraint.h>
+#include <Jolt/Physics/Body/BodyLockMulti.h>
+#include <Jolt/Physics/Body/BodyActivationListener.h>
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Assets/AssetTypes/PhysicsMaterial/PhysicsMaterial.h"
 #include "Assets/AssetTypes/PhysicsAsset/PhysicsAsset.h"
@@ -188,6 +202,22 @@ namespace Lumina::Physics
         TSpan<const uint32> IgnoreBodies;
     };
 
+    // Rejects character inner bodies so a character's MOVEMENT collision ignores other characters' proxies;
+    // char-vs-char is then handled solely by CharacterVsCharacterCollision (no double-collision). Only used on
+    // the serial character update, so reading the set is race-free.
+    class FCharacterProxyFilter : public JPH::BodyFilter
+    {
+    public:
+        explicit FCharacterProxyFilter(const THashSet<uint32>& InProxies) : Proxies(InProxies) {}
+
+        bool ShouldCollide(const JPH::BodyID& inBodyID) const override
+        {
+            return Proxies.find(inBodyID.GetIndexAndSequenceNumber()) == Proxies.end();
+        }
+
+        const THashSet<uint32>& Proxies;
+    };
+
     static FLayerInterfaceImpl                  GJoltLayerInterface;
     static FObjectLayerPairFilterImpl           GObjectVsObjectLayerFilter;
     static FObjectVsBroadPhaseLayerFilterImpl   GObjectVsBroadPhaseLayerFilter;
@@ -235,11 +265,40 @@ namespace Lumina::Physics
         }
     }
 
+    void FJoltContactListener::ApplySurfaceVelocity(const JPH::Body& inBody1, const JPH::Body& inBody2, JPH::ContactSettings& ioSettings)
+    {
+        if (Scene == nullptr)
+        {
+            return;
+        }
+
+        const auto* SV1 = Scene->GetBodySurfaceVelocity(inBody1.GetID());
+        const auto* SV2 = Scene->GetBodySurfaceVelocity(inBody2.GetID());
+
+        const bool bActive1 = SV1 != nullptr && SV1->bActive;
+        const bool bActive2 = SV2 != nullptr && SV2->bActive;
+        if (!bActive1 && !bActive2)
+        {
+            return;
+        }
+
+        // Jolt wants the relative surface velocity = body2 - body1 (world space). The angular term is taken
+        // about body1's center of mass (exact for a conveyor that is body1; an approximation if body2 spins).
+        const FVector3 Lin1 = bActive1 ? SV1->Linear  : FVector3(0.0f);
+        const FVector3 Lin2 = bActive2 ? SV2->Linear  : FVector3(0.0f);
+        const FVector3 Ang1 = bActive1 ? SV1->Angular : FVector3(0.0f);
+        const FVector3 Ang2 = bActive2 ? SV2->Angular : FVector3(0.0f);
+
+        ioSettings.mRelativeLinearSurfaceVelocity  = JoltUtils::ToJPHVec3(Lin2 - Lin1);
+        ioSettings.mRelativeAngularSurfaceVelocity = JoltUtils::ToJPHVec3(Ang2 - Ang1);
+    }
+
     void FJoltContactListener::OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
         // Apply per-material combine first so the constraint uses the right friction/restitution
         // (Jolt invokes this once per contact pair per step before solving).
         OverrideFrictionAndRestitution(inBody1, inBody2, inManifold, ioSettings);
+        ApplySurfaceVelocity(inBody1, inBody2, ioSettings);
 
         if (Scene)
         {
@@ -249,9 +308,10 @@ namespace Lumina::Physics
 
     void FJoltContactListener::OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
-        // Don't dispatch to the bus (Enter/Exit cover scripts), but material combine must still run each
-        // step or resting contacts revert to Jolt's default combiner.
+        // Don't dispatch to the bus (Enter/Exit cover scripts), but material combine + surface velocity must
+        // still run each step or resting contacts revert to Jolt's defaults (and the conveyor stops dragging).
         OverrideFrictionAndRestitution(inBody1, inBody2, inManifold, ioSettings);
+        ApplySurfaceVelocity(inBody1, inBody2, ioSettings);
     }
 
     void FJoltContactListener::OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair)
@@ -291,6 +351,12 @@ namespace Lumina::Physics
     {
         FScopeLock Lock(ContactQueueMutex);
         PendingContacts.push_back(Record);
+    }
+
+    void FJoltPhysicsScene::EnqueueActivation(entt::entity Entity, bool bActivated)
+    {
+        FScopeLock Lock(ActivationQueueMutex);
+        PendingActivations.push_back({ Entity, bActivated });
     }
 
     namespace
@@ -383,6 +449,45 @@ namespace Lumina::Physics
         }
     }
 
+    void FJoltPhysicsScene::DispatchActivationEvents()
+    {
+        TVector<FActivationRecord> Drain;
+        {
+            FScopeLock Lock(ActivationQueueMutex);
+            if (PendingActivations.empty())
+            {
+                return;
+            }
+            Drain.swap(PendingActivations);
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        for (const FActivationRecord& Record : Drain)
+        {
+            if (Record.Entity == entt::null || !Registry.valid(Record.Entity))
+            {
+                continue;
+            }
+
+            // Kind 5 = Wake, 6 = Sleep (matches EntityScriptRuntime.Dispatch + the CallbackFlags bits).
+            const int32 Kind = Record.bActivated ? 5 : 6;
+
+            SCSharpScriptComponent* CsComp = Registry.try_get<SCSharpScriptComponent>(Record.Entity);
+            if (CsComp == nullptr || CsComp->Instance == nullptr
+                || CsComp->Generation != DotNet::GetScriptGeneration()
+                || (CsComp->CallbackFlags & (1 << Kind)) == 0)
+            {
+                continue;
+            }
+
+            // The activation callbacks ignore the event payload; carry the self entity for context.
+            SCollisionEvent Event{};
+            Event.Entity = static_cast<uint32>(entt::to_integral(Record.Entity));
+            Event.Other  = 0xFFFFFFFFu;
+            DotNet::DispatchScriptCollision(CsComp->Instance, Kind, &Event);
+        }
+    }
+
     namespace
     {
         // Combine a pair of values under a combine mode. The pair's effective mode is the max of
@@ -446,6 +551,80 @@ namespace Lumina::Physics
         outRestitution = inBody.GetRestitution();
     }
     
+    // CharacterVirtual contact listener. Reports the capsule's own contacts -- the ones the kinematic inner
+    // body doesn't generate, i.e. STATIC world geometry (walls, floors, terrain). Dynamic/kinematic contacts
+    // already reach the character's script through the inner body via the rigid FJoltContactListener (the
+    // inner body shares the capsule shape + carries the entity user data), so dispatching them here too would
+    // double-report; we skip them. Runs on the (parallel) character substep, so it only appends to the
+    // thread-safe contact queue, draining game-thread as the character's OnContactBegin.
+    class FJoltCharacterContactListener : public JPH::CharacterContactListener
+    {
+    public:
+        FJoltCharacterContactListener(FJoltPhysicsScene* InScene, const JPH::BodyLockInterfaceNoLock* InLock)
+            : Scene(InScene)
+            , BodyLockInterface(InLock)
+        { }
+
+        virtual void OnContactAdded(const JPH::CharacterVirtual* inCharacter, const JPH::BodyID& inBodyID2,
+            const JPH::SubShapeID& /*inSubShapeID2*/, JPH::RVec3Arg inContactPosition, JPH::Vec3Arg inContactNormal,
+            JPH::CharacterContactSettings& /*ioSettings*/) override
+        {
+            const entt::entity CharacterEntity = static_cast<entt::entity>(static_cast<uint32>(inCharacter->GetUserData()));
+
+            entt::entity OtherEntity   = entt::null;
+            bool         bOtherStatic  = false;
+            if (const JPH::Body* OtherBody = BodyLockInterface->TryGetBody(inBodyID2))
+            {
+                bOtherStatic = OtherBody->IsStatic();
+                OtherEntity  = static_cast<entt::entity>(static_cast<uint32>(OtherBody->GetUserData()));
+            }
+            if (!bOtherStatic)
+            {
+                return;     // Dynamic/kinematic contacts arrive via the inner body's rigid contact.
+            }
+
+            FContactRecord Record{};
+            Record.Type        = EContactEventType::Added;
+            Record.EntityA     = CharacterEntity;
+            Record.EntityB     = OtherEntity;
+            Record.BodyIDA     = 0xFFFFFFFFu;
+            Record.BodyIDB     = inBodyID2.GetIndexAndSequenceNumber();
+            Record.Point       = FVector3(JoltUtils::FromJPHRVec3(inContactPosition));
+            Record.Normal      = JoltUtils::FromJPHVec3(inContactNormal);
+            Record.VelocityA   = FVector3(0.0f);
+            Record.VelocityB   = FVector3(0.0f);
+            Record.ImpactSpeed = 0.0f;
+            Record.bSensorA    = false;
+            Record.bSensorB    = false;
+            Scene->EnqueueContactRecord(Record);
+        }
+
+    private:
+        FJoltPhysicsScene*                  Scene = nullptr;
+        const JPH::BodyLockInterfaceNoLock* BodyLockInterface = nullptr;
+    };
+
+    // Body sleep/wake listener. Jolt calls these during the step (any worker thread, body locked) with the
+    // body's user data = entity id; we just stage the transition for the game-thread script dispatch.
+    class FJoltBodyActivationListener : public JPH::BodyActivationListener
+    {
+    public:
+        explicit FJoltBodyActivationListener(FJoltPhysicsScene* InScene) : Scene(InScene) { }
+
+        virtual void OnBodyActivated(const JPH::BodyID& /*inBodyID*/, JPH::uint64 inBodyUserData) override
+        {
+            Scene->EnqueueActivation(static_cast<entt::entity>(static_cast<uint32>(inBodyUserData)), true);
+        }
+
+        virtual void OnBodyDeactivated(const JPH::BodyID& /*inBodyID*/, JPH::uint64 inBodyUserData) override
+        {
+            Scene->EnqueueActivation(static_cast<entt::entity>(static_cast<uint32>(inBodyUserData)), false);
+        }
+
+    private:
+        FJoltPhysicsScene* Scene = nullptr;
+    };
+
     FJoltPhysicsScene::FJoltPhysicsScene(CWorld* InWorld)
         : Allocator(32ull * 1024 * 1024)
         , World(InWorld)
@@ -460,6 +639,7 @@ namespace Lumina::Physics
         // Sized once to MaxPhysicsBodies; JPH::BodyID::GetIndex() is bounded by this so the
         // contact-listener lookup is a bare array index with no resize race.
         BodyMaterials.resize(InitSettings.MaxPhysicsBodies);
+        BodySurfaceVelocities.resize(InitSettings.MaxPhysicsBodies);
 
         FVector3 GravityDir = Math::LengthSquared(InitSettings.GravityDirection) > 0.0f
             ? Math::Normalize(InitSettings.GravityDirection) : FVector3(0.0f, -1.0f, 0.0f);
@@ -497,6 +677,16 @@ namespace Lumina::Physics
         entt::dispatcher& Dispatcher = World->GetEntityRegistry().ctx().get<entt::dispatcher&>();
         ContactListener = MakeUnique<FJoltContactListener>(this, Dispatcher, &JoltSystem->GetBodyLockInterfaceNoLock());
         JoltSystem->SetContactListener(ContactListener.get());
+
+        // Shared across every CharacterVirtual; assigned per-character in OnCharacterComponentConstructed.
+        CharacterContactListener = MakeUnique<FJoltCharacterContactListener>(this, &JoltSystem->GetBodyLockInterfaceNoLock());
+
+        // Sleep/wake transitions -> EntityScript OnWake/OnSleep (drained game-thread).
+        ActivationListener = MakeUnique<FJoltBodyActivationListener>(this);
+        JoltSystem->SetBodyActivationListener(ActivationListener.get());
+
+        // Shared registry for character-vs-character (mutual pushing); characters opt in at construction.
+        CharacterVsCharacter = MakeUnique<JPH::CharacterVsCharacterCollisionSimple>();
         
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
@@ -504,18 +694,29 @@ namespace Lumina::Physics
         Registry.on_construct<SBoxColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SCapsuleColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SCylinderColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STaperedCapsuleColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STaperedCylinderColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SPlaneColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCompoundColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<STerrainColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
 
     FJoltPhysicsScene::~FJoltPhysicsScene()
     {
+        // Remove joints before JoltSystem is torn down (constraints reference live bodies/the manager).
+        DestroyAllConstraints();
+
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
         Registry.on_construct<SSphereColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SCapsuleColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SCylinderColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STaperedCapsuleColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STaperedCylinderColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SPlaneColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCompoundColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<STerrainColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
@@ -536,6 +737,7 @@ namespace Lumina::Physics
         // into the ECS before contact callbacks (scripts read fresh transforms).
         ApplyInterpolatedTransforms();
         DispatchContactEvents();
+        DispatchActivationEvents();
     }
 
     void FJoltPhysicsScene::ApplyDirtyTransforms(float FixedDt)
@@ -661,7 +863,10 @@ namespace Lumina::Physics
                 CreateRigidBodyImmediate(World->GetEntityRegistry(), Entity);
             }
         }
-        
+
+        // Build any component-authored joints whose bodies are now ready (pre-step, so locking is safe).
+        DrainPendingConstraints();
+
         const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
 
         // Re-apply global physics settings each frame so editor changes take effect immediately.
@@ -745,6 +950,9 @@ namespace Lumina::Physics
                 UpdateCharacters(FixedTimestep);
             }
 
+            // Disable any breakable joint that exceeded its force threshold this frame (reads fresh lambdas).
+            MonitorBreakableConstraints(FixedTimestep);
+
             // Contact records drained on game thread via DispatchPendingEvents.
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
@@ -782,7 +990,17 @@ namespace Lumina::Physics
         Registry.on_update<SRigidBodyComponent>().connect<&FJoltPhysicsScene::OnRigidBodyComponentUpdated>(this);
         Registry.on_construct<SRigidBodyComponent>().connect<&FJoltPhysicsScene::OnRigidBodyComponentConstructed>(this);
         Registry.on_destroy<SRigidBodyComponent>().connect<&FJoltPhysicsScene::OnRigidBodyComponentDestroyed>(this);
-        
+
+        Registry.on_construct<SPhysicsConstraintComponent>().connect<&FJoltPhysicsScene::OnConstraintComponentConstructed>(this);
+        Registry.on_destroy<SPhysicsConstraintComponent>().connect<&FJoltPhysicsScene::OnConstraintComponentDestroyed>(this);
+
+        // Queue joints that already exist on entities at play start (on_construct won't fire retroactively).
+        Registry.view<SPhysicsConstraintComponent>().each([&](entt::entity E, SPhysicsConstraintComponent& C)
+        {
+            C.ConstraintID = 0;
+            PendingConstraintCreations.push_back(E);
+        });
+
         entt::dispatcher& Dispatcher = World->GetEntityRegistry().ctx().get<entt::dispatcher&>();
         Dispatcher.sink<SImpulseEvent>().connect<&FJoltPhysicsScene::OnImpulseEvent>(this);
         Dispatcher.sink<SForceEvent>().connect<&FJoltPhysicsScene::OnForceEvent>(this);
@@ -804,7 +1022,10 @@ namespace Lumina::Physics
 
         Registry.on_construct<SRigidBodyComponent>().disconnect<&FJoltPhysicsScene::OnRigidBodyComponentConstructed>(this);
         Registry.on_destroy<SRigidBodyComponent>().disconnect<&FJoltPhysicsScene::OnRigidBodyComponentDestroyed>(this);
-        
+
+        Registry.on_construct<SPhysicsConstraintComponent>().disconnect<&FJoltPhysicsScene::OnConstraintComponentConstructed>(this);
+        Registry.on_destroy<SPhysicsConstraintComponent>().disconnect<&FJoltPhysicsScene::OnConstraintComponentDestroyed>(this);
+
         entt::dispatcher& Dispatcher = World->GetEntityRegistry().ctx().get<entt::dispatcher&>();
         Dispatcher.sink<SImpulseEvent>().disconnect<&FJoltPhysicsScene::OnImpulseEvent>(this);
         Dispatcher.sink<SForceEvent>().disconnect<&FJoltPhysicsScene::OnForceEvent>(this);
@@ -827,6 +1048,11 @@ namespace Lumina::Physics
     {
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         BodyInterface.ActivateBody(JPH::BodyID(BodyID));
+    }
+
+    bool FJoltPhysicsScene::IsBodyActive(uint32 BodyID)
+    {
+        return JoltSystem->GetBodyInterface().IsActive(JPH::BodyID(BodyID));
     }
 
     void FJoltPhysicsScene::DeactivateBody(uint32 BodyID)
@@ -1206,7 +1432,19 @@ namespace Lumina::Physics
                 const FVector3 TeleportLocation = Movement.PendingTeleportLocation;
                 Character->SetPosition(JoltUtils::ToJPHRVec3(TeleportLocation));
                 Character->SetLinearVelocity(JPH::Vec3::sZero());
+
+                // Re-query contacts at the new spot; SetPosition alone leaves stale contacts, so the character
+                // can spawn stuck-in-air or fall through the floor until its next move.
+                const JPH::ObjectLayer TeleportLayer = JoltUtils::PackToObjectLayer(Physics.CollisionProfile);
+                Character->RefreshContacts(
+                    PhysicsSystem->GetDefaultBroadPhaseLayerFilter(TeleportLayer),
+                    PhysicsSystem->GetDefaultLayerFilter(TeleportLayer),
+                    {}, {}, InAllocator);
+
                 Movement.Velocity        = FVector3(0.0f);
+                Movement.bGrounded       = false;
+                Movement.GroundEntity    = 0xFFFFFFFFu;
+                Movement.GroundNormal    = FVector3(0.0f, 1.0f, 0.0f);
                 Physics.LastBodyPosition = TeleportLocation;
                 return;
             }
@@ -1229,7 +1467,20 @@ namespace Lumina::Physics
             {
                 Movement.JumpCount = 0;
             }
-            
+
+            // Surface the ground we're standing on: normal for slope handling, entity for footstep-surface
+            // lookups and moving-platform logic. GetGroundUserData carries the ground body's entity id.
+            if (Movement.bGrounded)
+            {
+                Movement.GroundNormal = JoltUtils::FromJPHVec3(Character->GetGroundNormal());
+                Movement.GroundEntity = static_cast<uint32>(Character->GetGroundUserData());
+            }
+            else
+            {
+                Movement.GroundNormal = FVector3(0.0f, 1.0f, 0.0f);
+                Movement.GroundEntity = 0xFFFFFFFFu;
+            }
+
             FQuat TargetRotation = JoltUtils::FromJPHQuat(Character->GetRotation());
             if (Movement.bUseControllerRotation)
             {
@@ -1335,20 +1586,33 @@ namespace Lumina::Physics
 
             const JPH::ObjectLayer Layer = JoltUtils::PackToObjectLayer(Physics.CollisionProfile);
 
+            // Char-vs-char characters skip all proxy inner bodies during movement (their mutual collision
+            // runs through CharacterVsCharacterCollision instead); others use the default filter so they
+            // still block via inner bodies.
+            FCharacterProxyFilter ProxyFilter{CharacterProxyBodies};
+            JPH::BodyFilter       DefaultBodyFilter;
+            const JPH::BodyFilter& MovementBodyFilter = Physics.bCollideWithCharacters
+                ? static_cast<const JPH::BodyFilter&>(ProxyFilter)
+                : DefaultBodyFilter;
+
             Character->ExtendedUpdate(
                 FixedDt,
                 JPH::Vec3(0.0f, Movement.Gravity, 0.0f),
                 UpdateSettings,
                 PhysicsSystem->GetDefaultBroadPhaseLayerFilter(Layer),
                 PhysicsSystem->GetDefaultLayerFilter(Layer),
-                {},
+                MovementBodyFilter,
                 {},
                 InAllocator);
 
             Movement.Velocity = JoltUtils::FromJPHVec3(Character->GetLinearVelocity());
         };
 
-        if (Count < ParallelMinCount || CharacterAllocators.empty())
+        // CharacterVsCharacterCollisionSimple is brute-force and NOT thread-safe (it reads every other
+        // character's transform), so fall back to serial updates whenever any character opted into it.
+        const bool bCharacterVsCharacterActive = !CharacterVsCharacter->mCharacters.empty();
+
+        if (Count < ParallelMinCount || CharacterAllocators.empty() || bCharacterVsCharacterActive)
         {
             for (uint32 i = 0; i < Count; ++i)
             {
@@ -1367,8 +1631,19 @@ namespace Lumina::Physics
 
     uint32 FJoltPhysicsScene::GetEntityBodyID(entt::entity Entity)
     {
-        auto* RigidBody = World->GetEntityRegistry().try_get<SRigidBodyComponent>(Entity);
-        return RigidBody ? RigidBody->BodyID : JPH::BodyID::cInvalidBodyID;
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        if (auto* RigidBody = Registry.try_get<SRigidBodyComponent>(Entity))
+        {
+            return RigidBody->BodyID;
+        }
+
+        if (auto* Character = Registry.try_get<SCharacterPhysicsComponent>(Entity))
+        {
+            return Character->GetBodyID();
+        }
+
+        return JPH::BodyID::cInvalidBodyID;
     }
 
     TOptional<SRayResult> FJoltPhysicsScene::CastRay(const SRayCastSettings& Settings)
@@ -1559,6 +1834,186 @@ namespace Lumina::Physics
         return Results;
     }
 
+    namespace
+    {
+        // Collects the distinct entities of every body a CollideShape overlap touches. A single body can
+        // report multiple sub-shape hits, so de-dup on the entity (linear scan: overlap result sets are small).
+        class FOverlapCollector : public JPH::CollideShapeCollector
+        {
+        public:
+            FOverlapCollector(const JPH::BodyLockInterfaceNoLock& InLock, TVector<entt::entity>& InOut)
+                : Lock(InLock)
+                , Out(InOut)
+            {}
+
+            void AddHit(const JPH::CollideShapeResult& Hit) override
+            {
+                const JPH::Body* Body = Lock.TryGetBody(Hit.mBodyID2);
+                if (!Body)
+                {
+                    return;
+                }
+                const entt::entity E = static_cast<entt::entity>(static_cast<uint32>(Body->GetUserData()));
+                if (eastl::find(Out.begin(), Out.end(), E) == Out.end())
+                {
+                    Out.push_back(E);
+                }
+            }
+
+            const JPH::BodyLockInterfaceNoLock& Lock;
+            TVector<entt::entity>&              Out;
+        };
+    }
+
+    TVector<SRayResult> FJoltPhysicsScene::CastRayAll(const SRayCastSettings& Settings)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        TVector<SRayResult> Results;
+
+        const JPH::Vec3 JPHStart  = JoltUtils::ToJPHVec3(Settings.Start);
+        const JPH::Vec3 JPHEnd    = JoltUtils::ToJPHVec3(Settings.End);
+        const JPH::Vec3 Direction = JPHEnd - JPHStart;
+        if (Direction.Length() < LE_SMALL_NUMBER)
+        {
+            return Results;
+        }
+
+        JPH::RRayCast Ray;
+        Ray.mOrigin    = JPHStart;
+        Ray.mDirection = Direction;
+
+        const float RayLength = Math::Length(Settings.End - Settings.Start);
+        const JPH::BodyLockInterfaceNoLock& Lock = JoltSystem->GetBodyLockInterfaceNoLock();
+
+        class FRayAllCollector : public JPH::CastRayCollector
+        {
+        public:
+            FRayAllCollector(TVector<SRayResult>& OutResults, const SRayCastSettings& InSettings, const JPH::RRayCast& InRay, float InLength, const JPH::BodyLockInterfaceNoLock& InLock)
+                : Out(OutResults), Settings(InSettings), Ray(InRay), Length(InLength), Lock(InLock)
+            {}
+
+            void AddHit(const JPH::RayCastResult& Hit) override
+            {
+                const JPH::Body* Body = Lock.TryGetBody(Hit.mBodyID);
+                if (!Body)
+                {
+                    return;
+                }
+                const JPH::RVec3 Point  = Ray.GetPointOnRay(Hit.mFraction);
+                const JPH::Vec3  Normal = Body->GetWorldSpaceSurfaceNormal(Hit.mSubShapeID2, Point);
+
+                SRayResult R;
+                R.BodyID   = Hit.mBodyID.GetIndexAndSequenceNumber();
+                R.Entity   = static_cast<uint32>(Body->GetUserData());
+                R.Start    = Settings.Start;
+                R.End      = Settings.End;
+                R.Location = FVector3(JoltUtils::FromJPHRVec3(Point));
+                R.Normal   = Math::Normalize(JoltUtils::FromJPHVec3(Normal));
+                R.Fraction = Hit.mFraction;
+                R.Distance = Hit.mFraction * Length;
+                Out.emplace_back(Move(R));
+            }
+
+            TVector<SRayResult>&                Out;
+            const SRayCastSettings&             Settings;
+            const JPH::RRayCast&                Ray;
+            float                               Length;
+            const JPH::BodyLockInterfaceNoLock& Lock;
+        };
+
+        FRayAllCollector Collector(Results, Settings, Ray, RayLength, Lock);
+        FIgnoreFilter Filter{Settings.IgnoreBodies};
+
+        // Default layer filters = test every body along the ray (the "penetrate everything" use case);
+        // IgnoreBodies still excludes specific bodies (e.g. the shooter's own).
+        JoltSystem->GetNarrowPhaseQuery().CastRay(Ray, JPH::RayCastSettings(), Collector, {}, {}, Filter, {});
+
+        std::sort(Results.begin(), Results.end(), [](const SRayResult& A, const SRayResult& B) { return A.Fraction < B.Fraction; });
+        return Results;
+    }
+
+    void FJoltPhysicsScene::CollidePoint(const FVector3& Point, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        const JPH::BodyLockInterfaceNoLock& Lock = JoltSystem->GetBodyLockInterfaceNoLock();
+
+        class FPointCollector : public JPH::CollidePointCollector
+        {
+        public:
+            FPointCollector(const JPH::BodyLockInterfaceNoLock& InLock, TVector<entt::entity>& InOut)
+                : Lock(InLock), Out(InOut)
+            {}
+
+            void AddHit(const JPH::CollidePointResult& Hit) override
+            {
+                const JPH::Body* Body = Lock.TryGetBody(Hit.mBodyID);
+                if (!Body)
+                {
+                    return;
+                }
+                const entt::entity E = static_cast<entt::entity>(static_cast<uint32>(Body->GetUserData()));
+                if (eastl::find(Out.begin(), Out.end(), E) == Out.end())
+                {
+                    Out.push_back(E);
+                }
+            }
+
+            const JPH::BodyLockInterfaceNoLock& Lock;
+            TVector<entt::entity>&              Out;
+        };
+
+        FPointCollector Collector(Lock, OutEntities);
+        FIgnoreFilter Filter{IgnoreBodies};
+        JoltSystem->GetNarrowPhaseQuery().CollidePoint(
+            JoltUtils::ToJPHRVec3(FDoubleVector3(Point)), Collector, {}, {}, Filter, {});
+    }
+
+    void FJoltPhysicsScene::OverlapShapeInternal(const JPH::Shape* Shape, const JPH::RMat44& Transform, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities)
+    {
+        const JPH::BodyLockInterfaceNoLock& Lock = JoltSystem->GetBodyLockInterfaceNoLock();
+        FOverlapCollector Collector(Lock, OutEntities);
+        FIgnoreFilter Filter{IgnoreBodies};
+
+        JoltSystem->GetNarrowPhaseQuery().CollideShape(
+            Shape,
+            JPH::Vec3::sReplicate(1.0f),
+            Transform,
+            JPH::CollideShapeSettings(),
+            JPH::RVec3::sZero(),
+            Collector,
+            JPH::BroadPhaseLayerFilter(),
+            JPH::ObjectLayerFilter(),
+            Filter,
+            JPH::ShapeFilter());
+    }
+
+    void FJoltPhysicsScene::OverlapSphere(const FVector3& Center, float Radius, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities)
+    {
+        LUMINA_PROFILE_SCOPE();
+        if (Math::IsNearlyZero(Radius))
+        {
+            return;
+        }
+        JPH::SphereShape Shape(Radius);
+        OverlapShapeInternal(&Shape, JPH::RMat44::sTranslation(JoltUtils::ToJPHRVec3(Center)), IgnoreBodies, OutEntities);
+    }
+
+    void FJoltPhysicsScene::OverlapBox(const FVector3& Center, const FVector3& HalfExtents, const FQuat& Rotation, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities)
+    {
+        LUMINA_PROFILE_SCOPE();
+        if (HalfExtents.x <= 0.0f || HalfExtents.y <= 0.0f || HalfExtents.z <= 0.0f)
+        {
+            return;
+        }
+        // Jolt enforces a minimum box half-extent (convex radius); clamp so thin volumes don't assert.
+        const JPH::Vec3 Half = JPH::Vec3(Math::Max(HalfExtents.x, 0.01f), Math::Max(HalfExtents.y, 0.01f), Math::Max(HalfExtents.z, 0.01f));
+        JPH::BoxShape Shape(Half);
+        const JPH::RMat44 Transform = JPH::RMat44::sRotationTranslation(JoltUtils::ToJPHQuat(Rotation), JoltUtils::ToJPHRVec3(Center));
+        OverlapShapeInternal(&Shape, Transform, IgnoreBodies, OutEntities);
+    }
+
     void FJoltPhysicsScene::EnsureCharacterAllocators()
     {
         if (!CharacterAllocators.empty())
@@ -1624,6 +2079,21 @@ namespace Lumina::Physics
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         BodyInterface.SetUserData(Character->GetInnerBodyID(), entt::to_integral(Entity));
 
+        // Entity id on the character itself so the contact listener can resolve it; smoother motion over
+        // mesh seams; and route the capsule's contacts to the shared character listener.
+        Character->SetUserData(entt::to_integral(Entity));
+        Character->SetEnhancedInternalEdgeRemoval(CharacterComponent.bEnhancedInternalEdgeRemoval);
+        Character->SetListener(CharacterContactListener.get());
+
+        // Opt into mutual char-vs-char pushing. Its inner body joins the proxy set so OTHER characters'
+        // movement collision skips it -- char-char then runs solely through CharacterVsCharacterCollision.
+        if (CharacterComponent.bCollideWithCharacters)
+        {
+            Character->SetCharacterVsCharacterCollision(CharacterVsCharacter.get());
+            CharacterVsCharacter->Add(Character.GetPtr());
+            CharacterProxyBodies.insert(Character->GetInnerBodyID().GetIndexAndSequenceNumber());
+        }
+
         // Wrap into the pimpl handle the component owns (component header
         // doesn't see <Jolt/...> directly).
         CharacterComponent.Character        = MakeShared<FJoltCharacterHandle>();
@@ -1636,7 +2106,22 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::OnCharacterComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
-        
+        // Drop the character from the char-vs-char registry before its CharacterVirtual is released (the
+        // shared list holds raw pointers). The proxy set is the source of truth for membership, so this is
+        // correct even if bCollideWithCharacters was toggled after construction.
+        SCharacterPhysicsComponent* CharacterComponent = Registry.try_get<SCharacterPhysicsComponent>(Entity);
+        if (CharacterComponent == nullptr || !CharacterComponent->Character || CharacterComponent->Character->Ref == nullptr)
+        {
+            return;
+        }
+
+        JPH::CharacterVirtual* Character = CharacterComponent->Character->Ref.GetPtr();
+        const uint32 InnerID = Character->GetInnerBodyID().GetIndexAndSequenceNumber();
+        if (CharacterProxyBodies.find(InnerID) != CharacterProxyBodies.end())
+        {
+            CharacterVsCharacter->Remove(Character);
+            CharacterProxyBodies.erase(InnerID);
+        }
     }
 
     void FJoltPhysicsScene::OnRigidBodyComponentUpdated(entt::registry& Registry, entt::entity Entity)
@@ -1793,6 +2278,9 @@ namespace Lumina::Physics
         float                      MaterialRestitution = 0.0f;
         uint8                      MaterialFrictionCombine = 0;
         uint8                      MaterialRestitutionCombine = 0;
+        // Conveyor surface velocity from an SConveyorComponent (world space; zero = none).
+        FVector3                   SurfaceLinearVelocity = FVector3(0.0f);
+        FVector3                   SurfaceAngularVelocity = FVector3(0.0f);
     };
 
     // Thread-safe: reads only registry + loaded assets; no PhysicsSystem mutation.
@@ -1882,6 +2370,77 @@ namespace Lumina::Physics
             if (Shape == nullptr)
             {
                 LOG_ERROR("Failed to create CylinderCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+        }
+        else if (const STaperedCapsuleColliderComponent* TCC = Registry.try_get<STaperedCapsuleColliderComponent>(Entity))
+        {
+            ColliderTranslationOffset           = TCC->TranslationOffset;
+            ColliderRotationOffset              = TCC->RotationOffset;
+            bColliderIsTrigger                  = TCC->bIsTrigger;
+            ResolvedMaterial                    = TCC->PhysicsMaterial.Get();
+
+            const float ScaleFactor = TransformComponent->MaxScale();
+            Shape = Scene->GetOrCreateTaperedCapsuleShape(TCC->HalfHeight * ScaleFactor, TCC->TopRadius * ScaleFactor, TCC->BottomRadius * ScaleFactor);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create TaperedCapsuleCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+        }
+        else if (const STaperedCylinderColliderComponent* TCyC = Registry.try_get<STaperedCylinderColliderComponent>(Entity))
+        {
+            ColliderTranslationOffset           = TCyC->TranslationOffset;
+            ColliderRotationOffset              = TCyC->RotationOffset;
+            bColliderIsTrigger                  = TCyC->bIsTrigger;
+            ResolvedMaterial                    = TCyC->PhysicsMaterial.Get();
+
+            const float ScaleFactor = TransformComponent->MaxScale();
+            Shape = Scene->GetOrCreateTaperedCylinderShape(
+                TCyC->HalfHeight   * ScaleFactor,
+                TCyC->TopRadius    * ScaleFactor,
+                TCyC->BottomRadius * ScaleFactor,
+                TCyC->ConvexRadius * ScaleFactor);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create TaperedCylinderCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+        }
+        else if (const SPlaneColliderComponent* PC = Registry.try_get<SPlaneColliderComponent>(Entity))
+        {
+            bColliderIsTrigger = PC->bIsTrigger;
+            ResolvedMaterial   = PC->PhysicsMaterial.Get();
+
+            // Local plane through the origin with +Y normal; the entity's rotation/position orient + place it
+            // (negative half-space is solid). Built inline -- planes are few and rarely share dimensions.
+            JPH::PlaneShapeSettings PlaneSettings(
+                JPH::Plane::sFromPointAndNormal(JPH::Vec3::sZero(), JPH::Vec3::sAxisY()),
+                nullptr,
+                Math::Max(PC->HalfExtent, 1.0f));
+            PlaneSettings.SetEmbedded();
+            auto PlaneResult = PlaneSettings.Create();
+            if (PlaneResult.HasError())
+            {
+                LOG_ERROR("Failed to create PlaneCollider Shape for Entity: {} - {}", entt::to_integral(Entity), PlaneResult.GetError());
+                return EBodyBuildStatus::Error;
+            }
+            Shape = PlaneResult.Get();
+
+            // PlaneShape::MustBeStatic() -> true; force the body Static (shares the triangle-mesh path below).
+            bIsTriangleMesh = true;
+        }
+        else if (const SCompoundColliderComponent* CompC = Registry.try_get<SCompoundColliderComponent>(Entity))
+        {
+            bColliderIsTrigger = CompC->bIsTrigger;
+            ResolvedMaterial   = CompC->PhysicsMaterial.Get();
+
+            // Children carry their own local offsets, so the outer collider-offset wrapper stays disabled.
+            // All children are convex primitives, so the compound can be a dynamic body.
+            Shape = Scene->BuildCompoundShape(*CompC, *TransformComponent);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create CompoundCollider Shape for Entity: {}", entt::to_integral(Entity));
                 return EBodyBuildStatus::Error;
             }
         }
@@ -1998,6 +2557,22 @@ namespace Lumina::Physics
         Out.Settings.mMotionQuality             = RigidBodyComponent->MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;
         Out.Settings.mMaxLinearVelocity         = RigidBodyComponent->MaxLinearVelocity;
         Out.Settings.mMaxAngularVelocity        = RigidBodyComponent->MaxAngularVelocity;
+
+        // Per-axis DOF locks: start from All and clear each locked axis. Skip if nothing is locked, or if
+        // every axis is locked (EAllowedDOFs::None is invalid in Jolt -- such a body should be Static).
+        {
+            JPH::EAllowedDOFs DOFs = JPH::EAllowedDOFs::All;
+            if (RigidBodyComponent->bLockTranslationX) { DOFs &= ~JPH::EAllowedDOFs::TranslationX; }
+            if (RigidBodyComponent->bLockTranslationY) { DOFs &= ~JPH::EAllowedDOFs::TranslationY; }
+            if (RigidBodyComponent->bLockTranslationZ) { DOFs &= ~JPH::EAllowedDOFs::TranslationZ; }
+            if (RigidBodyComponent->bLockRotationX)    { DOFs &= ~JPH::EAllowedDOFs::RotationX; }
+            if (RigidBodyComponent->bLockRotationY)    { DOFs &= ~JPH::EAllowedDOFs::RotationY; }
+            if (RigidBodyComponent->bLockRotationZ)    { DOFs &= ~JPH::EAllowedDOFs::RotationZ; }
+            if (DOFs != JPH::EAllowedDOFs::All && DOFs != JPH::EAllowedDOFs::None)
+            {
+                Out.Settings.mAllowedDOFs = DOFs;
+            }
+        }
         if (ResolvedMaterial != nullptr)
         {
             Out.Settings.mFriction              = ResolvedMaterial->Friction;
@@ -2016,10 +2591,26 @@ namespace Lumina::Physics
         Out.Settings.mAngularDamping            = RigidBodyComponent->AngularDamping;
         Out.Settings.mLinearDamping             = RigidBodyComponent->LinearDamping;
 
-        if (RigidBodyComponent->bOverrideMass && MotionType == JPH::EMotionType::Dynamic)
+        if (MotionType == JPH::EMotionType::Dynamic)
         {
-            Out.Settings.mOverrideMassProperties        = JPH::EOverrideMassProperties::CalculateInertia;
-            Out.Settings.mMassPropertiesOverride.mMass  = RigidBodyComponent->Mass;
+            if (RigidBodyComponent->bOverrideInertia)
+            {
+                // Supply both mass and a diagonal inertia tensor; Jolt uses them verbatim.
+                Out.Settings.mOverrideMassProperties         = JPH::EOverrideMassProperties::MassAndInertiaProvided;
+                Out.Settings.mMassPropertiesOverride.mMass   = RigidBodyComponent->Mass;
+                Out.Settings.mMassPropertiesOverride.mInertia = JPH::Mat44::sScale(JoltUtils::ToJPHVec3(RigidBodyComponent->InertiaTensor));
+            }
+            else if (RigidBodyComponent->bOverrideMass)
+            {
+                Out.Settings.mOverrideMassProperties        = JPH::EOverrideMassProperties::CalculateInertia;
+                Out.Settings.mMassPropertiesOverride.mMass  = RigidBodyComponent->Mass;
+            }
+        }
+
+        if (const SConveyorComponent* Conveyor = Registry.try_get<SConveyorComponent>(Entity))
+        {
+            Out.SurfaceLinearVelocity  = Conveyor->SurfaceVelocity;
+            Out.SurfaceAngularVelocity = Conveyor->AngularSurfaceVelocity;
         }
 
         Out.LastBodyPosition = Position;
@@ -2460,6 +3051,428 @@ namespace Lumina::Physics
         OutRotation = JoltUtils::FromJPHQuat(BodyInterface.GetRotation(RootID));
     }
 
+    //================================================================================================
+    // Constraints / joints. Built from a Jolt-free FConstraintDesc; bodies resolved from entities, frames
+    // world-space. Create/Destroy run on the game thread outside the step (same contract as CreateRagdoll);
+    // the breakable monitor runs on the physics step right after Update().
+    //================================================================================================
+
+    namespace
+    {
+        // An axis perpendicular to In (normalized); seeds the hinge/slider reference normal when the caller
+        // doesn't care about the zero-angle orientation.
+        FVector3 ConstraintPerpendicular(const FVector3& In)
+        {
+            const FVector3 N   = Math::LengthSquared(In) > LE_SMALL_NUMBER ? Math::Normalize(In) : FVector3(0.0f, 1.0f, 0.0f);
+            const FVector3 Ref = Math::Abs(N.y) < 0.99f ? FVector3(0.0f, 1.0f, 0.0f) : FVector3(1.0f, 0.0f, 0.0f);
+            return Math::Normalize(Math::Cross(N, Ref));
+        }
+
+        void ConfigureMotor(JPH::MotorSettings& Motor, const FConstraintDesc& Desc, bool bAngular)
+        {
+            if (Desc.MotorFrequency > 0.0f)
+            {
+                Motor.mSpringSettings = JPH::SpringSettings(JPH::ESpringMode::FrequencyAndDamping, Desc.MotorFrequency, Desc.MotorDamping);
+            }
+            if (bAngular)
+            {
+                if (Desc.MotorTorqueLimit > 0.0f) { Motor.SetTorqueLimit(Desc.MotorTorqueLimit); }
+            }
+            else if (Desc.MotorForceLimit > 0.0f)
+            {
+                Motor.SetForceLimit(Desc.MotorForceLimit);
+            }
+        }
+
+        // Linear impulse the joint applied last step, converted to an average force (N) for break detection.
+        float ConstraintAppliedForce(const JPH::TwoBodyConstraint* C, EPhysicsConstraintType Type, float Dt)
+        {
+            if (C == nullptr || Dt <= 0.0f) { return 0.0f; }
+            float Impulse = 0.0f;
+            switch (Type)
+            {
+            case EPhysicsConstraintType::Point:    Impulse = static_cast<const JPH::PointConstraint*>(C)->GetTotalLambdaPosition().Length(); break;
+            case EPhysicsConstraintType::Fixed:    Impulse = static_cast<const JPH::FixedConstraint*>(C)->GetTotalLambdaPosition().Length(); break;
+            case EPhysicsConstraintType::Hinge:    Impulse = static_cast<const JPH::HingeConstraint*>(C)->GetTotalLambdaPosition().Length(); break;
+            case EPhysicsConstraintType::Cone:     Impulse = static_cast<const JPH::ConeConstraint*>(C)->GetTotalLambdaPosition().Length(); break;
+            case EPhysicsConstraintType::Distance: Impulse = Math::Abs(static_cast<const JPH::DistanceConstraint*>(C)->GetTotalLambdaPosition()); break;
+            case EPhysicsConstraintType::Slider:
+            {
+                const JPH::Vector<2> L = static_cast<const JPH::SliderConstraint*>(C)->GetTotalLambdaPosition();
+                Impulse = Math::Sqrt(L[0] * L[0] + L[1] * L[1]);
+                break;
+            }
+            }
+            return Impulse / Dt;
+        }
+    }
+
+    uint32 FJoltPhysicsScene::CreateConstraint(const FConstraintDesc& Desc)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        // All callers are outside the actual JoltSystem->Update() step: gameplay scripts run on the game
+        // thread (physics joined), and the component drain runs at the top of Update() before the step. So
+        // body locking + AddConstraint here is safe; we intentionally do not gate on bStepInProgress.
+
+        // Resolve both bodies; entt::null or a body-less entity attaches that side to the world.
+        auto ResolveID = [&](entt::entity E) -> JPH::BodyID
+        {
+            if (E == entt::null) { return JPH::BodyID(); }
+            const uint32 Raw = GetEntityBodyID(E);
+            return Raw == 0xFFFFFFFFu ? JPH::BodyID() : JPH::BodyID(Raw);
+        };
+        const JPH::BodyID IDA = ResolveID(Desc.BodyA);
+        const JPH::BodyID IDB = ResolveID(Desc.BodyB);
+
+        // Two world anchors constrain nothing.
+        if (IDA.IsInvalid() && IDB.IsInvalid())
+        {
+            return 0;
+        }
+
+        // Lock the real bodies for stable Body& refs; the world side uses Body::sFixedToWorld.
+        const JPH::BodyLockInterface& LockInterface = JoltSystem->GetBodyLockInterface();
+        JPH::BodyID ToLock[2];
+        int32 NumLock = 0;
+        int32 SlotA = -1, SlotB = -1;
+        if (!IDA.IsInvalid()) { SlotA = NumLock; ToLock[NumLock++] = IDA; }
+        if (!IDB.IsInvalid()) { SlotB = NumLock; ToLock[NumLock++] = IDB; }
+
+        JPH::BodyLockMultiWrite Lock(LockInterface, ToLock, NumLock);
+        JPH::Body* BodyA = &JPH::Body::sFixedToWorld;
+        JPH::Body* BodyB = &JPH::Body::sFixedToWorld;
+        if (SlotA >= 0) { BodyA = Lock.GetBody(SlotA); }
+        if (SlotB >= 0) { BodyB = Lock.GetBody(SlotB); }
+        if (BodyA == nullptr || BodyB == nullptr)
+        {
+            return 0;
+        }
+
+        const JPH::RVec3 Anchor = JoltUtils::ToJPHRVec3(FDoubleVector3(Desc.Anchor));
+        const FVector3   AxisN  = Math::LengthSquared(Desc.Axis) > LE_SMALL_NUMBER ? Math::Normalize(Desc.Axis) : FVector3(0.0f, 1.0f, 0.0f);
+        const JPH::Vec3  Axis   = JoltUtils::ToJPHVec3(AxisN);
+        const JPH::Vec3  Normal = JoltUtils::ToJPHVec3(ConstraintPerpendicular(AxisN));
+
+        JPH::TwoBodyConstraint* Created = nullptr;
+        switch (Desc.Type)
+        {
+        case EPhysicsConstraintType::Fixed:
+        {
+            JPH::FixedConstraintSettings S;
+            S.mSpace = JPH::EConstraintSpace::WorldSpace;
+            S.mAutoDetectPoint = true;     // Weld at the bodies' current relative pose.
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        case EPhysicsConstraintType::Point:
+        {
+            JPH::PointConstraintSettings S;
+            S.mSpace = JPH::EConstraintSpace::WorldSpace;
+            S.mPoint1 = S.mPoint2 = Anchor;
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        case EPhysicsConstraintType::Distance:
+        {
+            JPH::DistanceConstraintSettings S;
+            S.mSpace  = JPH::EConstraintSpace::WorldSpace;
+            S.mPoint1 = Anchor;
+            S.mPoint2 = JoltUtils::ToJPHRVec3(FDoubleVector3(Desc.AnchorB));
+            if (Desc.bHasLimits) { S.mMinDistance = Desc.MinLimit; S.mMaxDistance = Desc.MaxLimit; }
+            if (Desc.LimitFrequency > 0.0f) { S.mLimitsSpringSettings = JPH::SpringSettings(JPH::ESpringMode::FrequencyAndDamping, Desc.LimitFrequency, Desc.LimitDamping); }
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        case EPhysicsConstraintType::Hinge:
+        {
+            JPH::HingeConstraintSettings S;
+            S.mSpace = JPH::EConstraintSpace::WorldSpace;
+            S.mPoint1 = S.mPoint2 = Anchor;
+            S.mHingeAxis1 = S.mHingeAxis2 = Axis;
+            S.mNormalAxis1 = S.mNormalAxis2 = Normal;
+            if (Desc.bHasLimits) { S.mLimitsMin = Desc.MinLimit; S.mLimitsMax = Desc.MaxLimit; }
+            if (Desc.LimitFrequency > 0.0f) { S.mLimitsSpringSettings = JPH::SpringSettings(JPH::ESpringMode::FrequencyAndDamping, Desc.LimitFrequency, Desc.LimitDamping); }
+            S.mMaxFrictionTorque = Desc.MaxFriction;
+            ConfigureMotor(S.mMotorSettings, Desc, true);
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        case EPhysicsConstraintType::Slider:
+        {
+            JPH::SliderConstraintSettings S;
+            S.mSpace = JPH::EConstraintSpace::WorldSpace;
+            S.mAutoDetectPoint = true;
+            S.SetSliderAxis(Axis);
+            if (Desc.bHasLimits) { S.mLimitsMin = Desc.MinLimit; S.mLimitsMax = Desc.MaxLimit; }
+            if (Desc.LimitFrequency > 0.0f) { S.mLimitsSpringSettings = JPH::SpringSettings(JPH::ESpringMode::FrequencyAndDamping, Desc.LimitFrequency, Desc.LimitDamping); }
+            S.mMaxFrictionForce = Desc.MaxFriction;
+            ConfigureMotor(S.mMotorSettings, Desc, false);
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        case EPhysicsConstraintType::Cone:
+        {
+            JPH::ConeConstraintSettings S;
+            S.mSpace = JPH::EConstraintSpace::WorldSpace;
+            S.mPoint1 = S.mPoint2 = Anchor;
+            S.mTwistAxis1 = S.mTwistAxis2 = Axis;
+            S.mHalfConeAngle = Desc.HalfConeAngle;
+            Created = S.Create(*BodyA, *BodyB);
+            break;
+        }
+        }
+
+        if (Created == nullptr)
+        {
+            return 0;
+        }
+
+        JoltSystem->AddConstraint(Created);
+
+        FScopeLock MapLock(ConstraintsMutex);
+        const uint32 Handle = NextConstraintID++;
+        FJoltConstraint& Entry = Constraints[Handle];
+        Entry.Constraint = Created;     // JPH::Ref adopts ownership.
+        Entry.Type       = Desc.Type;
+        Entry.BreakForce = Desc.BreakForce;
+        Entry.bBroken    = false;
+        return Handle;
+    }
+
+    void FJoltPhysicsScene::DestroyConstraint(uint32 ConstraintID)
+    {
+        if (ConstraintID == 0) { return; }
+
+        JPH::Ref<JPH::TwoBodyConstraint> KeepAlive;
+        {
+            FScopeLock MapLock(ConstraintsMutex);
+            auto It = Constraints.find(ConstraintID);
+            if (It == Constraints.end()) { return; }
+            KeepAlive = It->second.Constraint;
+            Constraints.erase(It);
+        }
+        if (KeepAlive != nullptr)
+        {
+            JoltSystem->RemoveConstraint(KeepAlive.GetPtr());
+        }
+    }
+
+    void FJoltPhysicsScene::SetConstraintEnabled(uint32 ConstraintID, bool bEnabled)
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        auto It = Constraints.find(ConstraintID);
+        if (It != Constraints.end() && It->second.Constraint != nullptr)
+        {
+            It->second.Constraint->SetEnabled(bEnabled);
+            if (bEnabled) { It->second.bBroken = false; }
+        }
+    }
+
+    void FJoltPhysicsScene::SetConstraintMotor(uint32 ConstraintID, EConstraintMotorMode Mode, float Target)
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        auto It = Constraints.find(ConstraintID);
+        if (It == Constraints.end() || It->second.Constraint == nullptr) { return; }
+
+        const JPH::EMotorState State = Mode == EConstraintMotorMode::Velocity ? JPH::EMotorState::Velocity
+                                     : Mode == EConstraintMotorMode::Position ? JPH::EMotorState::Position
+                                     : JPH::EMotorState::Off;
+
+        if (It->second.Type == EPhysicsConstraintType::Hinge)
+        {
+            auto* H = static_cast<JPH::HingeConstraint*>(It->second.Constraint.GetPtr());
+            H->SetMotorState(State);
+            if (Mode == EConstraintMotorMode::Velocity)      { H->SetTargetAngularVelocity(Target); }
+            else if (Mode == EConstraintMotorMode::Position) { H->SetTargetAngle(Target); }
+        }
+        else if (It->second.Type == EPhysicsConstraintType::Slider)
+        {
+            auto* Sl = static_cast<JPH::SliderConstraint*>(It->second.Constraint.GetPtr());
+            Sl->SetMotorState(State);
+            if (Mode == EConstraintMotorMode::Velocity)      { Sl->SetTargetVelocity(Target); }
+            else if (Mode == EConstraintMotorMode::Position) { Sl->SetTargetPosition(Target); }
+        }
+    }
+
+    bool FJoltPhysicsScene::IsConstraintBroken(uint32 ConstraintID)
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        auto It = Constraints.find(ConstraintID);
+        return It != Constraints.end() && It->second.bBroken;
+    }
+
+    float FJoltPhysicsScene::GetConstraintValue(uint32 ConstraintID)
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        auto It = Constraints.find(ConstraintID);
+        if (It == Constraints.end() || It->second.Constraint == nullptr)
+        {
+            return 0.0f;
+        }
+        if (It->second.Type == EPhysicsConstraintType::Hinge)
+        {
+            return static_cast<JPH::HingeConstraint*>(It->second.Constraint.GetPtr())->GetCurrentAngle();
+        }
+        if (It->second.Type == EPhysicsConstraintType::Slider)
+        {
+            return static_cast<JPH::SliderConstraint*>(It->second.Constraint.GetPtr())->GetCurrentPosition();
+        }
+        return 0.0f;
+    }
+
+    void FJoltPhysicsScene::MonitorBreakableConstraints(float Dt)
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        for (auto It = Constraints.begin(); It != Constraints.end(); ++It)
+        {
+            FJoltConstraint& Entry = It->second;
+            if (Entry.BreakForce <= 0.0f || Entry.bBroken || Entry.Constraint == nullptr)
+            {
+                continue;
+            }
+            if (ConstraintAppliedForce(Entry.Constraint.GetPtr(), Entry.Type, Dt) > Entry.BreakForce)
+            {
+                Entry.Constraint->SetEnabled(false);
+                Entry.bBroken = true;
+            }
+        }
+    }
+
+    void FJoltPhysicsScene::DestroyAllConstraints()
+    {
+        FScopeLock MapLock(ConstraintsMutex);
+        for (auto It = Constraints.begin(); It != Constraints.end(); ++It)
+        {
+            if (It->second.Constraint != nullptr)
+            {
+                JoltSystem->RemoveConstraint(It->second.Constraint.GetPtr());
+            }
+        }
+        Constraints.clear();
+    }
+
+    void FJoltPhysicsScene::OnConstraintComponentConstructed(entt::registry& Registry, entt::entity Entity)
+    {
+        // Reset any handle copied in by duplication, then queue for deferred creation (bodies may not exist yet).
+        if (SPhysicsConstraintComponent* C = Registry.try_get<SPhysicsConstraintComponent>(Entity))
+        {
+            C->ConstraintID = 0;
+        }
+        FScopeLock Lock(PendingConstraintMutex);
+        PendingConstraintCreations.push_back(Entity);
+    }
+
+    void FJoltPhysicsScene::OnConstraintComponentDestroyed(entt::registry& Registry, entt::entity Entity)
+    {
+        if (SPhysicsConstraintComponent* C = Registry.try_get<SPhysicsConstraintComponent>(Entity))
+        {
+            if (C->ConstraintID != 0)
+            {
+                DestroyConstraint(C->ConstraintID);
+                C->ConstraintID = 0;
+            }
+        }
+    }
+
+    bool FJoltPhysicsScene::TryCreateComponentConstraint(entt::registry& Registry, entt::entity Entity)
+    {
+        SPhysicsConstraintComponent* C = Registry.try_get<SPhysicsConstraintComponent>(Entity);
+        if (C == nullptr || C->ConstraintID != 0)
+        {
+            return true;    // gone or already built; stop retrying.
+        }
+
+        // This entity is the child (body B) and must have a body before we can pin a joint to it.
+        const uint32 BodyBID = GetEntityBodyID(Entity);
+        if (BodyBID == 0xFFFFFFFFu)
+        {
+            return false;   // retry next frame.
+        }
+
+        // Optional parent (body A); when set, wait for its body too.
+        entt::entity Target = entt::null;
+        uint32 TargetBodyID = 0xFFFFFFFFu;
+        if (C->TargetBody != 0xFFFFFFFFu)
+        {
+            Target = static_cast<entt::entity>(C->TargetBody);
+            TargetBodyID = Registry.valid(Target) ? GetEntityBodyID(Target) : 0xFFFFFFFFu;
+            if (TargetBodyID == 0xFFFFFFFFu)
+            {
+                return false;
+            }
+        }
+
+        // Resolve the world-space frame from body B's live transform (BodyID overload; the entity helper is
+        // hidden by this class's GetBodyPosition(uint32) override).
+        const FVector3 BodyPos = GetBodyPosition(BodyBID);
+        const FQuat    BodyRot = GetBodyRotation(BodyBID);
+
+        FConstraintDesc Desc;
+        Desc.Type        = C->Type;
+        Desc.BodyA       = Target;          // parent (null => world).
+        Desc.BodyB       = Entity;          // child.
+        Desc.Anchor      = BodyPos + BodyRot * C->PivotOffset;
+        Desc.Axis        = BodyRot * C->Axis;
+        Desc.MaxFriction = C->Friction;
+        Desc.BreakForce  = C->BreakForce;
+
+        switch (C->Type)
+        {
+        case EPhysicsConstraintType::Hinge:
+            Desc.bHasLimits = C->bLimited;
+            Desc.MinLimit   = Math::Radians(C->LowerLimit);
+            Desc.MaxLimit   = Math::Radians(C->UpperLimit);
+            break;
+        case EPhysicsConstraintType::Slider:
+            Desc.bHasLimits = C->bLimited;
+            Desc.MinLimit   = C->LowerLimit;
+            Desc.MaxLimit   = C->UpperLimit;
+            break;
+        case EPhysicsConstraintType::Cone:
+            Desc.HalfConeAngle = Math::Radians(C->ConeHalfAngle);
+            break;
+        case EPhysicsConstraintType::Distance:
+            Desc.bHasLimits = C->bLimited;
+            Desc.MinLimit   = C->LowerLimit;
+            Desc.MaxLimit   = C->UpperLimit;
+            Desc.AnchorB    = (TargetBodyID != 0xFFFFFFFFu) ? GetBodyPosition(TargetBodyID) : Desc.Anchor;
+            break;
+        default:
+            break;
+        }
+
+        C->ConstraintID = CreateConstraint(Desc);   // 0 on failure -> we stop retrying a bad config.
+        return true;
+    }
+
+    void FJoltPhysicsScene::DrainPendingConstraints()
+    {
+        TVector<entt::entity> Batch;
+        {
+            FScopeLock Lock(PendingConstraintMutex);
+            if (PendingConstraintCreations.empty())
+            {
+                return;
+            }
+            Batch.swap(PendingConstraintCreations);
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        for (entt::entity Entity : Batch)
+        {
+            if (!Registry.valid(Entity))
+            {
+                continue;
+            }
+            if (!TryCreateComponentConstraint(Registry, Entity))
+            {
+                FScopeLock Lock(PendingConstraintMutex);
+                PendingConstraintCreations.push_back(Entity);   // bodies not ready; retry next frame.
+            }
+        }
+    }
+
     void FJoltPhysicsScene::CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
@@ -2611,6 +3624,133 @@ namespace Lumina::Physics
         return Shape;
     }
 
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateTaperedCapsuleShape(float HalfHeight, float TopRadius, float BottomRadius)
+    {
+        // Kind = 4 (tapered capsule). Radii must be strictly positive (Jolt asserts otherwise).
+        const float Top    = Math::Max(TopRadius, 0.001f);
+        const float Bottom = Math::Max(BottomRadius, 0.001f);
+        const FShapeKey Key{ 4, HalfHeight, Top, Bottom, 0.0f };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        JPH::TaperedCapsuleShapeSettings Settings(HalfHeight, Top, Bottom);
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached tapered capsule shape (hh {}, top {}, bottom {}): {}", HalfHeight, Top, Bottom, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateTaperedCylinderShape(float HalfHeight, float TopRadius, float BottomRadius, float ConvexRadius)
+    {
+        // Kind = 5 (tapered cylinder); W = convex (bevel) radius. Clamp the bevel so an oversized value
+        // can't trip an internal assert.
+        const float Top    = Math::Max(TopRadius, 0.001f);
+        const float Bottom = Math::Max(BottomRadius, 0.001f);
+        const float Convex = Math::Clamp(ConvexRadius, 0.0f, Math::Min(Math::Min(Top, Bottom), HalfHeight));
+        const FShapeKey Key{ 5, HalfHeight, Top, Bottom, Convex };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        JPH::TaperedCylinderShapeSettings Settings(HalfHeight, Top, Bottom, Convex);
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached tapered cylinder shape (hh {}, top {}, bottom {}, cv {}): {}", HalfHeight, Top, Bottom, Convex, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
+    JPH::ShapeRefC FJoltPhysicsScene::BuildCompoundShape(const SCompoundColliderComponent& Comp, const STransformComponent& Transform)
+    {
+        const float Scale = Transform.MaxScale();
+
+        // Each child reuses the cached primitive shapes, so N identical legs share one JPH::Shape.
+        auto BuildChild = [&](const SCompoundSubShape& Sub) -> JPH::ShapeRefC
+        {
+            switch (Sub.Type)
+            {
+            case ECompoundShapeType::Box:      return GetOrCreateBoxShape(Sub.HalfExtent * Scale);
+            case ECompoundShapeType::Sphere:   return GetOrCreateSphereShape(Sub.Radius * Scale);
+            case ECompoundShapeType::Capsule:  return GetOrCreateCapsuleShape(Sub.Radius * Scale, Sub.HalfHeight * Scale);
+            case ECompoundShapeType::Cylinder: return GetOrCreateCylinderShape(Sub.Radius * Scale, Sub.HalfHeight * Scale, 0.0f);
+            }
+            return {};
+        };
+
+        if (Comp.Shapes.empty())
+        {
+            return {};
+        }
+
+        // A static compound needs >= 2 children; with exactly 1, use the child directly (offset/rotated).
+        if (Comp.Shapes.size() == 1)
+        {
+            const SCompoundSubShape& Sub = Comp.Shapes[0];
+            JPH::ShapeRefC Child = BuildChild(Sub);
+            if (Child == nullptr)
+            {
+                return {};
+            }
+            const bool bHasOffset = Math::LengthSquared(Sub.Offset) > LE_SMALL_NUMBER || Math::LengthSquared(Sub.Rotation) > LE_SMALL_NUMBER;
+            if (!bHasOffset)
+            {
+                return Child;
+            }
+            JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(Sub.Offset * Scale), JoltUtils::ToJPHQuat(FQuat(Sub.Rotation)), Child);
+            auto Result = RTS.Create();
+            return Result.HasError() ? JPH::ShapeRefC{} : Result.Get();
+        }
+
+        JPH::StaticCompoundShapeSettings Compound;
+        Compound.SetEmbedded();
+        uint32 ValidChildren = 0;
+        for (const SCompoundSubShape& Sub : Comp.Shapes)
+        {
+            JPH::ShapeRefC Child = BuildChild(Sub);
+            if (Child == nullptr)
+            {
+                continue;
+            }
+            Compound.AddShape(JoltUtils::ToJPHVec3(Sub.Offset * Scale), JoltUtils::ToJPHQuat(FQuat(Sub.Rotation)), Child.GetPtr());
+            ++ValidChildren;
+        }
+
+        if (ValidChildren < 2)
+        {
+            return {};
+        }
+
+        auto Result = Compound.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create compound shape: {}", Result.GetError());
+            return {};
+        }
+        return Result.Get();
+    }
+
     void FJoltPhysicsScene::StoreBodyMaterial(JPH::BodyID BodyID, const FRigidBodyBuildResult& Build)
     {
         const uint32 Index = BodyID.GetIndex();
@@ -2624,6 +3764,10 @@ namespace Lumina::Physics
         Entry.Restitution          = Build.MaterialRestitution;
         Entry.FrictionCombine      = Build.MaterialFrictionCombine;
         Entry.RestitutionCombine   = Build.MaterialRestitutionCombine;
+
+        // Seed the conveyor surface velocity from the authored component (runtime changes go through
+        // SetSurfaceVelocity). Both creation paths route here, so this covers immediate + batched spawns.
+        StoreBodySurfaceVelocity(BodyID, Build.SurfaceLinearVelocity, Build.SurfaceAngularVelocity);
     }
 
     void FJoltPhysicsScene::ClearBodyMaterial(JPH::BodyID BodyID)
@@ -2634,6 +3778,7 @@ namespace Lumina::Physics
             return;
         }
         BodyMaterials[Index] = FBodyMaterialEntry{};
+        ClearBodySurfaceVelocity(BodyID);
     }
 
     const FJoltPhysicsScene::FBodyMaterialEntry* FJoltPhysicsScene::GetBodyMaterial(JPH::BodyID BodyID) const
@@ -2644,6 +3789,48 @@ namespace Lumina::Physics
             return nullptr;
         }
         return &BodyMaterials[Index];
+    }
+
+    void FJoltPhysicsScene::StoreBodySurfaceVelocity(JPH::BodyID BodyID, const FVector3& Linear, const FVector3& Angular)
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodySurfaceVelocities.size())
+        {
+            return;
+        }
+        FBodySurfaceVelocity& Entry = BodySurfaceVelocities[Index];
+        Entry.Linear  = Linear;
+        Entry.Angular = Angular;
+        Entry.bActive = Math::LengthSquared(Linear) > LE_SMALL_NUMBER || Math::LengthSquared(Angular) > LE_SMALL_NUMBER;
+    }
+
+    void FJoltPhysicsScene::ClearBodySurfaceVelocity(JPH::BodyID BodyID)
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodySurfaceVelocities.size())
+        {
+            return;
+        }
+        BodySurfaceVelocities[Index] = FBodySurfaceVelocity{};
+    }
+
+    const FJoltPhysicsScene::FBodySurfaceVelocity* FJoltPhysicsScene::GetBodySurfaceVelocity(JPH::BodyID BodyID) const
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodySurfaceVelocities.size())
+        {
+            return nullptr;
+        }
+        return &BodySurfaceVelocities[Index];
+    }
+
+    void FJoltPhysicsScene::SetSurfaceVelocity(entt::entity Entity, const FVector3& Linear, const FVector3& Angular)
+    {
+        const uint32 Raw = GetEntityBodyID(Entity);
+        if (Raw != 0xFFFFFFFFu)
+        {
+            StoreBodySurfaceVelocity(JPH::BodyID(Raw), Linear, Angular);
+        }
     }
 
     JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex)
@@ -2854,8 +4041,41 @@ namespace Lumina::Physics
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Event.BodyID);
-        
+
         Interface.SetGravityFactor(BodyID, Event.GravityFactor);
+    }
+
+    void FJoltPhysicsScene::ApplyBuoyancyImpulse(entt::entity Entity, const FVector3& SurfacePosition, const FVector3& SurfaceNormal,
+        float Buoyancy, float LinearDrag, float AngularDrag, const FVector3& FluidVelocity, float DeltaTime)
+    {
+        if (DeltaTime <= 0.0f)
+        {
+            return;
+        }
+
+        const uint32 Raw = GetEntityBodyID(Entity);
+        if (Raw == 0xFFFFFFFFu)
+        {
+            return;
+        }
+
+        // Jolt computes the submerged volume from the body's actual shape against the surface plane, so this
+        // replaces the old 4-point sampling with shape-accurate buoyancy + self-righting. Gravity is the
+        // system's own vector. The surface normal must be unit-length; guard against a degenerate input.
+        const FVector3 Normal = Math::LengthSquared(SurfaceNormal) > LE_SMALL_NUMBER
+            ? Math::Normalize(SurfaceNormal) : FVector3(0.0f, 1.0f, 0.0f);
+
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+        BodyInterface.ApplyBuoyancyImpulse(
+            JPH::BodyID(Raw),
+            JoltUtils::ToJPHRVec3(FDoubleVector3(SurfacePosition)),
+            JoltUtils::ToJPHVec3(Normal),
+            Buoyancy,
+            LinearDrag,
+            AngularDrag,
+            JoltUtils::ToJPHVec3(FluidVelocity),
+            JoltSystem->GetGravity(),
+            DeltaTime);
     }
 
     FVector3 FJoltPhysicsScene::GetVelocityAtPoint(uint32 BodyID, const FVector3& Point)

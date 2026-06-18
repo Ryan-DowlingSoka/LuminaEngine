@@ -34,6 +34,10 @@ enum EInternal { EC_InternalUseOnlyConstructor };
     #define REFLECT(...)
     #define PROPERTY(...)
     #define FUNCTION(...)
+    // Exposes a namespace-scope free function to C#: the Reflector emits a native extern "C" thunk + a C#
+    // [NativeCall] binding into the class named by Class="Namespace.Class". A marker only (detected via the
+    // macro record); generates no code at the call site.
+    #define SCRIPT_EXPORT(...)
 
 #else
 
@@ -41,6 +45,7 @@ enum EInternal { EC_InternalUseOnlyConstructor };
     #define REFLECT(...)
     #define PROPERTY(...)
     #define FUNCTION(...)
+    #define SCRIPT_EXPORT(...)
 
 #endif
 

@@ -99,6 +99,11 @@ namespace Lumina::Reflection
 			return Visitor::VisitEnum(Cursor, Parent, ParserContext);
 		}
 
+		case(CXCursor_FunctionDecl):
+		{
+			return Visitor::VisitFunction(Cursor, Parent, ParserContext);
+		}
+
 		case(CXCursor_Namespace):
 		{
 			ParserContext->PushNamespace(CursorName);

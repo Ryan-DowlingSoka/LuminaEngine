@@ -100,6 +100,19 @@ namespace Lumina
         PROPERTY(Script, Editable, Category = "Navigation")
         bool bAffectsNavigation = false;
 
+        // Spend extra effort removing ghost collisions with internal edges of meshes, so the character glides
+        // over tiled terrain / multi-triangle floors instead of catching on seams. Slightly more expensive.
+        PROPERTY(Script, Editable, Category = "Physics")
+        bool bEnhancedInternalEdgeRemoval = true;
+
+        // When true, this character collides with OTHER characters as a character -- smooth mutual
+        // pushing/sliding via Jolt's CharacterVsCharacterCollision, instead of merely being blocked by their
+        // inner bodies. Note: because that check isn't thread-safe, enabling it on ANY character makes the
+        // per-frame character update run serially, so very large crowds lose the parallel update. Set this
+        // consistently across characters that should interact.
+        PROPERTY(Script, Editable, Category = "Physics")
+        bool bCollideWithCharacters = true;
+
         FUNCTION(Script)
         uint32 GetBodyID() const;
 
@@ -161,6 +174,16 @@ namespace Lumina
         /** True when the character is standing on a surface. */
         PROPERTY(Script, ReadOnly, Category = "Movement")
         bool bGrounded = false;
+
+        /** Surface normal of the ground the character stands on (world space); +Y when airborne. Use for
+            slope handling and aligning effects. */
+        PROPERTY(Script, ReadOnly, Category = "Movement")
+        FVector3 GroundNormal = FVector3(0.0f, 1.0f, 0.0f);
+
+        /** Entity the character is standing on, or the null entity (0xFFFFFFFF) when airborne / on static
+            world geometry with no entity. Drives footstep-surface lookups and moving-platform logic. */
+        PROPERTY(Script, ReadOnly, Category = "Movement")
+        uint32 GroundEntity = 0xFFFFFFFF;
 
         /** Number of jumps performed since last landing. */
         PROPERTY(Script, ReadOnly, Category = "Movement")

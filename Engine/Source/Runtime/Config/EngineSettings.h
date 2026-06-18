@@ -6,6 +6,7 @@
 #include "Containers/Array.h"
 #include "Containers/String.h"
 #include "Core/Math/Math.h"
+#include "Input/Key.h"
 #include "World/World.h"
 #include "Assets/AssetRef.h"
 #include "EngineSettings.generated.h"
@@ -18,10 +19,6 @@ namespace Lumina
     {
         GENERATED_BODY()
     public:
-
-        /** Lua module loaded after the project DLL is loaded. Rename-safe (GUID-backed). */
-        PROPERTY(Editable, Category = "Scripting", AssetType = "luau")
-        FAssetRef LuaModuleFile;
 
         /** Reflected CGameInstance subclass to instantiate at runtime. Empty = base CGameInstance. */
         PROPERTY(Editable, Category = "Scripting")
@@ -51,6 +48,14 @@ namespace Lumina
         /** Editor UI scale. 0 = auto (monitor DPI + resolution); otherwise an explicit factor (1.0 = 100%). */
         PROPERTY(Editable, Category = "Appearance", ClampMin = 0.0f, ClampMax = 3.0f)
         float UIScale = 0.0f;
+
+        //~ Hotkeys.
+
+        /** Chord that recompiles + hot-reloads all C# scripts. Rebind it in the Settings panel. Default
+            Ctrl+Shift+B ("Build") -- chosen to avoid the editor's existing chords (gizmo W/E/R, Ctrl+S/Z/Y,
+            Ctrl+Shift+C/V/R, F5/F9). */
+        PROPERTY(Editable, Category = "Hotkeys")
+        SKey ReloadScriptsHotkey = SKey(EKey::B, /*Ctrl*/ true, /*Shift*/ true);
     };
 
     // The editor's central color palette. The ImGui renderer derives the global style from these (live --

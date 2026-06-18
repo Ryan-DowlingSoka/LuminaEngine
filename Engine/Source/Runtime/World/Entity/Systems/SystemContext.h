@@ -156,6 +156,11 @@ namespace Lumina
         /** Apply a world-space force at a world-space point (adds torque too). Safe from PrePhysics. */
         RUNTIME_API void AddForceAtPosition(entt::entity Entity, const FVector3& Force, const FVector3& Position) const;
 
+        /** Shape-accurate buoyancy for one frame: pass the fluid surface point + normal (e.g. sampled wave
+            surface). Buoyancy 1 = neutral density, >1 floats. Jolt derives submersion from the body shape. */
+        RUNTIME_API void ApplyBuoyancyImpulse(entt::entity Entity, const FVector3& SurfacePosition, const FVector3& SurfaceNormal,
+            float Buoyancy, float LinearDrag, float AngularDrag, const FVector3& FluidVelocity, float InDeltaTime) const;
+
         RUNTIME_API TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
 
         RUNTIME_API STransformComponent& GetEntityTransform(entt::entity Entity) const;

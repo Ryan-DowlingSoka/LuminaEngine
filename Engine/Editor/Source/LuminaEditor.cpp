@@ -189,14 +189,16 @@ namespace Lumina
                 const std::string Ext = SourcePath.extension().string();
 
                 // Token replace only on text files; binaries (premake5.exe, etc.) copy verbatim.
+                // .lua stays (premake5.lua carries $PROJECTNAME); .cs / .rml / .rcss are the C# + UI
+                // authoring files of the current workflow.
                 const bool bIsTextFile =
                     Ext == ".h"          || Ext == ".hpp"        || Ext == ".cpp"     ||
                     Ext == ".c"          || Ext == ".inl"        || Ext == ".lua"     ||
+                    Ext == ".cs"         || Ext == ".rml"        || Ext == ".rcss"    ||
                     Ext == ".json"       || Ext == ".lproject"   || Ext == ".lplugin" ||
-                    Ext == ".luau"       || Ext == ".bat"        || Ext == ".py"      ||
-                    Ext == ".md"         || Ext == ".txt"        || Ext == ".gitignore" ||
-                    Ext == ".cfg"        || Ext == ".yaml"       || Ext == ".yml"     ||
-                    Ext == ".xml";
+                    Ext == ".bat"        || Ext == ".py"         || Ext == ".md"      ||
+                    Ext == ".txt"        || Ext == ".gitignore"  || Ext == ".cfg"     ||
+                    Ext == ".yaml"       || Ext == ".yml"        || Ext == ".xml";
 
                 if (!bIsTextFile)
                 {

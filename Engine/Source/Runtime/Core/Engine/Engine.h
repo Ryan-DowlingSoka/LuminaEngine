@@ -52,9 +52,6 @@ namespace Lumina
         /** Used to optionally load a project as a DLL from the command line */
         RUNTIME_API virtual void LoadProject(FStringView Path);
 
-        /** Loads the project's script module */
-        RUNTIME_API void LoadProjectScript(FStringView Path);
-
         /** Cooked-runtime entry: mounts .pak next to exe, loads config/scripts/DLL, spawns game instance, loads startup map. */
         RUNTIME_API bool LoadCookedRuntime();
 

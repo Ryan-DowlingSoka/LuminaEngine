@@ -73,7 +73,10 @@ namespace Lumina
             {
                 Q1 = -Q1;
             }
-            return Math::Slerp(Q0, Q1, t);
+            // nlerp, NOT slerp: adjacent keyframes are dense (small arc), so a normalized lerp is visually
+            // identical to slerp while avoiding the acos + 3x sin per channel -- the dominant per-mesh cost
+            // at thousands of skinned meshes. Q0/Q1 are hemisphere-aligned above.
+            return Math::Normalize(Q0 * (1.0f - t) + Q1 * t);
         }
 
         static FORCEINLINE void GetBindTRS(const FSkeletonResource* Skeleton, int32 BoneIndex, FVector3& OutT, FQuat& OutR, FVector3& OutS)

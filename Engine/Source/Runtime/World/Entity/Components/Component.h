@@ -12,6 +12,29 @@
 
 namespace Lumina
 {
+    // A managed listener bound to a registry signal: the C# UnmanagedCallersOnly thunk + its GCHandle
+    // context (a pinned Action<Entity>). Heap-owned by the bridge; the listener's ADDRESS is both the entt
+    // connection payload and the disconnect key, so one allocation == one subscription.
+    using FManagedSignalThunk = void (*)(void* Ctx, uint32 Entity);
+    struct FManagedSignalListener
+    {
+        FManagedSignalThunk Thunk = nullptr;
+        void*               Ctx   = nullptr;
+        entt::connection    Connection;   // the live sink connection; release() disconnects (type-erased).
+    };
+
+    // entt connects a free function whose first parameter is the payload instance; forward to managed.
+    inline void ManagedSignalTrampoline(FManagedSignalListener& Listener, entt::registry&, entt::entity Entity)
+    {
+        if (Listener.Thunk)
+        {
+            Listener.Thunk(Listener.Ctx, static_cast<uint32>(Entity));
+        }
+    }
+
+    // Signal kinds shared with the C# Registry.On* API.
+    enum class EComponentSignal : int32 { Construct = 0, Destroy = 1, Update = 2 };
+
     // Direct per-component-type functions for the C# bridge's registry ops, bypassing entt::meta's
     // type-erased trampoline. Resolved once per type via FindComponentOps, then called directly.
     struct FComponentOps
@@ -24,6 +47,12 @@ namespace Lumina
         void  (*Delete)(void*);                          // free a New() instance
         void* (*EmplaceCopy)(entt::registry&, entt::entity, const void*); // emplace a COPY of *src -> live ptr
         uint64 TypeId;                                   // entt::type_hash<T>::value() -> registry.storage(id) for the View
+
+        // Registry-signal bridge for C# listeners (on_construct/on_destroy/on_update). The listener pointer
+        // is the connection payload + disconnect key. Patch fires on_update<T> on demand (no-op for tags).
+        void (*ConnectSignal)(entt::registry&, EComponentSignal, FManagedSignalListener*);
+        void (*DisconnectSignal)(entt::registry&, EComponentSignal, FManagedSignalListener*);
+        void (*Patch)(entt::registry&, entt::entity);
     };
 
     RUNTIME_API void RegisterComponentOps(FStringView Name, const FComponentOps* Ops);
@@ -146,6 +175,28 @@ namespace Lumina
                     }
                 },
                 (uint64)entt::type_hash<TComponent>::value(),
+                +[](entt::registry& R, EComponentSignal Kind, FManagedSignalListener* L)
+                {
+                    switch (Kind)
+                    {
+                        case EComponentSignal::Construct: L->Connection = R.on_construct<TComponent>().template connect<&ManagedSignalTrampoline>(*L); break;
+                        case EComponentSignal::Destroy:   L->Connection = R.on_destroy<TComponent>()  .template connect<&ManagedSignalTrampoline>(*L); break;
+                        case EComponentSignal::Update:    L->Connection = R.on_update<TComponent>()   .template connect<&ManagedSignalTrampoline>(*L); break;
+                    }
+                },
+                +[](entt::registry&, EComponentSignal, FManagedSignalListener* L)
+                {
+                    // entt::connection is type-erased, so release() disconnects without re-resolving the type.
+                    L->Connection.release();
+                },
+                +[](entt::registry& R, entt::entity E)
+                {
+                    // patch fires on_update<T>; meaningful only for data components (tags carry no value).
+                    if constexpr (!eastl::is_empty_v<TComponent>)
+                    {
+                        if (R.any_of<TComponent>(E)) { R.patch<TComponent>(E); }
+                    }
+                },
             };
             return Ops;
         }

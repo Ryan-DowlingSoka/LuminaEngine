@@ -140,7 +140,16 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
 ### Requirements
 
 - Windows 10 (1803 or newer) or Windows 11, 64-bit
-- Visual Studio 2022 with the MSVC v143 toolset (17.8 or newer)
+- **Visual Studio 2026 (18.0 or newer)** with the MSVC v143 toolset and the
+  ".NET desktop development" workload
+- **.NET 10 SDK** (x64)
+
+> [!IMPORTANT]
+> The engine's C# layer (LuminaSharp) targets **`net10.0`**. Only Visual Studio
+> **18.0+ (2026)** can build that target, VS 2022 (17.x) fails with
+> `error NETSDK1209` even if you install the standalone .NET 10 SDK, because VS
+> uses its own bundled MSBuild. `Setup.bat` validates this for you and stops with
+> a clear message if anything is missing.
 
 > [!NOTE]
 > [JetBrains Rider](https://www.jetbrains.com/rider/) is the recommended IDE for
@@ -211,7 +220,7 @@ always kept). `Aftermath` auto-enables only when an NVIDIA GPU is detected on th
 machine generating the solution.
 
 For a one-off build (e.g. a profiling-free package) you can override any feature
-on the command line without editing the file — the flag wins:
+on the command line without editing the file, the flag wins:
 
 ```bash
 GenerateProjectFiles.bat --tracy=off --validation=on --verbose-logging=off
@@ -223,6 +232,10 @@ Regenerating prints the resolved feature set, e.g.
 ### Troubleshooting
 
 > [!TIP]
+> - **`error NETSDK1209` / "does not support targeting .NET 10.0"?** Your Visual
+>   Studio is older than 18.0 (2026). Install VS 2026, the standalone .NET 10
+>   SDK alone will **not** fix this, because VS builds with its own bundled
+>   MSBuild. Run `Setup.bat` (or `BuildScripts\CheckPrerequisites.ps1`) to verify.
 > - **Missing v143 toolset?** Install it via Visual Studio Installer ->
 >   Individual Components -> MSVC v143 Build Tools.
 > - **"Cannot find .generated.h" error?** Build again; Visual Studio sometimes

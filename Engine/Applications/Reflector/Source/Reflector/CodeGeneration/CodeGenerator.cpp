@@ -99,8 +99,16 @@ namespace Lumina::Reflection
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Header.Project->Name + R"(\)" + Header.FileName + ".generated.cpp";
         }
 
-        eastl::string MakeGeneratedCSharpPath(const eastl::string& WorkspacePath, const FReflectedHeader& Header)
+        // bRoutable = the header has no reflected TYPES (it's a SCRIPT_EXPORT free-function facade). Only those
+        // route into a plugin/game's own Scripts/Generated (and compile into its assembly). Reflected-type
+        // wrappers stay in LuminaSharp.dll because they access engine internals (NativeStruct.Handle, the base
+        // ctor) that aren't accessible from another assembly.
+        eastl::string MakeGeneratedCSharpPath(const eastl::string& WorkspacePath, const FReflectedHeader& Header, bool bRoutable)
         {
+            if (bRoutable && !Header.Project->CSharpBindingsDir.empty())
+            {
+                return Header.Project->CSharpBindingsDir + R"(\)" + Header.FileName + ".generated.cs";
+            }
             return WorkspacePath + R"(\Intermediates\CSharpBindings\)" + Header.Project->Name + R"(\)" + Header.FileName + ".generated.cs";
         }
 
@@ -128,6 +136,15 @@ namespace Lumina::Reflection
             "    #include \"pch.h\"\n"
             "#endif\n";
 
+        // The reflected types for a header, or a shared empty list when the header has none (e.g. a header
+        // whose only reflection is SCRIPT_EXPORT free functions). Avoids ReflectedTypes.at() throwing.
+        const eastl::vector<eastl::unique_ptr<FReflectedType>>& TypesFor(const FReflectionDatabase& Db, FReflectedHeader* Header)
+        {
+            static const eastl::vector<eastl::unique_ptr<FReflectedType>> Empty;
+            const auto It = Db.ReflectedTypes.find(Header);
+            return It != Db.ReflectedTypes.end() ? It->second : Empty;
+        }
+
         void WriteTextFile(const eastl::string& PathUtf8, const eastl::string& Contents)
         {
             std::filesystem::path OutputPath(PathUtf8.c_str());
@@ -154,6 +171,9 @@ namespace Lumina::Reflection
         eastl::hash_map<FReflectedProject*, eastl::string>                  UnityPerProject;
         eastl::hash_set<FReflectedProject*>                                 DirtyProjects;
         eastl::hash_map<FReflectedProject*, eastl::hash_set<eastl::string>> ExpectedArtifacts;
+        // .generated.cs routed into a project's Scripts/Generated (free-function-only headers); used to sweep
+        // that dir without removing the live ones.
+        eastl::hash_map<FReflectedProject*, eastl::hash_set<eastl::string>> RoutedArtifacts;
 
         for (const auto& [Header, _] : ReflectionDatabase->ReflectedTypes)
         {
@@ -174,7 +194,38 @@ namespace Lumina::Reflection
                 DirtyProjects.insert(Header->Project);
                 GenerateHeaderFile(Header);
                 GenerateSourceFile(Header);
-                GenerateCSharpFile(Header);
+                GenerateCSharpFile(Header, /*bRoutable*/ false); // has reflected types -> stays in LuminaSharp.dll
+            }
+        }
+
+        // Headers whose ONLY reflection is SCRIPT_EXPORT free functions (no reflected type) aren't in
+        // ReflectedTypes, so the loop above skips them. Process them here: they need a .generated.cpp (the
+        // thunks) and a .generated.cs (the bindings), but NO .generated.h (no types, and they don't include
+        // it — SCRIPT_EXPORT doesn't set bHasReflectionMacros).
+        for (const auto& [Header, Fns] : ReflectionDatabase->FreeFunctions)
+        {
+            if (Fns.empty() || ReflectionDatabase->ReflectedTypes.find(Header) != ReflectionDatabase->ReflectedTypes.end())
+            {
+                continue; // empty, or already handled by the types loop (it emits free functions too)
+            }
+
+            eastl::string& Unity = UnityPerProject[Header->Project];
+            if (Unity.empty())
+            {
+                Unity += "#include \"pch.h\"\n";
+            }
+            Unity += "#include \"" + Header->FileName + ".generated.cpp\"\n";
+
+            auto& Expected = ExpectedArtifacts[Header->Project];
+            Expected.insert(Header->FileName + ".generated.cpp");
+            // The .cs is routed to the plugin/game dir (not the default), tracked separately for its sweep.
+            RoutedArtifacts[Header->Project].insert(Header->FileName + ".generated.cs");
+
+            if (Header->bDirty)
+            {
+                DirtyProjects.insert(Header->Project);
+                GenerateSourceFile(Header);
+                GenerateCSharpFile(Header, /*bRoutable*/ true); // free-function-only -> routes to plugin/game
             }
         }
 
@@ -231,6 +282,16 @@ namespace Lumina::Reflection
                 Expected, ".generated.cpp", ".generated.h");
             SweepOrphanDir(Project.get(), MakeProjectCSharpDir(Workspace->GetPath(), *Project),
                 Expected, ".generated.cs", nullptr);
+
+            // A routed project (plugin/game) also has a Scripts/Generated dir holding its free-function
+            // (SCRIPT_EXPORT) bindings; sweep it too so a binding that's removed — or a type-header binding
+            // that was wrongly routed before this scoping — gets cleaned out of the plugin's assembly input.
+            if (!Project->CSharpBindingsDir.empty())
+            {
+                const auto RIt = RoutedArtifacts.find(Project.get());
+                const auto* Routed = RIt != RoutedArtifacts.end() ? &RIt->second : nullptr;
+                SweepOrphanDir(Project.get(), Project->CSharpBindingsDir, Routed, ".generated.cs", nullptr);
+            }
         }
 
         for (auto* DirtyProject : DirtyProjects)
@@ -272,10 +333,10 @@ namespace Lumina::Reflection
         WriteTextFile(MakeGeneratedSourcePath(Workspace->GetPath(), *Header), Writer.String());
     }
 
-    void FCodeGenerator::GenerateCSharpFile(FReflectedHeader* Header)
+    void FCodeGenerator::GenerateCSharpFile(FReflectedHeader* Header, bool bRoutable)
     {
         FCodeWriter Writer(kStreamInitialCapacity);
-        const eastl::string Path = MakeGeneratedCSharpPath(Workspace->GetPath(), *Header);
+        const eastl::string Path = MakeGeneratedCSharpPath(Workspace->GetPath(), *Header, bRoutable);
 
         if (WriteCSharpContent(Writer, Header))
         {
@@ -291,7 +352,7 @@ namespace Lumina::Reflection
 
     bool FCodeGenerator::WriteCSharpContent(FCodeWriter& Writer, FReflectedHeader* Header)
     {
-        const auto& Types = ReflectionDatabase->ReflectedTypes.at(Header);
+        const auto& Types = TypesFor(*ReflectionDatabase, Header);
 
         Writer.Line("//*************************************************************************");
         Writer.Line("// Generated by Lumina Reflection Tool - DO NOT EDIT.");
@@ -317,12 +378,15 @@ namespace Lumina::Reflection
             }
         }
 
+        // SCRIPT_EXPORT free functions declared in this header (into their named C# static classes).
+        bEmittedAny |= CSharpBindingEmitter::EmitFreeFunctions(Writer, Header, *ReflectionDatabase);
+
         return bEmittedAny;
     }
 
     void FCodeGenerator::WriteHeaderContent(FCodeWriter& Writer, FReflectedHeader* Header)
     {
-        const auto& Types = ReflectionDatabase->ReflectedTypes.at(Header);
+        const auto& Types = TypesFor(*ReflectionDatabase, Header);
         const eastl::string FileID = Names::MakeFileIDForHeaderPath(Header->HeaderPath);
 
         Writer.Line("#pragma once");
@@ -482,7 +546,7 @@ namespace Lumina::Reflection
     {
         Writer.Clear();
 
-        const auto& Types = ReflectionDatabase->ReflectedTypes.at(Header);
+        const auto& Types = TypesFor(*ReflectionDatabase, Header);
         const eastl::string FileID = Names::MakeFileIDForHeaderPath(Header->HeaderPath);
 
         EmitFileBanner(Writer);
@@ -509,7 +573,18 @@ namespace Lumina::Reflection
         }
 
         Writer.BlankLines(2);
-        EmitStaticRegistration(Writer, FileID, Types);
+        // Static type-registration only when there ARE types. A free-function-only (SCRIPT_EXPORT) header
+        // has none, and an empty registration block pulls in compiled-in-registrar machinery it doesn't need.
+        if (!Types.empty())
+        {
+            EmitStaticRegistration(Writer, FileID, Types);
+        }
+
+        // The thunks below return blittable UDTs by C linkage (mirroring C# structs) -> C4190 is expected.
+        Writer.Line("#if defined(_MSC_VER)");
+        Writer.Line("#pragma warning(push)");
+        Writer.Line("#pragma warning(disable: 4190)");
+        Writer.Line("#endif");
 
         // Native size guards for any opted-in blittable C# struct mirrors (struct kinds only, not classes).
         for (const auto& Type : Types)
@@ -528,6 +603,13 @@ namespace Lumina::Reflection
                 CSharpBindingEmitter::EmitNativeThunks(Writer, static_cast<FReflectedStruct&>(*Type), *ReflectionDatabase);
             }
         }
+
+        // Native extern "C" thunks for this header's SCRIPT_EXPORT free functions.
+        CSharpBindingEmitter::EmitNativeFreeFunctions(Writer, Header, *ReflectionDatabase);
+
+        Writer.Line("#if defined(_MSC_VER)");
+        Writer.Line("#pragma warning(pop)");
+        Writer.Line("#endif");
     }
 
     void FCodeGenerator::WriteUnityBuildFile(FReflectedProject* Project, const eastl::string& Contents)

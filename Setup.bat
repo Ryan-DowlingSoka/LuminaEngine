@@ -49,6 +49,26 @@ if defined PRIOR_LUMINA_DIR (
     )
 )
 
+rem --- Validate build prerequisites -----------------------------------------
+rem Fail fast on a fresh clone (missing .NET 10 SDK / VS < 18.0 / curl / tar)
+rem with actionable guidance, instead of a cryptic NETSDK1209 mid-build.
+rem Set SKIP_PREREQ_CHECKS=1 to bypass (not recommended).
+if not defined SKIP_PREREQ_CHECKS (
+    where powershell.exe >nul 2>&1
+    if errorlevel 1 (
+        echo [setup] WARNING: powershell.exe not found; skipping prerequisite check.
+    ) else (
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LUMINA_DIR%\BuildScripts\CheckPrerequisites.ps1"
+        if errorlevel 1 (
+            echo.
+            echo [setup] Required build prerequisites are missing ^(see above^).
+            echo         Install them and re-run Setup.bat. To bypass anyway:
+            echo             set SKIP_PREREQ_CHECKS=1 ^&^& Setup.bat
+            goto :fail
+        )
+    )
+)
+
 rem --- Bootstrap premake5 if missing ----------------------------------------
 if not exist "%PREMAKE_EXE%" (
     echo [bootstrap] premake5.exe not found, downloading %PREMAKE_VERSION%...

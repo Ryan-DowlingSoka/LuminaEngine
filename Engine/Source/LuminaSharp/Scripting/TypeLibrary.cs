@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Reflection;
 using Lumina;
 
@@ -266,6 +267,7 @@ internal sealed class TypeDescription
     public Type Type { get; }
     public IReadOnlyList<ScriptProperty> Properties { get; private set; } = Array.Empty<ScriptProperty>();
     public int CollisionCallbackFlags { get; private set; }
+    private IReadOnlyList<RequiredComponent> RequiredComponents = Array.Empty<RequiredComponent>();
 
     public TypeDescription(Type Type)
     {
@@ -276,6 +278,88 @@ internal sealed class TypeDescription
     {
         Properties = Library.BuildMembers(Type, true, 0, new HashSet<Type>());
         CollisionCallbackFlags = ComputeCollisionFlags(Type);
+        RequiredComponents = ComputeRequiredComponents(Type);
+    }
+
+    /// <summary>Resolves each [RequireComponent] member (adding the component if missing) and assigns the
+    /// wrapper before OnReady. Reflection-free per instance — the member set is precomputed.</summary>
+    public void InjectRequiredComponents(EntityScript Script)
+    {
+        if (RequiredComponents.Count == 0)
+        {
+            return;
+        }
+
+        EntityRegistry Registry = Script.Registry;
+        foreach (RequiredComponent Required in RequiredComponents)
+        {
+            IntPtr Pointer = Registry.EmplaceRaw(Script.Entity, Required.Token);
+            if (Pointer == IntPtr.Zero)
+            {
+                Native.Log(ELogLevel.Warn,
+                    $"[RequireComponent] {Type.Name}.{Required.MemberName}: '{Required.ComponentName}' is not a registered component.");
+                continue;
+            }
+            Required.Setter(Script, Required.Factory(Pointer));
+        }
+    }
+
+    // Precompute the [RequireComponent] members: ops token, a compiled (IntPtr)->wrapper factory (over the
+    // core-assembly type, so it can't pin the collectible script ALC), and a reflection setter.
+    private static IReadOnlyList<RequiredComponent> ComputeRequiredComponents(Type Type)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy;
+        List<RequiredComponent>? Result = null;
+
+        void Consider(MemberInfo Member, Type MemberType, Action<object, object?> Setter)
+        {
+            if (Member.GetCustomAttribute<RequireComponentAttribute>() == null)
+            {
+                return;
+            }
+            if (!typeof(NativeStruct).IsAssignableFrom(MemberType))
+            {
+                Native.Log(ELogLevel.Warn,
+                    $"[RequireComponent] {Type.Name}.{Member.Name}: type '{MemberType.Name}' is not a component wrapper.");
+                return;
+            }
+            (Result ??= new List<RequiredComponent>()).Add(new RequiredComponent
+            {
+                MemberName = Member.Name,
+                ComponentName = MemberType.Name,
+                Token = Native.FindComponentOps(MemberType.Name),
+                Factory = BuildWrapperFactory(MemberType),
+                Setter = Setter,
+            });
+        }
+
+        foreach (FieldInfo Field in Type.GetFields(Flags))
+        {
+            Consider(Field, Field.FieldType, Field.SetValue);
+        }
+        foreach (PropertyInfo Property in Type.GetProperties(Flags))
+        {
+            if (Property.CanWrite && Property.GetIndexParameters().Length == 0)
+            {
+                Consider(Property, Property.PropertyType, Property.SetValue);
+            }
+        }
+
+        return (IReadOnlyList<RequiredComponent>?)Result ?? Array.Empty<RequiredComponent>();
+    }
+
+    private static Func<IntPtr, object?> BuildWrapperFactory(Type WrapperType)
+    {
+        ConstructorInfo? Constructor = WrapperType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+            null, new[] { typeof(IntPtr) }, null);
+        if (Constructor == null)
+        {
+            return static _ => null;
+        }
+        ParameterExpression Parameter = Expression.Parameter(typeof(IntPtr), "handle");
+        return Expression.Lambda<Func<IntPtr, object?>>(
+            Expression.Convert(Expression.New(Constructor, Parameter), typeof(object)), Parameter).Compile();
     }
 
     public object? Create()
@@ -319,6 +403,54 @@ internal sealed class TypeDescription
         {
             Flags |= 1 << 4;
         }
+
+        // OnWake (bit 5) / OnSleep (bit 6): parameterless physics sleep/wake callbacks. The bit indices must
+        // match the native activation dispatch in JoltPhysicsScene.
+        if (HasParameterlessOverride(Type, "OnWake"))
+        {
+            Flags |= 1 << 5;
+        }
+        if (HasParameterlessOverride(Type, "OnSleep"))
+        {
+            Flags |= 1 << 6;
+        }
+
+        // OnTargetPerceived (bit 7) / OnTargetLost (bit 8): AI perception callbacks (signature:
+        // SPerceptionEvent). The bit indices must match the native perception dispatch in SPerceptionSystem.
+        MethodInfo? Perceived = Type.GetMethod("OnTargetPerceived",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(Lumina.SPerceptionEvent) }, null);
+        if (Perceived != null && Perceived.DeclaringType != typeof(EntityScript))
+        {
+            Flags |= 1 << 7;
+        }
+
+        MethodInfo? Lost = Type.GetMethod("OnTargetLost",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(Lumina.SPerceptionEvent) }, null);
+        if (Lost != null && Lost.DeclaringType != typeof(EntityScript))
+        {
+            Flags |= 1 << 8;
+        }
+
         return Flags;
     }
+
+    private static bool HasParameterlessOverride(Type Type, string Name)
+    {
+        MethodInfo? Method = Type.GetMethod(Name,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, Type.EmptyTypes, null);
+        return Method != null && Method.DeclaringType != typeof(EntityScript);
+    }
+}
+
+/// <summary>One precomputed [RequireComponent] member: ops token, wrapper factory, and the setter.</summary>
+internal sealed class RequiredComponent
+{
+    public required string MemberName;
+    public required string ComponentName;
+    public required IntPtr Token;
+    public required Func<IntPtr, object?> Factory;
+    public required Action<object, object?> Setter;
 }

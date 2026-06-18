@@ -329,11 +329,13 @@ namespace Lumina
         EntityRegistry.on_construct <SInputComponent>()             .connect<&ThisClass::OnInputComponentConstruct>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
 
+        std::atomic<bool>* DirtySignal = ECS::Utils::EnsureTransformDirtySignal(EntityRegistry);
         auto TransformView = EntityRegistry.view<STransformComponent>();
         TransformView.each([&](entt::entity Entity, STransformComponent& TransformComponent)
         {
             TransformComponent.Registry = &EntityRegistry;
             TransformComponent.Entity = Entity;
+            TransformComponent.WorldDirtySignal = DirtySignal;
         });
 
         // Bind loaded input components to this world so their queries resolve to this world's viewport
@@ -937,11 +939,44 @@ namespace Lumina
         };
 
         To = DuplicateRecursive(DuplicateRecursive, From, entt::null);
-        
+
         for (auto& [Source, Dup] : SourceToDuplicate)
         {
             ECS::Utils::RemapEntityReferences(EntityRegistry, Dup, SourceToDuplicate, /*bClearUnmapped*/ false);
         }
+    }
+
+    entt::entity CWorld::DuplicateEntity(entt::entity Source)
+    {
+        if (Source == entt::null || !EntityRegistry.valid(Source))
+        {
+            return entt::null;
+        }
+
+        entt::entity New = entt::null;
+        DuplicateEntity(New, Source, [](entt::type_info) { return true; });
+        return New;
+    }
+
+    void CWorld::SetParent(entt::entity Child, entt::entity Parent)
+    {
+        ECS::Utils::ReparentEntity(EntityRegistry, Child, Parent, /*bPreserveWorld*/ true);
+    }
+
+    void CWorld::DetachFromParent(entt::entity Entity)
+    {
+        ECS::Utils::ReparentEntity(EntityRegistry, Entity, entt::null, /*bPreserveWorld*/ true);
+    }
+
+    entt::entity CWorld::GetParent(entt::entity Entity)
+    {
+        const FRelationshipComponent* Relationship = EntityRegistry.try_get<FRelationshipComponent>(Entity);
+        return Relationship ? Relationship->Parent : entt::null;
+    }
+
+    entt::entity CWorld::GetRootEntity(entt::entity Entity)
+    {
+        return ECS::Utils::GetRootEntity(EntityRegistry, Entity);
     }
 
     void CWorld::DestroyEntity(entt::entity Entity)
@@ -1192,6 +1227,7 @@ namespace Lumina
         STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);
         TransformComponent.Registry = &EntityRegistry;
         TransformComponent.Entity = Entity;
+        TransformComponent.WorldDirtySignal = ECS::Utils::EnsureTransformDirtySignal(EntityRegistry);
 
         Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
     }
@@ -1602,6 +1638,12 @@ namespace Lumina
         }
         
         return entt::null;
+    }
+
+    FName CWorld::GetEntityName(entt::entity Entity)
+    {
+        const SNameComponent* Name = EntityRegistry.try_get<SNameComponent>(Entity);
+        return Name ? Name->Name : FName();
     }
 
     entt::entity CWorld::GetFirstEntityWith(entt::id_type Type)

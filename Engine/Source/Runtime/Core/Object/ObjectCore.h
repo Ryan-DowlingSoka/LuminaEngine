@@ -164,6 +164,7 @@ namespace Lumina
         Vector,
         Struct,
         Optional,
+        SubStruct,
 
         Count,
     };
@@ -195,7 +196,8 @@ namespace Lumina
         "EnumProperty",
         "VectorProperty",
         "StructProperty",
-        "OptionalProperty"
+        "OptionalProperty",
+        "SubStructProperty"
     };
 
     static_assert(std::size(PropertyTypeFlagNames) == (size_t)EPropertyTypeFlags::Count, "PropertyTypeFlagStrings must match number of flags in EPropertyTypeFlags");
@@ -309,6 +311,15 @@ namespace Lumina
     };
 
     struct FStructPropertyParams : FPropertyParams
+    {
+        CStruct*            (*StructFunc)();
+
+        uint16 NumMetaData;
+        const FMetaDataPairParam* MetaDataArray;
+    };
+
+    // TSubStructOf<T>: StructFunc returns the base struct T every assignable value must derive from.
+    struct FSubStructPropertyParams : FPropertyParams
     {
         CStruct*            (*StructFunc)();
 

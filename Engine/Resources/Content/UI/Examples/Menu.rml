@@ -1,0 +1,14 @@
+<rml>
+<head>
+    <title>Lumina Menu</title>
+    <link type="text/rcss" href="Menu.rcss"/>
+</head>
+<body>
+    <div id="panel">
+        <div class="title">LUMINA</div>
+        <div id="play" class="button">Play</div>
+        <div id="toggle" class="button secondary">Toggle Theme</div>
+        <div id="status" class="status">Click Play to begin.</div>
+    </div>
+</body>
+</rml>

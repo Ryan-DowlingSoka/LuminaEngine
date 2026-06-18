@@ -373,6 +373,12 @@ namespace Lumina
         case EPropertyTypeFlags::SoftObject:
             Customization = FSoftObjectPropertyCustomization::MakeInstance();
             break;
+        case EPropertyTypeFlags::Class:
+            Customization = FClassPropertyCustomization::MakeInstance();
+            break;
+        case EPropertyTypeFlags::SubStruct:
+            Customization = FSubStructPropertyCustomization::MakeInstance();
+            break;
         case EPropertyTypeFlags::Name:
             Customization = FNamePropertyCustomization::MakeInstance();
             break;

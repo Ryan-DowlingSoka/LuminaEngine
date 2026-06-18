@@ -15,13 +15,18 @@
 
 namespace Lumina::RHI::Core
 {
-    // 32 MiB per frame slot; asserts on overflow.
+    // 32 MiB INITIAL per-frame slice. Grows on demand at BeginFrame when a frame's transient allocations
+    // outgrow it (the spike frame is covered by a one-off fallback allocation), and shrinks back after
+    // sustained low use so a brief spike (e.g. 5000 skinned meshes' bone matrices) doesn't permanently
+    // reserve host memory.
     static constexpr uint64 kTransientSliceSize = 32ull * 1024 * 1024;
 
     struct FTransientSlice
     {
         GPUPtr          Gpu = 0;
         std::byte*      Cpu = nullptr;
+        uint64          Capacity = 0;
+        uint32          LowStreak = 0;   // consecutive frames demand stayed below half capacity
         TAtomic<uint64> Cursor{0};
     };
 
@@ -42,10 +47,6 @@ namespace Lumina::RHI::Core
         uint32              CurrentSlot = 0;
         FMutex              SubmitMutex;
 
-        FSemaphoreH         UploadSemaphore;
-        uint64              UploadCounter = 0;
-        FMutex              UploadMutex;
-
         TVector<FPendingFree> PendingFrees;
         FMutex                PendingFreeMutex;
 
@@ -58,12 +59,14 @@ namespace Lumina::RHI::Core
     {
         GCore.GlobalHeap      = CreateTextureHeap(8192, 1024, 64);
         GCore.FrameTimeline   = CreateSemaphore(0);
-        GCore.UploadSemaphore = CreateSemaphore(0);
+
+        Upload::Initialize();
 
         for (FTransientSlice& Slice : GCore.Slices)
         {
             Slice.Gpu = Malloc(kTransientSliceSize, kDefaultAlign, EMemoryType::CPUWrite);
             Slice.Cpu = static_cast<std::byte*>(ToHost(Slice.Gpu));
+            Slice.Capacity = kTransientSliceSize;
             Slice.Cursor.store(0, std::memory_order_relaxed);
         }
 
@@ -129,6 +132,7 @@ namespace Lumina::RHI::Core
 
         WaitDeviceIdle();
 
+        Upload::Shutdown();
         Textures::Shutdown();
 
         // Device is idle: flush every deferred buffer free immediately.
@@ -154,57 +158,9 @@ namespace Lumina::RHI::Core
             Lists.clear();
         }
 
-        FreeH(GCore.UploadSemaphore);
         FreeH(GCore.FrameTimeline);
         FreeH(GCore.GlobalHeap);
         GCore.bInitialized = false;
-    }
-
-    void Upload(GPUPtr Dest, const void* Data, uint64 Size)
-    {
-        if (Dest == 0 || Data == nullptr || Size == 0)
-        {
-            return;
-        }
-
-        // Host-visible destination.
-        if (void* Mapped = ToHost(Dest))
-        {
-            Memory::Memcpy(Mapped, Data, Size);
-            return;
-        }
-
-        // Small aligned writes ride the command list directly; only large ones stage.
-        const bool bInline = Size <= kMaxInlineWrite && (Size & 3) == 0 && (Dest & 3) == 0;
-        const GPUPtr Staging = bInline ? 0 : Malloc(Size, kDefaultAlign, EMemoryType::CPUWrite);
-        if (!bInline)
-        {
-            Memory::Memcpy(ToHost(Staging), Data, Size);
-        }
-
-        FScopeLock Lock(GCore.UploadMutex);
-
-        const FCmdListH CL = OpenCommandList(EQueueType::Graphics);
-        if (bInline)
-        {
-            CmdWriteMemory(CL, Dest, Data, Size);
-        }
-        else
-        {
-            CmdMemcpy(CL, Dest, Staging, Size);
-        }
-
-        const uint64 Value = ++GCore.UploadCounter;
-        const FSemaphoreInfo Signal { GCore.UploadSemaphore, Value, EStageFlags::AllCommands };
-        RHI::Submit(EQueueType::Graphics, TSpan{&CL, 1}, {}, TSpan{&Signal, 1});
-
-        WaitSemaphore(GCore.UploadSemaphore, Value);
-        ResetCommandList(CL);
-
-        if (Staging != 0)
-        {
-            Free(Staging);
-        }
     }
 
     void DeferredFree(GPUPtr Memory)
@@ -265,8 +221,60 @@ namespace Lumina::RHI::Core
         }
         GCore.SlotCommandLists[Slot].clear();
 
-        GCore.Slices[Slot].Cursor.store(0, std::memory_order_relaxed);
+        // Flush queued uploads as the frame's first GPU work, on the frame timeline so
+        // slot recycling already waits for them. One submit + one Transfer->All barrier.
+        {
+            const FCmdListH UploadCL = OpenCommandList(EQueueType::Graphics);
+            if (Upload::Flush(UploadCL))
+            {
+                FScopeLock Lock(GCore.SubmitMutex);
+                const uint64 Value = ++GCore.TimelineCounter;
+                const FSemaphoreInfo Signal { GCore.FrameTimeline, Value, EStageFlags::AllCommands };
+                RHI::Submit(EQueueType::Graphics, TSpan{&UploadCL, 1}, {}, TSpan{&Signal, 1});
+                GCore.SlotWaitValue[Slot] = Value;
+                GCore.SlotCommandLists[Slot].push_back(UploadCL);
+            }
+            else
+            {
+                ResetCommandList(UploadCL);
+            }
+        }
+
+        // Resize this slot's transient slice to last cycle's demand before resetting it. The slot's GPU work
+        // has already retired (we waited its timeline above), so freeing/recreating the buffer is hazard-free.
+        {
+            FTransientSlice& Slice = GCore.Slices[Slot];
+            const uint64 Demand = Slice.Cursor.load(std::memory_order_relaxed);
+
+            uint64 NewCapacity = Slice.Capacity;
+            if (Demand > Slice.Capacity)
+            {
+                NewCapacity = Math::AlignUp(Demand + Demand / 2, 1024ull * 1024); // grow 1.5x, MiB-rounded
+                Slice.LowStreak = 0;
+            }
+            else if (Slice.Capacity > kTransientSliceSize && Demand * 2 < Slice.Capacity && ++Slice.LowStreak >= 64)
+            {
+                NewCapacity = Math::Max(kTransientSliceSize, Math::AlignUp(Demand + Demand / 2, 1024ull * 1024));
+                Slice.LowStreak = 0;
+            }
+            else if (Demand * 2 >= Slice.Capacity)
+            {
+                Slice.LowStreak = 0;
+            }
+
+            if (NewCapacity != Slice.Capacity)
+            {
+                Free(Slice.Gpu);
+                Slice.Gpu = Malloc(NewCapacity, kDefaultAlign, EMemoryType::CPUWrite);
+                Slice.Cpu = static_cast<std::byte*>(ToHost(Slice.Gpu));
+                Slice.Capacity = NewCapacity;
+            }
+
+            Slice.Cursor.store(0, std::memory_order_relaxed);
+        }
+
         GCore.CurrentSlot = Slot;
+        Upload::BeginSlot(Slot);
     }
 
     void Submit(FCmdListH CommandList)
@@ -307,7 +315,13 @@ namespace Lumina::RHI::Core
 
         const uint64 Padded = Size + Alignment;
         const uint64 RawOffset = Slice.Cursor.fetch_add(Padded, std::memory_order_relaxed);
-        ASSERT(RawOffset + Padded <= kTransientSliceSize, "Transient ring overflow; raise kTransientSliceSize");
+        
+        if (RawOffset + Padded > Slice.Capacity)
+        {
+            const GPUPtr Mem = Malloc(Size, Alignment, EMemoryType::CPUWrite);
+            DeferredFree(Mem);
+            return FTransientAlloc{ .Cpu = ToHost(Mem), .Gpu = Mem };
+        }
 
         const uint64 AlignedGpu = Math::AlignUp(Slice.Gpu + RawOffset, Alignment);
         const uint64 Skew = AlignedGpu - (Slice.Gpu + RawOffset);

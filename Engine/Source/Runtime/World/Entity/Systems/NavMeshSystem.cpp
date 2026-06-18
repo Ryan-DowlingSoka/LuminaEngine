@@ -1251,6 +1251,22 @@ namespace Lumina
             return FirstReadyNavMeshFromWorld(World) != nullptr;
         }
 
+        int32 RequestRebuild(CWorld* World)
+        {
+            if (!World)
+            {
+                return 0;
+            }
+            int32 Count = 0;
+            auto View = World->GetEntityRegistry().view<SNavMeshComponent>();
+            for (entt::entity E : View)
+            {
+                View.get<SNavMeshComponent>(E).bBakeRequested = true;
+                ++Count;
+            }
+            return Count;
+        }
+
         bool FindPath(CWorld* World, const FVector3& Start, const FVector3& End, FNavPath& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMeshFromWorld(World);

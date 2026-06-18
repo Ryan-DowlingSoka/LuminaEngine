@@ -14,6 +14,12 @@ public abstract class EntityScript
     /// <summary>The world's component store (mirrors C++ FEntityRegistry / entt::registry).</summary>
     public EntityRegistry Registry => World.Registry;
 
+    private Lumina.STransformComponent? CachedTransform;
+
+    /// <summary>This entity's transform, resolved once and cached (every entity has one). Reusing the wrapper
+    /// avoids a per-frame Registry.Get crossing and allocation.</summary>
+    public Lumina.STransformComponent Transform => CachedTransform ??= Registry.Get<Lumina.STransformComponent>(Entity);
+
     /// <summary>Get the script of type T on another entity (or this one), or null.</summary>
     protected T? GetScript<T>(Entity Target) where T : EntityScript
     {
@@ -77,6 +83,34 @@ public abstract class EntityScript
     }
 
     public virtual void OnOverlapEnd(Lumina.SCollisionEvent Event)
+    {
+    }
+
+    // Sleep/wake callbacks (game thread). The physics body went active (started moving / was disturbed) or
+    // went to sleep (came to rest). Useful for AI/audio/VFX level-of-detail: only do expensive work for
+    // awake bodies, or react to the moment something settles. OnWake also fires when the body first spawns.
+
+    /// <summary>The entity's physics body just became active (woke up or spawned).</summary>
+    public virtual void OnWake()
+    {
+    }
+
+    /// <summary>The entity's physics body just went to sleep (came to rest).</summary>
+    public virtual void OnSleep()
+    {
+    }
+
+    // AI perception callbacks (game thread, during the world update). Fire when this entity's
+    // SPerceptionComponent gains or loses awareness of another entity. The event is self-oriented
+    // (Perceiver is this entity).
+
+    /// <summary>This entity first became aware of Event.Target (Event.Sense is the sense that detected it).</summary>
+    public virtual void OnTargetPerceived(Lumina.SPerceptionEvent Event)
+    {
+    }
+
+    /// <summary>This entity lost awareness of Event.Target (Event.Location is its last known position).</summary>
+    public virtual void OnTargetLost(Lumina.SPerceptionEvent Event)
     {
     }
 }

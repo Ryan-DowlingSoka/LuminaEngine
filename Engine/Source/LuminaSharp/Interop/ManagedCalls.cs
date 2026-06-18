@@ -16,6 +16,7 @@ public static unsafe class ManagedCalls
 
     /// <summary>Resolves a managed type by name (LuminaSharp.dll, then the loaded script assembly, then an
     /// assembly-qualified fallback). Returns a strong GCHandle to the System.Type, or IntPtr.Zero.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr ClassFind(byte* Name, int Length)
     {
@@ -32,6 +33,7 @@ public static unsafe class ManagedCalls
     }
 
     /// <summary>Default-constructs an instance of the GCHandle'd type; returns a strong GCHandle to it.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr ObjectNew(IntPtr TypeHandle)
     {
@@ -53,6 +55,7 @@ public static unsafe class ManagedCalls
     }
 
     /// <summary>Releases a strong GCHandle previously returned by ClassFind / ObjectNew.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void FreeHandle(IntPtr Handle)
     {
@@ -72,6 +75,7 @@ public static unsafe class ManagedCalls
     /// <summary>Invokes a method by name on a target (an object handle, or a Type handle when bStatic != 0).
     /// Matched on name + argument count; arguments are coerced to the parameter types. A non-void return is
     /// written back through Sink(ctx, bytes, len) as one self-describing value. Returns 0 on success.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int Invoke(IntPtr Target, byte bStatic, byte* Name, int NameLength, byte* Args, int ArgsLength, IntPtr Sink, IntPtr Context)
     {
@@ -133,6 +137,7 @@ public static unsafe class ManagedCalls
     }
 
     /// <summary>Reads a field or property by name; writes its value back through Sink. Returns 0 on success.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int FieldGet(IntPtr ObjectHandle, byte* Name, int NameLength, IntPtr Sink, IntPtr Context)
     {
@@ -167,6 +172,7 @@ public static unsafe class ManagedCalls
     }
 
     /// <summary>Writes a field or property by name from a self-describing value blob. Returns 0 on success.</summary>
+    [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int FieldSet(IntPtr ObjectHandle, byte* Name, int NameLength, byte* Value, int ValueLength)
     {

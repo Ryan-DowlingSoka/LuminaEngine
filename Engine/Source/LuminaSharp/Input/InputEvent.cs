@@ -13,7 +13,7 @@ public enum EInputEventType : byte
 
 /// <summary>
 /// A single discrete input event delivered to <c>EntityScript.OnInput</c> while the entity's
-/// <c>SInputComponent</c> is receiving input — react to input as it happens, instead of polling each frame.
+/// <c>SInputComponent</c> is receiving input, react to input as it happens, instead of polling each frame.
 /// Key/Mouse Down/Up carry <see cref="KeyCode"/> + modifiers; MouseMove/MouseScroll carry the motion.
 /// Letters and digits use their ASCII-upper code as the key value (e.g. 'W' == 87), so
 /// <see cref="IsKey"/> is the easy way to test a keyboard key.

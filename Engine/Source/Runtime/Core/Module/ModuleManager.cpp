@@ -7,6 +7,7 @@
 #include "Paths/Paths.h"
 #include "Platform/Platform.h"
 #include "Platform/Process/PlatformProcess.h"
+#include <cstring>
 
 
 namespace Lumina
@@ -19,6 +20,8 @@ namespace Lumina
 
     IModuleInterface* FModuleManager::LoadModule(FStringView ModulePath)
     {
+        LastLoadError.clear();
+
         // Reduce "Foo-Development.dll" (or an already-bare name) to the registry key "Foo".
         // VFS::FileName returns empty with no slash, so fall back to the input itself.
         FStringView FileNameView = VFS::FileName(ModulePath, true);
@@ -73,9 +76,28 @@ namespace Lumina
             return nullptr;
         }
 
+        // ABI guard: a module built against an incompatible engine ABI (config, editor/game platform,
+        // compiler, or a breaking change) would corrupt memory once its code runs. Read the tiny signature
+        // export -- a const char* return, ABI-safe regardless of how the module was built -- and refuse the
+        // module before calling InitializeModule if it doesn't match this engine's. Catches the mismatches
+        // a filename can't (editor/game, toolset, ABI version) as well as a stale wrong-config DLL.
+        auto ABIFunctionPtr = Platform::LumGetProcAddress<ModuleABIFunc>(ModuleHandle, "LuminaModuleABISignature");
+        const char* ModuleABI = ABIFunctionPtr ? ABIFunctionPtr() : nullptr;
+        if (ModuleABI == nullptr || std::strcmp(ModuleABI, LUMINA_MODULE_ABI_SIGNATURE) != 0)
+        {
+            LastLoadError = FString("ABI mismatch (module '")
+                + (ModuleABI ? ModuleABI : "<unsigned>")
+                + "' vs engine '" + LUMINA_MODULE_ABI_SIGNATURE + "')";
+            LOG_ERROR("[Module Manager] - Refusing to load '{}': {}. Rebuild the project against this engine "
+                      "(matching Configuration and Editor/Game platform).", ModulePath, LastLoadError);
+            Platform::FreeDLLHandle(ModuleHandle);
+            return nullptr;
+        }
+
         auto InitFunctionPtr = Platform::LumGetProcAddress<ModuleInitFunc>(ModuleHandle, "InitializeModule");
         if (!InitFunctionPtr)
         {
+            LastLoadError = FString("missing InitializeModule export");
             LOG_WARN("Failed to get InitializeModule export: {}", ModulePath);
             return nullptr;
         }

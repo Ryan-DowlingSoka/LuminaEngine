@@ -6,6 +6,7 @@ namespace Lumina::Reflection
     class FReflectedEnum;
     class FReflectedStruct;
     class FReflectedClass;
+    class FReflectedHeader;
     class FCodeWriter;
 
     /**
@@ -35,5 +36,11 @@ namespace Lumina::Reflection
         // properties (read/write a public numeric/bool member by value). Into the .generated.cpp.
         // Accepts struct OR class (pass the FReflectedStruct base).
         void EmitNativeThunks(FCodeWriter& Writer, const FReflectedStruct& Type, const FReflectionDatabase& Database);
+
+        // SCRIPT_EXPORT free functions declared in a header: the C# static partial-class [NativeCall] bindings
+        // (into .generated.cs) and the native extern "C" thunks (into .generated.cpp). No-op if the header
+        // declares none. Module + API macro come from the header's project, like reflected-type methods.
+        bool EmitFreeFunctions(FCodeWriter& Writer, FReflectedHeader* Header, const FReflectionDatabase& Database);
+        void EmitNativeFreeFunctions(FCodeWriter& Writer, FReflectedHeader* Header, const FReflectionDatabase& Database);
     }
 }

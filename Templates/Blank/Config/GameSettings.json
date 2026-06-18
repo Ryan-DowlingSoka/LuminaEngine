@@ -1,7 +1,8 @@
 {
-    "Project": {
+    "ProjectSettings": {
+        "CookRoots": [],
         "EditorStartupMap": "",
-        "GameStartupMap": "",
-        "LuaModuleFile": ""
+        "GameInstanceClass": "",
+        "GameStartupMap": ""
     }
 }

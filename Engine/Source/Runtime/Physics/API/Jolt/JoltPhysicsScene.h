@@ -5,6 +5,7 @@
 #include <Jolt/Jolt.h>
 #include "Jolt/Physics/PhysicsSystem.h"
 #include "Jolt/Physics/Collision/Shape/Shape.h"
+#include "Jolt/Physics/Constraints/TwoBodyConstraint.h"
 #include "Containers/Array.h"
 #include <cstring>
 #include "Core/Threading/Thread.h"
@@ -14,9 +15,16 @@
 #include "World/Entity/Events/ImpulseEvent.h"
 
 
+namespace JPH
+{
+	class CharacterVsCharacterCollisionSimple;
+}
+
 namespace Lumina
 {
 	struct SImpulseEvent;
+	struct SCompoundColliderComponent;
+	struct STransformComponent;
 	class CWorld;
 	class CMesh;
 }
@@ -24,6 +32,8 @@ namespace Lumina
 namespace Lumina::Physics
 {
 	class FJoltPhysicsScene;
+	class FJoltCharacterContactListener;   // CharacterVirtual contact listener, defined in the .cpp.
+	class FJoltBodyActivationListener;     // Sleep/wake listener, defined in the .cpp.
 
 	enum class EContactEventType : uint8
 	{
@@ -73,6 +83,8 @@ namespace Lumina::Physics
 	private:
 		void OverrideFrictionAndRestitution(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings);
 		void GetFrictionAndRestitution(const JPH::Body& inBody, const JPH::SubShapeID& inSubShapeID, float& outFriction, float& outRestitution) const;
+		// Conveyor belts / moving surfaces: feed the per-body surface velocities into the contact constraint.
+		void ApplySurfaceVelocity(const JPH::Body& inBody1, const JPH::Body& inBody2, JPH::ContactSettings& ioSettings);
 
 	private:
 
@@ -102,6 +114,7 @@ namespace Lumina::Physics
     	void ActivateBody(uint32 BodyID) override;
     	void DeactivateBody(uint32 BodyID) override;
     	void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType) override;
+    	bool IsBodyActive(uint32 BodyID) override;
 
     	// Push game-thread transform edits into Jolt bodies once per frame,
     	// before the fixed-step loop.
@@ -125,6 +138,13 @@ namespace Lumina::Physics
     	
     	TOptional<SRayResult> CastRay(const SRayCastSettings& Settings) override;
 		TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) override;
+		TVector<SRayResult> CastRayAll(const SRayCastSettings& Settings) override;
+		void CollidePoint(const FVector3& Point, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) override;
+		void OverlapSphere(const FVector3& Center, float Radius, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) override;
+		void OverlapBox(const FVector3& Center, const FVector3& HalfExtents, const FQuat& Rotation, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities) override;
+
+		// Shared CollideShape overlap: gathers distinct entities into OutEntities. Shape is owned by the caller.
+		void OverlapShapeInternal(const JPH::Shape* Shape, const JPH::RMat44& Transform, const TVector<uint32>& IgnoreBodies, TVector<entt::entity>& OutEntities);
     	
     	// Lazily stands up the per-worker character-substep allocator pool on the first character;
     	// character-free worlds never allocate it.
@@ -137,6 +157,11 @@ namespace Lumina::Physics
     	void OnRigidBodyComponentDestroyed(entt::registry& Registry, entt::entity Entity);
     	void OnColliderComponentAdded(entt::registry& Registry, entt::entity Entity);
     	void OnColliderComponentRemoved(entt::registry& Registry, entt::entity Entity);
+
+    	// SPhysicsConstraintComponent lifecycle: construct queues creation (deferred until both bodies exist),
+    	// destroy tears down the live joint.
+    	void OnConstraintComponentConstructed(entt::registry& Registry, entt::entity Entity);
+    	void OnConstraintComponentDestroyed(entt::registry& Registry, entt::entity Entity);
     	
     	void OnImpulseEvent(const SImpulseEvent& Impulse) override;
         void OnForceEvent(const SForceEvent& Force) override;
@@ -147,7 +172,10 @@ namespace Lumina::Physics
         void OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event) override;
         void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) override;
         void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) override;
-    	
+
+    	void ApplyBuoyancyImpulse(entt::entity Entity, const FVector3& SurfacePosition, const FVector3& SurfaceNormal,
+    		float Buoyancy, float LinearDrag, float AngularDrag, const FVector3& FluidVelocity, float DeltaTime) override;
+
     	FVector3 GetVelocityAtPoint(uint32 BodyID, const FVector3& Point) override;
     	FVector3 GetLinearVelocity(uint32 BodyID) override;
     	FVector3 GetAngularVelocity(uint32 BodyID) override;
@@ -167,9 +195,20 @@ namespace Lumina::Physics
     	void GetRagdollRootTransform(const FJoltRagdollHandle& Handle, FVector3& OutPosition, FQuat& OutRotation) override;
     	uint32 AllocateRagdollGroupID() override { return NextRagdollGroupID++; }
 
+    	uint32 CreateConstraint(const FConstraintDesc& Desc) override;
+    	void DestroyConstraint(uint32 ConstraintID) override;
+    	void SetConstraintEnabled(uint32 ConstraintID, bool bEnabled) override;
+    	void SetConstraintMotor(uint32 ConstraintID, EConstraintMotorMode Mode, float Target) override;
+    	bool IsConstraintBroken(uint32 ConstraintID) override;
+    	float GetConstraintValue(uint32 ConstraintID) override;
+
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
     	
     	void EnqueueContactRecord(const FContactRecord& Record);
+
+    	// Called by the body-activation listener (physics thread) to stage a sleep/wake transition for the
+    	// game-thread script dispatch. bActivated == true is a wake.
+    	void EnqueueActivation(entt::entity Entity, bool bActivated);
 
     	// Shared collision shape, built on first request so N identical bodies share one JPH::Shape.
     	// Thread-safe: called from the parallel body build.
@@ -177,6 +216,12 @@ namespace Lumina::Physics
     	JPH::ShapeRefC GetOrCreateBoxShape(const FVector3& HalfExtent);
     	JPH::ShapeRefC GetOrCreateCapsuleShape(float Radius, float HalfHeight);
     	JPH::ShapeRefC GetOrCreateCylinderShape(float Radius, float HalfHeight, float CapRadius);
+    	JPH::ShapeRefC GetOrCreateTaperedCapsuleShape(float HalfHeight, float TopRadius, float BottomRadius);
+    	JPH::ShapeRefC GetOrCreateTaperedCylinderShape(float HalfHeight, float TopRadius, float BottomRadius, float ConvexRadius);
+
+    	// Build a StaticCompoundShape from an SCompoundColliderComponent's child primitives (each child reuses
+    	// the cached primitive shapes). Thread-safe (called from the parallel body build). Null on failure.
+    	JPH::ShapeRefC BuildCompoundShape(const SCompoundColliderComponent& Comp, const STransformComponent& Transform);
 
     	// Mesh-collider shape cached by mesh+scale+convexity so shards reuse one hull instead of re-running
     	// QuickHull; builds outside the lock so parallel distinct-mesh builds don't serialize.
@@ -198,9 +243,26 @@ namespace Lumina::Physics
     	void ClearBodyMaterial(JPH::BodyID BodyID);
     	const FBodyMaterialEntry* GetBodyMaterial(JPH::BodyID BodyID) const;
 
+    	// Per-body surface velocity (conveyor belts / moving floors). World-space; the contact listener feeds
+    	// the body2-minus-body1 difference into the constraint each step. Same threading model as BodyMaterials
+    	// (lock-free read on the step, game-thread writes between steps). bActive gates the per-contact work.
+    	struct FBodySurfaceVelocity
+    	{
+    		FVector3	Linear  = FVector3(0.0f);
+    		FVector3	Angular = FVector3(0.0f);
+    		bool		bActive = false;
+    	};
+    	void StoreBodySurfaceVelocity(JPH::BodyID BodyID, const FVector3& Linear, const FVector3& Angular);
+    	void ClearBodySurfaceVelocity(JPH::BodyID BodyID);
+    	const FBodySurfaceVelocity* GetBodySurfaceVelocity(JPH::BodyID BodyID) const;
+
+    	// Set a body's conveyor surface velocity at runtime (world space); zero clears it. Game thread only.
+    	void SetSurfaceVelocity(entt::entity Entity, const FVector3& Linear, const FVector3& Angular) override;
+
     private:
     	
     	void DispatchContactEvents();
+    	void DispatchActivationEvents();
     	
     	void SnapshotBodyStates();
     	
@@ -219,11 +281,12 @@ namespace Lumina::Physics
     	// Shared-shape cache keyed by kind + dimensions (bit-exact float compare).
     	struct FShapeKey
     	{
-    		uint8	Kind;       // 0 = sphere (X = radius), 1 = box (XYZ = half extent)
+    		uint8	Kind;       // 0 sphere, 1 box, 2 capsule, 3 cylinder, 4 tapered capsule, 5 tapered cylinder
     		float	X, Y, Z;
+    		float	W = 0.0f;   // 4th param (e.g. tapered-cylinder convex radius); 0 for the others.
     		bool operator==(const FShapeKey& Other) const
     		{
-    			return Kind == Other.Kind && X == Other.X && Y == Other.Y && Z == Other.Z;
+    			return Kind == Other.Kind && X == Other.X && Y == Other.Y && Z == Other.Z && W == Other.W;
     		}
     	};
     	struct FShapeKeyHash
@@ -237,7 +300,7 @@ namespace Lumina::Physics
     				std::memcpy(&Bits, &Value, sizeof(Bits));
     				Hash = (Hash * 1099511628211ull) ^ Bits;
     			};
-    			Mix(Key.X); Mix(Key.Y); Mix(Key.Z);
+    			Mix(Key.X); Mix(Key.Y); Mix(Key.Z); Mix(Key.W);
     			return Hash;
     		}
     	};
@@ -288,21 +351,71 @@ namespace Lumina::Physics
     	JPH::TempAllocatorImplWithMallocFallback	Allocator;
     	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;
     	TUniquePtr<FJoltContactListener>			ContactListener;
+    	// Shared CharacterVirtual contact listener; every character points at it (see OnCharacterComponentConstructed).
+    	TUniquePtr<FJoltCharacterContactListener>	CharacterContactListener;
+    	// Sleep/wake listener; records transitions for the game-thread script dispatch.
+    	TUniquePtr<FJoltBodyActivationListener>		ActivationListener;
+
+    	// Brute-force character-vs-character collision (mutual pushing). Characters that opt in are registered
+    	// here; their inner-body ids go in CharacterProxyBodies so each character's MOVEMENT collision skips
+    	// the others' inner bodies (char-char then runs purely through this interface, no double-collision).
+    	// Not thread-safe -> the character update runs serially whenever the list is non-empty.
+    	TUniquePtr<JPH::CharacterVsCharacterCollisionSimple>	CharacterVsCharacter;
+    	THashSet<uint32>							CharacterProxyBodies;
+
         TUniquePtr<JPH::PhysicsSystem>				JoltSystem;
         CWorld*										World = nullptr;
     	
     	FMutex										ContactQueueMutex;
     	TVector<FContactRecord>						PendingContacts;
 
+    	// Sleep/wake transitions staged by the activation listener (physics thread), drained game-thread.
+    	struct FActivationRecord
+    	{
+    		entt::entity	Entity;
+    		bool			bActivated;     // true = woke / spawned active, false = went to sleep
+    	};
+    	FMutex										ActivationQueueMutex;
+    	TVector<FActivationRecord>					PendingActivations;
+
     	// Material side table indexed by BodyID, sized once to MaxPhysicsBodies so the listener reads lock-free;
     	// writes are game-thread-only between steps.
     	TVector<FBodyMaterialEntry>					BodyMaterials;
+
+    	// Conveyor surface-velocity side table; same sizing/threading as BodyMaterials.
+    	TVector<FBodySurfaceVelocity>				BodySurfaceVelocities;
 
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;
 
     	// Monotonic source for per-ragdoll self-collision group ids.
     	uint32										NextRagdollGroupID = 1;
+
+    	// Active joints, keyed by the opaque handle CreateConstraint hands back. Guarded because the
+    	// breakable monitor reads/disables them on the physics step while Create/Destroy mutate the map on
+    	// the game thread (the two windows don't overlap, but the lock keeps it provably safe).
+    	struct FJoltConstraint
+    	{
+    		JPH::Ref<JPH::TwoBodyConstraint>	Constraint;
+    		EPhysicsConstraintType				Type        = EPhysicsConstraintType::Point;
+    		float								BreakForce  = 0.0f;     // N; 0 = unbreakable.
+    		bool								bBroken     = false;
+    	};
+    	FMutex										ConstraintsMutex;
+    	THashMap<uint32, FJoltConstraint>			Constraints;
+    	uint32										NextConstraintID = 1;
+
+    	// Physics-thread: after each step, disable any breakable joint whose applied force exceeded BreakForce.
+    	void MonitorBreakableConstraints(float Dt);
+    	// Remove + release every joint; called on teardown before JoltSystem is destroyed.
+    	void DestroyAllConstraints();
+
+    	// Editor/component-authored joints: try to build one entity's joint (true once handled, false to retry
+    	// next frame while its bodies aren't ready yet). DrainPendingConstraints runs the queue pre-step.
+    	bool TryCreateComponentConstraint(entt::registry& Registry, entt::entity Entity);
+    	void DrainPendingConstraints();
+    	FMutex										PendingConstraintMutex;
+    	TVector<entt::entity>						PendingConstraintCreations;
 
     	// Interp transforms staged by the physics thread, read game-thread (FrameStart join orders them).
     	// SoA, grow-only: positions are flat float3, rotations deinterleaved to x/y/z/w so nlerp vectorizes.

@@ -24,22 +24,19 @@ namespace Lumina
         const float  DeltaSeconds = (float)Context.GetDeltaTime();
 
         auto View = Context.CreateView<SCSharpScriptComponent>(entt::exclude<SDisabledTag>);
-
-        // Pass 1 - bind: create the managed instance for newly-attached components and rebind after a hot
-        // reload (generation change). OnAttach runs inside Create. An instance is created across the
-        // boundary only on an actual change.
+        
         View.each([&](entt::entity Entity, SCSharpScriptComponent& Component)
         {
             if (Component.ScriptClass.empty())
             {
-                return; // unset (or cleared via the editor) -> nothing to bind
+                return;
             }
             if (Component.Generation == Generation && Component.Instance != nullptr)
             {
-                return; // already bound this generation
+                return;
             }
 
-            // Generation changed: managed already freed the old instance handle on unload, so drop our
+            // Generation changed, managed already freed the old instance handle on unload, so drop our
             // stale pointer WITHOUT calling destroy (that would touch a freed GCHandle).
             Component.Instance = nullptr;
             Component.BindState = ECSharpBindState::Unbound;
@@ -67,10 +64,7 @@ namespace Lumina
             }
             DotNet::ApplyScriptProperties(Instance, Component.PropertyOverrides);
         });
-
-        // Pass 1.5 - input: deliver this frame's discrete input events to scripts that override OnInput, on
-        // entities currently receiving input. The events live on the world's input context (queued by the
-        // event processor, cleared at frame end) and are broadcast to every listening receiver in this world.
+        
         {
             CWorld* CW = Context.GetRegistry().ctx().get<CWorld*>();
             const FInputViewport* V = FInputViewportRegistry::Get().FindViewportForWorld(CW);
@@ -100,11 +94,9 @@ namespace Lumina
                 });
             }
         }
-
-        // Pass 2 - ready + collect: run OnReady on anything attached this frame (after all siblings have
-        // attached in pass 1), then gather every ready instance. One UpdateScripts crossing per world
-        // ticks them all in a tight managed loop.
+        
         TVector<void*> Ready;
+        Ready.reserve(View.size_hint());
         View.each([&](entt::entity, SCSharpScriptComponent& Component)
         {
             if (Component.Instance == nullptr)

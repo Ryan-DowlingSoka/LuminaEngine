@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI.h"
+#include "RHIUpload.h"
 #include "RenderResource.h"
 #include "Containers/Name.h"
 #include "Memory/Memcpy.h"
@@ -74,10 +75,6 @@ namespace Lumina::RHI
             Memory::Memcpy(Alloc.Cpu, Data, sizeof(T) * Count);
             return Alloc.Gpu;
         }
-
-        // Synchronous staged upload to GPU memory; writes through the mapping when
-        // the destination is host-visible. Thread-safe.
-        RUNTIME_API void Upload(GPUPtr Dest, const void* Data, uint64 Size);
 
         // Frees the memory once every in-flight frame has retired. Thread-safe.
         RUNTIME_API void DeferredFree(GPUPtr Memory);

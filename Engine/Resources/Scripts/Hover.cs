@@ -1,3 +1,4 @@
+using System;
 using LuminaSharp;
 using Lumina;
 
@@ -19,13 +20,13 @@ public sealed class Hover : EntityScript
 
     public override void OnReady()
     {
-        _Origin = Registry.Get<STransformComponent>(Entity).GetLocalLocation();
+        _Origin = Transform.GetLocalLocation();
     }
 
     public override void OnUpdate(float DeltaTime)
     {
-        _Time += DeltaTime;
-        float Offset = Amplitude * System.MathF.Sin(_Time * Frequency * System.MathF.Tau);
-        Registry.Get<STransformComponent>(Entity).SetLocalLocation(_Origin + new FVector3(0.0f, Offset, 0.0f));
+        _Time += DeltaTime * new Random().Next(1, 2);
+        float Offset = Amplitude * MathF.Sin(_Time * Frequency * MathF.Tau);
+        Transform.SetLocalLocation(_Origin + new FVector3(0.0f, Offset, 0.0f));
     }
 }

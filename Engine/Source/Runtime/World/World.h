@@ -178,6 +178,9 @@ namespace Lumina
         FUNCTION(Script)
         entt::entity GetEntityByName(const FName& Name);
 
+        FUNCTION(Script)
+        FName GetEntityName(entt::entity Entity);
+
         TOptional<SRayResult> CastRay(const SRayCastSettings& Settings);
 
         TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
@@ -207,7 +210,25 @@ namespace Lumina
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
         void DuplicateEntity(entt::entity& To, entt::entity From, const TFunctionRef<bool(entt::type_info)>& Callback);
-        
+
+        // Deep-copy Source and its children (components copy-constructed, transient handles rebuilt); returns the new root.
+        FUNCTION(Script)
+        entt::entity DuplicateEntity(entt::entity Source);
+
+        // Reparent Child under Parent (Parent = null detaches to the world root), preserving world transform.
+        FUNCTION(Script)
+        void SetParent(entt::entity Child, entt::entity Parent);
+
+        // Detach from the current parent, preserving world transform.
+        FUNCTION(Script)
+        void DetachFromParent(entt::entity Entity);
+
+        FUNCTION(Script)
+        entt::entity GetParent(entt::entity Entity);
+
+        FUNCTION(Script)
+        entt::entity GetRootEntity(entt::entity Entity);
+
         FUNCTION(Script)
         void DestroyEntity(entt::entity Entity);
         
@@ -216,8 +237,9 @@ namespace Lumina
         /** Switch the active camera, easing from the current view over BlendTime seconds (0 = snap). */
         void SetActiveCamera(entt::entity InEntity, float BlendTime, ECameraBlendFunction Function = ECameraBlendFunction::EaseInOut) const;
 
+        FUNCTION(Script)
         SCameraComponent* GetActiveCamera() const;
-        
+
         entt::entity GetActiveCameraEntity() const;
         
         void OnChangeCameraEvent(const FSwitchActiveCameraEvent& Event);

@@ -16,7 +16,8 @@ namespace Lumina::Reflection::Visitor
         { ReflectionEnumToString(EReflectionMacro::Property),      EReflectionMacro::Property },
         { ReflectionEnumToString(EReflectionMacro::Function),      EReflectionMacro::Function },
         { ReflectionEnumToString(EReflectionMacro::Reflect),       EReflectionMacro::Reflect  },
-        { ReflectionEnumToString(EReflectionMacro::GeneratedBody), EReflectionMacro::GeneratedBody }
+        { ReflectionEnumToString(EReflectionMacro::GeneratedBody), EReflectionMacro::GeneratedBody },
+        { ReflectionEnumToString(EReflectionMacro::ScriptExport),  EReflectionMacro::ScriptExport }
     };
     
     CXChildVisitResult VisitMacro(const CXCursor& Cursor, CXCursor, FClangParserContext* Context)
@@ -27,9 +28,14 @@ namespace Lumina::Reflection::Visitor
         auto It = MacroMap.find(CursorName);
         if (It != MacroMap.end())
         {
-            // Record the header so the post-parse pass knows to validate its
-            // include block (must contain <stem>.generated.h, must be last).
-            Context->ReflectedHeader->bHasReflectionMacros = true;
+            // Record the header so the post-parse pass knows to validate its include block (must contain
+            // <stem>.generated.h, must be last). SCRIPT_EXPORT is exempt: a free function emits a thunk into
+            // the .generated.cpp but nothing the header itself must include, so a SCRIPT_EXPORT-only header
+            // needs no .generated.h.
+            if (It->second != EReflectionMacro::ScriptExport)
+            {
+                Context->ReflectedHeader->bHasReflectionMacros = true;
+            }
 
             FReflectionMacro Macro(Context->ReflectedHeader->HeaderPath, Cursor, Range, It->second);
             if (It->second == EReflectionMacro::GeneratedBody)

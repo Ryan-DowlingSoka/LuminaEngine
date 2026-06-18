@@ -90,6 +90,15 @@ namespace Lumina
         }
     }
 
+    void FSystemContext::ApplyBuoyancyImpulse(entt::entity Entity, const FVector3& SurfacePosition, const FVector3& SurfaceNormal,
+        float Buoyancy, float LinearDrag, float AngularDrag, const FVector3& FluidVelocity, float InDeltaTime) const
+    {
+        if (World->PhysicsScene)
+        {
+            World->PhysicsScene->ApplyBuoyancyImpulse(Entity, SurfacePosition, SurfaceNormal, Buoyancy, LinearDrag, AngularDrag, FluidVelocity, InDeltaTime);
+        }
+    }
+
 
     TVector<SRayResult> FSystemContext::CastSphere(const SSphereCastSettings& Settings) const
     {

@@ -43,6 +43,57 @@ namespace Lumina
                 Registry.ctx().get<entt::dispatcher&>().trigger<FSwitchActiveCameraEvent>(FSwitchActiveCameraEvent{Entity});
             }
         }
+
+        // Advance every live shake by Dt, summing their additive offsets; expire finite ones. OutLocation is a
+        // local-space positional offset (world units); OutRotationDeg is pitch/yaw/roll in degrees.
+        static void EvaluateCameraShakes(FCameraGlobalState& State, float Dt, FVector3& OutLocation, FVector3& OutRotationDeg)
+        {
+            OutLocation    = FVector3(0.0f);
+            OutRotationDeg = FVector3(0.0f);
+
+            const float TwoPi = Math::TwoPi<float>();
+            for (int32 i = 0; i < (int32)State.Shakes.size(); )
+            {
+                FCameraShakeInstance& S = State.Shakes[i];
+                S.Elapsed += Dt;
+
+                // Envelope: ramp up over BlendInTime, ramp down over BlendOutTime before Duration ends.
+                float Env = 1.0f;
+                if (S.BlendInTime > 0.0f && S.Elapsed < S.BlendInTime)
+                {
+                    Env = S.Elapsed / S.BlendInTime;
+                }
+                if (S.Duration > 0.0f && S.BlendOutTime > 0.0f)
+                {
+                    const float Remaining = S.Duration - S.Elapsed;
+                    if (Remaining < S.BlendOutTime)
+                    {
+                        Env = Math::Min(Env, Math::Max(0.0f, Remaining / S.BlendOutTime));
+                    }
+                }
+
+                auto Osc = [&](float Phase, float FreqMul)
+                {
+                    return Math::Sin((S.Elapsed * S.Frequency * FreqMul + Phase) * TwoPi);
+                };
+
+                OutLocation.x    += S.LocationAmplitude.x * Osc(S.LocPhase[0], S.LocFreqMul[0]) * Env;
+                OutLocation.y    += S.LocationAmplitude.y * Osc(S.LocPhase[1], S.LocFreqMul[1]) * Env;
+                OutLocation.z    += S.LocationAmplitude.z * Osc(S.LocPhase[2], S.LocFreqMul[2]) * Env;
+                OutRotationDeg.x += S.RotationAmplitude.x * Osc(S.RotPhase[0], S.RotFreqMul[0]) * Env;
+                OutRotationDeg.y += S.RotationAmplitude.y * Osc(S.RotPhase[1], S.RotFreqMul[1]) * Env;
+                OutRotationDeg.z += S.RotationAmplitude.z * Osc(S.RotPhase[2], S.RotFreqMul[2]) * Env;
+
+                if (S.Duration > 0.0f && S.Elapsed >= S.Duration)
+                {
+                    State.Shakes.erase(State.Shakes.begin() + i);
+                }
+                else
+                {
+                    ++i;
+                }
+            }
+        }
     }
 
     void SCameraSystem::Startup(const FSystemContext& Context) noexcept
@@ -218,12 +269,25 @@ namespace Lumina
             BlendPostProcessSettings(FinalPostProcess, ResolvedPostProcess, Alpha);
         }
 
+        // Additive camera shake, composed on top of the blend. Applied only to the baked render view (below)
+        // -- the entity transform and the pre-shake Final pose recorded as the next blend's source are left
+        // untouched, so switching cameras mid-shake doesn't blend from a shaken pose.
+        FVector3 ShakeLocation(0.0f);
+        FVector3 ShakeRotationDeg(0.0f);
+        Detail::EvaluateCameraShakes(CameraState, (float)Context.GetDeltaTime(), ShakeLocation, ShakeRotationDeg);
+
+        const FVector3 ShakenPosition = FinalPosition + FinalRotation * ShakeLocation;
+        const FQuat    ShakenRotation = FinalRotation * FQuat(FVector3(
+            Math::Radians(ShakeRotationDeg.x),
+            Math::Radians(ShakeRotationDeg.y),
+            Math::Radians(ShakeRotationDeg.z)));
+
         // Bake the resolved view into the camera so direct matrix consumers (editor gizmo, CPU picking)
         // match the rendered view; SetResolvedView leaves the authored FOV intact as the blend target.
         Camera.SetResolvedView(
-            FinalPosition,
-            FinalRotation * FVector3(0.0f, 0.0f, 1.0f),
-            FinalRotation * FVector3(0.0f, 1.0f, 0.0f),
+            ShakenPosition,
+            ShakenRotation * FVector3(0.0f, 0.0f, 1.0f),
+            ShakenRotation * FVector3(0.0f, 1.0f, 0.0f),
             FinalFOV);
 
         Resolved.ViewVolume      = Camera.GetViewVolume();
@@ -278,5 +342,57 @@ namespace Lumina
     SCameraComponent* SCameraSystem::GetActiveCamera(entt::registry& Registry)
     {
         return Registry.try_get<SCameraComponent>(GetActiveCameraEntity(Registry));
+    }
+
+    uint32 SCameraSystem::PlayCameraShake(entt::registry& Registry, const FCameraShakeParams& Params)
+    {
+        FCameraGlobalState& State = Registry.ctx().get<FCameraGlobalState>();
+
+        FCameraShakeInstance S;
+        S.LocationAmplitude = Params.LocationAmplitude;
+        S.RotationAmplitude = Params.RotationAmplitude;
+        S.Frequency         = Math::Max(Params.Frequency, 0.01f);
+        S.Duration          = Params.Duration;
+        S.BlendInTime       = Math::Max(Params.BlendInTime, 0.0f);
+        S.BlendOutTime      = Math::Max(Params.BlendOutTime, 0.0f);
+        S.Elapsed           = 0.0f;
+        S.Handle            = State.NextShakeHandle++;
+
+        // Seed per-axis phase + slight frequency variation from the handle so axes (and successive shakes)
+        // don't oscillate in lockstep. Deterministic hash, no global RNG.
+        auto Frac = [](uint32 X) { X *= 2654435761u; X ^= X >> 15; return (float)(X & 0xFFFFu) / 65535.0f; };
+        for (int a = 0; a < 3; ++a)
+        {
+            S.LocPhase[a]   = Frac(S.Handle * 7u  + (uint32)a * 131u + 1u);
+            S.RotPhase[a]   = Frac(S.Handle * 13u + (uint32)a * 197u + 5u);
+            S.LocFreqMul[a] = 0.85f + 0.30f * Frac(S.Handle * 17u + (uint32)a * 53u + 9u);
+            S.RotFreqMul[a] = 0.85f + 0.30f * Frac(S.Handle * 23u + (uint32)a * 71u + 11u);
+        }
+
+        State.Shakes.push_back(S);
+        return S.Handle;
+    }
+
+    void SCameraSystem::StopCameraShake(entt::registry& Registry, uint32 Handle)
+    {
+        if (Handle == 0)
+        {
+            return;
+        }
+        FCameraGlobalState& State = Registry.ctx().get<FCameraGlobalState>();
+        for (FCameraShakeInstance& S : State.Shakes)
+        {
+            if (S.Handle == Handle)
+            {
+                // Turn a (possibly looping) shake into one that ends after its blend-out, for a smooth stop.
+                S.Duration = S.Elapsed + S.BlendOutTime;
+                break;
+            }
+        }
+    }
+
+    void SCameraSystem::StopAllCameraShakes(entt::registry& Registry)
+    {
+        Registry.ctx().get<FCameraGlobalState>().Shakes.clear();
     }
 }

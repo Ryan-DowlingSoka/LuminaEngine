@@ -19,7 +19,9 @@ namespace Lumina::Reflection
 
         void GenerateHeaderFile(FReflectedHeader* Header);
         void GenerateSourceFile(FReflectedHeader* Header);
-        void GenerateCSharpFile(FReflectedHeader* Header);
+        // bRoutable: header has no reflected types (a SCRIPT_EXPORT free-function facade) and may route its
+        // .generated.cs into a plugin/game's Scripts/Generated. Type-bearing headers pass false.
+        void GenerateCSharpFile(FReflectedHeader* Header, bool bRoutable);
 
         void WriteHeaderContent(FCodeWriter& Writer, FReflectedHeader* Header);
         void WriteSourceContent(FCodeWriter& Writer, FReflectedHeader* Header);

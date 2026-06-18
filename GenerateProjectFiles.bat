@@ -20,6 +20,16 @@ if not exist "%PREMAKE_EXE%" (
     exit /b 1
 )
 
+rem --- Advisory prerequisite check (non-blocking) ----------------------------
+rem Regen doesn't need the toolchain, but warn early if the build won't compile
+rem (missing .NET 10 SDK / VS < 18.0). Set SKIP_PREREQ_CHECKS=1 to silence.
+if not defined SKIP_PREREQ_CHECKS (
+    where powershell.exe >nul 2>&1
+    if not errorlevel 1 (
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LUMINA_DIR%\BuildScripts\CheckPrerequisites.ps1" -NonBlocking
+    )
+)
+
 rem  Extra args pass straight through to premake, so feature toggles work here:
 rem    GenerateProjectFiles.bat --tracy=off --validation=on --aftermath=on
 rem  (persistent defaults live in BuildScripts\BuildConfig.lua)

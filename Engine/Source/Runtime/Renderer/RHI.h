@@ -534,6 +534,45 @@ namespace Lumina::RHI
 
     RUNTIME_API void        CmdBarrier(FCmdListH CL, EStageFlags Before, EStageFlags After);
 
+    // Canonical pipeline-stage barriers shared by every renderer. Thin wrappers over
+    // CmdBarrier; the name reads as producer -> consumer. Prefer these to hand-rolled
+    // stage masks so the engine has one place to reason about coarse sync.
+    namespace Barriers
+    {
+        inline void ComputeToAll(FCmdListH CL)
+        {
+            CmdBarrier(CL,
+                EStageFlags::Compute,
+                EStageFlags::Compute | EStageFlags::VertexShader | EStageFlags::PixelShader |
+                EStageFlags::IndirectArguments | EStageFlags::FragmentTests | EStageFlags::Transfer);
+        }
+
+        inline void RasterToRead(FCmdListH CL)
+        {
+            CmdBarrier(CL,
+                EStageFlags::RasterColorOut | EStageFlags::FragmentTests,
+                EStageFlags::PixelShader | EStageFlags::VertexShader | EStageFlags::Compute |
+                EStageFlags::RasterColorOut | EStageFlags::FragmentTests);
+        }
+
+        inline void RasterToRaster(FCmdListH CL)
+        {
+            CmdBarrier(CL,
+                EStageFlags::RasterColorOut | EStageFlags::FragmentTests,
+                EStageFlags::RasterColorOut | EStageFlags::FragmentTests);
+        }
+
+        inline void TransferToAll(FCmdListH CL)
+        {
+            CmdBarrier(CL, EStageFlags::Transfer, EStageFlags::AllCommands);
+        }
+
+        inline void AllToTransfer(FCmdListH CL)
+        {
+            CmdBarrier(CL, EStageFlags::AllCommands, EStageFlags::Transfer);
+        }
+    }
+
     RUNTIME_API void        CmdBeginRenderPass(FCmdListH CL, const FRenderPassDesc& Desc);
     RUNTIME_API void        CmdEndRenderPass(FCmdListH CL);
 

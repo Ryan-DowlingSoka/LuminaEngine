@@ -167,4 +167,67 @@ namespace Lumina
 
         void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
     };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_TaperedCapsuleCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_TaperedCylinderCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_PlaneCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_CompoundCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_Conveyor : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_PhysicsConstraint : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_AIPerception : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        CStruct* GetSupportedComponentType() const override;
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, FEntity Entity) override;
+    };
 }

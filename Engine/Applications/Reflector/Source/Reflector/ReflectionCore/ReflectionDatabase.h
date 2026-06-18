@@ -15,6 +15,10 @@ namespace Lumina::Reflection
 
         void AddReflectedType(FReflectedType* Type);
 
+        // Registers a SCRIPT_EXPORT free function under its header (parallel to ReflectedTypes). Takes
+        // ownership of Fn.
+        void AddFreeFunction(FReflectedHeader* Header, FReflectedFunction* Fn);
+
         bool IsTypeRegistered(const FStringHash& Str) const;
 
         bool IsCoreType(const FStringHash& Hash) const;
@@ -31,9 +35,10 @@ namespace Lumina::Reflection
         T* GetReflectedType(const FStringHash& TypeName) const;
 
         
-        eastl::hash_map<FReflectedHeader*, eastl::vector<eastl::unique_ptr<FReflectedType>>>    ReflectedTypes;
-        eastl::hash_map<FStringHash, FReflectedType*>                                           TypeHashMap;
-        
+        eastl::hash_map<FReflectedHeader*, eastl::vector<eastl::unique_ptr<FReflectedType>>>     ReflectedTypes;
+        eastl::hash_map<FStringHash, FReflectedType*>                                            TypeHashMap;
+        eastl::hash_map<FReflectedHeader*, eastl::vector<eastl::unique_ptr<FReflectedFunction>>> FreeFunctions;
+
     };
 
 

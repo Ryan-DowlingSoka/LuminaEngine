@@ -25,6 +25,15 @@ namespace Lumina::Reflection
         TypeHashMap.insert_or_assign(NameHash, Type);
     }
 
+    void FReflectionDatabase::AddFreeFunction(FReflectedHeader* Header, FReflectedFunction* Fn)
+    {
+        if (Header == nullptr || Fn == nullptr)
+        {
+            return;
+        }
+        FreeFunctions[Header].push_back(eastl::unique_ptr<FReflectedFunction>(Fn));
+    }
+
     bool FReflectionDatabase::IsTypeRegistered(const FStringHash& Str) const
     {
         return TypeHashMap.find(Str) != TypeHashMap.end() || IsCoreType(Str);

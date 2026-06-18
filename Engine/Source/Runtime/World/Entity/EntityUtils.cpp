@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "EntityUtils.h"
 #include "Components/CharacterComponent.h"
 #include "Components/DirtyComponent.h"
@@ -62,6 +62,8 @@ using namespace entt::literals;
 
 namespace Lumina::ECS::Utils
 {
+    // --- Serialization ---
+
     bool SerializeEntity(FArchive& RESTRICT Ar, FEntityRegistry& RESTRICT Registry, entt::entity& RESTRICT Entity)
     {
         using namespace entt::literals;
@@ -321,6 +323,8 @@ namespace Lumina::ECS::Utils
         return Registry.storage<STagComponent>(entt::hashed_string(Tag.c_str())).contains(Entity);
     }
     
+    // --- Hierarchy ---
+
     void AddToParent(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
     {
         FRelationshipComponent& ChildRelationship = Registry.get_or_emplace<FRelationshipComponent>(Child);
@@ -568,12 +572,6 @@ namespace Lumina::ECS::Utils
         return GetChildCount(Registry, Entity) != 0;
     }
 
-    entt::entity GetParent(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-        return Relationship ? Relationship->Parent : entt::null;
-    }
-
     entt::entity GetRootEntity(FEntityRegistry& Registry, entt::entity Entity)
     {
         entt::entity Current = Entity;
@@ -591,112 +589,10 @@ namespace Lumina::ECS::Utils
         return Current;
     }
 
-    void CollectAncestors(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutAncestors)
-    {
-        ForEachAncestor(Registry, Entity, [&](entt::entity Ancestor)
-        {
-            OutAncestors.push_back(Ancestor);
-        });
-    }
-
-    entt::entity FindChildByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name)
-    {
-        entt::entity Found = entt::null;
-        ForEachChild(Registry, Parent, [&](entt::entity Child)
-        {
-            if (Found != entt::null)
-            {
-                return;
-            }
-
-            if (const SNameComponent* NameComponent = Registry.try_get<SNameComponent>(Child))
-            {
-                if (NameComponent->Name == Name)
-                {
-                    Found = Child;
-                }
-            }
-        });
-
-        return Found;
-    }
-
-    entt::entity FindDescendantByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name)
-    {
-        entt::entity Found = entt::null;
-        ForEachDescendant(Registry, Parent, [&](entt::entity Descendant)
-        {
-            if (Found != entt::null)
-            {
-                return;
-            }
-
-            if (const SNameComponent* NameComponent = Registry.try_get<SNameComponent>(Descendant))
-            {
-                if (NameComponent->Name == Name)
-                {
-                    Found = Descendant;
-                }
-            }
-        });
-
-        return Found;
-    }
-
-    entt::entity GetNextSibling(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-        return Relationship ? Relationship->Next : entt::null;
-    }
-
-    entt::entity GetPrevSibling(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-        return Relationship ? Relationship->Prev : entt::null;
-    }
-
-    void CollectSiblings(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutSiblings)
-    {
-        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-        if (!Relationship || Relationship->Parent == entt::null)
-        {
-            return;
-        }
-
-        ForEachChild(Registry, Relationship->Parent, [&](entt::entity Sibling)
-        {
-            if (Sibling != Entity)
-            {
-                OutSiblings.push_back(Sibling);
-            }
-        });
-    }
-
     size_t GetChildCount(FEntityRegistry& Registry, entt::entity Parent)
     {
         FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Parent);
         return Relationship ? Relationship->Children : 0;
-    }
-
-    size_t GetSiblingIndex(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
-        if (!Relationship || Relationship->Parent == entt::null)
-        {
-            return 0;
-        }
-
-        size_t Index = 0;
-        entt::entity Current = Registry.get<FRelationshipComponent>(Relationship->Parent).First;
-
-        while (Current != entt::null && Current != Entity)
-        {
-            Index++;
-            FRelationshipComponent* CurrentRelationship = Registry.try_get<FRelationshipComponent>(Current);
-            Current = CurrentRelationship ? CurrentRelationship->Next : entt::null;
-        }
-
-        return Index;
     }
 
     void CollectDescendants(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutDescendants)
@@ -746,29 +642,19 @@ namespace Lumina::ECS::Utils
         
         return false;
     }
-
-    // NOTE (fibers): this is a std OS recursive mutex, not a fiber-aware FFiberMutex. That is only safe
-    // because NO critical section under this lock ever parks the fiber (no Task::/future/FiberSync waits --
-    // all transform resolve work is pure CPU). If that ever changes, a fiber could migrate OS threads while
-    // holding the lock -> unlock-from-wrong-thread UB + recursive re-lock deadlock. HARD RULE: never await
-    // while holding this. It is recursive solely because World_MoveToward batch-holds it across
-    // ResolveTransformChain/SetEntityWorldTransform; de-nesting those is the prerequisite to moving this to a
-    // (non-recursive) FFiberMutex so contended waiters park their fiber instead of blocking a worker.
-    FRecursiveMutex& GetTransformResolveMutex()
-    {
-        static FRecursiveMutex Instance;
-        return Instance;
-    }
-
-    // Per-registry hint for the lock-free transform-read fast path.
-    struct alignas(LE_CACHELINE_SIZE) FTransformDirtyState
+    
+    struct CACHE_ALIGN FTransformDirtyState
     {
         std::atomic<bool> bAnyDirty{ true };
     };
-
-    static void OnTransformDirtied(FTransformDirtyState* State, FEntityRegistry&, entt::entity)
+    
+    static void OnTransformDirtied(FTransformDirtyState* State, FEntityRegistry& Registry, entt::entity Entity)
     {
         State->bAnyDirty.store(true, std::memory_order_release);
+        if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->bWorldDirty = true;
+        }
     }
 
     static FTransformDirtyState* FindTransformDirtyState(FEntityRegistry& Registry)
@@ -779,9 +665,7 @@ namespace Lumina::ECS::Utils
         }
         return nullptr;
     }
-
-    // Idempotent: creates the per-registry state + connects the dirty-tracking hook exactly once. Called at
-    // the start of the bulk resolve, which guarantees the hook is live before bAnyDirty is ever cleared.
+    
     static FTransformDirtyState& EnsureTransformDirtyState(FEntityRegistry& Registry)
     {
         if (TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>())
@@ -792,6 +676,11 @@ namespace Lumina::ECS::Utils
         FTransformDirtyState& State = *Registry.ctx().emplace<TUniquePtr<FTransformDirtyState>>(MakeUnique<FTransformDirtyState>());
         Registry.on_construct<FNeedsTransformUpdate>().connect<&OnTransformDirtied>(&State);
         return State;
+    }
+    
+    std::atomic<bool>* EnsureTransformDirtySignal(FEntityRegistry& Registry)
+    {
+        return &EnsureTransformDirtyState(Registry).bAnyDirty;
     }
 
     // Recompute world = parentWorld * local for every descendant of Root.
@@ -816,7 +705,7 @@ namespace Lumina::ECS::Utils
 
                 if (bClearDirty)
                 {
-                    Registry.remove<FNeedsTransformUpdate>(Child);
+                    ChildTransform.bWorldDirty = false;
                 }
 
                 Stack.push_back(Child);
@@ -827,10 +716,7 @@ namespace Lumina::ECS::Utils
     void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
-
-        // Lock-free fast path: nothing in this registry is dirty -> the read is known clean, skip the mutex.
-        // This is the common case after the frame's bulk resolve, when parallel reads (render extract, etc.)
-        // would otherwise all serialize on the global resolve mutex. See FTransformDirtyState.
+        
         if (const FTransformDirtyState* DirtyState = FindTransformDirtyState(Registry))
         {
             if (!DirtyState->bAnyDirty.load(std::memory_order_acquire))
@@ -838,11 +724,7 @@ namespace Lumina::ECS::Utils
                 return;
             }
         }
-
-        // Recursive mutex: concurrent MarkDirty + GetWorldMatrix would corrupt the sparse set; resolver may recurse.
-        FRecursiveScopeLock Lock(GetTransformResolveMutex());
-
-        // Chase dirty bit up to root; a dirty ancestor invalidates descendants even when they are clean.
+        
         TFixedVector<entt::entity, 64> AncestorChain;
         int32 TopmostDirtyIndex = -1;
 
@@ -852,7 +734,7 @@ namespace Lumina::ECS::Utils
         
         while (Current != entt::null)
         {
-            if (Registry.all_of<FNeedsTransformUpdate>(Current))
+            if (XFormStorage.contains(Current) && XFormStorage.get(Current).bWorldDirty)
             {
                 TopmostDirtyIndex = (int32)AncestorChain.size();
             }
@@ -895,123 +777,141 @@ namespace Lumina::ECS::Utils
             }
 
             Transform.CachedMatrix = Transform.WorldTransform.GetMatrix();
-            Registry.remove<FNeedsTransformUpdate>(Ancestor);
         }
 
-        // Propagate down the full subtree (siblings also referenced the ancestor's matrix). Resolve the
-        // transform storage once and index it directly instead of a pool-map lookup per node.
-        PropagateTransformsToDescendants(Registry, XFormStorage, AncestorChain[TopmostDirtyIndex], /*bClearDirty*/ true);
+        // Propagate to the full subtree. Compute-only (no flag clearing), so no lock needed.
+        PropagateTransformsToDescendants(Registry, XFormStorage, AncestorChain[TopmostDirtyIndex], /*bClearDirty*/ false);
     }
 
     void ResolveAllDirtyTransforms(FEntityRegistry& Registry)
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Install the dirty-tracking hook before anything can clear the flag (idempotent). After this bulk
-        // pass clears the pool we set bAnyDirty=false; any subsequent emplace re-arms it via OnTransformDirtied.
         FTransformDirtyState& DirtyState = EnsureTransformDirtyState(Registry);
-
-        auto SingleView        = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
-        auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
-
-        // Every entity owns a transform; resolve the pool once so the parallel walk below indexes it
-        // directly instead of re-resolving via Registry.get (which would also lazily assure under threads).
         auto& TransformStorage = Registry.storage<STransformComponent>();
-
-        if (!RelationshipGroup.empty())
+        
+        bool bPendingTags = false;
+        for (entt::entity Tagged : Registry.view<FNeedsTransformUpdate>())
         {
-            // Snapshot before iterating: removing members during iteration is unsafe.
-            TFixedVector<entt::entity, 100> DirtyEntities;
-            DirtyEntities.reserve(RelationshipGroup.size());
-            for (auto Entity : RelationshipGroup)
+            if (TransformStorage.contains(Tagged))
             {
-                DirtyEntities.push_back(Entity);
+                TransformStorage.get(Tagged).bWorldDirty = true;
+                bPendingTags = true;
+            }
+        }
+
+        // bAnyDirty (or a pending tag) gates the scan; nothing dirty -> nothing to do.
+        if (!bPendingTags && !DirtyState.bAnyDirty.load(std::memory_order_acquire))
+        {
+            return;
+        }
+
+        // Hierarchical: resolve only topmost-dirty roots top-down, so parallel subtrees stay disjoint.
+        {
+            auto HierView = Registry.view<STransformComponent, FRelationshipComponent>();
+
+            TFixedVector<entt::entity, 100> DirtyEntities;
+            for (auto Entity : HierView)
+            {
+                if (HierView.get<STransformComponent>(Entity).bWorldDirty)
+                {
+                    DirtyEntities.push_back(Entity);
+                }
             }
 
-            auto ResolveOne = [&](uint32 Index)
+            if (!DirtyEntities.empty())
             {
-                entt::entity DirtyEntity = DirtyEntities[Index];
-
-                auto& DirtyTransform    = RelationshipGroup.get<STransformComponent>(DirtyEntity);
-                auto& DirtyRelationship = RelationshipGroup.get<FRelationshipComponent>(DirtyEntity);
-
-                const bool bHasParent = DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent);
-
-                // Skip entities whose parent is also dirty: the topmost dirty ancestor's descent already
-                // covers this whole subtree. This halves the work on bulk loads (everything dirty) and keeps
-                // the parallel descent-roots' subtrees disjoint, so no two tasks write the same entity.
-                if (bHasParent && Registry.all_of<FNeedsTransformUpdate>(DirtyRelationship.Parent))
+                auto ResolveOne = [&](uint32 Index)
                 {
-                    return;
-                }
+                    entt::entity DirtyEntity = DirtyEntities[Index];
 
-                if (bHasParent)
+                    auto& DirtyTransform    = HierView.get<STransformComponent>(DirtyEntity);
+                    auto& DirtyRelationship = HierView.get<FRelationshipComponent>(DirtyEntity);
+
+                    const bool bHasParent = DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent);
+
+                    // Parent dirty too -> its descent covers this subtree. (Flags are cleared after the pass.)
+                    if (bHasParent && TransformStorage.contains(DirtyRelationship.Parent)
+                        && TransformStorage.get(DirtyRelationship.Parent).bWorldDirty)
+                    {
+                        return;
+                    }
+
+                    if (bHasParent)
+                    {
+                        const FTransform& ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform;
+                        DirtyTransform.WorldTransform = ParentWorld * DirtyTransform.LocalTransform;
+                    }
+                    else
+                    {
+                        DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
+                    }
+
+                    DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
+
+                    PropagateTransformsToDescendants(Registry, TransformStorage, DirtyEntity, /*bClearDirty*/ false);
+                };
+
+                if (DirtyEntities.size() > 1000)
                 {
-                    const FTransform& ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform;
-                    DirtyTransform.WorldTransform = ParentWorld * DirtyTransform.LocalTransform;
+                    Task::ParallelFor((uint32)DirtyEntities.size(), ResolveOne);
                 }
                 else
                 {
-                    DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
+                    for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
+                    {
+                        ResolveOne(i);
+                    }
                 }
 
-                DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
+                // Clear flags after the pass (keeps the parent-dirty read above stable).
+                for (entt::entity Resolved : DirtyEntities)
+                {
+                    TransformStorage.get(Resolved).bWorldDirty = false;
+                }
+            }
+        }
 
-                PropagateTransformsToDescendants(Registry, TransformStorage, DirtyEntity, /*bClearDirty*/ false);
+        // Flat (no relationship): world == local. Resolve + clear inline (no parent, so safe during the pass).
+        {
+            auto FlatView   = Registry.view<STransformComponent>(entt::exclude<FRelationshipComponent>);
+            auto FlatHandle = FlatView.handle();
+
+            auto ResolveFlat = [&](uint32 Index)
+            {
+                entt::entity Entity = (*FlatHandle)[Index];
+                if (!FlatView.contains(Entity))
+                {
+                    return; // hierarchical (handled above) or a tombstone hole
+                }
+                STransformComponent& Transform = FlatView.get<STransformComponent>(Entity);
+                if (!Transform.bWorldDirty)
+                {
+                    return;
+                }
+                Transform.WorldTransform = Transform.LocalTransform;
+                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
+                Transform.bWorldDirty    = false;
             };
 
-            if (DirtyEntities.size() > 1000)
+            if (FlatHandle->size() > 1000)
             {
-                Task::ParallelFor((uint32)DirtyEntities.size(), ResolveOne);
+                Task::ParallelFor((uint32)FlatHandle->size(), ResolveFlat);
             }
             else
             {
-                for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
+                for (uint32 i = 0; i < (uint32)FlatHandle->size(); ++i)
                 {
-                    ResolveOne(i);
+                    ResolveFlat(i);
                 }
             }
         }
 
-        if (SingleView.size_hint() < 1000)
-        {
-            SingleView.each([&](STransformComponent& Transform)
-            {
-                Transform.WorldTransform = Transform.LocalTransform;
-                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
-            });
-        }
-        else
-        {
-            auto WorkFunctor = [](STransformComponent& Transform)
-            {
-                Transform.WorldTransform = Transform.LocalTransform;
-                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
-            };
-
-            auto Handle = SingleView.handle();
-            Task::ParallelFor(Handle->size(), [&](uint32 Index)
-            {
-                entt::entity Entity = (*Handle)[Index];
-
-                if (SingleView.contains(Entity))
-                {
-                    std::apply(WorkFunctor, SingleView.get(Entity));
-                }
-            });
-        }
-
         Registry.clear<FNeedsTransformUpdate>();
-
-        // Pool is now empty: arm the lock-free read fast path until the next emplace re-dirties it.
         DirtyState.bAnyDirty.store(false, std::memory_order_release);
     }
 
-    FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->GetWorldLocation() : FVector3{};    
-    }
+    // --- Entity transform accessors ---
 
     FQuat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity)
     {
@@ -1025,124 +925,12 @@ namespace Lumina::ECS::Utils
         return Transform ? Transform->GetWorldScale() : FVector3{};
     }
 
-    void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Location)
-    {
-        if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
-        {
-            Transform->SetLocation(Location);
-        }    
-    }
-
-    void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const FQuat& Rotation)
-    {
-        if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
-        {
-            Transform->SetRotation(Rotation);
-        }
-    }
-
     void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Scale)
     {
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
         {
             Transform->SetScale(Scale);
         }
-    }
-
-    bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        return Registry.valid(Entity);
-    }
-
-    FVector3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Translation)
-    {
-        auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->Translate(Translation) : FVector3{};
-    }
-
-    entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity)
-    {
-        THashMap<entt::entity, entt::entity> SourceToDuplicate;
-
-        auto DuplicateRecursive = [&](auto& Self, entt::entity Source, entt::entity NewParent) -> entt::entity
-        {
-            entt::entity To = Registry.create();
-            SourceToDuplicate[Source] = To;
-
-            for (auto&& [ID, Storage] : Registry.storage())
-            {
-                if (Storage.contains(Source) && !Storage.contains(To))
-                {
-                        // Rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
-                    if (ID == entt::type_hash<FRelationshipComponent>::value()
-                        || ID == entt::type_hash<SRigidBodyComponent>::value())
-                    {
-                        continue;
-                    }
-
-                    Storage.push(To, Storage.value(Source));
-                }
-            }
-
-            // Rebind: bit-copy carries source's self-references (Entity/Registry ptr).
-            if (STransformComponent* NewTransform = Registry.try_get<STransformComponent>(To))
-            {
-                NewTransform->Bind(Registry, To);
-                Registry.emplace_or_replace<FNeedsTransformUpdate>(To);
-            }
-
-            // Remove auto-emplaced default first; emplace_or_replace would fire on_update (no-op), not on_construct.
-            if (const SRigidBodyComponent* SourceBody = Registry.try_get<SRigidBodyComponent>(Source))
-            {
-                SRigidBodyComponent NewBody = *SourceBody;
-                NewBody.BodyID = 0xFFFFFFFF;
-
-                Registry.remove<SRigidBodyComponent>(To);
-                Registry.emplace<SRigidBodyComponent>(To, eastl::move(NewBody));
-            }
-
-            // The bit-copy carried the source's transient managed binding (Instance is a GCHandle the two
-            // components would otherwise share and double-free). Keep the serialized fields, reset the rest
-            // so the duplicate rebinds to its own managed instance next tick.
-            if (SCSharpScriptComponent* NewScript = Registry.try_get<SCSharpScriptComponent>(To))
-            {
-                NewScript->Instance      = nullptr;
-                NewScript->Generation    = -1;
-                NewScript->BindState     = ECSharpBindState::Unbound;
-                NewScript->CallbackFlags = 0;
-            }
-
-            if (NewParent != entt::null)
-            {
-                ECS::Utils::ReparentEntity(Registry, To, NewParent);
-            }
-            else if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Source))
-            {
-                if (Rel->Parent != entt::null)
-                {
-                    ECS::Utils::ReparentEntity(Registry, To, Rel->Parent);
-                }
-            }
-
-            // Recursively duplicate children parented to new duplicate
-            ECS::Utils::ForEachChild(Registry, Source, [&](entt::entity Child)
-            {
-                Self(Self, Child, To);
-            });
-
-            return To;
-        };
-
-        entt::entity Root = DuplicateRecursive(DuplicateRecursive, Entity, entt::null);
-
-        // Fix up entity-handle properties so references between duplicated entities point at the
-        // new copies; references to entities outside the duplicated set are left untouched.
-        for (auto& [Source, Dup] : SourceToDuplicate)
-        {
-            RemapEntityReferences(Registry, Dup, SourceToDuplicate, /*bClearUnmapped*/ false);
-        }
-
-        return Root;
     }
 
     namespace
@@ -1224,6 +1012,8 @@ namespace Lumina::ECS::Utils
         }
     }
 
+    // --- Reflection / queries + misc ---
+
     void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped)
     {
         using namespace entt::literals;
@@ -1285,14 +1075,6 @@ namespace Lumina::ECS::Utils
         Transform->SetLocalTransform(NewLocal);
     }
 
-    FVector3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From)
-    {
-        FVector3 ToLoc = GetEntityLocation(Registry, To);
-        FVector3 FromLoc = GetEntityLocation(Registry, From);
-        FVector3 Direction = Math::Normalize(ToLoc - FromLoc);
-        return Direction;
-    }
-
     void DestroyEntity(FEntityRegistry& Registry, entt::entity Entity)
     {
         Registry.destroy(Entity);
@@ -1313,14 +1095,19 @@ namespace Lumina::ECS::Utils
         Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
     }
 
-    void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity)
+    // Tag a body for the physics sync to reposition it. Single-threaded path (bodies aren't mass-moved).
+    void MarkPhysicsBodyDirtyIfBodied(FEntityRegistry& Registry, entt::entity Entity)
     {
-        FRecursiveScopeLock Lock(GetTransformResolveMutex());
-        Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
-
         if (Registry.any_of<SRigidBodyComponent, SCharacterPhysicsComponent>(Entity))
         {
             Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
         }
+    }
+
+    // External (non-setter) dirtying. The tag flows through OnTransformDirtied to set the flag. Single-threaded.
+    void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+        MarkPhysicsBodyDirtyIfBodied(Registry, Entity);
     }
 }

@@ -27,10 +27,6 @@ namespace Lumina::RHI::Textures
 
     struct FState
     {
-        FSemaphoreH         UploadSemaphore;
-        uint64              UploadCounter = 0;
-        FMutex              UploadMutex;
-
         TVector<FStorageSlot> StorageSlots;
         FMutex                StorageMutex;
 
@@ -45,13 +41,14 @@ namespace Lumina::RHI::Textures
 
     void Initialize()
     {
-        GState.UploadSemaphore = CreateSemaphore(0);
-        GState.bInitialized    = true;
+        GState.bInitialized = true;
 
         // 1x1 magenta placeholder: distinct enough that a missing/invalid texture is obvious.
+        // It backs every invalid ResourceID, so it must be resident before any sampling.
         GState.Default = Create(FTexture2DDesc{ .Width = 1, .Height = 1, .Format = EFormat::RGBA8_UNORM });
         const uint8 Magenta[4] = { 255, 0, 255, 255 };
         Upload(GState.Default, 0, Magenta, sizeof(Magenta), 1);
+        FlushUploadsAndWait();
     }
 
     void Shutdown()
@@ -88,7 +85,6 @@ namespace Lumina::RHI::Textures
         FreeH(GState.Default.Texture);
         GState.Default = FManagedTexture{};
 
-        FreeH(GState.UploadSemaphore);
         GState.bInitialized = false;
     }
 
@@ -146,50 +142,12 @@ namespace Lumina::RHI::Textures
 
     void Upload(const FManagedTexture& Tex, uint32 Mip, const void* Data, uint64 Size, uint32 RowPitchTexels)
     {
-        if (!Tex.IsValid() || Data == nullptr || Size == 0)
-        {
-            return;
-        }
-
-        const GPUPtr Staging = Malloc(Size, kDefaultAlign, EMemoryType::CPUWrite);
-        Memory::Memcpy(ToHost(Staging), Data, Size);
-
-        FTextureSlice Slice;
-        Slice.Mip = Mip;
-
-        FScopeLock Lock(GState.UploadMutex);
-
-        const FCmdListH CL = OpenCommandList(EQueueType::Graphics);
-        CmdCopyMemoryToTexture(CL, Staging, RowPitchTexels, Tex.Texture, Slice);
-
-        const uint64 Value = ++GState.UploadCounter;
-        const FSemaphoreInfo Signal { GState.UploadSemaphore, Value, EStageFlags::AllCommands };
-        Submit(EQueueType::Graphics, TSpan{&CL, 1}, {}, TSpan{&Signal, 1});
-
-        WaitSemaphore(GState.UploadSemaphore, Value);
-        ResetCommandList(CL);
-
-        Free(Staging);
+        UploadTexture(Tex.Texture, Mip, Data, Size, RowPitchTexels);
     }
 
     void Clear(const FManagedTexture& Tex, const float Value[4])
     {
-        if (!Tex.IsValid())
-        {
-            return;
-        }
-
-        FScopeLock Lock(GState.UploadMutex);
-
-        const FCmdListH CL = OpenCommandList(EQueueType::Graphics);
-        CmdClearTexture(CL, Tex.Texture, Value);
-
-        const uint64 Counter = ++GState.UploadCounter;
-        const FSemaphoreInfo Signal { GState.UploadSemaphore, Counter, EStageFlags::AllCommands };
-        Submit(EQueueType::Graphics, TSpan{&CL, 1}, {}, TSpan{&Signal, 1});
-
-        WaitSemaphore(GState.UploadSemaphore, Counter);
-        ResetCommandList(CL);
+        UploadClearTexture(Tex.Texture, Value);
     }
 
     uint32 StorageSlot(const FManagedTexture& Tex, uint32 Mip)

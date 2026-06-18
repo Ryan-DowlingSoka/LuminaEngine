@@ -80,56 +80,8 @@ namespace Lumina
     #define SCENE_MARKER_CONCAT(A, B) SCENE_MARKER_CONCAT_INNER(A, B)
     #define SCENE_GPU_SCOPE(InCL, Name) FScopedGPUMarker SCENE_MARKER_CONCAT(GpuMarker_, __LINE__)(InCL, Name)
     
-    namespace Barriers
-    {
-        static void ComputeToAll(RHI::FCmdListH CL)
-        {
-            RHI::CmdBarrier(CL,
-                RHI::EStageFlags::Compute,
-                RHI::EStageFlags::Compute | RHI::EStageFlags::VertexShader | RHI::EStageFlags::PixelShader |
-                RHI::EStageFlags::IndirectArguments | RHI::EStageFlags::FragmentTests | RHI::EStageFlags::Transfer);
-        }
+    namespace Barriers = RHI::Barriers;
 
-        static void RasterToRead(RHI::FCmdListH CL)
-        {
-            RHI::CmdBarrier(CL,
-                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests,
-                RHI::EStageFlags::PixelShader | RHI::EStageFlags::VertexShader | RHI::EStageFlags::Compute |
-                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
-        }
-
-        static void RasterToRaster(RHI::FCmdListH CL)
-        {
-            RHI::CmdBarrier(CL,
-                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests,
-                RHI::EStageFlags::RasterColorOut | RHI::EStageFlags::FragmentTests);
-        }
-
-        static void TransferToAll(RHI::FCmdListH CL)
-        {
-            RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
-        }
-
-        static void AllToTransfer(RHI::FCmdListH CL)
-        {
-            RHI::CmdBarrier(CL, RHI::EStageFlags::AllCommands, RHI::EStageFlags::Transfer);
-        }
-    }
-
-    static void UploadSceneImagePixels(const FSceneImage& Image, const void* Bytes, uint64 Size, uint32 RowPitchTexels)
-    {
-        const RHI::GPUPtr Staging = RHI::Malloc(Size, RHI::kDefaultAlign, RHI::EMemoryType::CPUWrite);
-        Memory::Memcpy(RHI::ToHost(Staging), Bytes, Size);
-
-        RHI::FCmdListH CL = RHI::OpenCommandList();
-        RHI::CmdCopyMemoryToTexture(CL, Staging, RowPitchTexels, Image.Texture);
-        RHI::CmdBarrier(CL, RHI::EStageFlags::Transfer, RHI::EStageFlags::AllCommands);
-        RHI::Submit(CL);
-        RHI::WaitDeviceIdle();
-        RHI::ResetCommandList(CL);
-        RHI::Free(Staging);
-    }
-    
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , ShadowAtlas(FShadowAtlasConfig())

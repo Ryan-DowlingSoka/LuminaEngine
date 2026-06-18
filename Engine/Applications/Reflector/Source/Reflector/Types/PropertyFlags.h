@@ -76,6 +76,7 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         Vector,
         Struct,
         Optional,
+        SubStruct,
     };
 
     /** Must be in-sync with EPropertyFlags in ObjectCore.h */

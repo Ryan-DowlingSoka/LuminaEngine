@@ -4,9 +4,9 @@ $PLUGINDESCRIPTION
 
 A Lumina plugin scaffolded from the editor. It ships two modules:
 
-- **$RUNTIMEMODULE** (`Runtime`) — gameplay code loaded in both the editor and
+- **$RUNTIMEMODULE** (`Runtime`), gameplay code loaded in both the editor and
   packaged game. Add reflected components/systems, Lua bindings, etc. here.
-- **$EDITORMODULE** (`Editor`) — editor-only customizations, stripped from
+- **$EDITORMODULE** (`Editor`), editor-only customizations, stripped from
   packaged builds. Register asset editor tools, property customizations, and
   menus here.
 

@@ -46,4 +46,12 @@
     </Compile>
   </ItemGroup>
 
+  <!-- Copy the source-generator assembly next to LuminaSharp.dll so the RUNTIME script compiler
+       (ScriptCompiler) can load + run it on plugin/game scripts — that's what fills the [NativeCall]
+       bodies of Reflector-generated bindings routed into a plugin's own runtime-compiled assembly. -->
+  <Target Name="CopyGeneratorForRuntime" AfterTargets="Build">
+    <Copy SourceFiles="@(Analyzer)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true"
+          Condition="'%(Filename)' == 'LuminaSharp.Generators'" />
+  </Target>
+
 </Project>

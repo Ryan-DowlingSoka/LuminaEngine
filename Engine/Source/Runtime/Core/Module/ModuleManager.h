@@ -8,6 +8,37 @@
 #include "Memory/SmartPtr.h"
 
 
+// ---- Module ABI guard ---------------------------------------------------------------------------
+// A module DLL links the engine and shares its struct layouts / vtables, so loading one built against an
+// incompatible engine ABI corrupts memory instead of failing cleanly. The most common cause is a config
+// mismatch (a Debug DLL vs a Development engine -> different CRT, iterator-debug level, struct sizes);
+// editor-vs-game (WITH_EDITOR changes layouts) and toolset changes are others. Every modular module bakes
+// a signature string via IMPLEMENT_MODULE, and FModuleManager::LoadModule refuses any whose signature
+// differs from the running engine's -- checked before any module code runs.
+//
+// Bump LUMINA_MODULE_ABI_VERSION on any source change that alters the engine's binary interface to modules
+// (layout/size of a boundary type, enum values, vtable shape, exported signatures) so older modules are
+// refused until rebuilt. The config/platform/compiler components below are automatic.
+#define LUMINA_MODULE_ABI_VERSION 1
+
+#if defined(WITH_EDITOR) && WITH_EDITOR
+    #define LUMINA_MODULE_ABI_PLATFORM "Editor"
+#else
+    #define LUMINA_MODULE_ABI_PLATFORM "Game"
+#endif
+
+#define LUMINA_MODULE_ABI_STR2(x) #x
+#define LUMINA_MODULE_ABI_STR(x)  LUMINA_MODULE_ABI_STR2(x)
+
+// Compile-time fingerprint, identical for the engine and any ABI-compatible module.
+// Example: "LMABI/1|Development|Editor|MSC1944"
+#define LUMINA_MODULE_ABI_SIGNATURE                              \
+    "LMABI/" LUMINA_MODULE_ABI_STR(LUMINA_MODULE_ABI_VERSION)    \
+    "|" LUMINA_CONFIGURATION_NAME                                \
+    "|" LUMINA_MODULE_ABI_PLATFORM                               \
+    "|MSC" LUMINA_MODULE_ABI_STR(_MSC_VER)
+
+
 // IMPLEMENT_MODULE has two flavors (LUMINA_MONOLITHIC): modular exports InitializeModule for
 // GetProcAddress; monolithic registers an intrusive FStaticModuleRegistration drained on lookup.
 #ifdef LUMINA_MONOLITHIC
@@ -26,6 +57,10 @@
 
 #define IMPLEMENT_MODULE(ModuleClass, ModuleName)                                           \
     DECLARE_MODULE_ALLOCATOR_OVERRIDES()                                                    \
+    extern "C" __declspec(dllexport) const char* LuminaModuleABISignature()                 \
+    {                                                                                       \
+        return LUMINA_MODULE_ABI_SIGNATURE;                                                 \
+    }                                                                                       \
     extern "C" __declspec(dllexport) Lumina::IModuleInterface* InitializeModule()           \
     {                                                                                       \
         Lumina::Memory::InitializeThreadHeap();                                             \
@@ -52,6 +87,8 @@ namespace Lumina
 
     using ModuleInitFunc = IModuleInterface* (*)();
     using ModuleShutdownFunc = void (*)();
+    // ABI guard export (see LUMINA_MODULE_ABI_SIGNATURE); returns a static string, ABI-safe to call.
+    using ModuleABIFunc = const char* (*)();
 
     // Monolithic-build static registration; self-links into an intrusive list during static
     // init. Ctor touches zero runtime state (static-init order across TUs is undefined).
@@ -88,6 +125,11 @@ namespace Lumina
         // True if a module with this bare name is statically linked (monolithic builds).
         bool HasStaticFactory(const FName& Name) const { return FindStaticFactory(Name) != nullptr; }
 
+        // Human-readable reason the most recent LoadModule call failed (e.g. an ABI mismatch), or empty
+        // if it succeeded / failed without a recorded reason. Lets callers (the editor project loader)
+        // surface a warning. Reset at the start of each LoadModule.
+        RUNTIME_API const FString& GetLastLoadError() const { return LastLoadError; }
+
 
     private:
 
@@ -103,5 +145,8 @@ namespace Lumina
 
         // Static module factories from IMPLEMENT_MODULE in monolithic builds (linear list).
         TVector<eastl::pair<FName, ModuleInitFunc>> StaticModuleFactories;
+
+        // Reason the last LoadModule failed (ABI mismatch, etc.); see GetLastLoadError.
+        FString LastLoadError;
     };
 }
