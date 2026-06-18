@@ -73,7 +73,10 @@ Engine/Editor/Config/EditorSettings.json
 obj/
 bin/
 
+# Generated C# projects: engine ones (LuminaSharp + Generators) are emitted by premake like the
+# .vcxproj; the *.Scripts.csproj are emitted by the runtime script host. All are generated, none tracked.
+*.csproj
+
 # C# script dev environment
-*.Scripts.csproj
 **/Scripts/.idea/
 **/Scripts/.vs/

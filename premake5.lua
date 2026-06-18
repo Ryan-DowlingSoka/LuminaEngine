@@ -6,6 +6,7 @@ if _ACTION == "setup" then return end
 
 include "BuildScripts/Dependencies"
 include "BuildScripts/Workspace"
+include "BuildScripts/CSharpProject"
 include "BuildScripts/Module"
 include "BuildScripts/PluginDiscovery"
 include "BuildScripts/Actions/Reflection"
@@ -36,24 +37,73 @@ LuminaWorkspaceSettings({
     -- an SDK-style net10 csproj (its C# support is legacy), so we author the .csproj and surface it
     -- here via externalproject; IDEs (Rider/VS) then treat it as a real C# project in the solution.
     group "Engine/Managed"
-        -- The [NativeCall] source generator. A first-class solution project (not just a P2P analyzer
-        -- reference) so MSBuild restores it on the solution and builds it in the SAME config it's
-        -- resolved as an analyzer -- otherwise a .sln build builds it as bin/Debug while the analyzer
-        -- path resolves elsewhere, and a fresh clone fails with CS0006 (the DLL "could not be found").
-        externalproject "LuminaSharp.Generators"
+        -- The [NativeCall] Roslyn source generator. Fully premake-generated SDK-style csproj via the
+        -- CSharpProject extension (premake's stock C# generator can't emit IsRoslynComponent etc.).
+        project "LuminaSharp.Generators"
             location "Engine/Source/LuminaSharp.Generators"
-            uuid "B7E2D9C4-1A6F-4C3B-8D5E-2F9A0B1C3D4E"
             kind "SharedLib"
             language "C#"
+            clr "NetCore"
+            dotnetsdk "Default"
+            dotnetframework "netstandard2.0"
+            files { "Engine/Source/LuminaSharp.Generators/**.cs" }
+            -- The **.cs glob is evaluated at generation time; keep MSBuild's own generated obj/ sources
+            -- (AssemblyInfo/AssemblyAttributes) out or they duplicate the SDK's auto-generated ones.
+            removefiles { "Engine/Source/LuminaSharp.Generators/obj/**", "Engine/Source/LuminaSharp.Generators/bin/**" }
+            dotnetstripdefines(true)
+            dotnetrawprops {
+                "<LangVersion>latest</LangVersion>",
+                "<Nullable>enable</Nullable>",
+                "<ImplicitUsings>disable</ImplicitUsings>",
+                "<IncludeBuildOutput>false</IncludeBuildOutput>",
+                "<IsRoslynComponent>true</IsRoslynComponent>",
+                "<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>",
+            }
+            -- PrivateAssets=all so the Roslyn package stays build-time only; injected directly to set the metadata.
+            dotnetrawitems {
+                [[<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />]],
+            }
 
-        externalproject "LuminaSharp"
+        -- The managed engine API (loaded at runtime by FDotNetHost). References the generator AS an
+        -- analyzer and compiles the Reflector-emitted bindings.
+        project "LuminaSharp"
             location "Engine/Source/LuminaSharp"
-            uuid "8F4B1C2A-3D4E-5F6A-7B8C-9D0E1F2A3B4C"
             kind "SharedLib"
             language "C#"
-            -- Build after Runtime so the Reflector has emitted the generated C# bindings the csproj globs,
-            -- and after the generator so the analyzer DLL exists when this compiles.
+            clr "NetCore"
+            dotnetsdk "Default"
+            dotnetframework "net10.0"
+            files { "Engine/Source/LuminaSharp/**.cs" }
+            removefiles { "Engine/Source/LuminaSharp/obj/**", "Engine/Source/LuminaSharp/bin/**" }
+            -- Build after Runtime (Reflector emits the bindings) and after the generator (analyzer DLL exists).
             dependson { "Runtime", "LuminaSharp.Generators" }
+            -- Output straight into the engine binaries where FDotNetHost looks.
+            targetdir(path.join(LuminaConfig.GetTargetDirectory(), "DotNet", "Managed"))
+            dotnetstripdefines(true)
+            dotnetrawprops {
+                "<EnableDynamicLoading>true</EnableDynamicLoading>",
+                "<AllowUnsafeBlocks>true</AllowUnsafeBlocks>",
+                "<Nullable>enable</Nullable>",
+                "<ImplicitUsings>disable</ImplicitUsings>",
+                "<AssemblyName>LuminaSharp</AssemblyName>",
+                "<RootNamespace>LuminaSharp</RootNamespace>",
+                "<Deterministic>true</Deterministic>",
+                "<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>",
+                "<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>",
+            }
+            dotnetrawitems {
+                [[<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" />]],
+                -- The generator as a source-generator/analyzer reference (the wire premake can't make).
+                [[<ProjectReference Include="..\LuminaSharp.Generators\LuminaSharp.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />]],
+                -- Reflector-emitted C# bindings (MSBuild glob, expanded at build time -- they don't exist at premake time).
+                [[<Compile Include="..\..\..\Intermediates\CSharpBindings\**\*.generated.cs"><Link>Generated\%(RecursiveDir)%(Filename)%(Extension)</Link></Compile>]],
+            }
+            -- Copy the generator assembly next to LuminaSharp.dll so the runtime ScriptCompiler can load it.
+            dotnetrawtail {
+                [[<Target Name="CopyGeneratorForRuntime" AfterTargets="Build">]],
+                [[  <Copy SourceFiles="@(Analyzer)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'%(Filename)' == 'LuminaSharp.Generators'" />]],
+                [[</Target>]],
+            }
     group ""
 
     -- Included after Engine so Tests' ModuleDependencies (Runtime/Editor) are already registered and
