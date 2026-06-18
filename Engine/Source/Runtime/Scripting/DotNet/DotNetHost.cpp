@@ -181,10 +181,7 @@ namespace Lumina::DotNet
         hostfxr_get_runtime_delegate_fn             GGetDelegate = nullptr;
         FExporterTable                              GExports{};
         int32                                       GCachedGeneration = 0;
-        // Managed export resolver (resolved by name via hostfxr at bootstrap); the one entry that bootstraps
-        // every other managed lookup, and the path plugin C++ uses to resolve script-defined exports by name.
         ResolveManagedExportFn                      GResolveManagedExport = nullptr;
-        // Local typed cache of the engine's managed entries, filled by name through GResolveManagedExport.
         FManagedExports                             GManaged{};
 
         // Sink the managed EnumerateEntityScripts calls once per script type; Ctx is the out vector.

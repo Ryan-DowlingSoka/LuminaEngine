@@ -31,5 +31,19 @@ if CleanAction then
                 os.rmdir(Dir)
             end
         end
+
+        -- premake-generated Directory.Build.props (CSharpProject.lua) live in the LuminaSharp source
+        -- dirs; purge them so a regen re-emits cleanly and stale restore paths don't linger.
+        local PropGlobs =
+        {
+            path.join(Root, "Engine/Source/LuminaSharp*/**.props"),
+        }
+
+        for _, Glob in ipairs(PropGlobs) do
+            for _, File in ipairs(os.matchfiles(Glob)) do
+                Logger.Info("Purging " .. File)
+                os.remove(File)
+            end
+        end
     end
 end

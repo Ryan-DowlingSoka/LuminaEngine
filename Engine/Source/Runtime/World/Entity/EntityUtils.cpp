@@ -701,6 +701,14 @@ namespace Lumina::ECS::Utils
                 Transform->bWorldDirty = true;
                 State->DirtyTransforms.enqueue(Entity);
             }
+
+            // External dirtying must also re-sync the physics body, else the body keeps its old pose
+            // and overwrites the edit on the next readback (entity snaps back). The setter path queues
+            // this via bHasPhysicsBody; this tag path is the editor/net/prefab backstop, so mirror it.
+            if (Registry.any_of<SRigidBodyComponent, SCharacterPhysicsComponent>(Entity))
+            {
+                State->DirtyBodies.enqueue(Entity);
+            }
         }
         State->bAnyDirty.store(true, std::memory_order_release);
     }
