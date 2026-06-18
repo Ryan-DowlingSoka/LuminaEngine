@@ -36,13 +36,24 @@ LuminaWorkspaceSettings({
     -- an SDK-style net10 csproj (its C# support is legacy), so we author the .csproj and surface it
     -- here via externalproject; IDEs (Rider/VS) then treat it as a real C# project in the solution.
     group "Engine/Managed"
+        -- The [NativeCall] source generator. A first-class solution project (not just a P2P analyzer
+        -- reference) so MSBuild restores it on the solution and builds it in the SAME config it's
+        -- resolved as an analyzer -- otherwise a .sln build builds it as bin/Debug while the analyzer
+        -- path resolves elsewhere, and a fresh clone fails with CS0006 (the DLL "could not be found").
+        externalproject "LuminaSharp.Generators"
+            location "Engine/Source/LuminaSharp.Generators"
+            uuid "B7E2D9C4-1A6F-4C3B-8D5E-2F9A0B1C3D4E"
+            kind "SharedLib"
+            language "C#"
+
         externalproject "LuminaSharp"
             location "Engine/Source/LuminaSharp"
             uuid "8F4B1C2A-3D4E-5F6A-7B8C-9D0E1F2A3B4C"
             kind "SharedLib"
             language "C#"
-            -- Build after Runtime so the Reflector has emitted the generated C# bindings the csproj globs.
-            dependson { "Runtime" }
+            -- Build after Runtime so the Reflector has emitted the generated C# bindings the csproj globs,
+            -- and after the generator so the analyzer DLL exists when this compiles.
+            dependson { "Runtime", "LuminaSharp.Generators" }
     group ""
 
     -- Included after Engine so Tests' ModuleDependencies (Runtime/Editor) are already registered and

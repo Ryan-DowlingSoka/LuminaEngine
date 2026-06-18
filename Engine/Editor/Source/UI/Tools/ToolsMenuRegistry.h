@@ -18,17 +18,27 @@ namespace Lumina
         FString           Label;      // menu text, may embed an LE_ICON_* glyph
         TFunction<bool()> IsActive;   // optional; drives the checkmark (tool currently open?)
         TFunction<void()> OnToggle;   // required; open the tool if closed, else close it
+        uint32            Handle = 0; // assigned by Register; opaque to the caller
     };
 
-    // Process-wide registry of plugin-contributed Tools-menu entries. Entries persist for the
-    // editor session (plugins don't unregister); duplicate labels are allowed but discouraged.
+    // Process-wide registry of plugin-contributed Tools-menu entries.
+    //
+    // LIFETIME: the callbacks capture code that lives in the REGISTERING module's DLL, but this
+    // registry is a static singleton (in the Editor module) that outlives every plugin. A plugin
+    // MUST Unregister in its ShutdownModule, before its DLL is unloaded -- otherwise the entry's
+    // TFunctions are destroyed against unmapped code when the registry tears down, and the process
+    // crashes on exit.
     class EDITOR_API FToolsMenuRegistry
     {
     public:
 
         static FToolsMenuRegistry& Get();
 
-        void Register(FToolsMenuEntry Entry);
+        // Returns a handle to pass to Unregister.
+        uint32 Register(FToolsMenuEntry Entry);
+
+        // Remove a previously registered entry. Safe to call with 0 or an already-removed handle.
+        void Unregister(uint32 Handle);
 
         const TVector<FToolsMenuEntry>& GetEntries() const { return Entries; }
 
@@ -37,5 +47,6 @@ namespace Lumina
     private:
 
         TVector<FToolsMenuEntry> Entries;
+        uint32                   NextHandle = 1;
     };
 }

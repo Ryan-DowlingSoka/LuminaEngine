@@ -48,7 +48,7 @@ public readonly unsafe partial struct Timers
     // The GCHandle target: the managed callback plus whether it loops (so the trampoline knows when to free).
     private sealed class Entry
     {
-        public Action Body;
+        public required Action Body;
         public bool Loop;
     }
 

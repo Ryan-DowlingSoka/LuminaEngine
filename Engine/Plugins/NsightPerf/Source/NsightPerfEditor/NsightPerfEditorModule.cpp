@@ -87,12 +87,17 @@ void FNsightPerfEditorModule::StartupModule()
             UI->ToggleTool<FNsightPerfTool>(UI);
         }
     };
-    FToolsMenuRegistry::Get().Register(Move(Entry));
+    ToolsMenuHandle = FToolsMenuRegistry::Get().Register(Move(Entry));
 
     LOG_INFO("[NsightPerf] Editor module ready");
 }
 
 void FNsightPerfEditorModule::ShutdownModule()
 {
+    // Remove our Tools-menu entry while this DLL is still mapped: its callbacks are code here, and
+    // the registry (Editor module, static lifetime) would otherwise destroy them after we unload.
+    FToolsMenuRegistry::Get().Unregister(ToolsMenuHandle);
+    ToolsMenuHandle = 0;
+
     LOG_INFO("[NsightPerf] Editor module shutdown");
 }

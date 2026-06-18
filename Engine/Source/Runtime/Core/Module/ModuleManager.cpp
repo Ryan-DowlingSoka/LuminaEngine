@@ -112,7 +112,11 @@ namespace Lumina
 
         FStringView ModuleName = VFS::FileName(ModulePath, true);
 
-        FModuleInfo* ModuleInfo = GetOrCreateModuleInfo(ModuleName);
+        // Key the map by the bare name (no "-<Config>" suffix), matching the static path above and the
+        // name UnloadModule/PluginManager use (the descriptor's module name). Keying by the suffixed
+        // DLL filename instead made a dynamically-loaded module impossible to find on unload -> the
+        // DEBUG_ASSERT(it != end()) in UnloadModule fired at shutdown.
+        FModuleInfo* ModuleInfo = GetOrCreateModuleInfo(BareFName);
         ModuleInfo->ModuleHandle = ModuleHandle;
         ModuleInfo->ModuleInterface.reset(ModuleInterface);
 

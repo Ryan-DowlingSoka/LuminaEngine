@@ -8,8 +8,27 @@ namespace Lumina
         return Instance;
     }
 
-    void FToolsMenuRegistry::Register(FToolsMenuEntry Entry)
+    uint32 FToolsMenuRegistry::Register(FToolsMenuEntry Entry)
     {
+        const uint32 Handle = NextHandle++;
+        Entry.Handle = Handle;
         Entries.push_back(eastl::move(Entry));
+        return Handle;
+    }
+
+    void FToolsMenuRegistry::Unregister(uint32 Handle)
+    {
+        if (Handle == 0)
+        {
+            return;
+        }
+        for (auto It = Entries.begin(); It != Entries.end(); ++It)
+        {
+            if (It->Handle == Handle)
+            {
+                Entries.erase(It);
+                return;
+            }
+        }
     }
 }
