@@ -77,6 +77,10 @@ bin/
 # .vcxproj; the *.Scripts.csproj are emitted by the runtime script host. All are generated, none tracked.
 *.csproj
 
+# premake (CSharpProject.lua) emits a Directory.Build.props next to each managed csproj to route NuGet
+# restore obj into Intermediates. Generated like the csproj -- not tracked.
+Directory.Build.props
+
 # C# script dev environment
 **/Scripts/.idea/
 **/Scripts/.vs/
