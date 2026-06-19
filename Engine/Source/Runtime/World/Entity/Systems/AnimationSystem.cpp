@@ -20,9 +20,10 @@
 
 namespace Lumina
 {
+    // Mutates the simple-anim / graph / blackboard state (time advance, VM state, lazy init), so they are
+    // WRITES, not reads — the system is their sole writer but the declaration must be honest for scheduling.
     FSystemAccess SAnimationSystem::Access = FSystemAccess{}
-        .Write<SSkeletalMeshComponent, STransformComponent>()
-        .Read<SSimpleAnimationComponent, SAnimationGraphComponent, SBlackboardComponent>();
+        .Write<SSkeletalMeshComponent, STransformComponent, SSimpleAnimationComponent, SAnimationGraphComponent, SBlackboardComponent>();
 
     // Skeletons not rendered within this window are treated as off-screen (a few frames of slack so brief
     // occlusion / culling flicker doesn't stutter the pose).

@@ -23,7 +23,7 @@ namespace Lumina
         .Write<SNavMeshComponent>()
         .Read<SBoxColliderComponent, SSphereColliderComponent, SMeshColliderComponent,
               SCapsuleColliderComponent, SCylinderColliderComponent, SCharacterPhysicsComponent,
-              STerrainColliderComponent, STransformComponent, SStaticMeshComponent>();
+              STerrainColliderComponent, STerrainComponent, STransformComponent, SStaticMeshComponent>();
 
     // NOLINTBEGIN(bugprone-throwing-static-initialization)
 

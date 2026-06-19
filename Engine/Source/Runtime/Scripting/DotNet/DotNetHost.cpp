@@ -194,8 +194,28 @@ namespace Lumina::DotNet
             }
         }
 
-        // Sink the managed EnumerateEntitySystems calls once per system type; Ctx is the out vector.
-        void LmSystemDescSink(void* Ctx, const char* Name, int Len, int Stage, int Priority)
+        // Reads the entt::type_hash ids off an array of FComponentOps* access tokens into Out.
+        void LmCollectAccessIds(const void* const* Tokens, int Count, TVector<uint32>& Out)
+        {
+            if (Tokens == nullptr || Count <= 0)
+            {
+                return;
+            }
+            Out.reserve(static_cast<size_t>(Count));
+            for (int i = 0; i < Count; ++i)
+            {
+                if (const FComponentOps* Ops = static_cast<const FComponentOps*>(Tokens[i]))
+                {
+                    Out.push_back(static_cast<uint32>(Ops->TypeId));
+                }
+            }
+        }
+
+        // Sink the managed EnumerateEntitySystems calls once per system type; Ctx is the out vector. The
+        // write/read tokens are FComponentOps* the system declared via [Writes]/[Reads]; their TypeId is the
+        // entt::type_hash used to build the FSystemAccess (no tokens => exclusive).
+        void LmSystemDescSink(void* Ctx, const char* Name, int Len, int Stage, int Priority,
+            const void* const* WriteTokens, int NWrite, const void* const* ReadTokens, int NRead)
         {
             auto* Out = static_cast<TVector<FManagedSystemDesc>*>(Ctx);
             if (Out != nullptr && Name != nullptr && Len > 0)
@@ -204,6 +224,8 @@ namespace Lumina::DotNet
                 Desc.TypeName.assign(Name, static_cast<size_t>(Len));
                 Desc.Stage = (Stage >= 0 && Stage < (int)EUpdateStage::Max) ? (EUpdateStage)Stage : EUpdateStage::PrePhysics;
                 Desc.Priority = Priority;
+                LmCollectAccessIds(WriteTokens, NWrite, Desc.Writes);
+                LmCollectAccessIds(ReadTokens, NRead, Desc.Reads);
                 Out->push_back(eastl::move(Desc));
             }
         }

@@ -43,6 +43,22 @@ namespace Lumina
         FVector4 Color = FVector4(1.0f);
     };
     
+    // One system as scheduled in a stage, with its declared access — the snapshot CWorld::GetSystemSchedule
+    // hands the Gameplay Insights editor tool. Reads/Writes are entt::type_hash ids; resolve names with
+    // GetAccessTypeName (SystemAccess.h).
+    struct FSystemScheduleEntry
+    {
+        FName           Name;                  // None for a managed (C#) system
+        TVector<uint32> Writes;
+        TVector<uint32> Reads;
+        uint8           Stage      = 0;        // EUpdateStage
+        uint8           Priority   = 255;
+        uint8           Batch      = 0;        // parallel batch index within the stage
+        uint8           BatchSize  = 1;        // systems running concurrently in this batch
+        bool            bExclusive = false;
+        bool            bManaged   = false;
+    };
+
     struct FWorldDebugInterface
     {
         CWorld* World = nullptr;
@@ -74,6 +90,7 @@ namespace Lumina
             void*          Self = nullptr;
             FSystemAccess  Access;
             uint8          StagePriority = 255;
+            FName          Name;            // for the parallel-schedule dump (Core.Systems.LogSchedule)
         };
 
         // A unique active system in this world. Owns the once-per-system Startup/Teardown lifecycle; the
@@ -305,7 +322,11 @@ namespace Lumina
         void SetEntityScript(entt::entity Entity, FStringView ScriptClass);
 
         void RegisterSystems();
-        
+
+        // Read-only snapshot of the per-stage parallel system batches + each system's declared access, for the
+        // Gameplay Insights editor tool. Replays the TickSystems batching; game thread.
+        void GetSystemSchedule(TVector<FSystemScheduleEntry>& Out) const;
+
         //~ Begin Debug Drawing
         void DrawBillboard(int32 ResourceID, const FVector3& Location, float Scale) override;
         void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;

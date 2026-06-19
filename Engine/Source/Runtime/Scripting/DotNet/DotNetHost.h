@@ -20,7 +20,8 @@ namespace Lumina::DotNet
     // Bumped whenever the native<->managed boundary ABI changes.
     // v4: LoadScripts takes per-unit assembly buckets (FSourceAssembly).
     // v5: native->managed exports resolved by name (ResolveManagedExport) instead of a mirrored struct/hash.
-    inline constexpr int32 GAbiVersion = 5;
+    // v6: managed system-descriptor sink carries declared read/write component-ops tokens (parallel C# systems).
+    inline constexpr int32 GAbiVersion = 6;
 
     // Boots the embedded runtime and runs the managed handshake.
     RUNTIME_API void Initialize();
@@ -83,9 +84,11 @@ namespace Lumina::DotNet
     
     struct FManagedSystemDesc
     {
-        FString      TypeName;
-        EUpdateStage Stage = EUpdateStage::PrePhysics;
-        int32        Priority = 128;
+        FString         TypeName;
+        EUpdateStage    Stage = EUpdateStage::PrePhysics;
+        int32           Priority = 128;
+        TVector<uint32> Writes;   // entt::type_hash ids of written components (empty => exclusive system)
+        TVector<uint32> Reads;    // entt::type_hash ids of read components
     };
 
     RUNTIME_API void GatherManagedSystemDescs(TVector<FManagedSystemDesc>& Out);

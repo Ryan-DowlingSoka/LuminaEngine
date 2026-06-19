@@ -2,6 +2,8 @@
 #include "Core/UpdateStage.h"
 #include "Physics/PhysicsTypes.h"
 #include "Physics/Ray/RayCast.h"
+#include "SystemAccess.h"
+#include "SystemResources.h"
 #include "TaskSystem/TaskSystem.h"
 #include "World/Entity/Components/TransformComponent.h"
 
@@ -105,6 +107,7 @@ namespace Lumina
         template<typename... Ts>
         void Clear() const
         {
+            (ValidateSystemAccess(static_cast<uint32>(entt::type_hash<Ts>::value()), true, "Write<> of the cleared component"), ...);
             Registry.clear<Ts...>();
         }
 
@@ -123,12 +126,14 @@ namespace Lumina
         template<typename T, typename ... TArgs>
         T& Emplace(entt::entity entity, TArgs&& ... Args)
         {
+            ValidateSystemAccess(static_cast<uint32>(entt::type_hash<T>::value()), true, "Write<> of the emplaced component");
             return Registry.emplace<T>(entity, std::forward<TArgs>(Args)...);
         }
 
         template<typename T, typename ... TArgs>
         T& EmplaceOrReplace(entt::entity entity, TArgs&& ... Args) const
         {
+            ValidateSystemAccess(static_cast<uint32>(entt::type_hash<T>::value()), true, "Write<> of the emplaced component");
             return Registry.emplace_or_replace<T>(entity, std::forward<TArgs>(Args)...);
         }
         
@@ -184,7 +189,11 @@ namespace Lumina
 
         RUNTIME_API entt::entity Create(FVector3 Location) const;
         RUNTIME_API entt::entity Create() const;
-        RUNTIME_API void Destroy(entt::entity Entity) const { Registry.destroy(Entity); }
+        void Destroy(entt::entity Entity) const
+        {
+            ValidateSystemAccess(static_cast<uint32>(entt::type_hash<SystemResource::EntityStructure>::value()), true, "Write<SystemResource::EntityStructure>");
+            Registry.destroy(Entity);
+        }
 
         RUNTIME_API size_t GetNumEntities() const;
         RUNTIME_API bool IsValidEntity(entt::entity Entity) const;

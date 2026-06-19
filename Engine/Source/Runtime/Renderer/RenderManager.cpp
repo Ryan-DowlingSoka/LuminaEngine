@@ -48,6 +48,9 @@ namespace Lumina
 
     FRenderManager::~FRenderManager()
     {
+        // Detach from resize events before teardown so a late resize can't enqueue work.
+        FWindow::OnWindowResized.Remove(WindowResizedHandle);
+
         // Stop the worker first: queued commands hold refs to GPU resources destroyed below.
         if (GRenderThread)
         {
@@ -128,6 +131,8 @@ namespace Lumina
 
         FWindow* Window = Windowing::GetPrimaryWindowHandle();
         Swapchain = RHI::CreateSwapchain(Window->GetWindow(), Window->GetExtent());
+
+        WindowResizedHandle = FWindow::OnWindowResized.AddMember(this, &FRenderManager::OnWindowResized);
 
         GRenderThread = Memory::New<FRenderThread>();
         GRenderThread->Start();
@@ -226,5 +231,35 @@ namespace Lumina
     void FRenderManager::RecreatePrimarySwapchain()
     {
         RHI::RecreateSwapchain(Swapchain, Windowing::GetPrimaryWindowHandle()->GetExtent());
+    }
+
+    void FRenderManager::OnWindowResized(FWindow* Window, const FUIntVector2& Extent)
+    {
+        // Only the primary window owns the presented swapchain. A minimized / zero-area
+        // window has no valid extent to build against.
+        if (Window != Windowing::GetPrimaryWindowHandle() || Window->IsWindowMinimized())
+        {
+            return;
+        }
+
+        if (Extent.x == 0 || Extent.y == 0)
+        {
+            return;
+        }
+
+        // The swapchain lives on the render thread; rebuild it there. Coalesce duplicate
+        // events by skipping when the extent already matches.
+        const FVector2 NewSize = FVector2(Extent);
+        ENQUEUE_RENDER_COMMAND(RecreateSwapchainOnResize)([this, Extent, NewSize]
+        {
+            const FUIntVector2 Current = RHI::GetSwapchainExtent(Swapchain);
+            if (Current.x == Extent.x && Current.y == Extent.y)
+            {
+                return;
+            }
+
+            RHI::RecreateSwapchain(Swapchain, Extent);
+            OnSwapchainResized.Broadcast(NewSize);
+        });
     }
 }

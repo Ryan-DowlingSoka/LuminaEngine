@@ -13,6 +13,7 @@ namespace Lumina
     class FSpirVShaderCompiler;
     class FShaderLibrary;
     class FUpdateContext;
+    class FWindow;
 }
 
 namespace Lumina
@@ -72,6 +73,8 @@ namespace Lumina
         NODISCARD FSharedRenderResources& GetSharedRenderResources() { return SharedRenderResources; }
 
     private:
+        
+        void OnWindowResized(FWindow* Window, const FUIntVector2& Extent);
 
         #if WITH_EDITOR
         IImGuiRenderer*                     ImGuiRenderer = nullptr;
@@ -87,6 +90,8 @@ namespace Lumina
 
         // New RHI owns presentation: the primary window swapchain.
         RHI::FSwapchainH                    Swapchain;
+
+        FDelegateHandle                     WindowResizedHandle;
 
         uint8                               CurrentFrameIndex = 0;
     };

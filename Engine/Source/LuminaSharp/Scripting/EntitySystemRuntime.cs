@@ -29,8 +29,12 @@ internal sealed class EntitySystemRuntime
     /// <summary>Number of discovered [EntitySystem] types in this generation (for editor diagnostics).</summary>
     public int TypeCount => Library.EntitySystemTypes.Count;
 
-    /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority).
-    /// sink(ctx, utf8Name, byteLen, stage, priority) is called once per type.</summary>
+    // Max component types one access list (reads or writes) can declare; systems touch a handful at most.
+    private const int MaxAccessTokens = 32;
+
+    /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority,
+    /// write-ops tokens, read-ops tokens). The tokens are FComponentOps* the native side reads TypeId off to
+    /// build the system's FSystemAccess (empty arrays => exclusive). Called once per type.</summary>
     public unsafe void Enumerate(IntPtr Sink, IntPtr Context)
     {
         if (Sink == IntPtr.Zero)
@@ -38,8 +42,10 @@ internal sealed class EntitySystemRuntime
             return;
         }
 
-        var Add = (delegate* unmanaged[Stdcall]<IntPtr, byte*, int, int, int, void>)Sink;
+        var Add = (delegate* unmanaged[Stdcall]<IntPtr, byte*, int, int, int, IntPtr*, int, IntPtr*, int, void>)Sink;
         Span<byte> Scratch = stackalloc byte[256];
+        IntPtr* Writes = stackalloc IntPtr[MaxAccessTokens];
+        IntPtr* Reads = stackalloc IntPtr[MaxAccessTokens];
         foreach (Type Type in Library.EntitySystemTypes)
         {
             EntitySystemAttribute? Meta = Type.GetCustomAttribute<EntitySystemAttribute>();
@@ -48,16 +54,55 @@ internal sealed class EntitySystemRuntime
                 continue;
             }
 
+            // Resolve declared access to FComponentOps tokens. If any declared type fails to resolve we drop
+            // ALL access for this system so it stays exclusive (under-declaring access would race silently).
+            int NWrite = ResolveAccessTokens(Type.GetCustomAttributes<WritesAttribute>(), Writes, Type, "Writes");
+            int NRead = ResolveAccessTokens(Type.GetCustomAttributes<ReadsAttribute>(), Reads, Type, "Reads");
+            if (NWrite < 0 || NRead < 0)
+            {
+                NWrite = 0;
+                NRead = 0;
+            }
+
             Interop.FInteropString Encoded = new(FullName, Scratch);
             try
             {
-                Add(Context, Encoded.Pointer, Encoded.Length, (int)Meta.Stage, Meta.Priority);
+                Add(Context, Encoded.Pointer, Encoded.Length, (int)Meta.Stage, Meta.Priority, Writes, NWrite, Reads, NRead);
             }
             finally
             {
                 Encoded.Free();
             }
         }
+    }
+
+    /// <summary>Resolves an access attribute's component types to their FComponentOps tokens into Out.
+    /// Returns the token count, or -1 if any declared type is not a registered component (caller then falls
+    /// back to exclusive).</summary>
+    private static unsafe int ResolveAccessTokens(IEnumerable<ComponentAccessAttribute> Attributes, IntPtr* Out, Type System, string Kind)
+    {
+        int Count = 0;
+        foreach (ComponentAccessAttribute Attribute in Attributes)
+        {
+            foreach (Type Component in Attribute.Components)
+            {
+                if (Count >= MaxAccessTokens)
+                {
+                    Native.Log(ELogLevel.Warn, $"EntitySystem '{System.Name}' declares more than {MaxAccessTokens} {Kind} components; running exclusive.");
+                    return -1;
+                }
+
+                IntPtr Token = Native.FindComponentOps(Component.Name);
+                if (Token == IntPtr.Zero)
+                {
+                    Native.Log(ELogLevel.Warn, $"EntitySystem '{System.Name}' declares {Kind} access to '{Component.Name}', which is not a registered component; running exclusive.");
+                    return -1;
+                }
+
+                Out[Count++] = Token;
+            }
+        }
+        return Count;
     }
 
     /// <summary>Instantiates the named EntitySystem for a world; returns a strong GCHandle (as IntPtr)

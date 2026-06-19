@@ -21,7 +21,8 @@ public static unsafe partial class Host
     // Must equal Lumina::DotNet::GAbiVersion.
     // v4: LoadScripts takes per-unit assembly buckets (FSourceAssembly) instead of a flat source list.
     // v5: native->managed exports resolved by name (ManagedExportRegistry) instead of a mirrored struct/hash.
-    private const int AbiVersion = 5;
+    // v6: EnumerateEntitySystems sink carries declared read/write component-ops tokens (parallel C# systems).
+    private const int AbiVersion = 6;
 
     // The logical module name for the engine module that hosts this assembly (Runtime). NativeBindings
     // resolves it to the loaded native handle via ModuleHandle; per-module bindings use their own names.
@@ -492,8 +493,8 @@ public static unsafe partial class Host
     //  the EntityScript entries but one instance per WORLD (not per entity); the GCHandle is the FStageSlot
     //  Self the shared native shim forwards OnUpdate to.
 
-    /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority).
-    /// sink(ctx, utf8Name, byteLen, stage, priority) is called once per type.</summary>
+    /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority, declared
+    /// write-ops tokens, declared read-ops tokens). Called once per type; see EntitySystemRuntime.Enumerate.</summary>
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void EnumerateEntitySystems(IntPtr Sink, IntPtr Context)

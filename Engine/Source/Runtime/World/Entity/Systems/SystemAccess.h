@@ -1,6 +1,8 @@
 #pragma once
 
+#include "ModuleAPI.h"
 #include "Containers/Array.h"
+#include "Containers/String.h"
 // entt (entt::type_hash) is provided via the precompiled header, like the rest of the World module.
 
 namespace Lumina
@@ -67,5 +69,64 @@ namespace Lumina
                 || Intersects(A.Writes, B.Reads)
                 || Intersects(B.Writes, A.Reads);
         }
+
+        // An exclusive system implicitly declares everything; otherwise the id must be in the matching set.
+        bool DeclaresWrite(uint32 Id) const
+        {
+            if (bExclusive)
+            {
+                return true;
+            }
+            for (uint32 W : Writes)
+            {
+                if (W == Id)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // A write satisfies a read (you may read what you write), so check both sets.
+        bool DeclaresRead(uint32 Id) const
+        {
+            return DeclaresWrite(Id) || [&]
+            {
+                for (uint32 R : Reads)
+                {
+                    if (R == Id)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }();
+        }
     };
+
+    // Debug/Development honest-access validation. The stage scheduler binds the executing system's access on
+    // the current thread for the duration of its Update (see CWorld::TickSystems); access-implying helpers
+    // (transform resolve, SetEntityWorldTransform, physics, structural ECS changes) then call
+    // ValidateSystemAccess to assert the system actually declared what it touched. Catches the silent
+    // under-declaration race that parallel systems are prone to. Compiled to a no-op in Shipping.
+    //
+    // bWrite picks the required access kind. What is a human label naming the access to add (e.g.
+    // "Write<STransformComponent>"). No-op when no system access is bound (i.e. called outside the scheduler,
+    // such as gameplay code or editor tools) or when the bound system is exclusive (declares everything).
+#if defined(LE_SHIPPING)
+    inline void SetExecutingSystemAccess(const FSystemAccess*) {}
+    inline const FSystemAccess* GetExecutingSystemAccess() { return nullptr; }
+    inline void ValidateSystemAccess(uint32, bool, const char*) {}
+#else
+    RUNTIME_API void SetExecutingSystemAccess(const FSystemAccess* Access);
+    RUNTIME_API const FSystemAccess* GetExecutingSystemAccess();
+    RUNTIME_API void ValidateSystemAccess(uint32 ComponentId, bool bWrite, const char* What);
+#endif
+
+    // Reverse map from an access id (entt::type_hash, what FSystemAccess stores) to a display name, so editor
+    // tooling can render a system's declared reads/writes as "STransformComponent" / "PhysicsQuery" rather than
+    // an opaque hash. Components self-register at op-table registration; the SystemResource:: tags register at
+    // first lookup. Returns nullptr for an unknown id.
+    RUNTIME_API void RegisterAccessTypeName(uint32 Id, FStringView Name);
+    RUNTIME_API const char* GetAccessTypeName(uint32 Id);
 }

@@ -11,6 +11,9 @@
 #include "Components/CSharpScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
+#include "Systems/SystemAccess.h"
+#include "Systems/SystemResources.h"
+#include "Core/Assertions/Assert.h"
 #include "Memory/MemoryConcurrentQueue.h"
 #include "TaskSystem/FiberSync.h"
 #include "TaskSystem/Scheduler/JobScheduler.h"
@@ -49,9 +52,42 @@ namespace Lumina
         }
     }
 
+    // id (entt::type_hash) -> display name, for editor tooling that renders declared system accesses.
+    namespace
+    {
+        THashMap<uint32, FString>& AccessTypeNameMap()
+        {
+            static THashMap<uint32, FString> Map;
+            return Map;
+        }
+    }
+
+    void RegisterAccessTypeName(uint32 Id, FStringView Name)
+    {
+        AccessTypeNameMap()[Id] = eastl::string(Name.data(), Name.size());
+    }
+
+    const char* GetAccessTypeName(uint32 Id)
+    {
+        // Lazily register the non-reflected SystemResource:: tags (they have no op table to hook).
+        auto& Map = AccessTypeNameMap();
+        if (Map.empty() || Map.find(static_cast<uint32>(entt::type_hash<SystemResource::PhysicsQuery>::value())) == Map.end())
+        {
+            Map[static_cast<uint32>(entt::type_hash<SystemResource::PhysicsQuery>::value())]    = "PhysicsQuery";
+            Map[static_cast<uint32>(entt::type_hash<SystemResource::EntityStructure>::value())] = "EntityStructure";
+            Map[static_cast<uint32>(entt::type_hash<SystemResource::EventDispatcher>::value())] = "EventDispatcher";
+        }
+        const auto It = Map.find(Id);
+        return It != Map.end() ? It->second.c_str() : nullptr;
+    }
+
     void RegisterComponentOps(FStringView Name, const FComponentOps* Ops)
     {
         ComponentOpsMap()[ComponentOpsKey(Name)] = Ops;
+        if (Ops != nullptr)
+        {
+            RegisterAccessTypeName(static_cast<uint32>(Ops->TypeId), Name);
+        }
     }
 
     const FComponentOps* FindComponentOps(FStringView Name)
@@ -59,6 +95,58 @@ namespace Lumina
         const auto It = ComponentOpsMap().find(ComponentOpsKey(Name));
         return It != ComponentOpsMap().end() ? It->second : nullptr;
     }
+
+    //~ Honest-access validation (see SystemAccess.h). One thread_local per Runtime thread holds the access
+    //  of the system currently ticking on that thread; the scheduler binds/unbinds it around each Update.
+#if !defined(LE_SHIPPING)
+    namespace
+    {
+        thread_local const FSystemAccess* GExecutingSystemAccess = nullptr;
+    }
+
+    void SetExecutingSystemAccess(const FSystemAccess* Access)
+    {
+        GExecutingSystemAccess = Access;
+    }
+
+    const FSystemAccess* GetExecutingSystemAccess()
+    {
+        return GExecutingSystemAccess;
+    }
+
+    void ValidateSystemAccess(uint32 ComponentId, bool bWrite, const char* What)
+    {
+        const FSystemAccess* Access = GExecutingSystemAccess;
+        if (Access == nullptr)
+        {
+            return; // not inside a scheduled system Update (gameplay/editor/tool call) -> nothing to check
+        }
+
+        const bool bDeclared = bWrite ? Access->DeclaresWrite(ComponentId) : Access->DeclaresRead(ComponentId);
+        if (bDeclared)
+        {
+            return;
+        }
+
+        // Log each unique (system access, missing access) once so a per-entity loop doesn't spam, then assert
+        // (debug only). The same access object pointer identifies the offending system for the frame.
+        static FFiberMutex SeenMutex;
+        static THashSet<uint64> Seen;
+        const uint64 Key = (reinterpret_cast<uint64>(Access) ^ (uint64(ComponentId) << 1)) ^ (bWrite ? 1ull : 0ull);
+        bool bFirst = false;
+        {
+            FFiberScopeLock Lock(SeenMutex);
+            bFirst = Seen.insert(Key).second;
+        }
+        if (bFirst)
+        {
+            LOG_ERROR("System ran in parallel but under-declared its ECS access: it touched something requiring "
+                      "{} which it did not declare. Add it to the system's FSystemAccess (or drop the Access member "
+                      "to run exclusive). This is a silent data race under concurrent scheduling.", What);
+            DEBUG_ASSERT(false, "System under-declared ECS access (see log).");
+        }
+    }
+#endif
 }
 
 using namespace entt::literals; 
@@ -899,6 +987,10 @@ namespace Lumina::ECS::Utils
     {
         LUMINA_PROFILE_SCOPE();
 
+        // Writes WorldTransform across the registry and walks parent chains -> a calling system must declare it.
+        ValidateSystemAccess(static_cast<uint32>(entt::type_hash<STransformComponent>::value()), true, "Write<STransformComponent>");
+        ValidateSystemAccess(static_cast<uint32>(entt::type_hash<FRelationshipComponent>::value()), false, "Read<FRelationshipComponent>");
+
         FTransformDirtyState& DirtyState = *EnsureTransformDirtyState(Registry);
         FFiberScopeLock ResolveLock(DirtyState.ResolveGuard);   // one resolver writes WorldTransform at a time
 
@@ -1187,6 +1279,10 @@ namespace Lumina::ECS::Utils
 
     void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform)
     {
+        // Writes the entity's local transform and reads the parent's world matrix via FRelationshipComponent.
+        ValidateSystemAccess(static_cast<uint32>(entt::type_hash<STransformComponent>::value()), true, "Write<STransformComponent>");
+        ValidateSystemAccess(static_cast<uint32>(entt::type_hash<FRelationshipComponent>::value()), false, "Read<FRelationshipComponent>");
+
         STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity);
         if (Transform == nullptr)
         {

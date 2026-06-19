@@ -22,6 +22,19 @@ namespace Lumina
             }
             return H;
         }
+
+        // One open (not-yet-closed) scope. The stack is thread-local: a scope always opens and closes on the
+        // same thread/fiber, so nesting and self-time accounting are per-thread and need no lock. Only the
+        // shared per-frame aggregation (touched in EndScope) is mutex-guarded.
+        struct FOpenScope
+        {
+            FFixedString Name;
+            uint64       Hash    = 0;
+            double       StartMs = 0.0;
+            double       ChildMs = 0.0;
+        };
+
+        thread_local TVector<FOpenScope> GOpenStack;
     }
 
     FGameplayProfiler& FGameplayProfiler::Get()
@@ -36,10 +49,39 @@ namespace Lumina
         if (bInEnabled && !bWas)
         {
             // Fresh start so a stale partial frame can't leak in.
-            Stack.clear();
-            IndexOf.clear();
-            Current = FGameplayProfileFrame{};
+            {
+                std::lock_guard<std::mutex> Lock(Mutex);
+                GOpenStack.clear();
+                IndexOf.clear();
+                Current = FGameplayProfileFrame{};
+            }
+            std::lock_guard<std::mutex> SpanLock(SpanMutex);
+            SystemCurrent = FSystemSpanFrame{};
         }
+    }
+
+    double FGameplayProfiler::NowMilliseconds()
+    {
+        return NowMs();
+    }
+
+    void FGameplayProfiler::RecordSystemSpan(FStringView Name, uint8 Stage, uint8 Batch, bool bExclusive, double StartMs, double EndMs, uint16 Worker)
+    {
+        if (!IsEnabled())
+        {
+            return;
+        }
+        FSystemSpan Span;
+        Span.Name       = FFixedString(Name.data(), Name.size());
+        Span.StartMs    = StartMs;
+        Span.EndMs      = EndMs;
+        Span.Worker     = Worker;
+        Span.Stage      = Stage;
+        Span.Batch      = Batch;
+        Span.bExclusive = bExclusive;
+
+        std::lock_guard<std::mutex> Lock(SpanMutex);
+        SystemCurrent.Spans.push_back(std::move(Span));
     }
 
     void FGameplayProfiler::BeginFrame()
@@ -48,11 +90,21 @@ namespace Lumina
         {
             return;
         }
-        Current.Entries.clear();
-        IndexOf.clear();
-        Stack.clear();
-        Current.TotalMs = 0.0;
-        Current.FrameNumber = ++FrameCounter;
+        {
+            std::lock_guard<std::mutex> Lock(Mutex);
+            Current.Entries.clear();
+            IndexOf.clear();
+            GOpenStack.clear();
+            Current.TotalMs = 0.0;
+            Current.FrameNumber = ++FrameCounter;
+        }
+        {
+            std::lock_guard<std::mutex> Lock(SpanMutex);
+            SystemCurrent.Spans.clear();
+            SystemCurrent.FrameStartMs = NowMs();
+            SystemCurrent.FrameEndMs   = 0.0;
+            SystemCurrent.FrameNumber  = FrameCounter;
+        }
     }
 
     void FGameplayProfiler::EndFrame()
@@ -62,6 +114,7 @@ namespace Lumina
             return;
         }
 
+        std::lock_guard<std::mutex> Lock(Mutex);
         double Total = 0.0;
         for (const FGameplayProfileEntry& E : Current.Entries)
         {
@@ -98,6 +151,13 @@ namespace Lumina
                 EntryHistory[E.Hash] = std::move(Ring);
             }
         }
+
+        // Roll the system-span frame (separate lock; worker threads only ever push into SystemCurrent).
+        {
+            std::lock_guard<std::mutex> SpanLock(SpanMutex);
+            SystemCurrent.FrameEndMs = NowMs();
+            SystemLatest = SystemCurrent;
+        }
     }
 
     void FGameplayProfiler::BeginScope(FStringView Name)
@@ -111,46 +171,52 @@ namespace Lumina
         Open.Hash    = HashName(Name);
         Open.StartMs = NowMs();
         Open.ChildMs = 0.0;
-        Stack.push_back(std::move(Open));
+        GOpenStack.push_back(std::move(Open));   // thread-local; no lock
     }
 
     void FGameplayProfiler::EndScope()
     {
-        if (!IsEnabled() || Stack.empty())
+        if (!IsEnabled() || GOpenStack.empty())
         {
             return;
         }
 
-        FOpenScope Open = std::move(Stack.back());
-        Stack.pop_back();
+        FOpenScope Open = std::move(GOpenStack.back());
+        GOpenStack.pop_back();
 
         const double Duration = NowMs() - Open.StartMs;
         const double Self     = Duration - Open.ChildMs;
 
-        int32 Index;
-        const auto It = IndexOf.find(Open.Hash);
-        if (It != IndexOf.end())
+        // Aggregate into the shared per-frame table (parallel systems may close scopes concurrently).
         {
-            Index = It->second;
-        }
-        else
-        {
-            Index = static_cast<int32>(Current.Entries.size());
-            FGameplayProfileEntry Entry;
-            Entry.Name = Open.Name;
-            Entry.Hash = Open.Hash;
-            Current.Entries.push_back(std::move(Entry));
-            IndexOf[Open.Hash] = Index;
+            std::lock_guard<std::mutex> Lock(Mutex);
+
+            int32 Index;
+            const auto It = IndexOf.find(Open.Hash);
+            if (It != IndexOf.end())
+            {
+                Index = It->second;
+            }
+            else
+            {
+                Index = static_cast<int32>(Current.Entries.size());
+                FGameplayProfileEntry Entry;
+                Entry.Name = Open.Name;
+                Entry.Hash = Open.Hash;
+                Current.Entries.push_back(std::move(Entry));
+                IndexOf[Open.Hash] = Index;
+            }
+
+            FGameplayProfileEntry& Entry = Current.Entries[Index];
+            Entry.Calls++;
+            Entry.InclusiveMs += Duration;
+            Entry.ExclusiveMs += Self;
         }
 
-        FGameplayProfileEntry& Entry = Current.Entries[Index];
-        Entry.Calls++;
-        Entry.InclusiveMs += Duration;
-        Entry.ExclusiveMs += Self;
-
-        if (!Stack.empty())
+        // Charge this scope's time to its parent (thread-local nesting; no lock).
+        if (!GOpenStack.empty())
         {
-            Stack.back().ChildMs += Duration;
+            GOpenStack.back().ChildMs += Duration;
         }
     }
 

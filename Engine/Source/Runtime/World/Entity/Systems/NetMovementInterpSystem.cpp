@@ -7,6 +7,7 @@
 #include "Core/Object/ObjectCore.h"
 #include "World/Net/NetWorldState.h"
 #include "World/Entity/EntityUtils.h"
+#include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/RepTransformComponent.h"
 #include "World/Entity/Components/NetworkComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
@@ -15,11 +16,12 @@ namespace Lumina
 {
     // Disjoint write set so the scheduler can overlap this with other PostPhysics systems that don't touch
     // transforms. Dirty-tagging (FNeedsTransformUpdate) happens in the serial tail, covered by the transform
-    // write domain (same convention as SAnimationSystem's root-motion pass).
+    // write domain (same convention as SAnimationSystem's root-motion pass). FRelationshipComponent is read
+    // by the ResolveAllDirtyTransforms parent-chain walk.
     FSystemAccess SNetMovementInterpSystem::Access = FSystemAccess{}
         .Write<STransformComponent>()
         .Write<FRepTransform>()               // per-entity SmoothedInterpDelay is updated in the parallel body
-        .Read<SNetworkComponent>();
+        .Read<SNetworkComponent, FRelationshipComponent>();
 
     void SNetMovementInterpSystem::Update(const FSystemContext& Context) noexcept
     {

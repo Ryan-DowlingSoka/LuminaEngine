@@ -50,11 +50,7 @@ namespace Lumina
         CClass* Class = nullptr;
     };
 
-    // Reflectable handle to a CStruct guaranteed to be T or a struct derived from T. The struct
-    // analog of TSubclassOf; picks a reflected struct TYPE at runtime.
-    //
-    // Layout invariant: exactly one CStruct* (pointer-sized) at offset 0. FSubStructProperty reads
-    // the member as a CStruct* directly, so don't add members.
+    // Reflectable handle to a CStruct guaranteed to be T or a struct derived from T.
     template<typename T>
     class TSubStructOf
     {

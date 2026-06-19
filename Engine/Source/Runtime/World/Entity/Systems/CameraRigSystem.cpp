@@ -5,6 +5,7 @@
 #include "Physics/Ray/RayCast.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CameraFollowComponent.h"
+#include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/SpringArmComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/Components/EntityTags.h"
@@ -12,9 +13,11 @@
 
 namespace Lumina
 {
+    // FRelationshipComponent is read by SetEntityWorldTransform (parent-chain world matrix); CastSphere reads
+    // the physics scene.
     FSystemAccess SCameraRigSystem::Access = FSystemAccess{}
         .Write<STransformComponent, SCameraFollowComponent, SSpringArmComponent>()
-        .Read<SystemResource::PhysicsQuery>();
+        .Read<SystemResource::PhysicsQuery, FRelationshipComponent>();
 
     namespace Detail
     {

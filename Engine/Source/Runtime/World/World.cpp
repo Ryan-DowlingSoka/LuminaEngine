@@ -19,6 +19,8 @@
 #include "Core/Engine/Engine.h"
 #include "Core/Profiler/CPUProfiler.h"
 #include "TaskSystem/TaskSystem.h"
+#include "TaskSystem/Scheduler/JobScheduler.h"
+#include "Core/Profiler/GameplayProfiler.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Serialization/MemoryArchiver.h"
@@ -1306,7 +1308,7 @@ namespace Lumina
                 bAnyStage = true;
                 if (Desc.Update != nullptr)
                 {
-                    SystemUpdateList[i].push_back(FStageSlot{ Desc.Update, nullptr, Desc.Access, Desc.Priorities.GetPriorityForStage((EUpdateStage)i) });
+                    SystemUpdateList[i].push_back(FStageSlot{ Desc.Update, nullptr, Desc.Access, Desc.Priorities.GetPriorityForStage((EUpdateStage)i), Desc.Name });
                 }
             }
 
@@ -1347,8 +1349,21 @@ namespace Lumina
                 Managed.Priority   = Desc.Priority;
                 Managed.Generation = Generation;
 
+                // A C# system that declared [Reads]/[Writes] access joins the parallel batches exactly like a
+                // native system; one with no declared access stays exclusive (the safe default).
+                FSystemAccess Access;
+                if (Desc.Writes.empty() && Desc.Reads.empty())
+                {
+                    Access = FSystemAccess::Exclusive();
+                }
+                else
+                {
+                    Access.Writes = Desc.Writes;
+                    Access.Reads  = Desc.Reads;
+                }
+
                 SystemUpdateList[(int32)Desc.Stage].push_back(
-                    FStageSlot{ &ManagedSystemUpdate, Instance, FSystemAccess::Exclusive(), (uint8)Desc.Priority });
+                    FStageSlot{ &ManagedSystemUpdate, Instance, Access, (uint8)Desc.Priority, FName(Desc.TypeName.c_str()) });
             }
         }
 
@@ -1357,6 +1372,61 @@ namespace Lumina
         {
             eastl::sort(SystemUpdateList[i].begin(), SystemUpdateList[i].end(),
                 [](const FStageSlot& A, const FStageSlot& B) { return A.StagePriority < B.StagePriority; });
+        }
+    }
+
+    // Read-only snapshot of how systems group into parallel batches per stage, with each system's declared
+    // access. Replays the exact TickSystems greedy batching so the Gameplay Insights editor tool can show the
+    // real schedule (replaces the old Core.Systems.LogSchedule console dump). Game thread; cheap.
+    void CWorld::GetSystemSchedule(TVector<FSystemScheduleEntry>& Out) const
+    {
+        Out.clear();
+        for (uint8 s = 0; s < (uint8)EUpdateStage::Max; ++s)
+        {
+            const TVector<FStageSlot>& Systems = SystemUpdateList[s];
+            const size_t Count = Systems.size();
+
+            size_t i = 0;
+            uint8 BatchIndex = 0;
+            while (i < Count)
+            {
+                size_t j = i + 1;
+                if (!Systems[i].Access.bExclusive)
+                {
+                    while (j < Count)
+                    {
+                        bool bConflicts = Systems[j].Access.bExclusive;
+                        for (size_t k = i; !bConflicts && k < j; ++k)
+                        {
+                            bConflicts = FSystemAccess::Conflicts(Systems[k].Access, Systems[j].Access);
+                        }
+                        if (bConflicts)
+                        {
+                            break;
+                        }
+                        ++j;
+                    }
+                }
+
+                const size_t BatchSize = j - i;
+                for (size_t k = i; k < j; ++k)
+                {
+                    const FStageSlot& Slot = Systems[k];
+                    FSystemScheduleEntry& Entry = Out.emplace_back();
+                    Entry.Name       = Slot.Name;
+                    Entry.Stage      = (uint8)s;
+                    Entry.Priority   = Slot.StagePriority;
+                    Entry.Batch      = BatchIndex;
+                    Entry.BatchSize  = (uint8)BatchSize;
+                    Entry.bExclusive = Slot.Access.bExclusive;
+                    Entry.bManaged   = Slot.Name.IsNone();
+                    Entry.Writes     = Slot.Access.Writes;
+                    Entry.Reads      = Slot.Access.Reads;
+                }
+
+                ++BatchIndex;
+                i = j;
+            }
         }
     }
 
@@ -1672,13 +1742,39 @@ namespace Lumina
         TVector<FStageSlot>& Systems = SystemUpdateList[(uint32)Context.GetUpdateStage()];
         const size_t Count = Systems.size();
 
-        auto RunOne = [&](FStageSlot& S) { S.Update(S.Self, Context); };
+        // When the Gameplay Insights tool is recording, capture a per-system execution span (name + time window
+        // + worker thread slot) so the editor can lay systems out per-thread. One bool load when off.
+        FGameplayProfiler& Profiler = FGameplayProfiler::Get();
+        const bool  bProfiling = Profiler.IsEnabled();
+        const uint8 StageIndex = (uint8)Context.GetUpdateStage();
+
+        // Bind the system's declared access on the running thread so access-implying helpers can validate
+        // honest declaration (Debug/Dev; no-op in Shipping). Cleared after so out-of-scheduler calls don't check.
+        auto RunOne = [&](FStageSlot& S, uint8 Batch)
+        {
+            SetExecutingSystemAccess(&S.Access);
+            if (bProfiling)
+            {
+                const double Start = FGameplayProfiler::NowMilliseconds();
+                S.Update(S.Self, Context);
+                const double End = FGameplayProfiler::NowMilliseconds();
+                const FString Label = S.Name.IsNone() ? FString("<system>") : S.Name.ToString();
+                Profiler.RecordSystemSpan(FStringView(Label.c_str(), Label.size()), StageIndex, Batch,
+                    S.Access.bExclusive, Start, End, (uint16)Jobs::GetWorkerIndex());
+            }
+            else
+            {
+                S.Update(S.Self, Context);
+            }
+            SetExecutingSystemAccess(nullptr);
+        };
 
         // Walk the priority-sorted list and greedily group consecutive systems that conflict with
         // NOTHING already in the current batch; flush the batch (run concurrently) on the first
         // conflict, then continue. Exclusive systems (no declared access) always run alone. A
         // conflicting/lower-priority system lands in a later batch, so priority order is preserved.
         size_t i = 0;
+        uint8 BatchIndex = 0;
         while (i < Count)
         {
             size_t j = i + 1;
@@ -1702,7 +1798,7 @@ namespace Lumina
             const size_t BatchSize = j - i;
             if (BatchSize <= 1)
             {
-                RunOne(Systems[i]);
+                RunOne(Systems[i], BatchIndex);
             }
             else
             {
@@ -1711,11 +1807,12 @@ namespace Lumina
                 Task::ParallelFor(static_cast<uint32>(BatchSize), [&](uint32 Index)
                 {
                     DEBUG_ASSERT(!Systems[i + Index].Access.bExclusive); // scheduler invariant
-                    RunOne(Systems[i + Index]);
+                    RunOne(Systems[i + Index], BatchIndex);
                 }, 1);
             }
 
             i = j;
+            ++BatchIndex;
         }
     }
 }

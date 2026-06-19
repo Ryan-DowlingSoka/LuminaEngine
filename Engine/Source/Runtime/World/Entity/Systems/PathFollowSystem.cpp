@@ -5,15 +5,19 @@
 #include "TaskSystem/TaskSystem.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CharacterControllerComponent.h"
+#include "World/Entity/Components/NavMeshComponent.h"
 #include "World/Entity/Components/PathFollowComponent.h"
+#include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/Systems/NavMeshSystem.h"
 
 namespace Lumina
 {
+    // STransformComponent is a WRITE: ResolveAllDirtyTransforms mutates WorldTransform (and walks parent
+    // chains via FRelationshipComponent). FindPath reads the navmesh component.
     FSystemAccess SPathFollowSystem::Access = FSystemAccess{}
-        .Write<SPathFollowComponent, SCharacterControllerComponent>()
-        .Read<STransformComponent>();
+        .Write<SPathFollowComponent, SCharacterControllerComponent, STransformComponent>()
+        .Read<FRelationshipComponent, SNavMeshComponent>();
 
     namespace
     {
