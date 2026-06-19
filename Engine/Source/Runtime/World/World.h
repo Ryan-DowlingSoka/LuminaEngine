@@ -43,7 +43,7 @@ namespace Lumina
         FVector4 Color = FVector4(1.0f);
     };
     
-    // One system as scheduled in a stage, with its declared access — the snapshot CWorld::GetSystemSchedule
+    // One system as scheduled in a stage, with its declared access, the snapshot CWorld::GetSystemSchedule
     // hands the Gameplay Insights editor tool. Reads/Writes are entt::type_hash ids; resolve names with
     // GetAccessTypeName (SystemAccess.h).
     struct FSystemScheduleEntry
@@ -90,7 +90,7 @@ namespace Lumina
             void*          Self = nullptr;
             FSystemAccess  Access;
             uint8          StagePriority = 255;
-            FName          Name;            // for the parallel-schedule dump (Core.Systems.LogSchedule)
+            FName          Name;            // for the Gameplay Insights schedule view (GetSystemSchedule)
         };
 
         // A unique active system in this world. Owns the once-per-system Startup/Teardown lifecycle; the
@@ -356,8 +356,6 @@ namespace Lumina
         FORCEINLINE bool IsGameWorld() const { return WorldType == EWorldType::Game; }
         
         void SetEntityTransform(entt::entity Entity, const FTransform& NewTransform);
-        TVector<entt::entity> GetSelectedEntities() const;
-        bool IsSelected(entt::entity Entity) const;
 
         template<typename TFunc>
         void ForEachUniqueSystem(TFunc&& Func);

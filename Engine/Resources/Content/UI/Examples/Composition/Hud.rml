@@ -1,0 +1,17 @@
+<rml>
+<head>
+    <title>HUD Composition</title>
+    <link type="text/rcss" href="Hud.rcss"/>
+    <link type="text/template" href="Clock.rml"/>
+    <link type="text/template" href="HealthBar.rml"/>
+    <link type="text/template" href="Minimap.rml"/>
+</head>
+<!-- data-model="hud" binds the whole HUD (and every composed widget) to the HudModel from HudExample.cs. -->
+<body data-model="hud">
+    <!-- Each id'd div is a slot, positioned by Hud.rcss. Drop widgets from the Composition panel;
+         Ctrl+drag in the canvas to nudge (writes transform:translate, stays responsive). -->
+    <div id="topbar" style=""><template src="clock"/></div>
+    <div id="hp" style=""><template src="healthbar"/></div>
+    <div id="minimap" style=""><template src="minimap"/>        </div>
+</body>
+</rml>

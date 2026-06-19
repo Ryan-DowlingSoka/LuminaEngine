@@ -17,7 +17,8 @@
 #endif
 
 #include <intrin.h>
-#include <condition_variable>
+#include <atomic>
+#include <bit>
 #include <cstdio>
 
 // Fiber scheduler with assist-wait fallback for external threads. One worker thread per core drains
@@ -140,58 +141,36 @@ namespace Lumina::Jobs
             Fibers::FFiber SchedulerFiber = nullptr; // this worker's scheduler fiber
             FWorkFiber*    CurrentFiber   = nullptr; // work fiber currently switched in on this worker
             FPendingSwitch Pending;
+            uint32         StealCursor    = 0;       // rotating victim offset for work-stealing
         };
         thread_local FThreadState TLS;
 
-        // Eventcount: lets an idle worker block until work appears.
-        struct FEventCount
+        // Per-worker job queues (one per priority) + a private wake futex. A worker drains its OWN queues
+        // first, then steals from others. A burst submit is spread across these at enqueue time
+        // (DistributeJobs), so every worker has local work to start on immediately instead of funneling all
+        // consumers through one shared queue. The home consumer token is the owner's fast path; thieves
+        // dequeue tokenless. WakeSignal is the worker's private parking spot: an idle worker futex-waits on
+        // it (std::atomic::wait) and a submitter bumps+notifies it, so a fan-out wakes every idle worker in
+        // PARALLEL rather than filing them one-at-a-time through a single condition-variable mutex, that
+        // serial CV ramp is the cold first-wave wake that left only ~22-30 of 30 workers engaged per frame.
+        struct alignas(64) FWorkerLocal
         {
-            static constexpr uint64 kWaiterMask = 0xFFFFFFFFull;
-            static constexpr uint64 kEpochInc   = 0x100000000ull;
-            static constexpr uint64 kWaiterInc  = 1ull;
+            FJobQueue                  Queues[3];
+            moodycamel::ConsumerToken* Home[3] = { nullptr, nullptr, nullptr };
+            TAtomic<uint32>            WakeSignal{0}; // bumped (with notify) to wake this worker from its wait
 
-            TAtomic<uint64>         State{0};
-            FMutex                  Mutex;
-            std::condition_variable CV;
-
-            // Register intent to wait and capture the current epoch. Must be followed by exactly one of
-            // CancelWait (condition turned out satisfied) or Wait (block on the captured epoch).
-            uint32 PrepareWait()
+            FWorkerLocal()
             {
-                const uint64 Prev = State.fetch_add(kWaiterInc, std::memory_order_acq_rel);
-                return static_cast<uint32>(Prev >> 32);
-            }
-
-            void CancelWait()
-            {
-                State.fetch_sub(kWaiterInc, std::memory_order_acq_rel);
-            }
-
-            void Wait(uint32 Key)
-            {
+                for (int P = 0; P < 3; ++P)
                 {
-                    std::unique_lock<FMutex> Lock(Mutex);
-                    CV.wait(Lock, [&] { return static_cast<uint32>(State.load(std::memory_order_acquire) >> 32) != Key; });
+                    Home[P] = Memory::New<moodycamel::ConsumerToken>(Queues[P]);
                 }
-                State.fetch_sub(kWaiterInc, std::memory_order_acq_rel);
             }
-
-            void Notify(bool All)
+            ~FWorkerLocal()
             {
-                const uint64 Prev = State.fetch_add(kEpochInc, std::memory_order_acq_rel);
-                if ((Prev & kWaiterMask) != 0)
+                for (int P = 0; P < 3; ++P)
                 {
-                    // Hold the lock across notify so we never signal in the gap between a waiter's
-                    // predicate check and its block (the std CV lost-wakeup guard).
-                    std::scoped_lock Lock(Mutex);
-                    if (All)
-                    {
-                        CV.notify_all();
-                    }
-                    else
-                    {
-                        CV.notify_one();
-                    }
+                    Memory::Delete(Home[P]);
                 }
             }
         };
@@ -206,9 +185,8 @@ namespace Lumina::Jobs
 
             TVector<FThread> WorkerThreads;
 
-            FJobQueue      JobQueues[3];
-            TVector<moodycamel::ProducerToken> ProdTokens[3];
-            TVector<moodycamel::ConsumerToken> ConsTokens[3];
+            FWorkerLocal*   Workers = nullptr;        // [NumWorkers] per-worker queues (the job storage)
+            alignas(64) TAtomic<uint32> NextSubmitWorker{0}; // rotating distribution start, anti-bias
             alignas(64) TAtomic<int64> AvailJobs{0};   // queued, not yet popped (idle-wake hint)
             alignas(64) TAtomic<int64> InFlight{0};    // submitted, not yet completed (WaitForAll)
 
@@ -223,18 +201,17 @@ namespace Lumina::Jobs
             TAtomic<uint32> NextExternalSlot{0};
             TAtomic<bool>   bShutdown{false};
 
-            FEventCount     WorkSignal; // idle workers park here; bumped on submit / fiber-ready / shutdown
+            // Bit per worker set while that worker is futex-parked. Load-bearing: WakeWorkers scans it to
+            // wake only idle workers (and only as many as there are jobs). One uint64 word per 64 workers.
+            // Also read by the editor advisor (resume-affinity hint). Own cache line.
+            alignas(64) std::atomic<uint64>* IdleMask = nullptr; // [IdleMaskWords]
+            uint32 IdleMaskWords = 0;
 
-            // Live count of threads inside PopJob's shared-queue dequeue. Sampled by the editor advisor
-            // (only while profiling) to gauge contention on the global queue, the thing per-worker
-            // deques / work-stealing would relieve. Own cache line: it must not false-share the hot
-            // counters above, especially since the diagnostic itself reads/writes it from many workers.
+            // Live count of threads inside a job dequeue (own-queue or steal). Sampled by the editor
+            // advisor (only while profiling) to gauge how much stealing/contention is in play now that
+            // work is sharded per-worker. Own cache line: it must not false-share the hot counters above,
+            // especially since the diagnostic itself reads/writes it from many workers.
             alignas(64) TAtomic<int32> PoppersInFlight{0};
-
-            // Bit per worker (index < 64) set while that worker is blocked idle. The advisor reads it when
-            // a fiber becomes ready: if the fiber's owner worker is idle, resume affinity could put it back
-            // on its warm core for free. Editor advisor only; written only when a worker actually blocks.
-            alignas(64) TAtomic<uint64> IdleWorkerMask{0};
 
 #if USING(WITH_EDITOR)
             // Per-worker OS-core occupancy for the editor's CPU view: which logical core a worker last
@@ -253,40 +230,160 @@ namespace Lumina::Jobs
                 || G->bShutdown.load(std::memory_order_acquire);
         }
 
-        void WakeWorkers(bool All)
+        FORCEINLINE void SetWorkerIdle(uint32 W)
         {
-            G->WorkSignal.Notify(All);
+            G->IdleMask[W >> 6].fetch_or(1ull << (W & 63), std::memory_order_relaxed);
+        }
+        FORCEINLINE void ClearWorkerIdle(uint32 W)
+        {
+            G->IdleMask[W >> 6].fetch_and(~(1ull << (W & 63)), std::memory_order_relaxed);
         }
 
-        bool PopJob(FQueuedJob& Out, uint32 Slot)
+        // Wake up to Count idle workers by bumping + notifying their private futexes. The seq_cst fence
+        // pairs with the one a parking worker runs between publishing its idle bit and re-checking HasWork:
+        // that Dekker ordering guarantees we either observe its idle bit here (and wake it) or it observes
+        // the work we just published (and never parks). Spurious bumps of an already-awake worker are
+        // harmless, its next wait returns immediately, re-checks, and re-waits.
+        void WakeWorkers(uint32 Count)
         {
-#if USING(WITH_EDITOR)
-            // Sample how many threads are dequeuing the shared queue at once (contention proxy for the
-            // advisor). Latch the enabled flag so the inc/dec pair stays balanced across a mid-call toggle.
-            const bool Diag = FJobProfiler::Get().IsEnabled();
-            if (Diag)
+            if (Count == 0)
             {
-                const uint32 Conc = static_cast<uint32>(G->PoppersInFlight.fetch_add(1, std::memory_order_relaxed)) + 1u;
-                FJobProfiler::Get().NotePop(Conc);
+                return;
             }
-#endif
-            bool bGot = false;
-            for (int P = 0; P < 3; ++P)
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            uint32 Woken = 0;
+            for (uint32 Wd = 0; Wd < G->IdleMaskWords && Woken < Count; ++Wd)
             {
-                if (G->JobQueues[P].try_dequeue(G->ConsTokens[P][Slot], Out))
+                uint64 Bits = G->IdleMask[Wd].load(std::memory_order_relaxed);
+                while (Bits != 0 && Woken < Count)
                 {
-                    G->AvailJobs.fetch_sub(1, std::memory_order_relaxed);
-                    bGot = true;
-                    break;
+                    const uint32 B = (uint32)std::countr_zero(Bits);
+                    Bits &= (Bits - 1);
+                    const uint32 W = (Wd << 6) + B;
+                    G->Workers[W].WakeSignal.fetch_add(1, std::memory_order_release);
+                    G->Workers[W].WakeSignal.notify_one();
+                    ++Woken;
                 }
             }
+        }
+
 #if USING(WITH_EDITOR)
-            if (Diag)
+        // Concurrency-of-poppers sample (contention proxy for the advisor). Latched so inc/dec stay
+        // balanced across a mid-call toggle. RAII so every early return is covered.
+        struct FPopperScope
+        {
+            bool Diag;
+            FPopperScope()
             {
-                G->PoppersInFlight.fetch_sub(1, std::memory_order_relaxed);
+                Diag = FJobProfiler::Get().IsEnabled();
+                if (Diag)
+                {
+                    const uint32 Conc = static_cast<uint32>(G->PoppersInFlight.fetch_add(1, std::memory_order_relaxed)) + 1u;
+                    FJobProfiler::Get().NotePop(Conc);
+                }
             }
+            ~FPopperScope()
+            {
+                if (Diag)
+                {
+                    G->PoppersInFlight.fetch_sub(1, std::memory_order_relaxed);
+                }
+            }
+        };
+        #define POPPER_SCOPE() FPopperScope LE_PopperScope_
+#else
+        #define POPPER_SCOPE() ((void)0)
 #endif
-            return bGot;
+
+        // Spread a batch across worker queues as contiguous slices from a rotating start, so each worker
+        // gets a local run to begin on. Bulk-enqueue per slice keeps moodycamel's per-item overhead amortized.
+        void DistributeJobs(const FQueuedJob* Jobs, uint32 Count, int Prio)
+        {
+            const uint32 W     = G->NumWorkers;
+            const uint32 Start = G->NextSubmitWorker.fetch_add(1, std::memory_order_relaxed) % W;
+            const uint32 Base  = Count / W;
+            const uint32 Rem   = Count % W;
+            uint32 Idx = 0;
+            for (uint32 i = 0; i < W; ++i)
+            {
+                const uint32 N = Base + (i < Rem ? 1u : 0u);
+                if (N == 0)
+                {
+                    continue;
+                }
+                const uint32 Wk = (Start + i) % W;
+                G->Workers[Wk].Queues[Prio].enqueue_bulk(Jobs + Idx, N);
+                Idx += N;
+            }
+        }
+
+        // Worker fast path: drain own queues (priority order) first, then steal from other workers,
+        // resuming the scan where the last steal landed. Decrements AvailJobs on success.
+        bool TryGetJobWorker(FQueuedJob& Out, uint32 Slot)
+        {
+            POPPER_SCOPE();
+            FWorkerLocal& Self = G->Workers[Slot];
+            for (int P = 0; P < 3; ++P)
+            {
+                if (Self.Queues[P].try_dequeue(*Self.Home[P], Out))
+                {
+                    G->AvailJobs.fetch_sub(1, std::memory_order_relaxed);
+                    return true;
+                }
+            }
+            // Own queue dry: only pay the cross-worker scan if the hint says work exists somewhere.
+            // AvailJobs is bumped before jobs are enqueued (see RunJobs), so <= 0 means genuinely nothing
+            // to steal, skip the O(workers*prio) probe. Avoids burning the tail of a fan-out (and every
+            // assist-wait spin) scanning empty queues.
+            if (G->AvailJobs.load(std::memory_order_relaxed) <= 0)
+            {
+                return false;
+            }
+            const uint32 W      = G->NumWorkers;
+            const uint32 Cursor = TLS.StealCursor;
+            for (uint32 i = 1; i < W; ++i)
+            {
+                const uint32 V = (Slot + Cursor + i) % W;
+                for (int P = 0; P < 3; ++P)
+                {
+                    if (G->Workers[V].Queues[P].try_dequeue(Out))
+                    {
+                        TLS.StealCursor = Cursor + i;
+                        G->AvailJobs.fetch_sub(1, std::memory_order_relaxed);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // External / assist path: no home queues, so steal-scan every worker's queues from a rotating
+        // cursor. Decrements AvailJobs on success.
+        bool TryStealAny(FQueuedJob& Out)
+        {
+            // Fast-fail an empty steal (the common case while assist-waiting on in-flight work): no scan,
+            // no diagnostic churn. Safe because AvailJobs is bumped before any job is enqueued.
+            if (G->AvailJobs.load(std::memory_order_relaxed) <= 0)
+            {
+                return false;
+            }
+            POPPER_SCOPE();
+            const uint32 W      = G->NumWorkers;
+            const uint32 Cursor = TLS.StealCursor;
+            for (uint32 i = 0; i < W; ++i)
+            {
+                const uint32 V = (Cursor + i) % W;
+                for (int P = 0; P < 3; ++P)
+                {
+                    if (G->Workers[V].Queues[P].try_dequeue(Out))
+                    {
+                        TLS.StealCursor = Cursor + i + 1;
+                        G->AvailJobs.fetch_sub(1, std::memory_order_relaxed);
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         void PushReady(FWorkFiber* Fiber)
@@ -297,7 +394,7 @@ namespace Lumina::Jobs
             if (FJobProfiler::Get().IsEnabled())
             {
                 const uint16 Owner = Fiber->OwnerWorker.load(std::memory_order_relaxed);
-                if (Owner < 64 && (G->IdleWorkerMask.load(std::memory_order_relaxed) & (1ull << Owner)) != 0)
+                if (Owner < G->NumWorkers && (G->IdleMask[Owner >> 6].load(std::memory_order_relaxed) & (1ull << (Owner & 63))) != 0)
                 {
                     FJobProfiler::Get().NoteAffinityOpportunity();
                 }
@@ -305,7 +402,7 @@ namespace Lumina::Jobs
 #endif
             G->ReadyFibers.enqueue(Fiber);
             G->ReadyCount.fetch_add(1, std::memory_order_relaxed);
-            WakeWorkers(false);
+            WakeWorkers(1);
         }
 
         void LockCounter(FCounter* C)
@@ -535,10 +632,13 @@ namespace Lumina::Jobs
                 }
             }
         }
+        
+        constexpr int kHotPauseSpins = 1024; // tight _mm_pause: catch the next wave without a syscall
+        constexpr int kHotYieldSpins = 128;  // OS-friendly tail; near-free when idle, holds hot when busy
 
         void WaitForWork()
         {
-            for (int Spin = 0; Spin < 512; ++Spin)
+            for (int Spin = 0; Spin < kHotPauseSpins; ++Spin)
             {
                 if (HasWork())
                 {
@@ -546,31 +646,31 @@ namespace Lumina::Jobs
                 }
                 CpuPause();
             }
-
-            // Capture the epoch, then re-check. If work (or shutdown) appeared after the spin, the
-            // epoch may already differ, but the eventcount only signals "something changed", not the
-            // queue contents, so re-check HasWork() explicitly and bail without blocking if satisfied.
-            const uint32 Key = G->WorkSignal.PrepareWait();
+            for (int Spin = 0; Spin < kHotYieldSpins; ++Spin)
+            {
+                if (HasWork())
+                {
+                    return;
+                }
+                Threading::ThreadYield();
+            }
+            
+            const uint32 W   = TLS.WorkerIndex;
+            const uint32 Sig = G->Workers[W].WakeSignal.load(std::memory_order_acquire);
+            SetWorkerIdle(W);
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             if (HasWork())
             {
-                G->WorkSignal.CancelWait();
+                ClearWorkerIdle(W);
                 return;
             }
-
 #if USING(WITH_EDITOR)
-            FJobProfiler::Get().IdleBegin(TLS.WorkerIndex, FJobProfiler::NowMs());
-            if (TLS.WorkerIndex < 64)
-            {
-                G->IdleWorkerMask.fetch_or(1ull << TLS.WorkerIndex, std::memory_order_relaxed);
-            }
+            FJobProfiler::Get().IdleBegin(W, FJobProfiler::NowMs());
 #endif
-            G->WorkSignal.Wait(Key);
+            G->Workers[W].WakeSignal.wait(Sig, std::memory_order_acquire);
+            ClearWorkerIdle(W);
 #if USING(WITH_EDITOR)
-            if (TLS.WorkerIndex < 64)
-            {
-                G->IdleWorkerMask.fetch_and(~(1ull << TLS.WorkerIndex), std::memory_order_relaxed);
-            }
-            FJobProfiler::Get().IdleEnd(TLS.WorkerIndex, FJobProfiler::NowMs());
+            FJobProfiler::Get().IdleEnd(W, FJobProfiler::NowMs());
 #endif
         }
 
@@ -611,7 +711,7 @@ namespace Lumina::Jobs
                 if (G->FreeFibers.try_dequeue(Free))
                 {
                     FQueuedJob Job;
-                    if (PopJob(Job, Slot))
+                    if (TryGetJobWorker(Job, Slot))
                     {
                         Free->Job        = Job;
                         TLS.CurrentFiber = Free;
@@ -698,17 +798,21 @@ namespace Lumina::Jobs
         G->NumWorkFibers  = Config.NumWorkFibers != 0 ? Config.NumWorkFibers : kDefaultWorkFibers;
         G->FiberStackSize = Config.FiberStackSize != 0 ? Config.FiberStackSize : kDefaultFiberStack;
 
-        // One consumer token per queue per thread slot. Each slot is owned by a single thread, so a
-        // token is only ever touched by that thread.
-        for (int P = 0; P < 3; ++P)
+        // Per-worker queues (the job storage). Built BEFORE workers start so the home consumer tokens
+        // exist when they spin up. Placement-new like the other pools so each FWorkerLocal constructs its
+        // moodycamel queues + home tokens in place.
+        G->Workers = static_cast<FWorkerLocal*>(Memory::Malloc(sizeof(FWorkerLocal) * G->NumWorkers, alignof(FWorkerLocal)));
+        for (uint32 i = 0; i < G->NumWorkers; ++i)
         {
-            G->ProdTokens[P].reserve(G->NumThreadSlots);
-            G->ConsTokens[P].reserve(G->NumThreadSlots);
-            for (uint32 S = 0; S < G->NumThreadSlots; ++S)
-            {
-                G->ProdTokens[P].emplace_back(G->JobQueues[P]);
-                G->ConsTokens[P].emplace_back(G->JobQueues[P]);
-            }
+            new (&G->Workers[i]) FWorkerLocal();
+        }
+
+        // One idle-mask word per 64 workers (the wake-targeting bitset). Zeroed: nobody parked yet.
+        G->IdleMaskWords = (G->NumWorkers + 63u) / 64u;
+        G->IdleMask = static_cast<std::atomic<uint64>*>(Memory::Malloc(sizeof(std::atomic<uint64>) * G->IdleMaskWords, alignof(std::atomic<uint64>)));
+        for (uint32 i = 0; i < G->IdleMaskWords; ++i)
+        {
+            new (&G->IdleMask[i]) std::atomic<uint64>(0);
         }
 
         G->CounterPool = static_cast<FCounter*>(Memory::Malloc(sizeof(FCounter) * kCounterPoolSize, alignof(FCounter)));
@@ -762,7 +866,12 @@ namespace Lumina::Jobs
         }
 
         G->bShutdown.store(true, std::memory_order_release);
-        G->WorkSignal.Notify(true);
+        // Wake every worker (not just the idle-masked ones) so all observe shutdown promptly.
+        for (uint32 i = 0; i < G->NumWorkers; ++i)
+        {
+            G->Workers[i].WakeSignal.fetch_add(1, std::memory_order_release);
+            G->Workers[i].WakeSignal.notify_one();
+        }
 
         for (FThread& Thread : G->WorkerThreads)
         {
@@ -780,6 +889,26 @@ namespace Lumina::Jobs
         }
         void* FiberMem = G->WorkFibers;
         Memory::Free(FiberMem);
+
+        // Workers have joined, so the per-worker queues are quiescent. Tear down after the fibers.
+        if (G->Workers != nullptr)
+        {
+            for (uint32 i = 0; i < G->NumWorkers; ++i)
+            {
+                G->Workers[i].~FWorkerLocal();
+            }
+            void* WorkersMem = G->Workers;
+            Memory::Free(WorkersMem);
+            G->Workers = nullptr;
+        }
+
+        if (G->IdleMask != nullptr)
+        {
+            // std::atomic<uint64> is trivially destructible, just free the storage.
+            void* MaskMem = G->IdleMask;
+            Memory::Free(MaskMem);
+            G->IdleMask = nullptr;
+        }
 
 #if USING(WITH_EDITOR)
         if (G->WorkerCores != nullptr)
@@ -908,48 +1037,30 @@ namespace Lumina::Jobs
         }
         G->InFlight.fetch_add(static_cast<int64>(Count), std::memory_order_acq_rel);
 
-        const int Prio  = static_cast<int>(Priority);
-        FJobQueue& Queue = G->JobQueues[Prio];
-        // Producer token for this thread's slot, one slot per thread, same invariant the consumer
-        // tokens rely on, so the token is never touched concurrently.
-        moodycamel::ProducerToken& Tok = G->ProdTokens[Prio][GetWorkerIndex()];
-
-        if (Count == 1)
-        {
-            // Single-job fast path
-            FQueuedJob Job;
-            Job.Function = Jobs[0].Function;
-            Job.Argument = Jobs[0].Argument;
-            Job.Counter  = Counter;
-#if USING(WITH_EDITOR)
-            Job.Name     = Jobs[0].Name;
-#endif
-            Queue.enqueue(Tok, Job);
-        }
-        else
-        {
-            // Bulk-enqueue: building items into a stack batch and pushing them with one bulk op amortizes
-            // moodycamel's per-item block/atomic bookkeeping over the whole batch.
-            constexpr uint32 kBatch = 256;
-            FQueuedJob Batch[kBatch];
-            for (uint32 Base = 0; Base < Count; Base += kBatch)
-            {
-                const uint32 N = (Count - Base) < kBatch ? (Count - Base) : kBatch;
-                for (uint32 i = 0; i < N; ++i)
-                {
-                    Batch[i].Function = Jobs[Base + i].Function;
-                    Batch[i].Argument = Jobs[Base + i].Argument;
-                    Batch[i].Counter  = Counter;
-#if USING(WITH_EDITOR)
-                    Batch[i].Name     = Jobs[Base + i].Name;
-#endif
-                }
-                Queue.enqueue_bulk(Tok, Batch, N);
-            }
-        }
+        const int Prio = static_cast<int>(Priority);
+        
         G->AvailJobs.fetch_add(static_cast<int64>(Count), std::memory_order_relaxed);
+        
+        constexpr uint32 kBatch = 256;
+        FQueuedJob Batch[kBatch];
+        for (uint32 Base = 0; Base < Count; Base += kBatch)
+        {
+            const uint32 N = (Count - Base) < kBatch ? (Count - Base) : kBatch;
+            for (uint32 i = 0; i < N; ++i)
+            {
+                Batch[i].Function = Jobs[Base + i].Function;
+                Batch[i].Argument = Jobs[Base + i].Argument;
+                Batch[i].Counter  = Counter;
+#if USING(WITH_EDITOR)
+                Batch[i].Name     = Jobs[Base + i].Name;
+#endif
+            }
+            DistributeJobs(Batch, N, Prio);
+        }
 
-        WakeWorkers(Count > 1);
+        // Wake up to Count idle workers: exactly enough for a fan-out, just one for a single job. Avoids
+        // both the all-workers thundering herd on a tiny submit and the one-worker under-wake on a fan-out.
+        WakeWorkers(Count);
     }
 
     void RunJob(FJobFunction Fn, void* Arg, EJobPriority Priority, FCounter* Counter, const char* Name)
@@ -1009,7 +1120,7 @@ namespace Lumina::Jobs
         while (Counter->Value.load(std::memory_order_acquire) > Value)
         {
             FQueuedJob Job;
-            if (PopJob(Job, Slot))
+            if (TryStealAny(Job))
             {
                 Job.Function(Job.Argument, Slot);
                 OnJobComplete(Job.Counter, Slot);
@@ -1082,7 +1193,7 @@ namespace Lumina::Jobs
         }
         const uint32 Slot = GetWorkerIndex();
         FQueuedJob Job;
-        if (PopJob(Job, Slot))
+        if (TryStealAny(Job))
         {
             Job.Function(Job.Argument, Slot);
             OnJobComplete(Job.Counter, Slot);
@@ -1107,7 +1218,12 @@ namespace Lumina::Jobs
         Out.FibersInUse   = NonRunning < Out.NumWorkFibers ? Out.NumWorkFibers - NonRunning : 0;
         for (int P = 0; P < 3; ++P)
         {
-            Out.QueueDepth[P] = static_cast<uint32>(G->JobQueues[P].size_approx());
+            size_t Depth = 0;
+            for (uint32 w = 0; w < G->NumWorkers; ++w)
+            {
+                Depth += G->Workers[w].Queues[P].size_approx();
+            }
+            Out.QueueDepth[P] = static_cast<uint32>(Depth);
         }
         Out.InFlight = G->InFlight.load(std::memory_order_relaxed);
     }

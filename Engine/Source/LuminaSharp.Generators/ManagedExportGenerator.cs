@@ -14,7 +14,7 @@ namespace LuminaSharp.Generators;
 /// <c>[ManagedExport]</c> (which is also <c>[UnmanagedCallersOnly]</c>) static method is registered, by name,
 /// into <c>ManagedExportRegistry</c>; native resolves a managed function pointer by that name at bootstrap
 /// (see <c>DotNet::ResolveManagedExport</c>). There is no hand-mirrored C++ struct and no layout/hash to keep
-/// in sync — adding a native->C# call is just this attribute. The export name defaults to the method name; a
+/// in sync, adding a native->C# call is just this attribute. The export name defaults to the method name; a
 /// constructor argument overrides it (e.g. <c>[ManagedExport(""MyPlugin.Foo"")]</c>).
 ///
 /// The same attribute works in plugin/game script assemblies. Combined with a <c>[ModuleInitializer]</c> that

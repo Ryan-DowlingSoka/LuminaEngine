@@ -4,6 +4,7 @@
 // the per-world Rml::Context lives on CWorld via FWorldUIContext.
 
 #include "Core/Math/Math.h"
+#include "Containers/Array.h"
 #include "Containers/String.h"
 #include "Memory/SmartPtr.h"
 #include "Renderer/RHI.h"
@@ -100,6 +101,29 @@ namespace Lumina::RmlUi
     RUNTIME_API void            ClearEditorContextDocument(Rml::Context* Context);
 
     //--------------------------------------------------------------------------------------------
+    // Editor composition designer: live-DOM slot introspection.
+    //
+    // After a document is parsed into an editor preview context, EnumerateEditorSlots walks the element
+    // tree and reports every addressable container (an element carrying an id) as a "slot" the visual
+    // designer can assign a widget into. Offsets/sizes are border-box, in context pixels (the tool maps
+    // them to canvas space). Assignment state is NOT reported here: a <template src> directive is consumed
+    // at parse time and leaves no DOM element, so the editor reads assignments back from the source text.
+    // Takes the bridge lock; game/editor thread only.
+    //--------------------------------------------------------------------------------------------
+
+    struct FRmlEditorSlot
+    {
+        FString  Id;                    // element id -- the assignment anchor
+        FString  Tag;                   // element tag name (e.g. "div")
+        FVector2 OffsetPx{0.0f, 0.0f};  // absolute border-box offset, context px
+        FVector2 SizePx{0.0f, 0.0f};    // border-box size, context px
+        int32    Depth = 0;             // tree depth from the root, for indentation
+        int32    ChildCount = 0;
+    };
+
+    RUNTIME_API void EnumerateEditorSlots(Rml::Context* Context, TVector<FRmlEditorSlot>& OutSlots);
+
+    //--------------------------------------------------------------------------------------------
     // Scripting surface: screen documents + element manipulation + event listeners.
     //
     // These drive a world's own full-screen Rml::Context (the HUD/menu context input is already
@@ -160,4 +184,50 @@ namespace Lumina::RmlUi
     // managed GCHandle, exactly like a registry signal.
     RUNTIME_API void* AddElementEventListener(CWorld* World, void* Element, FStringView EventType, FManagedUIEventThunk Thunk, void* Context);
     RUNTIME_API void  RemoveElementEventListener(CWorld* World, void* Listener);
+    
+    // Scalar wire type for a bound variable. Mirrors LuminaSharp's EUIVarType. Numbers cross as double and
+    // are coerced to the registered type in the cache (so {{ Health }} formats as int, not "100.000000").
+    enum class EUIVarType : int32 { Bool = 0, Int = 1, Float = 2, Double = 3, String = 4 };
+
+    // Native -> managed writeback for two-way bound variables. For String, Number is 0 and (Str,StrLen) is
+    // the UTF-8 value (valid only for the call); otherwise Str is null and Number carries the value.
+    using FManagedDataSetThunk   = void (*)(void* Context, int32 Field, int32 Type, double Number, const char* Str, int32 StrLen);
+
+    // One argument of a data-event-* call (e.g. the 3 in data-event-click="Select(3)"). UTF-8, valid only
+    // for the dispatch call. RmlUi event args arrive as Variants; the bridge stringifies them uniformly.
+    struct FUIArg { const char* Ptr; int32 Len; };
+    // Native -> managed command dispatch for a data-event-* binding, with its (stringified) arguments.
+    using FManagedDataEventThunk = void (*)(void* Context, int32 CommandId, int32 ArgCount, const FUIArg* Args);
+
+    // Create a named data model on the world's context. Context is the managed GCHandle passed back to the
+    // thunks. Returns an opaque model handle, or null on failure (no context / duplicate name).
+    RUNTIME_API void* CreateDataModel(CWorld* World, FStringView Name, void* Context, FManagedDataSetThunk SetThunk, FManagedDataEventThunk EventThunk);
+
+    // Register a scalar variable (Type is EUIVarType); returns its field id (a dense index), or -1 on failure.
+    RUNTIME_API int32 DataModelBindScalar(void* Model, FStringView Name, int32 Type);
+    // Register a command callback bound by data-event-*; CommandId is dispatched back through EventThunk.
+    RUNTIME_API void  DataModelBindCommand(void* Model, FStringView Name, int32 CommandId);
+
+    // Register a list (array-of-struct) variable for data-for; returns a list field id (its own index space,
+    // separate from scalar fields), or -1. Add its columns with DataModelBindListMember, then push rows.
+    // Cells are strings (RmlUi formats/compares them via Variant conversion); the list is one-way (display).
+    RUNTIME_API int32 DataModelBindList(void* Model, FStringView Name);
+    // Add a named member (column) to a list, in RML reachable as {{ item.Name }}; returns its column index.
+    RUNTIME_API int32 DataModelBindListMember(void* Model, int32 ListField, FStringView MemberName);
+    // Set the row count (clears to that many empty rows); then set every cell, then DataModelListDirty.
+    RUNTIME_API void  DataModelListResize(void* Model, int32 ListField, int32 RowCount);
+    RUNTIME_API void  DataModelListSetCell(void* Model, int32 ListField, int32 Row, int32 Col, FStringView Value);
+    RUNTIME_API void  DataModelListDirty(void* Model, int32 ListField);
+
+    // Push a value into the cache (does NOT mark dirty -- call DataModelDirty after a batch).
+    RUNTIME_API void  DataModelSetNumber(void* Model, int32 Field, double Value);
+    RUNTIME_API void  DataModelSetString(void* Model, int32 Field, FStringView Value);
+
+    // Mark a variable (or all) dirty so RmlUi refreshes its views on the next context Update.
+    RUNTIME_API void  DataModelDirty(void* Model, int32 Field);
+    RUNTIME_API void  DataModelDirtyAll(void* Model);
+
+    // Remove the model from its context and free the wrapper. No-op (safe) if the model was already reaped
+    // when its world tore down -- the handle is validated against the live set, not dereferenced blindly.
+    RUNTIME_API void  DestroyDataModel(void* Model);
 }

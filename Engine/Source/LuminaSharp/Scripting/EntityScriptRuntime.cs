@@ -141,6 +141,46 @@ internal sealed class EntityScriptRuntime
         }
     }
 
+    /// <summary>Dispatches OnFixedUpdate to a batch of scripts (one crossing per fixed step per world). Called
+    /// 0..N times per frame by the native fixed-update accumulator, before the physics step.</summary>
+    public unsafe void FixedUpdate(IntPtr* Handles, int Count, float FixedDeltaTime)
+    {
+        bool Profiling = Profiler.Enabled;
+        for (int Index = 0; Index < Count; Index++)
+        {
+            if (Resolve(Handles[Index]) is not EntityScript Script)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (Profiling)
+                {
+                    Profiler.Begin(Script.GetType().Name + ".FixedUpdate");
+                }
+                try
+                {
+                    using (Game.Push(Script.World, Script.Entity))
+                    {
+                        Script.OnFixedUpdate(FixedDeltaTime);
+                    }
+                }
+                finally
+                {
+                    if (Profiling)
+                    {
+                        Profiler.End();
+                    }
+                }
+            }
+            catch (Exception Exception)
+            {
+                Native.Log(ELogLevel.Error, $"EntityScript.OnFixedUpdate threw: {Exception}");
+            }
+        }
+    }
+
     public void Destroy(IntPtr Pointer)
     {
         if (Pointer == IntPtr.Zero)

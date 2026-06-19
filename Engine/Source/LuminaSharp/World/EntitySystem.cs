@@ -60,11 +60,11 @@ public sealed class EntitySystemAttribute : Attribute
 /// same type serialize even on disjoint entities (conservative correctness).
 ///
 /// CONTRACT for a system that declares any access (i.e. runs in parallel): its <see cref="EntitySystem.OnUpdate"/>
-/// must be synchronous compute over the declared components only. Declare honestly — an under-declared write
+/// must be synchronous compute over the declared components only. Declare honestly, an under-declared write
 /// races silently. Do NOT make structural changes (create/destroy entities, add/remove components) from a
 /// system that declares access, and do NOT call blocking/parking work (Task.ParallelFor, await, long native
 /// locks): the body runs on a job-system fiber and yielding it breaks CLR thread-affinity. A system that
-/// declares NO access is treated as EXCLUSIVE (runs alone) — the safe default for structural or unknown work.
+/// declares NO access is treated as EXCLUSIVE (runs alone), the safe default for structural or unknown work.
 /// </summary>
 public abstract class ComponentAccessAttribute : Attribute
 {

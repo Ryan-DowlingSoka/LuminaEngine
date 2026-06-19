@@ -12,6 +12,7 @@ namespace Lumina;
 // a member says otherwise. Tolerances match LE_SMALL_NUMBER (1e-8) and LE_KINDA_SMALL_NUMBER (1e-4).
 
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FVector2")]
 public struct FVector2 : IEquatable<FVector2>
 {
     public float X;
@@ -191,6 +192,7 @@ public struct FVector2 : IEquatable<FVector2>
 }
 
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FVector3")]
 public struct FVector3 : IEquatable<FVector3>
 {
     public float X;
@@ -435,6 +437,7 @@ public struct FVector3 : IEquatable<FVector3>
 }
 
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FVector4")]
 public struct FVector4 : IEquatable<FVector4>
 {
     public float X;
@@ -556,6 +559,7 @@ public struct FVector4 : IEquatable<FVector4>
 }
 
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FQuat")]
 public struct FQuat : IEquatable<FQuat>
 {
     public float X;

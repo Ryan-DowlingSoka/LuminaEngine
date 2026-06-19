@@ -76,8 +76,9 @@ namespace Lumina
         bool                    bHasResolvedView = false;
     };
 
-    // Game-thread accumulator driving OnFixedUpdate at the physics fixed rate.
-    // Owned by SScriptSystem; independent of the physics scene's own accumulator.
+    // Game-thread accumulator driving C# EntityScript OnFixedUpdate at the physics fixed rate (1/PhysicsHz).
+    // Owned by SCSharpScriptSystem (PrePhysics pass); independent of the physics scene's own accumulator but
+    // uses the same Hz/cap, so it runs the same number of fixed steps per frame.
     struct FScriptFixedUpdateState
     {
         float Accumulator = 0.0f;

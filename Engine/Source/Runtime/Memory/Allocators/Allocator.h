@@ -346,6 +346,17 @@ namespace Lumina
     // Use it through FMemMark, not directly.
     RUNTIME_API FBlockLinearAllocator& GetThreadScratchAllocator();
 
+    // Per-thread frame arena: a bump allocator that lives for the whole frame and is bulk-reset at the
+    // frame boundary by ResetThreadFrameAllocators() (NOT per FMemMark scope). Use for per-thread scratch
+    // whose data must outlive a parallel-for and be consumed later in the same frame (gather -> merge).
+    // Registered globally on first touch so the boundary reset can reclaim it; grows to the per-thread
+    // high-water mark and is reused every frame, so a parallel pass never reallocates its own arena pool.
+    RUNTIME_API FBlockLinearAllocator& GetThreadFrameAllocator();
+
+    // Reset every registered thread frame arena (rewind to empty, keep blocks for reuse). MUST run at a
+    // quiescent frame boundary with no tasks touching frame arenas, i.e. engine frame-begin. Registry walk.
+    RUNTIME_API void ResetThreadFrameAllocators();
+
     // RAII bump-allocator scope: mark on construction, restore on destruction (O(1) bulk free).
     // No destructors run on exit, so store only trivially destructible data. Nested marks compose (LIFO).
     class FMemMark

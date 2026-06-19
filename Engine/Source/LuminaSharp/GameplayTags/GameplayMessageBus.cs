@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace LuminaSharp;
 
@@ -19,8 +20,16 @@ public enum GameplayTagMatch
 /// hierarchical <see cref="GameplayTag"/> channels. Type-safe (each listener declares its payload type) and
 /// hierarchical (a broadcast on <c>"Combat.Damage.Fire"</c> reaches Partial listeners on <c>"Combat.Damage"</c>
 /// and <c>"Combat"</c>). Per-world, so PIE / multiple worlds stay isolated. Game thread only.
+///
+/// Two delivery models share one channel space:
+/// <list type="bullet">
+/// <item><see cref="Broadcast{T}(GameplayTag, T)"/> reaches every listener on the channel, anywhere in the world.</item>
+/// <item><see cref="SendUp{T}"/> / <see cref="SendDown{T}"/> deliver only along a source entity's scene-graph
+/// chain (ancestors / descendants). Listeners opt into directional delivery with the entity-scoped
+/// <see cref="Subscribe{T}(Entity, GameplayTag, Action{T}, GameplayTagMatch)"/> overload.</item>
+/// </list>
 /// </summary>
-public readonly struct GameplayMessageBus
+public readonly unsafe partial struct GameplayMessageBus
 {
     private readonly ulong World;
 
@@ -36,7 +45,7 @@ public readonly struct GameplayMessageBus
     /// </summary>
     public IDisposable Subscribe<T>(GameplayTag Channel, Action<T> Handler, GameplayTagMatch Match = GameplayTagMatch.Partial)
     {
-        if (!Channel.IsValid || Handler == null)
+        if (!Channel.IsValid)
         {
             return GameplayMessageSubscription.Empty;
         }
@@ -68,8 +77,6 @@ public readonly struct GameplayMessageBus
 
         object Boxed = Message!;
         Type MessageType = typeof(T);
-        // Walk channel -> root. Exact listeners fire only at the channel level; Partial at every ancestor
-        // (those tags are all ancestors-or-equal of the channel, so the channel is "under" them).
         for (GameplayTag Cur = Channel; Cur.IsValid; Cur = Cur.Parent)
         {
             State.Dispatch(Cur.Id, Cur.Id == Channel.Id, MessageType, Boxed);
@@ -78,6 +85,110 @@ public readonly struct GameplayMessageBus
 
     /// <summary>Broadcast by tag name (interns the channel first).</summary>
     public void Broadcast<T>(string Channel, T Message) => Broadcast(GameplayTag.Request(Channel), Message);
+    
+    /// <summary>
+    /// Listen for <typeparamref name="T"/> messages delivered to <paramref name="Owner"/> via
+    /// <see cref="SendUp{T}"/> / <see cref="SendDown{T}"/>. Unlike the global <see cref="Subscribe{T}(GameplayTag, Action{T}, GameplayTagMatch)"/>,
+    /// this listener fires only when a directional send reaches <paramref name="Owner"/>'s entity along the
+    /// scene graph. <paramref name="Match"/> applies the same hierarchical channel rule as the global overload.
+    /// Dispose the handle to stop listening (e.g. in <c>EntityScript.OnDetach</c>).
+    /// </summary>
+    public IDisposable Subscribe<T>(Entity Owner, GameplayTag Channel, Action<T> Handler, GameplayTagMatch Match = GameplayTagMatch.Partial)
+    {
+        if (Owner.IsNull || !Channel.IsValid)
+        {
+            return GameplayMessageSubscription.Empty;
+        }
+        EntityListener Entry = new(typeof(T), Message => Handler((T)Message), Channel.Id, Match);
+        BusRegistry.Of(World).AddEntity(Owner.Id, Entry);
+        return new GameplayMessageSubscription(World, Owner.Id, Entry);
+    }
+
+    /// <summary>Entity-scoped subscribe by tag name (interns the channel first).</summary>
+    public IDisposable Subscribe<T>(Entity Owner, string Channel, Action<T> Handler, GameplayTagMatch Match = GameplayTagMatch.Partial)
+        => Subscribe(Owner, GameplayTag.Request(Channel), Handler, Match);
+
+    /// <summary>
+    /// Send <paramref name="Message"/> on <paramref name="Channel"/> UP the scene graph: to <paramref name="Source"/>
+    /// (when <paramref name="IncludeSelf"/>) then each ancestor up to the root. Only entity-scoped listeners
+    /// (see the <see cref="Subscribe{T}(Entity, GameplayTag, Action{T}, GameplayTagMatch)"/> overload) on those
+    /// entities receive it, filtered by channel and payload type.
+    /// </summary>
+    public void SendUp<T>(Entity Source, GameplayTag Channel, T Message, bool IncludeSelf = true)
+    {
+        if (Source.IsNull || !Channel.IsValid)
+        {
+            return;
+        }
+        BusState? State = BusRegistry.Find(World);
+        if (State == null)
+        {
+            return;
+        }
+
+        object Boxed = Message!;
+        Type MessageType = typeof(T);
+        Entity Cur = IncludeSelf ? Source : new Entity(GetParentRaw(World, Source.Id));
+        while (!Cur.IsNull)
+        {
+            State.DispatchEntity(Cur.Id, Channel, MessageType, Boxed);
+            Cur = new Entity(GetParentRaw(World, Cur.Id));
+        }
+    }
+
+    /// <summary>Send up the scene graph by tag name (interns the channel first).</summary>
+    public void SendUp<T>(Entity Source, string Channel, T Message, bool IncludeSelf = true)
+        => SendUp(Source, GameplayTag.Request(Channel), Message, IncludeSelf);
+
+    /// <summary>
+    /// Send <paramref name="Message"/> on <paramref name="Channel"/> DOWN the scene graph: to <paramref name="Source"/>
+    /// (when <paramref name="IncludeSelf"/>) then every descendant (depth-first). Only entity-scoped listeners
+    /// (see the <see cref="Subscribe{T}(Entity, GameplayTag, Action{T}, GameplayTagMatch)"/> overload) on those
+    /// entities receive it, filtered by channel and payload type.
+    /// </summary>
+    public void SendDown<T>(Entity Source, GameplayTag Channel, T Message, bool IncludeSelf = true)
+    {
+        if (Source.IsNull || !Channel.IsValid)
+        {
+            return;
+        }
+        BusState? State = BusRegistry.Find(World);
+        if (State == null)
+        {
+            return;
+        }
+
+        object Boxed = Message!;
+        Type MessageType = typeof(T);
+        if (IncludeSelf)
+        {
+            State.DispatchEntity(Source.Id, Channel, MessageType, Boxed);
+        }
+        DispatchDescendants(State, Source.Id, Channel, MessageType, Boxed);
+    }
+
+    /// <summary>Send down the scene graph by tag name (interns the channel first).</summary>
+    public void SendDown<T>(Entity Source, string Channel, T Message, bool IncludeSelf = true)
+        => SendDown(Source, GameplayTag.Request(Channel), Message, IncludeSelf);
+
+    // Depth-first walk of an entity's children via the relationship first-child / next-sibling links.
+    private void DispatchDescendants(BusState State, uint Parent, GameplayTag Channel, Type MessageType, object Boxed)
+    {
+        for (Entity Child = new(GetFirstChildRaw(World, Parent)); !Child.IsNull; Child = new Entity(GetNextSiblingRaw(World, Child.Id)))
+        {
+            State.DispatchEntity(Child.Id, Channel, MessageType, Boxed);
+            DispatchDescendants(State, Child.Id, Channel, MessageType, Boxed);
+        }
+    }
+
+    [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_World_GetParentEntity")]
+    private static partial uint GetParentRaw(ulong World, uint Entity);
+
+    [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_World_GetFirstChildEntity")]
+    private static partial uint GetFirstChildRaw(ulong World, uint Entity);
+
+    [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_World_GetNextSiblingEntity")]
+    private static partial uint GetNextSiblingRaw(ulong World, uint Entity);
 }
 
 /// <summary>One registered listener: its payload type, the boxed-invoke shim, and its match mode.</summary>
@@ -95,11 +206,48 @@ internal sealed class Listener
     }
 }
 
+/// <summary>An entity-scoped listener for directional (SendUp/SendDown) delivery: like <see cref="Listener"/>
+/// but it also carries the channel tag, since directional sends index by entity, not by channel.</summary>
+internal sealed class EntityListener
+{
+    public readonly Type MessageType;
+    public readonly Action<object> Invoke;
+    public readonly uint ChannelId;
+    public readonly GameplayTagMatch Match;
+
+    public EntityListener(Type MessageType, Action<object> Invoke, uint ChannelId, GameplayTagMatch Match)
+    {
+        this.MessageType = MessageType;
+        this.Invoke = Invoke;
+        this.ChannelId = ChannelId;
+        this.Match = Match;
+    }
+
+    /// <summary>True if a directional send on <paramref name="Sent"/> reaches this listener's channel, applying
+    /// the same hierarchical rule as a Broadcast: Exact wants the same tag; Partial also accepts a descendant.</summary>
+    public bool Reaches(GameplayTag Sent)
+    {
+        if (Match == GameplayTagMatch.Exact)
+        {
+            return Sent.Id == ChannelId;
+        }
+        for (GameplayTag Cur = Sent; Cur.IsValid; Cur = Cur.Parent)
+        {
+            if (Cur.Id == ChannelId)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
 /// <summary>Per-world listener table, keyed by tag id. Self-locking; safe to (un)subscribe during dispatch.</summary>
 internal sealed class BusState
 {
-    private readonly object Gate = new();
+    private readonly Lock Gate = new();
     private readonly Dictionary<uint, List<Listener>> ByTag = new();
+    private readonly Dictionary<uint, List<EntityListener>> ByEntity = new();
 
     public void Add(uint TagId, Listener Entry)
     {
@@ -146,12 +294,59 @@ internal sealed class BusState
             }
         }
     }
+
+    public void AddEntity(uint EntityId, EntityListener Entry)
+    {
+        lock (Gate)
+        {
+            if (!ByEntity.TryGetValue(EntityId, out List<EntityListener>? List))
+            {
+                List = new List<EntityListener>();
+                ByEntity[EntityId] = List;
+            }
+            List.Add(Entry);
+        }
+    }
+
+    public void RemoveEntity(uint EntityId, EntityListener Entry)
+    {
+        lock (Gate)
+        {
+            if (ByEntity.TryGetValue(EntityId, out List<EntityListener>? List))
+            {
+                List.Remove(Entry);
+            }
+        }
+    }
+
+    /// <summary>Deliver a directional send that has reached <paramref name="EntityId"/> to that entity's
+    /// listeners whose channel and payload type match.</summary>
+    public void DispatchEntity(uint EntityId, GameplayTag Channel, Type MessageType, object Boxed)
+    {
+        EntityListener[] Snapshot;
+        lock (Gate)
+        {
+            if (!ByEntity.TryGetValue(EntityId, out List<EntityListener>? List) || List.Count == 0)
+            {
+                return;
+            }
+            Snapshot = List.ToArray(); // snapshot so a handler may (un)subscribe mid-dispatch
+        }
+
+        foreach (EntityListener Entry in Snapshot)
+        {
+            if (Entry.Reaches(Channel) && Entry.MessageType.IsAssignableFrom(MessageType))
+            {
+                Entry.Invoke(Boxed);
+            }
+        }
+    }
 }
 
 /// <summary>Holds one <see cref="BusState"/> per world handle (world-isolated event buses).</summary>
 internal static class BusRegistry
 {
-    private static readonly object Gate = new();
+    private static readonly Lock Gate = new();
     private static readonly Dictionary<ulong, BusState> Worlds = new();
 
     public static BusState Of(ulong World)
@@ -182,8 +377,9 @@ public sealed class GameplayMessageSubscription : IDisposable
     internal static readonly GameplayMessageSubscription Empty = new();
 
     private readonly ulong World;
-    private readonly uint TagId;
+    private readonly uint Key; // tag id for a global listener, entity id for an entity-scoped one
     private Listener? Entry;
+    private EntityListener? EntityEntry;
 
     private GameplayMessageSubscription()
     {
@@ -192,18 +388,30 @@ public sealed class GameplayMessageSubscription : IDisposable
     internal GameplayMessageSubscription(ulong World, uint TagId, Listener Entry)
     {
         this.World = World;
-        this.TagId = TagId;
+        this.Key = TagId;
         this.Entry = Entry;
     }
 
-    public bool IsActive => Entry != null;
+    internal GameplayMessageSubscription(ulong World, uint EntityId, EntityListener Entry)
+    {
+        this.World = World;
+        this.Key = EntityId;
+        this.EntityEntry = Entry;
+    }
+
+    public bool IsActive => Entry != null || EntityEntry != null;
 
     public void Dispose()
     {
         if (Entry != null)
         {
-            BusRegistry.Find(World)?.Remove(TagId, Entry);
+            BusRegistry.Find(World)?.Remove(Key, Entry);
             Entry = null;
+        }
+        if (EntityEntry != null)
+        {
+            BusRegistry.Find(World)?.RemoveEntity(Key, EntityEntry);
+            EntityEntry = null;
         }
     }
 }

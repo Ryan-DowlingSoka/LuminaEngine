@@ -715,12 +715,35 @@ namespace Lumina
         return (DrawID & 0x00FFFFFF) | (((uint32)Flags & 0xFF) << 24);
     }
 
+    // CPU FFrustum (rich, SoA tail) -> 96-byte GPU plane mirror, and back (rebuilds the SoA).
+    FORCEINLINE FGPUFrustum AsGPU(const FFrustum& F)
+    {
+        FGPUFrustum G;
+        for (int i = 0; i < FFrustum::NUM; ++i)
+        {
+            G.Planes[i] = F.Planes[i];
+        }
+        return G;
+    }
+
+    FORCEINLINE FFrustum FromGPU(const FGPUFrustum& G)
+    {
+        FFrustum F;
+        for (int i = 0; i < FFrustum::NUM; ++i)
+        {
+            F.Planes[i] = G.Planes[i];
+        }
+        F.RebuildSoA();
+        return F;
+    }
+
     struct FCullData
     {
-        FFrustum Frustum;
-        FFrustum ShadowFrustum;
+        // Uploaded raw to the GPU -- plane-only mirrors, NOT the rich CPU FFrustum (see Frustum.h).
+        FGPUFrustum Frustum;
+        FGPUFrustum ShadowFrustum;
 
-        FFrustum CascadeFrustum[NumCascades];
+        FGPUFrustum CascadeFrustum[NumCascades];
 
         uint32 bFrustumCull;
         uint32 bOcclusionCull;

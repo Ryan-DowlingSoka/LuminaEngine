@@ -43,6 +43,11 @@ namespace Lumina
         /** Drop a fresh flat terrain entity at the world origin. */
         static entt::entity CreateDefaultTerrain(CWorld* World);
 
+        /** Decode an image file (PNG/TGA/HDR/16-bit) and resample its luminance into the terrain's heightmap
+         *  grid. Returns false with a human-readable reason in OutError; on success OutSrcW/H report the source
+         *  image size. Marks the terrain fully dirty so the next frame re-uploads + re-chunks. */
+        static bool ImportHeightmap(STerrainComponent& Terrain, const char* FilePath, FString& OutError, int32& OutSrcW, int32& OutSrcH);
+
     private:
         bool  bShowSettings = true;
 

@@ -15,6 +15,7 @@
 #include "Core/Profiler/CPUProfiler.h"
 #include "Core/Profiler/GameplayProfiler.h"
 #include "Core/Profiler/Profile.h"
+#include "Memory/Allocators/Allocator.h"
 #if USING(WITH_EDITOR)
 #include "TaskSystem/Scheduler/JobProfiler.h"
 #endif
@@ -52,7 +53,7 @@
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectCore.h"
 
-#if WITH_EDITOR
+#if USING(WITH_EDITOR)
 #include "Tools/UI/ImGui/ImGuiX.h"   // editor toast for a refused project module (NotifyError)
 #endif
 
@@ -64,13 +65,14 @@ namespace Lumina
 
     static FUIntVector2 EngineViewportSize = FUIntVector2(0, 0);
 
-    static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
-
-    // Pre-parse just the .lproject "Plugins" array so early-phase module loading sees
-    // project overrides; the full LoadProject() runs too late (post Lua/WorldManager).
+    static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 165, "Changes the maximum frame-rate of your engine");
+    
     static void PreloadProjectPluginOverrides(FStringView LprojPath)
     {
-        if (LprojPath.empty()) return;
+        if (LprojPath.empty())
+        {
+            return;
+        }
         std::error_code EC;
         if (!std::filesystem::exists(std::filesystem::path(LprojPath.data(), LprojPath.data() + LprojPath.size()), EC))
         {
@@ -92,16 +94,25 @@ namespace Lumina
         {
             return; // Malformed JSON; LoadProject will surface a real error later.
         }
-        if (!Root.is_object()) return;
+        if (!Root.is_object())
+        {
+            return;
+        }
 
         auto It = Root.find("Plugins");
-        if (It == Root.end() || !It->is_array() || It->empty()) return;
+        if (It == Root.end() || !It->is_array() || It->empty())
+        {
+            return;
+        }
 
         TVector<FProjectPluginOverride> Overrides;
         Overrides.reserve(It->size());
         for (const auto& Entry : *It)
         {
-            if (!Entry.is_object()) continue;
+            if (!Entry.is_object())
+            {
+                continue;
+            }
             FProjectPluginOverride Override;
             if (auto NameIt = Entry.find("Name"); NameIt != Entry.end() && NameIt->is_string())
             {
@@ -182,8 +193,7 @@ namespace Lumina
         FConsoleRegistry::Get().LoadFromConfig();
         
         basisu::basisu_encoder_init();
-        // Headless dedicated server has no audio device, no GPU, and no window. Skip those subsystems;
-        // physics/network/task/Lua all still run.
+
         if (!GIsHeadless)
         {
             Audio::Initialize();
@@ -216,10 +226,7 @@ namespace Lumina
 
         // Built-in primitive meshes must exist before any world deserializes.
         CPrimitiveManager::Get();
-
-        // Bake the default world-text font on the main thread (the render extract runs on workers and only
-        // reads it). Lazy elsewhere, but force it here so the first text draw never initializes off-thread.
-        // No text is rendered headless, so skip the TTF load.
+        
         if (!GIsHeadless)
         {
             CFontManager::Get();
@@ -229,9 +236,7 @@ namespace Lumina
 
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::EngineInit);
         ProcessNewlyLoadedCObjects();
-
-        // --Project= load runs here: post-Lua (reflection touches the VM), post-WorldManager
-        // (LoadStartupMap spawns a world), pre-EditorUI (skips the Open Project dialog).
+        
         if (TOptional<FFixedString> ProjectArg = GCommandLine->Get("Project"))
         {
             LoadProject(ProjectArg.value());
@@ -242,15 +247,12 @@ namespace Lumina
 
         DeveloperToolUI = CreateDevelopmentTools();
         DeveloperToolUI->Initialize(UpdateContext);
-        // Below the viewport router, so panel clicks reach the world first.
         GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI, (int32)EInputLayer::EditorChrome);
 
         FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::EditorInit);
         ProcessNewlyLoadedCObjects();
         #endif
-        
-        // RmlUi renders through our render interface; nothing to draw headless. Skipping init makes
-        // every per-world RmlUi call (CreateWorldUI/Tick/Render/Destroy) a safe no-op.
+
         if (!GIsHeadless)
         {
             RmlUi::Initialize();
@@ -269,16 +271,11 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         FCoreDelegates::OnPreEngineShutdown.BroadcastAndClear();
-
-        // Drain render thread + GPU before UI teardown: RmlUi::Shutdown frees widget RTs an
-        // in-flight frame may still sample (bindless) -- freeing under the GPU is a UAF.
-        // No renderer exists headless.
+        
         if (!GIsHeadless)
         {
             FlushRenderingCommands();
             RHI::WaitDeviceIdle();
-
-            // UI before renderer: RmlUi's shutdown releases resources through our render interface.
             RmlUi::Shutdown();
         }
 
@@ -302,7 +299,6 @@ namespace Lumina
             GRenderManager = nullptr;
         }
 
-        // Stop the worker before Physics::Shutdown so no in-flight step touches Jolt globals being destroyed.
         if (GPhysicsThread)
         {
             GPhysicsThread->Stop();
@@ -311,7 +307,6 @@ namespace Lumina
         }
 
         Physics::Shutdown();
-        // Audio's per-frame pump runs on the task pool, so drain/free it before the task system stops.
         if (!GIsHeadless)
         {
             Audio::Shutdown();
@@ -319,7 +314,6 @@ namespace Lumina
         Network::Shutdown();
         Task::Shutdown();
 
-        // Drop plugin records before UnloadAllModules rips the DLLs out from under us.
         FPluginManager::Get().ShutdownAllPlugins();
         FModuleManager::Get().UnloadAllModules();
 
@@ -337,30 +331,29 @@ namespace Lumina
 
         UpdateContext.MarkFrameStart(Platform::GetTime());
 
+        // Frame boundary: reclaim every thread's frame arena before any system gathers into it this frame.
+        // Quiescent here (single game thread, previous frame's parallel gathers already joined+consumed).
+        ResetThreadFrameAllocators();
+
         FCPUProfiler::Get().BeginFrame();
         FGameplayProfiler::Get().BeginFrame();
 #if USING(WITH_EDITOR)
         FJobProfiler::Get().BeginFrame();
 #endif
 
-        // Drain queued audio commands on the task pool (outside the minimized gate so audio keeps up).
         if (!GIsHeadless)
         {
             Audio::Update();
         }
 
-        // Service the network transport every frame (outside the minimized gate so connections stay alive).
         Network::Update();
 
-        // Headless has no window to query; always run the tick body. Short-circuits before the null deref.
         if (GIsHeadless || !Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
             {
                 LUMINA_PROFILE_SECTION_COLORED("FrameStart", tracy::Color::Red);
                 UpdateContext.UpdateStage = EUpdateStage::FrameStart;
-
-                // Join the previous frame's physics worker before any game-thread code touches the
-                // ECS. ProcessQueue runs marshaled callbacks that may mutate it, so it follows the join.
+                
                 {
                     LUMINA_PROFILE_SECTION_COLORED("WaitForPhysics", tracy::Color::DarkOliveGreen);
                     GWorldManager->WaitForPhysics();
@@ -368,9 +361,7 @@ namespace Lumina
                 }
 
                 MainThread::ProcessQueue();
-
-                // Drain OpenLevel/Connect, then Travel, before world ticks; tearing down a world from inside
-                // its own update is unsafe. OpenLevel may itself queue a Travel that runs in the same drain.
+                
                 ProcessPendingOpenLevel();
                 ProcessPendingTravel();
 
@@ -384,7 +375,6 @@ namespace Lumina
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
-                // Reclaim hidden-world renderers after the grace window expires.
                 if (!GIsHeadless)
                 {
                     GWorldManager->ReclaimIdleRenderers(UpdateContext.GetFrameStartTime());
@@ -461,9 +451,7 @@ namespace Lumina
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
-
-                // Per-world UI ticks inside each world's Extract; only editor preview contexts remain global.
-                // Extract/FrameEnd push GPU work; nothing to render headless.
+                
                 if (!GIsHeadless)
                 {
                     RmlUi::TickEditorContexts();

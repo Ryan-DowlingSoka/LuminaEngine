@@ -8,7 +8,7 @@ namespace Lumina
 {
     // Payload for OnContact/OnOverlap. Fields are self-oriented: Entity/Velocity = self, Normal away from self.
     // Every field is blittable (entt::entity surfaces as the C# Entity handle), so the Reflector auto-generates
-    // the LuminaSharp SCollisionEvent value mirror + a native size assert — no hand-written mirror.
+    // the LuminaSharp SCollisionEvent value mirror + a native size assert, no hand-written mirror.
     REFLECT(Event)
     struct SCollisionEvent
     {

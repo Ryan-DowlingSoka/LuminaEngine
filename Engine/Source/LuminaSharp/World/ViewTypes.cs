@@ -132,14 +132,8 @@ public readonly unsafe struct View<T1>
                 Native.ViewEnd(State);
                 State = IntPtr.Zero;
             }
-            if (Entities != null)
-            {
-                ArrayPool<uint>.Shared.Return(Entities);
-            }
-            if (Ptrs != null)
-            {
-                ArrayPool<IntPtr>.Shared.Return(Ptrs);
-            }
+            ArrayPool<uint>.Shared.Return(Entities);
+            ArrayPool<IntPtr>.Shared.Return(Ptrs);
         }
     }
 
@@ -273,14 +267,8 @@ public readonly unsafe struct View<T1, T2>
                 Native.ViewEnd(State);
                 State = IntPtr.Zero;
             }
-            if (Entities != null)
-            {
-                ArrayPool<uint>.Shared.Return(Entities);
-            }
-            if (Ptrs != null)
-            {
-                ArrayPool<IntPtr>.Shared.Return(Ptrs);
-            }
+            ArrayPool<uint>.Shared.Return(Entities);
+            ArrayPool<IntPtr>.Shared.Return(Ptrs);
         }
     }
 
@@ -422,14 +410,8 @@ public readonly unsafe struct View<T1, T2, T3>
                 Native.ViewEnd(State);
                 State = IntPtr.Zero;
             }
-            if (Entities != null)
-            {
-                ArrayPool<uint>.Shared.Return(Entities);
-            }
-            if (Ptrs != null)
-            {
-                ArrayPool<IntPtr>.Shared.Return(Ptrs);
-            }
+            ArrayPool<uint>.Shared.Return(Entities);
+            ArrayPool<IntPtr>.Shared.Return(Ptrs);
         }
     }
 
@@ -579,14 +561,8 @@ public readonly unsafe struct View<T1, T2, T3, T4>
                 Native.ViewEnd(State);
                 State = IntPtr.Zero;
             }
-            if (Entities != null)
-            {
-                ArrayPool<uint>.Shared.Return(Entities);
-            }
-            if (Ptrs != null)
-            {
-                ArrayPool<IntPtr>.Shared.Return(Ptrs);
-            }
+            ArrayPool<uint>.Shared.Return(Entities);
+            ArrayPool<IntPtr>.Shared.Return(Ptrs);
         }
     }
 

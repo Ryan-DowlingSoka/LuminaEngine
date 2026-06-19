@@ -54,6 +54,22 @@ public readonly unsafe partial struct UI
     public UIDocument LoadDocumentFromMemory(string Rml, string SourceUrl = "[inline]")
         => new(Handle, Native.UI_LoadDocumentFromMemory(Handle, Rml, SourceUrl));
 
+    /// <summary>
+    /// Registers an MVVM <see cref="ViewModel"/> as a named data model on this world's UI context, so RML can
+    /// bind to it declaratively (<c>data-model="Name"</c> + <c>{{ Prop }}</c> / <c>data-event-*</c>). Call this
+    /// BEFORE <see cref="LoadDocument"/> for the document that references the model, RmlUi resolves data bindings
+    /// at load time. Keep the returned <see cref="UIDataModel"/> and <see cref="UIDataModel.Dispose">dispose</see>
+    /// it when done (e.g. in <see cref="EntityScript.OnDetach"/>). Returns an invalid model on failure (e.g. a
+    /// duplicate name); check <see cref="UIDataModel.IsValid"/>.
+    /// </summary>
+    public UIDataModel AddModel(string Name, ViewModel Model) => new(Handle, Name, Model);
+
+    /// <summary>
+    /// Re-fetch a data model registered on this world by <see cref="AddModel"/>, so another script can push to
+    /// a model it didn't create. Returns null if no model with that name is currently registered.
+    /// </summary>
+    public UIDataModel? GetModel(string Name) => UIDataModel.Find(Handle, Name);
+
     /// <summary>Sets how this world's viewport routes input.</summary>
     public void SetInputMode(UIInputMode Mode) => Native.UI_SetInputMode(Handle, (int)Mode);
 

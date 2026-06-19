@@ -29,6 +29,8 @@ namespace Lumina
             Component->BindState = ECSharpBindState::Unbound;
             Component->ScriptClass = NewClass;
             Component->Generation = -1;
+            
+            Component->PropertyOverrides.Items.clear();
         }
         
         FString FindScriptSourceFile(FStringView ScriptClass)

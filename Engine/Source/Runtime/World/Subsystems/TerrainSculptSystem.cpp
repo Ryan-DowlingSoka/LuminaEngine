@@ -62,6 +62,53 @@ namespace Lumina
         return FIntVector2(int(WorldPos.x / Stride), int(WorldPos.z / Stride));
     }
 
+    bool FTerrainSculptSystem::SampleHeight(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, float WorldX, float WorldZ, float& OutHeight)
+    {
+        const int32 Res = Terrain.Resolution;
+        if (Res < 2 || Terrain.Heightmap.size() < size_t(Res) * size_t(Res))
+        {
+            return false;
+        }
+
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
+        const float Stride = Terrain.TileWorldSize / float(Res - 1);
+
+        const float Lx = (WorldX - OriginXZ.x) / Stride;
+        const float Lz = (WorldZ - OriginXZ.y) / Stride;
+        if (Lx < 0.0f || Lz < 0.0f || Lx > float(Res - 1) || Lz > float(Res - 1))
+        {
+            return false;
+        }
+
+        const int X0 = int(Lx), Z0 = int(Lz);
+        const int X1 = std::min(X0 + 1, Res - 1), Z1 = std::min(Z0 + 1, Res - 1);
+        const float Tx = Lx - float(X0), Tz = Lz - float(Z0);
+        const float H00 = Terrain.Heightmap[size_t(Z0) * Res + X0];
+        const float H10 = Terrain.Heightmap[size_t(Z0) * Res + X1];
+        const float H01 = Terrain.Heightmap[size_t(Z1) * Res + X0];
+        const float H11 = Terrain.Heightmap[size_t(Z1) * Res + X1];
+        const float H   = Math::Mix(Math::Mix(H00, H10, Tx), Math::Mix(H01, H11, Tx), Tz);
+
+        OutHeight = TerrainOrigin.y + H * Terrain.MaxHeight;
+        return true;
+    }
+
+    FVector3 FTerrainSculptSystem::SampleNormal(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, float WorldX, float WorldZ)
+    {
+        const float Stride = Terrain.TileWorldSize / float(std::max(Terrain.Resolution - 1, 1));
+        const float Eps    = std::max(Stride, 0.5f);
+
+        float HxL, HxR, HzL, HzR;
+        if (!SampleHeight(Terrain, TerrainOrigin, WorldX - Eps, WorldZ, HxL)) { return FVector3(0.0f, 1.0f, 0.0f); }
+        if (!SampleHeight(Terrain, TerrainOrigin, WorldX + Eps, WorldZ, HxR)) { return FVector3(0.0f, 1.0f, 0.0f); }
+        if (!SampleHeight(Terrain, TerrainOrigin, WorldX, WorldZ - Eps, HzL)) { return FVector3(0.0f, 1.0f, 0.0f); }
+        if (!SampleHeight(Terrain, TerrainOrigin, WorldX, WorldZ + Eps, HzR)) { return FVector3(0.0f, 1.0f, 0.0f); }
+
+        const float dHdx = (HxR - HxL) / (2.0f * Eps);
+        const float dHdz = (HzR - HzL) / (2.0f * Eps);
+        return Math::Normalize(FVector3(-dHdx, 1.0f, -dHdz));
+    }
+
     bool FTerrainSculptSystem::Raycast(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, const FVector3& RayOrigin, const FVector3& RayDir, FVector3& OutHit)
     {
         const int32 Res     = Terrain.Resolution;

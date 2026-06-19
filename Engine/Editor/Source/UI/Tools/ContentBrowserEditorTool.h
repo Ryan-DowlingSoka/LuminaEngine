@@ -57,7 +57,8 @@ namespace Lumina
             Directory,
             Asset,
             CSharpScript,
-            Markup,     // .rml / .rcss
+            Markup,     // .rml (UI document)
+            Stylesheet, // .rcss (UI stylesheet)
             Audio,      // .wav
             Generic,
         };
@@ -114,9 +115,10 @@ namespace Lumina
                 if (Info.IsLAsset())    { return EIconKind::Asset; }
 
                 const FString Ext = Info.GetExt();
-                if (Ext == ".rml" || Ext == ".rcss") { return EIconKind::Markup; }
-                if (Ext == ".wav")                   { return EIconKind::Audio; }
-                if (Ext == ".cs")                    { return EIconKind::CSharpScript; }
+                if (Ext == ".rml")  { return EIconKind::Markup; }
+                if (Ext == ".rcss") { return EIconKind::Stylesheet; }
+                if (Ext == ".wav")  { return EIconKind::Audio; }
+                if (Ext == ".cs")   { return EIconKind::CSharpScript; }
                 return EIconKind::Generic;
             }
 

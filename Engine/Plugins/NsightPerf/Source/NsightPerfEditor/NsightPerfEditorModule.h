@@ -16,7 +16,7 @@ namespace Lumina
 
     private:
         // Our Tools-menu entry's handle. Must be unregistered in ShutdownModule (before this DLL
-        // unloads) — its callbacks are code in this DLL, but the registry outlives the plugin.
+        // unloads), its callbacks are code in this DLL, but the registry outlives the plugin.
         uint32 ToolsMenuHandle = 0;
     };
 }

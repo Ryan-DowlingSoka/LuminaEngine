@@ -82,7 +82,7 @@ internal sealed class ScriptManager
 
                 // Emit this unit's DLL to its own <root>/Binaries/DotNet so it's a real on-disk artifact
                 // (alongside the plugin's C++ Binaries). Best-effort: a locked/unwritable target never fails
-                // the reload — the live generation loads from these in-memory bytes regardless.
+                // the reload, the live generation loads from these in-memory bytes regardless.
                 EmitAssembly(Unit.Name, Unit.DllPath, Pe);
             }
             else if (!string.IsNullOrEmpty(Unit.DllPath) && File.Exists(Unit.DllPath))
@@ -145,7 +145,7 @@ internal sealed class ScriptManager
     }
 
     // Post-order DFS over the unit dependency graph: a unit appears after every dependency it names that is
-    // also present in this set (unknown names — a dependency that ships no scripts — are ignored). A cycle is
+    // also present in this set (unknown names, a dependency that ships no scripts, are ignored). A cycle is
     // broken at the back-edge and logged; the generation still loads (degraded refs) rather than failing.
     private static List<ScriptAssemblyUnit> TopologicalOrder(IReadOnlyList<ScriptAssemblyUnit> Units)
     {

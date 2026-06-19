@@ -36,11 +36,11 @@ public readonly unsafe partial struct Audio
     }
 
     /// <summary>Play a non-spatialized sound (UI, music, 2D SFX). Returns the controlling handle.</summary>
-    public AudioHandle Play2D(CAudioStream Sound, float Volume = 1.0f, float Pitch = 1.0f, bool Loop = false)
+    public AudioHandle Play2D(CAudioStream? Sound, float Volume = 1.0f, float Pitch = 1.0f, bool Loop = false)
         => Sound is null ? default : PlaySound2DRaw(Sound.Handle, Volume, Pitch, Loop ? 1 : 0);
 
     /// <summary>Play a spatialized sound at a world location, attenuated between Min and Max distance (meters).</summary>
-    public AudioHandle PlayAtLocation(CAudioStream Sound, FVector3 Location, float Volume = 1.0f, float Pitch = 1.0f,
+    public AudioHandle PlayAtLocation(CAudioStream? Sound, FVector3 Location, float Volume = 1.0f, float Pitch = 1.0f,
         float MinDistance = 1.0f, float MaxDistance = 50.0f, bool Loop = false)
         => Sound is null ? default : PlaySoundAtLocationRaw(Sound.Handle, Location, Volume, Pitch, MinDistance, MaxDistance, Loop ? 1 : 0);
 

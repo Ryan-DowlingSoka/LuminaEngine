@@ -45,12 +45,11 @@ namespace Lumina
         GENERATED_BODY()
     public:
 
-        /** Editor UI scale. 0 = auto (monitor DPI + resolution); otherwise an explicit factor (1.0 = 100%). */
-        PROPERTY(Editable, Category = "Appearance", ClampMin = 0.0f, ClampMax = 3.0f)
+        /** Editor UI scale. 0 = auto (monitor DPI + resolution); otherwise an explicit factor (1.0 = 100%).
+            Stepped (no click-drag) so the whole editor doesn't relayout continuously while adjusting. */
+        PROPERTY(Editable, Category = "Appearance", ClampMin = 0.0f, ClampMax = 3.0f, NoDrag, Delta = 0.1f)
         float UIScale = 0.0f;
-
-        //~ Hotkeys.
-
+        
         /** Chord that recompiles + hot-reloads all C# scripts. Rebind it in the Settings panel. Default
             Ctrl+Shift+B ("Build") -- chosen to avoid the editor's existing chords (gizmo W/E/R, Ctrl+S/Z/Y,
             Ctrl+Shift+C/V/R, F5/F9). */
@@ -93,6 +92,10 @@ namespace Lumina
         /** Section header labels (muted blue). */
         PROPERTY(Editable, Color, Category = "Accents")
         FVector4 SectionHeader = FVector4(0.50f, 0.58f, 0.72f, 1.00f);
+
+        /** Outliner entity icon tint: a warm accent so entities stand out in the scene tree. */
+        PROPERTY(Editable, Color, Category = "Accents")
+        FVector4 EntityIcon = FVector4(0.90f, 0.44f, 0.36f, 1.00f);
 
         //~ Text: foreground hierarchy.
 

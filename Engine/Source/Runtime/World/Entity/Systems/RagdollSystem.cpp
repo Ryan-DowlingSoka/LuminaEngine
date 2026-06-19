@@ -26,6 +26,8 @@ namespace Lumina
 
     void SRagdollSystem::Update(const FSystemContext& SystemContext) noexcept
     {
+        LUMINA_PROFILE_SCOPE();
+
         Physics::IPhysicsScene* Scene = SystemContext.GetPhysicsScene();
         if (Scene == nullptr)
         {

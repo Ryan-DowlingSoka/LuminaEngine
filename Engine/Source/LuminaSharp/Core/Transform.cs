@@ -11,6 +11,7 @@ namespace Lumina;
 /// used instead of an auto-generated one (C# can't express the 16-byte alignment / padding otherwise).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FTransform")]
 public struct FTransform
 {
     public FVector3 Location;   // @0

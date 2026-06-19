@@ -53,13 +53,13 @@ namespace Lumina
             T Data[2];
         };
 
-        TVec() = default;
-        explicit constexpr TVec(T Scalar) : x(Scalar), y(Scalar) {}
+        TVec() noexcept = default;
+        explicit constexpr TVec(T Scalar) noexcept : x(Scalar), y(Scalar) {}
 
         // Per-component; accepts mixed/int args, the cast removes brace-narrowing.
         template<typename A, typename B>
         requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B>)
-        constexpr TVec(A InX, B InY) : x(T(InX)), y(T(InY)) {}
+        constexpr TVec(A InX, B InY) noexcept : x(T(InX)), y(T(InY)) {}
 
         // Implicit truncation from larger vectors.
         constexpr TVec(const TVec<T, 3>& V) : x(V.x), y(V.y) {}
@@ -93,11 +93,11 @@ namespace Lumina
             T Data[3];
         };
 
-        TVec() = default;
-        explicit constexpr TVec(T Scalar) : x(Scalar), y(Scalar), z(Scalar) {}
+        TVec() noexcept = default;
+        explicit constexpr TVec(T Scalar) noexcept : x(Scalar), y(Scalar), z(Scalar) {}
 
         template<typename A, typename B, typename C>
-            requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B> && std::is_arithmetic_v<C>)
+        requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B> && std::is_arithmetic_v<C>)
         constexpr TVec(A InX, B InY, C InZ) : x(T(InX)), y(T(InY)), z(T(InZ)) {}
 
         constexpr TVec(const TVec<T, 2>& XY, T InZ) : x(XY.x), y(XY.y), z(InZ) {}
@@ -130,8 +130,8 @@ namespace Lumina
             T Data[4];
         };
 
-        TVec() = default;
-        explicit constexpr TVec(T Scalar) : x(Scalar), y(Scalar), z(Scalar), w(Scalar) {}
+        TVec() noexcept = default;
+        explicit constexpr TVec(T Scalar) noexcept : x(Scalar), y(Scalar), z(Scalar), w(Scalar) {}
 
         template<typename A, typename B, typename C, typename D>
         requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B> && std::is_arithmetic_v<C> && std::is_arithmetic_v<D>)

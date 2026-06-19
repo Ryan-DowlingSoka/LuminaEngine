@@ -5,6 +5,9 @@
 #include <cstring>
 #include "Core/Math/Math.h"
 
+#include "Platform/Process/PlatformProcess.h"
+#include "Renderer/Format.h"
+#include "Tools/Import/ImportHelpers.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/NameComponent.h"
@@ -92,6 +95,122 @@ namespace Lumina
         return Entity;
     }
 
+    bool FTerrainEditMode::ImportHeightmap(STerrainComponent& Terrain, const char* FilePath, FString& OutError, int32& OutSrcW, int32& OutSrcH)
+    {
+        OutSrcW = 0;
+        OutSrcH = 0;
+
+        if (FilePath == nullptr || *FilePath == '\0')
+        {
+            OutError = "No file selected.";
+            return false;
+        }
+
+        // Decode the image to raw pixels. Heightmaps are read as-is (no vertical flip, no sRGB curve) so the
+        // stored sample value maps directly to height; 16-bit grayscale gives the smoothest result.
+        TOptional<Import::Textures::FTextureImportResult> Decoded = Import::Textures::ImportTexture(FStringView(FilePath), /*bFlipVertical*/ false);
+        if (!Decoded.has_value() || Decoded->Pixels.empty())
+        {
+            OutError = "Could not decode image (unsupported, corrupt, or empty file).";
+            return false;
+        }
+
+        const Import::Textures::FTextureImportResult& Img = *Decoded;
+        const int32 W = (int32)Img.Dimensions.x;
+        const int32 H = (int32)Img.Dimensions.y;
+        OutSrcW = W;
+        OutSrcH = H;
+
+        if (W < 2 || H < 2)
+        {
+            OutError = "Image is too small to be a heightmap (needs at least 2x2).";
+            return false;
+        }
+
+        // Classify the decoded format into (element kind, channel count); the height is the red channel.
+        enum class EKind { U8, U16, F32 };
+        EKind Kind     = EKind::U8;
+        int32 Channels = 1;
+        switch (Img.Format)
+        {
+            case EFormat::R8_UNORM:                          Kind = EKind::U8;  Channels = 1; break;
+            case EFormat::RG8_UNORM:                         Kind = EKind::U8;  Channels = 2; break;
+            case EFormat::RGBA8_UNORM: case EFormat::SRGBA8_UNORM: Kind = EKind::U8;  Channels = 4; break;
+            case EFormat::R16_UNORM:                         Kind = EKind::U16; Channels = 1; break;
+            case EFormat::RG16_UNORM:                        Kind = EKind::U16; Channels = 2; break;
+            case EFormat::RGBA16_UNORM:                      Kind = EKind::U16; Channels = 4; break;
+            case EFormat::R32_FLOAT:                         Kind = EKind::F32; Channels = 1; break;
+            case EFormat::RG32_FLOAT:                        Kind = EKind::F32; Channels = 2; break;
+            case EFormat::RGB32_FLOAT:                       Kind = EKind::F32; Channels = 3; break;
+            case EFormat::RGBA32_FLOAT:                      Kind = EKind::F32; Channels = 4; break;
+            default:
+                OutError = "Unsupported pixel format for a heightmap.";
+                return false;
+        }
+
+        const size_t ElemSize  = (Kind == EKind::U8) ? 1 : (Kind == EKind::U16 ? 2 : 4);
+        const size_t Stride    = (size_t)W * (size_t)Channels * ElemSize;
+        if (Img.Pixels.size() < Stride * (size_t)H)
+        {
+            OutError = "Decoded pixel buffer is smaller than its reported dimensions.";
+            return false;
+        }
+
+        const uint8* Base = Img.Pixels.data();
+        auto ReadHeight = [&](int32 px, int32 py) -> float
+        {
+            const size_t Sample = ((size_t)py * (size_t)W + (size_t)px) * (size_t)Channels;
+            switch (Kind)
+            {
+                case EKind::U8:  return (float)Base[Sample] / 255.0f;
+                case EKind::U16: return (float)reinterpret_cast<const uint16*>(Base)[Sample] / 65535.0f;
+                case EKind::F32: return std::clamp(reinterpret_cast<const float*>(Base)[Sample], 0.0f, 1.0f);
+            }
+            return 0.0f;
+        };
+
+        // Resample the source image into the terrain's (pow2+1) grid with bilinear filtering, so any image
+        // size works without disturbing the chunking invariant.
+        const int32 Res = Terrain.Resolution;
+        if (Res < 2)
+        {
+            OutError = "Terrain resolution is invalid.";
+            return false;
+        }
+
+        const size_t N = (size_t)Res * (size_t)Res;
+        Terrain.Heightmap.assign(N, 0.0f);
+
+        for (int32 ty = 0; ty < Res; ++ty)
+        {
+            const float V  = (float)ty / (float)(Res - 1);
+            const float Fy = V * (float)(H - 1);
+            const int32 Y0 = (int32)Fy;
+            const int32 Y1 = std::min(Y0 + 1, H - 1);
+            const float Dy = Fy - (float)Y0;
+
+            for (int32 tx = 0; tx < Res; ++tx)
+            {
+                const float U  = (float)tx / (float)(Res - 1);
+                const float Fx = U * (float)(W - 1);
+                const int32 X0 = (int32)Fx;
+                const int32 X1 = std::min(X0 + 1, W - 1);
+                const float Dx = Fx - (float)X0;
+
+                const float H00 = ReadHeight(X0, Y0);
+                const float H10 = ReadHeight(X1, Y0);
+                const float H01 = ReadHeight(X0, Y1);
+                const float H11 = ReadHeight(X1, Y1);
+                const float Height = Math::Mix(Math::Mix(H00, H10, Dx), Math::Mix(H01, H11, Dx), Dy);
+
+                Terrain.Heightmap[(size_t)ty * (size_t)Res + (size_t)tx] = std::clamp(Height, 0.0f, 1.0f);
+            }
+        }
+
+        Terrain.MarkHeightmapReplaced();
+        return true;
+    }
+
     void FTerrainEditMode::OnEnter(CWorld* World)
     {
         // Spawning a default terrain on enter makes the mode self-bootstrapping,
@@ -126,6 +245,53 @@ namespace Lumina
         if (ImGui::Button("+ Terrain", ImVec2(0, ButtonSize)))
         {
             CreateDefaultTerrain(World);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_IMPORT " Heightmap", ImVec2(0, ButtonSize)))
+        {
+            // Import a heightmap image onto the active terrain (creating a default one first if none exists).
+            entt::entity TerrainEntity = FindPreferredTerrain(World);
+            if (TerrainEntity == entt::null)
+            {
+                TerrainEntity = CreateDefaultTerrain(World);
+            }
+
+            FFixedString File;
+            const char* Filter =
+                "Heightmap (*.png;*.tga;*.hdr;*.jpg)\0*.png;*.tga;*.hdr;*.jpg\0"
+                "PNG (*.png)\0*.png\0"
+                "All Files (*.*)\0*.*\0";
+            if (TerrainEntity != entt::null && Platform::OpenFileDialogue(File, "Select Heightmap Image", Filter))
+            {
+                STerrainComponent& Terrain = World->GetEntityRegistry().get<STerrainComponent>(TerrainEntity);
+
+                // Wrap in an undo transaction so the import is a single Ctrl+Z (snapshots the pre-import heightmap).
+                const bool bTransaction = (Context != nullptr);
+                if (bTransaction)
+                {
+                    Context->BeginModeTransaction();
+                }
+
+                FString Error;
+                int32 SrcW = 0;
+                int32 SrcH = 0;
+                const bool bOk = ImportHeightmap(Terrain, File.c_str(), Error, SrcW, SrcH);
+
+                if (bTransaction)
+                {
+                    Context->EndModeTransaction("Import Heightmap");
+                }
+
+                if (bOk)
+                {
+                    ImGuiX::Notifications::NotifySuccess("Heightmap imported: {}x{} -> {}^2 grid.", SrcW, SrcH, Terrain.Resolution);
+                }
+                else
+                {
+                    ImGuiX::Notifications::NotifyError("Heightmap import failed: {}", Error.c_str());
+                }
+            }
         }
 
         ImGui::SameLine();

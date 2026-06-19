@@ -100,8 +100,14 @@ namespace Lumina
                 // Type-only entry; +/- buttons step by Delta, no click-drag scrubbing.
                 ValueType Step = static_cast<ValueType>(Speed);
                 ImGui::InputScalar("##Value", DT, &DisplayValue, &Step, nullptr, Format);
-                if (Min && DisplayValue < *Min) DisplayValue = *Min;
-                if (Max && DisplayValue > *Max) DisplayValue = *Max;
+                if (Min && DisplayValue < *Min)
+                {
+                    DisplayValue = *Min;
+                }
+                if (Max && DisplayValue > *Max)
+                {
+                    DisplayValue = *Max;
+                }
             }
             else
             {

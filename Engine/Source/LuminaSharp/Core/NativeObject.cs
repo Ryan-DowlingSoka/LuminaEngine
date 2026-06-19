@@ -7,7 +7,7 @@ namespace LuminaSharp;
 /// object-array index + generation) rather than a bare pointer, so a wrapper to a since-destroyed object
 /// fails loudly instead of silently reading reclaimed memory: <see cref="IsValid"/> reports liveness (like
 /// Unity's <c>obj != null</c>), and every generated property/method accessor reads through
-/// <see cref="Handle"/>, which re-resolves and throws once the object is freed. Engine-constructed only —
+/// <see cref="Handle"/>, which re-resolves and throws once the object is freed. Engine-constructed only,
 /// instances are handed out by the engine (Asset.Load, the generated getters, ...), never <c>new</c>'d by
 /// user code. CObjects don't move while alive, so re-resolving returns the same pointer; it's purely a
 /// generation-validated liveness gate.
@@ -27,7 +27,7 @@ public class NativeObject
     }
 
     /// <summary>True while the native CObject this wraps is still alive (index + generation validated
-    /// against the object array). Mirrors Unity's <c>obj != null</c> — check it before using a reference
+    /// against the object array). Mirrors Unity's <c>obj != null</c>, check it before using a reference
     /// you've held across frames, asset unloads, or other structural changes.</summary>
     public bool IsValid => ObjectIndex < 0
         ? RawHandle != IntPtr.Zero
@@ -50,7 +50,7 @@ public class NativeObject
             {
                 throw new InvalidOperationException(
                     "Use of a destroyed native object: the CObject this wrapper referenced has been freed. " +
-                    "Don't cache wrappers across frames or structural changes — re-fetch it (Asset.Load, the property, ...).");
+                    "Don't cache wrappers across frames or structural changes, re-fetch it (Asset.Load, the property, ...).");
             }
             return Pointer;
         }

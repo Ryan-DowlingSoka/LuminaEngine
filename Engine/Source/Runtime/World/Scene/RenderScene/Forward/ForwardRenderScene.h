@@ -32,6 +32,10 @@ namespace Lumina
     struct SExponentialHeightFogComponent;
     class CWorld;
     struct SStaticMeshComponent;
+    struct SDynamicMeshComponent;
+    struct SFoliageComponent;
+    struct SFoliageType;
+    struct FFoliageBakedInstance;
     struct SSkeletalMeshComponent;
     struct STransformComponent;
     struct STerrainComponent;
@@ -582,10 +586,17 @@ namespace Lumina
         void CompileDrawCommands_RenderThread(RHI::FCmdListH CL);
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+        void ProcessDynamicMeshEntityInternal(entt::entity Entity, const SDynamicMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+        void ProcessFoliageBakedInstance(const SFoliageType& Type, const FFoliageBakedInstance& Baked, uint32 OwnerEntityID, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         
         void BuildSceneCullContext();
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
+
+        // Bind this worker's draw-data slot to its thread frame arena on the first touch of a gather pass,
+        // then accumulate. Must be called from inside a parallel-for body (Slot == Range.Thread); the arena
+        // is thread-local, so Slot's OS thread and the arena it allocates from are one and the same.
+        FThreadLocalDrawData& AcquireThreadLocalDrawData(uint32 Slot);
 
         void ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
@@ -730,8 +741,6 @@ namespace Lumina
         THashMap<entt::entity, FTerrainGPUState> TerrainGPUStates;
         
         THashMap<entt::entity, FParticleGPUState> ParticleGPUStates;
-        
-        TVector<TUniquePtr<FBlockLinearAllocator>> FrameArenas;
 
         TVector<FDrawBatchKey>                  MergeGlobalBatchKeys;
         TVector<TVector<FLocalBatchEntry*>>     MergeBatchToLocals;
@@ -750,8 +759,12 @@ namespace Lumina
         TVector<FDecalSortEntry>                DecalSortScratch;
         THashMap<CMaterial*, int32>             DecalGroupMinSort;
         
+        // Per-worker draw-data slots, persistent across frames. Each slot's arena-backed vectors are
+        // (re)bound to the owning worker's thread frame arena lazily, on that worker's first touch of a
+        // gather pass (see AcquireThreadLocalDrawData); a null arena marks a slot not yet bound this frame.
         TVector<FThreadLocalDrawData>           ThreadLocalStorage;
-        
+        uint32                                  CurrentReservePerThread = 0;
+
         struct alignas(64) FLineBatchScratch
         {
             static constexpr uint32 kMaxBuckets = 16;

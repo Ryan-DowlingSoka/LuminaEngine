@@ -121,6 +121,7 @@ namespace Lumina::DotNet
         typedef void* (CORECLR_DELEGATE_CALLTYPE* CreateEntityScriptFn)(const char*, int32, uint64, uint32);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* OnReadyScriptFn)(void*);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* UpdateScriptsFn)(void* const*, int32, float);
+        typedef void  (CORECLR_DELEGATE_CALLTYPE* FixedUpdateScriptsFn)(void* const*, int32, float);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* DestroyEntityScriptFn)(void*);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* EnumerateEntityScriptsFn)(void*, void*);
         typedef void  (CORECLR_DELEGATE_CALLTYPE* EnumerateEntitySystemsFn)(void*, void*);
@@ -144,7 +145,7 @@ namespace Lumina::DotNet
 
         // A LOCAL typed cache of the engine's managed entries (call sites stay typed). NOT an ABI mirror: native
         // fills each field at bootstrap by resolving it by name via ResolveManagedExport, so field set/order is
-        // a local concern only — no C# struct to match, no drift hash. A missing entry fails loudly per-name.
+        // a local concern only, no C# struct to match, no drift hash. A missing entry fails loudly per-name.
         struct FManagedExports
         {
             ApplyScriptPropertiesFn     ApplyScriptProperties;
@@ -175,6 +176,7 @@ namespace Lumina::DotNet
             TickFn                      Tick;
             TickEntitySystemFn          TickEntitySystem;
             UpdateScriptsFn             UpdateScripts;
+            FixedUpdateScriptsFn        FixedUpdateScripts;
         };
 
         bool                                        bInitialized = false;
@@ -305,7 +307,7 @@ namespace Lumina::DotNet
 
         // Enumerate the script units: every enabled plugin (deps = its .lplugin dependencies), the game (an
         // implicit dependency on every enabled plugin), and the engine library (standalone base). Each unit
-        // compiles into its OWN DLL under its OWN <root>/Binaries/DotNet — the game in the project, a plugin in
+        // compiles into its OWN DLL under its OWN <root>/Binaries/DotNet, the game in the project, a plugin in
         // its plugin dir (alongside its C++ Binaries), the engine next to the engine binaries. Nothing is
         // bundled into LuminaSharp, and a disabled plugin is filtered out here so it produces no unit at all.
         TVector<FScriptUnit> BuildScriptUnits()
@@ -777,6 +779,7 @@ namespace Lumina::DotNet
         LM_RESOLVE(Tick,                   TickFn);
         LM_RESOLVE(TickEntitySystem,       TickEntitySystemFn);
         LM_RESOLVE(UpdateScripts,          UpdateScriptsFn);
+        LM_RESOLVE(FixedUpdateScripts,     FixedUpdateScriptsFn);   // optional: null -> fixed update skipped
         #undef LM_RESOLVE
 
         // The core script entries are mandatory.
@@ -1005,6 +1008,14 @@ namespace Lumina::DotNet
         if (bInitialized && GManaged.UpdateScripts && Count > 0)
         {
             GManaged.UpdateScripts(Instances, Count, DeltaSeconds);
+        }
+    }
+
+    void FixedUpdateScripts(void* const* Instances, int32 Count, float FixedDeltaSeconds)
+    {
+        if (bInitialized && GManaged.FixedUpdateScripts && Count > 0)
+        {
+            GManaged.FixedUpdateScripts(Instances, Count, FixedDeltaSeconds);
         }
     }
 
@@ -1688,7 +1699,7 @@ LUMINA_DOTNET_EXPORT(void, SetObjectPtr)(void* Member, void* Value)
 
 // Weak-handle validity backing the managed NativeObject. GetHandle packs a live CObject*'s array handle
 // as (Generation << 32 | Index), Index = -1 if the object isn't array-tracked. Resolve returns the live
-// CObject* only if that (Index, Generation) still names a live, non-destroyed object, else null — so a
+// CObject* only if that (Index, Generation) still names a live, non-destroyed object, else null, so a
 // managed wrapper to a since-freed object throws on access instead of reading reclaimed memory.
 LUMINA_DOTNET_EXPORT(int64, ObjectGetHandle)(void* Object)
 {

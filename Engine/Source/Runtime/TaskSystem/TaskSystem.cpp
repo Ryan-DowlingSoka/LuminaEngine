@@ -7,6 +7,7 @@
 #if USING(WITH_EDITOR)
 #include "Scheduler/JobProfiler.h"
 #endif
+#include <algorithm>
 #include <cstdlib>
 
 namespace Lumina
@@ -40,11 +41,17 @@ namespace Lumina
             uint32 NumChunks = (Num + Grain - 1) / Grain;
 
             uint32 MaxChunks = Jobs::GetNumWorkers() * 4u;
-            if (MaxChunks == 0)         MaxChunks = 1;
-            if (MaxChunks > kMaxChunks) MaxChunks = kMaxChunks;
+            if (MaxChunks == 0)
+            {
+                MaxChunks = 1;
+            }
+            MaxChunks = std::min(MaxChunks, kMaxChunks);
+            NumChunks = std::min(NumChunks, MaxChunks);
 
-            if (NumChunks > MaxChunks) NumChunks = MaxChunks;
-            if (NumChunks == 0)        NumChunks = 1;
+            if (NumChunks == 0)
+            {
+                NumChunks = 1;
+            }
             return NumChunks;
         }
 

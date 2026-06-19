@@ -64,9 +64,87 @@ namespace Lumina
         void InsertSnippet(const char* Snippet);
         void PersistSettings() const;
 
-        // Inline color-swatch overlay: a clickable square before each #RRGGBB[AA] literal that
-        // opens a picker; edits commit as a normal text replacement (so undo/dirty/reload work).
-        void DrawInlineColorSwatches();
+        // --- Composition designer ---
+        // A "slot" is any live-DOM element with an id; a "widget" is a <template>-rooted .rml in the
+        // project. Assigning a widget to a slot writes <link type="text/template"> + <template src> into
+        // the buffer (the single source of truth), which the normal reload re-parses. Assignment state is
+        // read back from the buffer text since a <template src> directive leaves no DOM element.
+        struct FCompSlot
+        {
+            FString Id;
+            FString Tag;
+            ImVec2  OffsetPx{0.0f, 0.0f};   // border-box, context px
+            ImVec2  SizePx{0.0f, 0.0f};
+            int32   Depth = 0;
+            int32   ChildCount = 0;
+            FString AssignedSrc;            // src of the slotted <template>, parsed from the buffer
+        };
+        struct FCompWidget
+        {
+            FString DisplayName;            // file name without extension
+            FString VirtualPath;            // full virtual path (backs the <link href>)
+            FString TemplateName;           // <template name="..."> -> the value in <template src="...">
+            FString ContentSlotId;          // <template content="..."> (informational)
+        };
+
+        void RefreshCompositionSlots();     // pull live-DOM slots, then stamp buffer-parsed assignments
+        void RefreshWidgetLibrary();        // scan the document's folder tree for <template> widgets
+        void DrawCompositionPanel();
+        void DrawSlotInspector();           // numeric Left/Top/Width/Height fields for the selected slot
+        void DrawSlotOverlays(const ImVec2& CanvasMin, float ScalePx);
+        void AssignWidgetToSlot(const FString& SlotId, int WidgetIndex);
+        void ClearSlotAssignment(const FString& SlotId);
+
+        // UMG-style authoring: insert a new building block (kElementPrimitives) as the last child of
+        // TargetSlotId (empty = the document body), auto-id'd so it's immediately a manipulable slot;
+        // RemoveElement deletes a slot's element (open..close) from the buffer entirely.
+        void AddElement(const FString& TargetSlotId, int PrimitiveIndex);
+        void RemoveElement(const FString& SlotId);
+        // Reorder: swap a slot's element with its previous/next sibling. Inline text: replace a text-leaf
+        // element's inner text (no child elements) from the inspector.
+        void MoveElement(const FString& SlotId, bool bUp);
+        void SetElementInnerText(const FString& SlotId, const std::string& NewText);
+        // Returns the element's id, assigning a fresh one (written into its open tag) if it had none -- so any
+        // element in the hierarchy, id'd or not, becomes addressable the moment the user acts on it.
+        FString EnsureElementId(const std::string& Tag, size_t OpenLt, const std::string& ExistingId);
+
+        // Repositioning writes a `transform: translate(...)` to the slot element's inline style -- a relative
+        // nudge that never changes the element's position mode or anchoring, so it stays responsive on resize
+        // (unlike position:absolute + left/top, which pins it). CommitSlotVisual sets the transform so the
+        // element's rendered top-left lands at TargetVisualPx; CommitSlotMove is the drag-delta wrapper.
+        // SetSlotInlineStyle merges arbitrary props into the element's style="" attribute in the buffer.
+        void CommitSlotMove(const FString& SlotId, ImVec2 DeltaPx);
+        void CommitSlotVisual(const FString& SlotId, ImVec2 TargetVisualPx, bool bSnapToGrid);
+        void SetSlotInlineStyle(const FString& SlotId, const std::vector<std::pair<std::string, std::string>>& Sets);
+
+        TVector<FCompSlot>   CompSlots;
+        TVector<FCompWidget> CompWidgets;
+        FString              SelectedSlotId;
+        FString              HoveredSlotId;          // recomputed each frame (tree or canvas hover)
+        bool                 bShowSlotOverlays = true;
+        bool                 bWidgetLibraryDirty = true;
+        char                 WidgetSearch[64] = {};
+
+        bool                 bDraggingSlot = false;
+        FString              DraggingSlotId;
+        ImVec2               DragDeltaPx{0.0f, 0.0f}; // accumulated drag, context px
+
+        // Inspector field caches: DragFloat owns these while being scrubbed/typed; we snap them back to
+        // the live DOM value whenever the field isn't active (so canvas drags + reloads flow in).
+        float                InspLeft = 0.0f;
+        float                InspTop = 0.0f;
+        float                InspWidth = 0.0f;
+        float                InspHeight = 0.0f;
+        char                 InspText[256] = {}; // inline inner-text edit buffer for text-leaf slots
+        float                InspFontSize = 16.0f;
+        ImVec4               InspColor{1.0f, 1.0f, 1.0f, 1.0f};
+        FString              InspColorSyncId;    // re-pull InspColor only when the selection changes
+
+        // Assignment parse is keyed on the undo index so the buffer is copied only when it actually
+        // changed; slot geometry still refreshes every frame (cheap DOM walk, no text copy).
+        std::string          CompAssignText;
+        size_t               CompAssignUndoIndex = ~size_t(0);
+        bool                 bCompAssignDirty = true;
 
         FString                     VirtualPath;
         FString                     ParentDir;
@@ -85,10 +163,7 @@ namespace Lumina
         bool                        bBufferDirty = false;
         bool                        bAutoReload = true;
 
-        // Per-frame churn guards: status bar + color swatches once rebuilt strings every
-        // frame; these caches refresh only when the undo index changes.
-        std::vector<std::string>    CachedLines;                    // backing for color-swatch parse
-        size_t                      CachedLinesUndoIndex = ~size_t(0);
+        // Per-frame churn guard: the status bar's byte count is recomputed only when the undo index moves.
         size_t                      CachedDocBytes = 0;             // status-bar byte count
         size_t                      CachedStatusUndoIndex = ~size_t(0);
 
@@ -102,6 +177,11 @@ namespace Lumina
         uint32                      CanvasWidth = 0;
         uint32                      CanvasHeight = 0;
         int                         ResolutionPreset = 0;     // 0 = Fit
+        
+        // Auto DPI tracks the engine's dp convention (ratio = canvas height / 1080) so dp-authored UI
+        // previews at the same relative size it will in-game, instead of a fixed ratio that overflows
+        // small canvases. The slider becomes a manual override when this is off.
+        bool                        bAutoDpi = true;
         float                       PreviewDpiScale = 1.5f;
         float                       ViewZoom = 1.0f;          // pan/zoom over the canvas
         ImVec2                      ViewPan{0.0f, 0.0f};

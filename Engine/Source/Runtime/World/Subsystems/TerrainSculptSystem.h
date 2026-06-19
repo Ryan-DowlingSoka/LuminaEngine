@@ -55,6 +55,14 @@ namespace Lumina
         // entity's world position; the terrain centers on it (renderer's OriginXZ = TerrainOrigin.xz - HalfSize).
         static bool Raycast(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, const FVector3& RayOrigin, const FVector3& RayDir, FVector3& OutHit);
 
+        // Bilinear world-space surface height at (WorldX, WorldZ). Returns false if the point is outside the
+        // terrain footprint. TerrainOrigin is the entity world position (the terrain centers on it).
+        static bool SampleHeight(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, float WorldX, float WorldZ, float& OutHeight);
+
+        // Surface normal at (WorldX, WorldZ) from the height gradient (central differences). Returns world up
+        // if the point is off the terrain.
+        static FVector3 SampleNormal(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, float WorldX, float WorldZ);
+
     private:
         static void ApplySculpt (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect);
         static void ApplyFlatten(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect);

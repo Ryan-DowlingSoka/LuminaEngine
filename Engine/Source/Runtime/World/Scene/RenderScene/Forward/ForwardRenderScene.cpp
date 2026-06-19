@@ -42,6 +42,8 @@
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/SkyLightComponent.h"
 #include "world/entity/components/staticmeshcomponent.h"
+#include "World/Entity/Components/DynamicMeshComponent.h"
+#include "World/Entity/Components/FoliageComponent.h"
 #include "World/Entity/Components/TerrainComponent.h"
 #include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
@@ -492,7 +494,7 @@ namespace Lumina
         SceneGlobalData.SSAOSettings.Radius             = Frame.CachedWorldSettings.SSAORadius;
         SceneGlobalData.SSAOSettings.Intensity          = Frame.CachedWorldSettings.SSAOIntensity;
         SceneGlobalData.SSAOSettings.Power              = Frame.CachedWorldSettings.SSAOPower;
-        SceneGlobalData.CullData.Frustum                = ViewVolume.GetFrustum();
+        SceneGlobalData.CullData.Frustum                = AsGPU(ViewVolume.GetFrustum());
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
         SceneGlobalData.CullData.InstanceNum            = (uint32)Frame.Geometry.Instances.size();
@@ -551,7 +553,7 @@ namespace Lumina
             Data.ScreenSize                   = FUIntVector4(CaptureSize.x, CaptureSize.y, 0, 0);
             Data.FarPlane                     = VV.GetFar();
             Data.NearPlane                    = VV.GetNear();
-            Data.CullData.Frustum             = VV.GetFrustum();
+            Data.CullData.Frustum             = AsGPU(VV.GetFrustum());
         }
 
                 
@@ -1022,6 +1024,21 @@ namespace Lumina
         }
     }
 
+    FForwardRenderScene::FThreadLocalDrawData& FForwardRenderScene::AcquireThreadLocalDrawData(uint32 Slot)
+    {
+        FThreadLocalDrawData& Local = ThreadLocalStorage[Slot];
+
+        // First touch this frame on this worker: bind the slot to this thread's frame arena and reserve.
+        // CompileDrawCommands_GameThread cleared every slot's arena to null up front, so a null arena here
+        // is the once-per-frame guard; later chunks on the same worker see the bound arena and accumulate.
+        if (Local.Arena.GetArena() == nullptr)
+        {
+            Local.ResetForFrame(FFrameArenaAllocator(&GetThreadFrameAllocator(), "RenderGather"));
+            Local.Items.reserve(CurrentReservePerThread);
+        }
+        return Local;
+    }
+
     void FForwardRenderScene::CompileDrawCommands_GameThread()
     {
         LUMINA_PROFILE_SCOPE();
@@ -1058,6 +1075,8 @@ namespace Lumina
             auto SkyLightView        = Registry.view<SSkyLightComponent>(entt::exclude<SDisabledTag>);
             auto FogView             = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
             auto StaticView          = Registry.view<SStaticMeshComponent>(entt::exclude<SDisabledTag>);
+            auto DynamicMeshView     = Registry.view<SDynamicMeshComponent>(entt::exclude<SDisabledTag>);
+            auto FoliageView         = Registry.view<SFoliageComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView        = Registry.view<SSkeletalMeshComponent>(entt::exclude<SDisabledTag>);
             auto TerrainAllView      = Registry.view<STerrainComponent>();
             auto TerrainView         = Registry.view<STerrainComponent>(entt::exclude<SDisabledTag>);
@@ -1081,37 +1100,25 @@ namespace Lumina
 
             const uint32 NumThreads = GTaskSystem->GetNumTaskThreads();
 
-            // 8MB: bone vector dominates (skeletons x bones x 48B); headroom for ~12k+ per thread.
-            constexpr SIZE_T kArenaBlockSize = 8 * 1024 * 1024;
-            if (FrameArenas.size() < NumThreads)
-            {
-                FrameArenas.reserve(NumThreads);
-                while (FrameArenas.size() < NumThreads)
-                {
-                    FrameArenas.push_back(MakeUnique<FBlockLinearAllocator>(kArenaBlockSize));
-                }
-            }
-            for (uint32 t = 0; t < NumThreads; ++t)
-            {
-                FrameArenas[t]->Reset();
-            }
-
-            // Persistent: outer storage keeps capacity, arena-backed members reset per frame.
-            // NumThreads is process-constant, so this grows once.
+            // Persistent: outer storage keeps capacity, slots are (re)bound to per-worker thread frame
+            // arenas lazily on each worker's first gather touch. NumThreads is process-constant, grows once.
             TVector<FThreadLocalDrawData>& ThreadLocal = ThreadLocalStorage;
             if (ThreadLocal.size() < NumThreads)
             {
                 ThreadLocal.reserve(NumThreads);
                 while (ThreadLocal.size() < NumThreads)
                 {
-                    ThreadLocal.emplace_back(FFrameArenaAllocator(FrameArenas[ThreadLocal.size()].get()));
+                    ThreadLocal.emplace_back();
                 }
             }
-            const uint32 ReservePerThread = (uint32)((EstimatedProxies + NumThreads - 1) / std::max(1u, NumThreads));
+            CurrentReservePerThread = (uint32)((EstimatedProxies + NumThreads - 1) / std::max(1u, NumThreads));
+
+            // Clear last frame's binding from every slot so the merge reads empty (not stale) data for any
+            // worker that runs no gather chunk this frame. The arenas were reclaimed at frame-begin
+            // (ResetThreadFrameAllocators); a null arena here marks "unbound", rebound per worker on touch.
             for (uint32 t = 0; t < NumThreads; ++t)
             {
-                ThreadLocal[t].ResetForFrame(FFrameArenaAllocator(FrameArenas[t].get()));
-                ThreadLocal[t].Items.reserve(ReservePerThread);
+                ThreadLocal[t].ResetForFrame(FFrameArenaAllocator());
             }
             
             
@@ -1188,7 +1195,7 @@ namespace Lumina
             FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticView.handle()->size(), 64, [&](const Task::FParallelRange& Range)
             {
                 LUMINA_PROFILE_SECTION("Process Static Mesh Range");
-                FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                FThreadLocalDrawData& Local = AcquireThreadLocalDrawData(Range.Thread);
                 auto Handle = StaticView.handle();
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
@@ -1200,12 +1207,29 @@ namespace Lumina
                         ProcessStaticMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
                     }
                 }
-            });
+            }, ETaskPriority::High); // critical path: MergeNode waits on this, so it runs ahead of emitters
+
+            FTaskGraph::FNodeHandle DynamicNode = Graph.AddParallelFor((uint32)DynamicMeshView.handle()->size(), 64, [&](const Task::FParallelRange& Range)
+            {
+                LUMINA_PROFILE_SECTION("Process Dynamic Mesh Range");
+                FThreadLocalDrawData& Local = AcquireThreadLocalDrawData(Range.Thread);
+                auto Handle = DynamicMeshView.handle();
+                for (uint32 i = Range.Start; i < Range.End; ++i)
+                {
+                    entt::entity Entity = (*Handle)[i];
+                    if (DynamicMeshView.contains(Entity))
+                    {
+                        const SDynamicMeshComponent& MeshComponent      = DynamicMeshView.get<SDynamicMeshComponent>(Entity);
+                        const STransformComponent&   TransformComponent = TransformStorage.get(Entity);
+                        ProcessDynamicMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                    }
+                }
+            }, ETaskPriority::High); // critical path (gates MergeNode)
 
             FTaskGraph::FNodeHandle SkeletalNode = Graph.AddParallelFor((uint32)SkeletalView.handle()->size(), 32, [&](const Task::FParallelRange& Range)
             {
                 LUMINA_PROFILE_SECTION("Process Skeletal Mesh Range");
-                FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                FThreadLocalDrawData& Local = AcquireThreadLocalDrawData(Range.Thread);
                 auto Handle = SkeletalView.handle();
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
@@ -1217,13 +1241,55 @@ namespace Lumina
                         ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
                     }
                 }
-            });
+            }, ETaskPriority::High); // critical path (gates MergeNode)
 
             FTaskGraph::FNodeHandle MergeNode = Graph.Add([&]
             {
                 MergeMeshDrawData(ThreadLocal);
+            }, ETaskPriority::High); // tail of the critical path: grab a worker the instant its inputs are done
+
+            // Foliage: mostly-static instance soup. The heavy per-instance precompute (world transform +
+            // bounds) lives in a persistent BakedInstances cache rebuilt ONLY when the foliage changes
+            // (EnsureRenderCache, here on the game thread, a no-op when unchanged). The per-frame parallel
+            // task then just culls the cached sphere and emits, so it rides the GPU meshlet cull + indirect
+            // draw with no per-frame geometry recompute. Component pointers are stable (in_place_delete).
+            FoliageView.each([&](entt::entity FoliageEntity, SFoliageComponent& Foliage)
+            {
+                if (Foliage.Types.empty() || Foliage.Instances.empty())
+                {
+                    return;
+                }
+
+                Foliage.EnsureRenderCache();
+
+                const uint32 BakedCount = (uint32)Foliage.BakedInstances.size();
+                if (BakedCount == 0)
+                {
+                    return;
+                }
+
+                SFoliageComponent* FoliagePtr = &Foliage;
+                const uint32 OwnerID = entt::to_integral(FoliageEntity);
+
+                FTaskGraph::FNodeHandle FoliageNode = Graph.AddParallelFor(BakedCount, 512, [this, FoliagePtr, OwnerID](const Task::FParallelRange& Range)
+                {
+                    LUMINA_PROFILE_SECTION("Process Foliage Range");
+                    FThreadLocalDrawData& Local = AcquireThreadLocalDrawData(Range.Thread);
+                    const TVector<SFoliageType>&          Types = FoliagePtr->Types;
+                    const TVector<FFoliageBakedInstance>& Baked = FoliagePtr->BakedInstances;
+                    for (uint32 i = Range.Start; i < Range.End; ++i)
+                    {
+                        const FFoliageBakedInstance& B = Baked[i];
+                        if (B.TypeIndex < 0 || B.TypeIndex >= (int32)Types.size())
+                        {
+                            continue;
+                        }
+                        ProcessFoliageBakedInstance(Types[B.TypeIndex], B, OwnerID, Local);
+                    }
+                }, ETaskPriority::High); // critical path (gates MergeNode)
+                Graph.AddDependency(MergeNode, FoliageNode);
             });
-            
+
             FLineBatcherComponent* LineBatcher = nullptr;
             LineBatcherView.each([&](FLineBatcherComponent& C) { if (LineBatcher == nullptr)
                     {
@@ -1245,8 +1311,8 @@ namespace Lumina
                 Graph.AddDependency(LineFinalizeNode, LineBatchNode);
             }
 
-            // Triangles are low-volume; keep them as one High-priority node so they overlap the mesh fan-out
-            // without needing the full chunk split.
+            // Triangles are low-volume; one node, Medium priority so it overlaps the mesh fan-out without
+            // stealing the first workers from the High critical-path nodes that gate MergeNode.
             Graph.Add([&]
             {
                 LUMINA_PROFILE_SECTION("Batched Triangle Processing");
@@ -1255,13 +1321,13 @@ namespace Lumina
                 {
                     ProcessBatchedTriangles(TriangleBatcherComponent);
                 });
-            }, ETaskPriority::High);
+            }, ETaskPriority::Medium);
 
             Graph.Add([&]
             {
                 LUMINA_PROFILE_SECTION("Process Widget Primitives");
 
-                const FFrustum& WidgetFrustum = SceneGlobalData.CullData.Frustum;
+                const FFrustum WidgetFrustum = FromGPU(SceneGlobalData.CullData.Frustum);
                 const bool      bCullWidgets   = SceneGlobalData.CullData.bFrustumCull != 0u;
 
                 WidgetView.each([&](entt::entity Entity, SWidgetComponent& WidgetComponent)
@@ -1296,7 +1362,7 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Process Text Primitives");
 
-                const FFrustum& TextFrustum = SceneGlobalData.CullData.Frustum;
+                const FFrustum TextFrustum = FromGPU(SceneGlobalData.CullData.Frustum);
                 const bool      bCullText   = SceneGlobalData.CullData.bFrustumCull != 0u;
                 const FVector3  CamRight    = FVector3(SceneGlobalData.CameraData.Right);
                 const FVector3  CamUp       = FVector3(SceneGlobalData.CameraData.Up);
@@ -1433,7 +1499,7 @@ namespace Lumina
                     Batch.Count         = (uint32)GlyphInstances.size() - First;
                     Batch.bDepthTest    = TextComponent.bDepthTest;
                 });
-            }, ETaskPriority::High);
+            }, ETaskPriority::Medium); // emitter, not on the mesh critical path: don't outrank Static/Skeletal/Foliage
 
             Graph.Add([&]
             {
@@ -1818,6 +1884,7 @@ namespace Lumina
             Graph.AddDependency(PointLightTask, DLightTask);
             Graph.AddDependency(SpotLightTask, DLightTask);
             Graph.AddDependency(MergeNode, StaticNode);
+            Graph.AddDependency(MergeNode, DynamicNode);
             Graph.AddDependency(MergeNode, SkeletalNode);
 
             Graph.Dispatch();
@@ -1999,7 +2066,7 @@ namespace Lumina
         {
             const FVector3 SunDir = Math::Normalize(LightData.SunDirection);
             constexpr float ShadowSweepDistance = 2000.0f;
-            SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum.Extruded(SunDir, ShadowSweepDistance);
+            SceneGlobalData.CullData.ShadowFrustum   = AsGPU(FromGPU(SceneGlobalData.CullData.Frustum).Extruded(SunDir, ShadowSweepDistance));
             SceneGlobalData.CullData.bHasDirectional = 1u;
         }
         else
@@ -2202,8 +2269,7 @@ namespace Lumina
     // Resolve the material-pure portion of a slot, cached per-thread by material so the
     // ~10 virtual calls below don't repeat for every surface sharing a material.
     template <typename TComponent>
-    static const FForwardRenderScene::FCachedMaterialResolve& ResolveMaterialCached(
-        FForwardRenderScene::FThreadLocalDrawData& Local, const TComponent& MeshComponent, int16 SlotIdx)
+    static const FForwardRenderScene::FCachedMaterialResolve& ResolveMaterialCached(FForwardRenderScene::FThreadLocalDrawData& Local, const TComponent& MeshComponent, int16 SlotIdx)
     {
         CMaterialInterface* RawMaterial = MeshComponent.GetMaterialForSlot(SlotIdx);
 
@@ -2217,15 +2283,10 @@ namespace Lumina
         }
 
         CMaterialInterface* Material = RawMaterial;
-        // Non-surface domains have different pipeline layouts / vertex stages (e.g. the decal box VS reads
-        // a buffer the mesh path never binds); misassignment to a mesh falls back to the default material.
         if (IsValid(Material))
         {
             const EMaterialType DomainType = Material->GetMaterialType();
-            if (DomainType == EMaterialType::Terrain ||
-                DomainType == EMaterialType::PostProcess ||
-                DomainType == EMaterialType::UI ||
-                DomainType == EMaterialType::Decal)
+            if (DomainType != EMaterialType::PBR)
             {
                 Material = nullptr;
             }
@@ -2407,12 +2468,12 @@ namespace Lumina
 
         // World bounds first so we can reject before paying for mesh/surface lookups.
         // BoundsScale inflates cull sphere when animation/displacement push past asset AABB.
-        const float     CullScale   = Math::Max(MeshComponent.BoundsScale, 1.0f);
-        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const FVector3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const FVector3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = Math::Length(Extents) * CullScale;
-        const FVector4 SphereBounds = FVector4(Center, Radius);
+        const float     CullScale    = Math::Max(MeshComponent.BoundsScale, 1.0f);
+        const FAABB     BoundingBox  = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const FVector3  Center       = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const FVector3  Extents      = BoundingBox.Max - Center;
+        const float     Radius       = Math::Length(Extents) * CullScale;
+        const FVector4  SphereBounds = FVector4(Center, Radius);
 
         if (!SceneCullContext.ShouldKeep(
                 Center,
@@ -2430,17 +2491,15 @@ namespace Lumina
         // GPUPtr is the BDA; dead-mesh safety comes from Core::DeferredFree, no pinning needed.
         const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
 
+        constexpr float kMinAngularSize = 0.05f;
+        
         // Angular size proxy (2r/d, squared to skip sqrt). Tiny props skip depth pre-pass.
         const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
         const FVector3 ToCamera   = Center - CameraPos;
         const float     DistSq     = Math::Dot(ToCamera, ToCamera);
-        constexpr float kMinAngularSize = 0.05f;
         const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
-        // Distance in radii; one sqrt+divide hoisted out of the per-surface loop.
-        const float DistanceOverRadius = (Radius > 0.0f)
-            ? (Math::Sqrt(DistSq) / Radius)
-            : 0.0f;
+        const float DistanceOverRadius = (Radius > 0.0f) ? (Math::Sqrt(DistSq) / Radius) : 0.0f;
 
         EInstanceFlags BaseFlags = EInstanceFlags::None;
         if (MeshComponent.bReceiveShadow)
@@ -2454,17 +2513,17 @@ namespace Lumina
 
         const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
         FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
-        EntityRecord.Transform            = TransformMatrix;
-        EntityRecord.SphereBounds         = SphereBounds;
-        EntityRecord.MeshletHeaderAddress = MeshletHeaderAddress;
-        EntityRecord.CustomData           = MeshComponent.CustomPrimitiveData.Data.Packed;
-        EntityRecord.EntityID             = entt::to_integral(Entity);
-        EntityRecord.LocalBoneOffset      = ~0u;
-        EntityRecord.SkinMeshletStart  = 0u;
-        EntityRecord.SkinMeshletCount  = 0u;
-        EntityRecord.SkinSpanStart     = 0u;
-        EntityRecord.SkinSliceSize     = 0u;
-        EntityRecord.GlobalSkinnedBase = 0u;
+        EntityRecord.Transform              = TransformMatrix;
+        EntityRecord.SphereBounds           = SphereBounds;
+        EntityRecord.MeshletHeaderAddress   = MeshletHeaderAddress;
+        EntityRecord.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
+        EntityRecord.EntityID               = entt::to_integral(Entity);
+        EntityRecord.LocalBoneOffset        = ~0u;
+        EntityRecord.SkinMeshletStart       = 0u;
+        EntityRecord.SkinMeshletCount       = 0u;
+        EntityRecord.SkinSpanStart          = 0u;
+        EntityRecord.SkinSliceSize          = 0u;
+        EntityRecord.GlobalSkinnedBase      = 0u;
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
@@ -2493,7 +2552,235 @@ namespace Lumina
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
 
-            FProcessedDrawItem& Item = Local.Items.emplace_back();
+            FProcessedDrawItem& Item  = Local.Items.emplace_back();
+            Item.EntityRecordIndex    = EntityRecordIdx;
+            Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
+            Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.ShadowMeshletOffset  = ShadowMeshletOffset;
+            Item.ShadowMeshletCount   = ShadowMeshletCount;
+            Item.Flags                = Flags;
+            Item.MaterialIndex        = Slot.MaterialIdx;
+            Item.LocalBatchIndex      = LocalBatchIdx;
+            Item.LocalDrawIndex       = LocalDrawIdx;
+            Item._Pad                 = 0;
+        }
+    }
+
+    // Mirror of the static path, but the mesh lives on the component itself (a runtime CStaticMesh built from
+    // data) rather than referencing a shared asset. Same meshlet pipeline, culling, LODs and material resolve.
+    void FForwardRenderScene::ProcessDynamicMeshEntityInternal(entt::entity Entity, const SDynamicMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
+    {
+        const FFrameData& Frame = *ExtractFrame;
+        const auto& SceneCullContext = Frame.Geometry.SceneCullContext;
+        const auto& SceneGlobalData  = Frame.SceneGlobalData;
+
+        CMesh* Mesh = MeshComponent.DynamicMesh;
+        if (!IsValid(Mesh))
+        {
+            return;
+        }
+
+        const FMatrix4& TransformMatrix = TransformComponent.CachedMatrix;
+
+        const float     CullScale    = Math::Max(MeshComponent.BoundsScale, 1.0f);
+        const FAABB     BoundingBox  = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const FVector3  Center       = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const FVector3  Extents      = BoundingBox.Max - Center;
+        const float     Radius       = Math::Length(Extents) * CullScale;
+        const FVector4  SphereBounds = FVector4(Center, Radius);
+
+        if (!SceneCullContext.ShouldKeep(
+                Center,
+                Radius,
+                MeshComponent.bCastShadow,
+                MeshComponent.MaxDrawDistance,
+                FVector3(SceneGlobalData.CameraData.Location)))
+        {
+            ++Local.Stats.NumInstancesCulled;
+            return;
+        }
+
+        const FMeshResource& Resource = Mesh->GetMeshResource();
+        const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
+
+        constexpr float kMinAngularSize = 0.05f;
+
+        const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
+        const FVector3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = Math::Dot(ToCamera, ToCamera);
+        const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
+
+        const float DistanceOverRadius = (Radius > 0.0f) ? (Math::Sqrt(DistSq) / Radius) : 0.0f;
+
+        EInstanceFlags BaseFlags = EInstanceFlags::None;
+        if (MeshComponent.bReceiveShadow)
+        {
+            BaseFlags |= EInstanceFlags::ReceiveShadow;
+        }
+        if (MeshComponent.bIgnoreOcclusionCulling)
+        {
+            BaseFlags |= EInstanceFlags::IgnoreOcclusionCulling;
+        }
+
+        const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
+        FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
+        EntityRecord.Transform              = TransformMatrix;
+        EntityRecord.SphereBounds           = SphereBounds;
+        EntityRecord.MeshletHeaderAddress   = MeshletHeaderAddress;
+        EntityRecord.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
+        EntityRecord.EntityID               = entt::to_integral(Entity);
+        EntityRecord.LocalBoneOffset        = ~0u;
+        EntityRecord.SkinMeshletStart       = 0u;
+        EntityRecord.SkinMeshletCount       = 0u;
+        EntityRecord.SkinSpanStart          = 0u;
+        EntityRecord.SkinSliceSize          = 0u;
+        EntityRecord.GlobalSkinnedBase      = 0u;
+
+        for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+        {
+            const FResolvedSlot Slot = ResolveSlot(Local, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
+
+            const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
+
+            FDrawBatchKey BatchKey
+            {
+                .MaterialID       = Slot.MaterialID,
+                .bDrawInDepthPass = (Slot.bDrawInDepthPass ? 1u : 0u),
+                .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
+                .bMasked          = (Slot.bMasked          ? 1u : 0u),
+                .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
+            };
+            const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
+            const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
+
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]       : 0u;
+            const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+            const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
+            const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
+
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot);
+            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
+
+            FProcessedDrawItem& Item  = Local.Items.emplace_back();
+            Item.EntityRecordIndex    = EntityRecordIdx;
+            Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
+            Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.ShadowMeshletOffset  = ShadowMeshletOffset;
+            Item.ShadowMeshletCount   = ShadowMeshletCount;
+            Item.Flags                = Flags;
+            Item.MaterialIndex        = Slot.MaterialIdx;
+            Item.LocalBatchIndex      = LocalBatchIdx;
+            Item.LocalDrawIndex       = LocalDrawIdx;
+            Item._Pad                 = 0;
+        }
+    }
+
+    namespace
+    {
+        // Adapts a foliage type to the ResolveSlot/ResolveMaterialCached template contract (the same surface
+        // a mesh component exposes), so foliage shares the exact material-resolution + batching path.
+        struct FFoliageDrawProxy
+        {
+            const SFoliageType* Type = nullptr;
+            bool bCastShadow   = true;
+            bool bUseAsOccluder = false; // foliage is small; never an occlusion writer
+
+            CMaterialInterface* GetMaterialForSlot(size_t Slot) const
+            {
+                return (Type && Type->Mesh.IsValid()) ? Type->Mesh->GetMaterialAtSlot(Slot) : nullptr;
+            }
+        };
+    }
+
+    void FForwardRenderScene::ProcessFoliageBakedInstance(const SFoliageType& Type, const FFoliageBakedInstance& Baked, uint32 OwnerEntityID, FThreadLocalDrawData& Local)
+    {
+        const FFrameData& Frame = *ExtractFrame;
+        const auto& SceneCullContext = Frame.Geometry.SceneCullContext;
+        const auto& SceneGlobalData  = Frame.SceneGlobalData;
+
+        CMesh* Mesh = Type.Mesh;
+        if (!IsValid(Mesh))
+        {
+            return;
+        }
+
+        // Transform + cull sphere were baked when the foliage last changed; no per-frame matrix/AABB work.
+        const FMatrix4& TransformMatrix = Baked.Transform;
+        const FVector4  SphereBounds    = Baked.SphereBounds;
+        const FVector3  Center          = FVector3(SphereBounds);
+        const float     Radius          = SphereBounds.w;
+
+        if (!SceneCullContext.ShouldKeep(
+                Center,
+                Radius,
+                Type.bCastShadow,
+                Type.CullDistance,
+                FVector3(SceneGlobalData.CameraData.Location)))
+        {
+            ++Local.Stats.NumInstancesCulled;
+            return;
+        }
+
+        const FMeshResource& Resource = Mesh->GetMeshResource();
+        const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
+
+        const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
+        const FVector3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = Math::Dot(ToCamera, ToCamera);
+        const float DistanceOverRadius = (Radius > 0.0f) ? (Math::Sqrt(DistSq) / Radius) : 0.0f;
+
+        EInstanceFlags BaseFlags = EInstanceFlags::None;
+        if (Type.bReceiveShadow)
+        {
+            BaseFlags |= EInstanceFlags::ReceiveShadow;
+        }
+
+        FFoliageDrawProxy Proxy;
+        Proxy.Type        = &Type;
+        Proxy.bCastShadow = Type.bCastShadow;
+
+        const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
+        FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
+        EntityRecord.Transform              = TransformMatrix;
+        EntityRecord.SphereBounds           = SphereBounds;
+        EntityRecord.MeshletHeaderAddress   = MeshletHeaderAddress;
+        EntityRecord.CustomData             = 0u;
+        EntityRecord.EntityID               = OwnerEntityID;
+        EntityRecord.LocalBoneOffset        = ~0u;
+        EntityRecord.SkinMeshletStart       = 0u;
+        EntityRecord.SkinMeshletCount       = 0u;
+        EntityRecord.SkinSpanStart          = 0u;
+        EntityRecord.SkinSliceSize          = 0u;
+        EntityRecord.GlobalSkinnedBase      = 0u;
+
+        for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+        {
+            const FResolvedSlot Slot = ResolveSlot(Local, Proxy, Surface.MaterialIndex, /*bSignificantOccluder*/ false);
+
+            const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
+
+            FDrawBatchKey BatchKey
+            {
+                .MaterialID       = Slot.MaterialID,
+                .bDrawInDepthPass = (Slot.bDrawInDepthPass ? 1u : 0u),
+                .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
+                .bMasked          = (Slot.bMasked          ? 1u : 0u),
+                .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
+            };
+            const uint32 LODIndex       = ResolveSurfaceLOD(Surface, -1, RenderSettings.bUseLODs, DistanceOverRadius);
+            const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
+
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]       : 0u;
+            const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+            const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
+            const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
+
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot);
+            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
+
+            FProcessedDrawItem& Item  = Local.Items.emplace_back();
             Item.EntityRecordIndex    = EntityRecordIdx;
             Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
             Item.SurfaceMeshletCount  = SurfaceMeshletCount;
@@ -2520,12 +2807,12 @@ namespace Lumina
         }
         
         const FMatrix4& TransformMatrix = TransformComponent.CachedMatrix;
-        const float     CullScale   = Math::Max(MeshComponent.BoundsScale, 1.0f);
-        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const FVector3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const FVector3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = Math::Length(Extents) * CullScale;
-        const FVector4 SphereBounds = FVector4(Center, Radius);
+        const float     CullScale    = Math::Max(MeshComponent.BoundsScale, 1.0f);
+        const FAABB     BoundingBox  = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const FVector3  Center       = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const FVector3  Extents      = BoundingBox.Max - Center;
+        const float     Radius       = Math::Length(Extents) * CullScale;
+        const FVector4  SphereBounds = FVector4(Center, Radius);
 
         if (!SceneCullContext.ShouldKeep(
                 Center,
@@ -2846,7 +3133,9 @@ namespace Lumina
         {
             auto DedupBody = [&](const Task::FParallelRange& Range)
             {
-                TFrameHashMap<uint64, uint32> Dedupe(FFrameArenaAllocator(FrameArenas[Range.Thread].get()));
+                // Per-batch dedup scratch on this worker's frame arena (8 MB blocks fit the bucket array;
+                // reclaimed at the next frame-begin reset like the gathered data it sits beside).
+                TFrameHashMap<uint64, uint32> Dedupe(FFrameArenaAllocator(&GetThreadFrameAllocator(), "DrawDedupe"));
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
                     Dedupe.clear();
@@ -3056,7 +3345,7 @@ namespace Lumina
 
     bool FForwardRenderScene::ShouldRequestShadow(const FVector3& LightPosition, float LightRadius) const
     {
-        return ExtractFrame->SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
+        return FromGPU(ExtractFrame->SceneGlobalData.CullData.Frustum).IntersectsSphere(LightPosition, LightRadius);
     }
 
     void FForwardRenderScene::BuildSceneCullContext()
@@ -3069,7 +3358,7 @@ namespace Lumina
 
         SceneCullContext.Reset();
         SceneCullContext.bEnabled = RenderSettings.bCPUInstanceCull;
-        SceneCullContext.Frustum  = SceneGlobalData.CullData.Frustum;
+        SceneCullContext.Frustum  = FromGPU(SceneGlobalData.CullData.Frustum);
 
         if (!SceneCullContext.bEnabled)
         {
@@ -3104,27 +3393,26 @@ namespace Lumina
             // Sweep camera frustum along sun so off-screen casters between sun and view stay.
             // Distance MUST match ShadowSweepDistance in CompileDrawCommands.
             constexpr float ShadowSweepDistance = 2000.0f;
-            SceneCullContext.SunShadowFrustum = SceneCullContext.Frustum.Extruded(
-                SceneCullContext.SunDirection, ShadowSweepDistance);
+            SceneCullContext.SunShadowFrustum = SceneCullContext.Frustum.Extruded(SceneCullContext.SunDirection, ShadowSweepDistance);
         }
 
         // Shadow-casting locals: only keep lights whose attenuation sphere intersects camera frustum.
         auto PointView = Registry.view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
         for (entt::entity Entity : PointView)
         {
-            const SPointLightComponent& Light    = PointView.get<SPointLightComponent>(Entity);
+            const SPointLightComponent& Light = PointView.get<SPointLightComponent>(Entity);
             if (!Light.bCastShadows)
             {
                 continue;
             }
             const STransformComponent&  Transform = PointView.get<STransformComponent>(Entity);
-            const FVector3 Position = Transform.WorldTransform.GetLocation();
             const float     Radius   = Light.Attenuation;
-            if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
+            // Test with the location already resident in the transform's SIMD lanes (no scalar round-trip).
+            if (!SceneCullContext.Frustum.IntersectsSphere(Transform.WorldTransform.Location, Radius))
             {
                 continue;
             }
-            SceneCullContext.ShadowLights.push_back({ Position, Radius });
+            SceneCullContext.ShadowLights.push_back({ Transform.WorldTransform.GetLocation(), Radius });
         }
 
         auto SpotView = Registry.view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
@@ -3136,13 +3424,12 @@ namespace Lumina
                 continue;
             }
             const STransformComponent& Transform = SpotView.get<STransformComponent>(Entity);
-            const FVector3 Position = Transform.WorldTransform.GetLocation();
             const float     Radius   = Light.Attenuation;
-            if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
+            if (!SceneCullContext.Frustum.IntersectsSphere(Transform.WorldTransform.Location, Radius))
             {
                 continue;
             }
-            SceneCullContext.ShadowLights.push_back({ Position, Radius });
+            SceneCullContext.ShadowLights.push_back({ Transform.WorldTransform.GetLocation(), Radius });
         }
     }
 
@@ -3941,7 +4228,7 @@ namespace Lumina
 
             // Feed this cascade's frustum to the shadow cull pass so small casters
             // that only touch cascade 0 don't pay VPC cost on cascades 1/2.
-            SceneGlobalData.CullData.CascadeFrustum[i] = FFrustum::FromViewProjection(CascadeVP);
+            SceneGlobalData.CullData.CascadeFrustum[i] = AsGPU(FFrustum::FromViewProjection(CascadeVP));
 
             LastSplitDistance = SplitFar;
         }
@@ -4011,7 +4298,7 @@ namespace Lumina
         constexpr uint32 kMaxBuckets = FLineBatchScratch::kMaxBuckets;
 
         const float    Dt      = ExtractFrame->SceneGlobalData.DeltaTime;
-        FFrustum       Frustum = ExtractFrame->SceneGlobalData.CullData.Frustum; // local: IsInside is non-const
+        FFrustum       Frustum = FromGPU(ExtractFrame->SceneGlobalData.CullData.Frustum);
         FLineBatchScratch&     S      = LineBatchScratch[Range.Thread];
         const FLineChunk* const Chunks = LineChunkScratch.data();
 

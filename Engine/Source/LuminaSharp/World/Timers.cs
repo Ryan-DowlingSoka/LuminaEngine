@@ -57,10 +57,6 @@ public readonly unsafe partial struct Timers
     /// before the first fire (useful for staggering loopers).</summary>
     public TimerHandle SetTimer(float Seconds, Action Callback, bool Loop = false, float FirstDelay = -1.0f)
     {
-        if (Callback is null)
-        {
-            return Invalid;
-        }
         GCHandle Context = GCHandle.Alloc(new Entry { Body = Callback, Loop = Loop });
         uint Id = SetRaw(Seconds, Loop ? 1 : 0, FirstDelay, ThunkPtr, GCHandle.ToIntPtr(Context));
         if (Id == 0xFFFFFFFFu)
@@ -78,10 +74,6 @@ public readonly unsafe partial struct Timers
     /// automatically when that entity is destroyed.</summary>
     public TimerHandle SetTimerForEntity(Entity Owner, float Seconds, Action Callback, bool Loop = false, float FirstDelay = -1.0f)
     {
-        if (Callback is null)
-        {
-            return Invalid;
-        }
         GCHandle Context = GCHandle.Alloc(new Entry { Body = Callback, Loop = Loop });
         uint Id = SetForEntityRaw(Owner.Id, Seconds, Loop ? 1 : 0, FirstDelay, ThunkPtr, GCHandle.ToIntPtr(Context));
         if (Id == 0xFFFFFFFFu)

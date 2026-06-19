@@ -34,14 +34,11 @@
 
 namespace Lumina
 {
-    // Registry of per-component direct-call op tables (see FComponentOps). Populated at component
-    // registration; resolved by the C# bridge once per type. Keyed by a hash of the exact name bytes
-    // so a non-null-terminated name from C# matches the registered c_str name.
     namespace
     {
-        eastl::hash_map<uint32, const FComponentOps*>& ComponentOpsMap()
+        THashMap<uint32, const FComponentOps*>& ComponentOpsMap()
         {
-            static eastl::hash_map<uint32, const FComponentOps*> Map;
+            static THashMap<uint32, const FComponentOps*> Map;
             return Map;
         }
 
@@ -52,7 +49,6 @@ namespace Lumina
         }
     }
 
-    // id (entt::type_hash) -> display name, for editor tooling that renders declared system accesses.
     namespace
     {
         THashMap<uint32, FString>& AccessTypeNameMap()
@@ -909,6 +905,13 @@ namespace Lumina::ECS::Utils
                 Child = Next;
             }
         }
+    }
+
+    bool AnyTransformsDirty(FEntityRegistry& Registry)
+    {
+        TUniquePtr<FTransformDirtyState>* Holder = Registry.ctx().find<TUniquePtr<FTransformDirtyState>>();
+        FTransformDirtyState* State = Holder ? Holder->get() : nullptr;
+        return State != nullptr && State->bAnyDirty.load(std::memory_order_acquire);
     }
 
     void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity)

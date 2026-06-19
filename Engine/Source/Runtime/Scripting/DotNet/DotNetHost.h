@@ -78,6 +78,10 @@ namespace Lumina::DotNet
     
     RUNTIME_API void UpdateScripts(void* const* Instances, int32 Count, float DeltaSeconds);
 
+    // Dispatches OnFixedUpdate to a batch of scripts at the fixed physics step (called 0..N times per frame by
+    // the SCSharpScriptSystem accumulator). No-op if the managed export is absent (old generation).
+    RUNTIME_API void FixedUpdateScripts(void* const* Instances, int32 Count, float FixedDeltaSeconds);
+
     RUNTIME_API void DestroyEntityScript(void* Instance);
     
     RUNTIME_API void GatherEntityScriptTypes(TVector<FString>& OutTypeNames);

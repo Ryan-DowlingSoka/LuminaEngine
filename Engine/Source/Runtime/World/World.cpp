@@ -19,8 +19,6 @@
 #include "Core/Engine/Engine.h"
 #include "Core/Profiler/CPUProfiler.h"
 #include "TaskSystem/TaskSystem.h"
-#include "TaskSystem/Scheduler/JobScheduler.h"
-#include "Core/Profiler/GameplayProfiler.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Serialization/MemoryArchiver.h"
@@ -1378,54 +1376,71 @@ namespace Lumina
     // Read-only snapshot of how systems group into parallel batches per stage, with each system's declared
     // access. Replays the exact TickSystems greedy batching so the Gameplay Insights editor tool can show the
     // real schedule (replaces the old Core.Systems.LogSchedule console dump). Game thread; cheap.
+    namespace
+    {
+        // List-scheduling: assign each system (already sorted by priority) to the LOWEST-indexed batch whose
+        // members it does not conflict with. Unlike the old consecutive batching, this groups mutually
+        // non-conflicting systems even when an exclusive/conflicting system sits between them in priority order
+        // -- that interleaving was the actual source of "everything runs serial". Batches run in ascending
+        // order; because systems are processed in priority order and a conflict pushes a system to a later
+        // batch, conflicting pairs still execute in priority order (the higher-priority one first). Returns one
+        // index list per batch (indices into Systems).
+        TVector<TVector<uint16>> ComputeSystemBatches(const TVector<CWorld::FStageSlot>& Systems)
+        {
+            TVector<TVector<uint16>> Batches;
+            for (uint16 s = 0; s < (uint16)Systems.size(); ++s)
+            {
+                int32 Chosen = -1;
+                for (uint16 b = 0; b < (uint16)Batches.size() && Chosen < 0; ++b)
+                {
+                    bool bConflicts = false;
+                    for (uint16 Member : Batches[b])
+                    {
+                        if (FSystemAccess::Conflicts(Systems[s].Access, Systems[Member].Access))
+                        {
+                            bConflicts = true;
+                            break;
+                        }
+                    }
+                    if (!bConflicts)
+                    {
+                        Chosen = (int32)b;
+                    }
+                }
+                if (Chosen < 0)
+                {
+                    Chosen = (int32)Batches.size();
+                    Batches.emplace_back();
+                }
+                Batches[(size_t)Chosen].push_back(s);
+            }
+            return Batches;
+        }
+    }
+
     void CWorld::GetSystemSchedule(TVector<FSystemScheduleEntry>& Out) const
     {
         Out.clear();
         for (uint8 s = 0; s < (uint8)EUpdateStage::Max; ++s)
         {
             const TVector<FStageSlot>& Systems = SystemUpdateList[s];
-            const size_t Count = Systems.size();
-
-            size_t i = 0;
-            uint8 BatchIndex = 0;
-            while (i < Count)
+            const TVector<TVector<uint16>> Batches = ComputeSystemBatches(Systems);
+            for (uint8 b = 0; b < (uint8)Batches.size(); ++b)
             {
-                size_t j = i + 1;
-                if (!Systems[i].Access.bExclusive)
+                for (uint16 Index : Batches[b])
                 {
-                    while (j < Count)
-                    {
-                        bool bConflicts = Systems[j].Access.bExclusive;
-                        for (size_t k = i; !bConflicts && k < j; ++k)
-                        {
-                            bConflicts = FSystemAccess::Conflicts(Systems[k].Access, Systems[j].Access);
-                        }
-                        if (bConflicts)
-                        {
-                            break;
-                        }
-                        ++j;
-                    }
-                }
-
-                const size_t BatchSize = j - i;
-                for (size_t k = i; k < j; ++k)
-                {
-                    const FStageSlot& Slot = Systems[k];
+                    const FStageSlot& Slot = Systems[Index];
                     FSystemScheduleEntry& Entry = Out.emplace_back();
                     Entry.Name       = Slot.Name;
                     Entry.Stage      = (uint8)s;
                     Entry.Priority   = Slot.StagePriority;
-                    Entry.Batch      = BatchIndex;
-                    Entry.BatchSize  = (uint8)BatchSize;
+                    Entry.Batch      = b;
+                    Entry.BatchSize  = (uint8)Batches[b].size();
                     Entry.bExclusive = Slot.Access.bExclusive;
                     Entry.bManaged   = Slot.Name.IsNone();
                     Entry.Writes     = Slot.Access.Writes;
                     Entry.Reads      = Slot.Access.Reads;
                 }
-
-                ++BatchIndex;
-                i = j;
             }
         }
     }
@@ -1721,98 +1736,45 @@ namespace Lumina
         EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
     }
 
-    TVector<entt::entity> CWorld::GetSelectedEntities() const
-    {
-        auto View = EntityRegistry.view<FSelectedInEditorComponent>();
-        TVector<entt::entity> Selections(View.size());
-        View.each([&](entt::entity Entity)
-        {
-           Selections.push_back(Entity); 
-        });
-        return Selections;
-    }
-
-    bool CWorld::IsSelected(entt::entity Entity) const
-    {
-        return EntityRegistry.any_of<FSelectedInEditorComponent>(Entity);
-    }
-
     void CWorld::TickSystems(FSystemContext& Context)
     {
         TVector<FStageSlot>& Systems = SystemUpdateList[(uint32)Context.GetUpdateStage()];
-        const size_t Count = Systems.size();
-
-        // When the Gameplay Insights tool is recording, capture a per-system execution span (name + time window
-        // + worker thread slot) so the editor can lay systems out per-thread. One bool load when off.
-        FGameplayProfiler& Profiler = FGameplayProfiler::Get();
-        const bool  bProfiling = Profiler.IsEnabled();
-        const uint8 StageIndex = (uint8)Context.GetUpdateStage();
-
-        // Bind the system's declared access on the running thread so access-implying helpers can validate
-        // honest declaration (Debug/Dev; no-op in Shipping). Cleared after so out-of-scheduler calls don't check.
-        auto RunOne = [&](FStageSlot& S, uint8 Batch)
+        
+        auto RunOne = [&](FStageSlot& S)
         {
             SetExecutingSystemAccess(&S.Access);
-            if (bProfiling)
-            {
-                const double Start = FGameplayProfiler::NowMilliseconds();
-                S.Update(S.Self, Context);
-                const double End = FGameplayProfiler::NowMilliseconds();
-                const FString Label = S.Name.IsNone() ? FString("<system>") : S.Name.ToString();
-                Profiler.RecordSystemSpan(FStringView(Label.c_str(), Label.size()), StageIndex, Batch,
-                    S.Access.bExclusive, Start, End, (uint16)Jobs::GetWorkerIndex());
-            }
-            else
-            {
-                S.Update(S.Self, Context);
-            }
+            S.Update(S.Self, Context);
             SetExecutingSystemAccess(nullptr);
         };
-
-        // Walk the priority-sorted list and greedily group consecutive systems that conflict with
-        // NOTHING already in the current batch; flush the batch (run concurrently) on the first
-        // conflict, then continue. Exclusive systems (no declared access) always run alone. A
-        // conflicting/lower-priority system lands in a later batch, so priority order is preserved.
-        size_t i = 0;
-        uint8 BatchIndex = 0;
-        while (i < Count)
+        
+        const TVector<TVector<uint16>> Batches = ComputeSystemBatches(Systems);
+        for (const TVector<uint16>& Batch : Batches)
         {
-            size_t j = i + 1;
-            if (!Systems[i].Access.bExclusive)
+            // Transform-resolve BARRIER: resolve all dirty transforms once on the game thread before the batch
+            // runs. This empties the dirty queue and clears bAnyDirty, so every GetWorld* the batch's systems
+            // make takes the guard-free fast path (a pure cached read -- no resolve-guard, no cache mutation),
+            // which is what lets multiple transform-reading systems actually run in PARALLEL instead of
+            // serializing on the resolve guard. A writer batch re-dirties; the next batch's barrier resolves it,
+            // so readers still see prior writers' results (priority order preserved). Cheap when nothing moved.
+            if (ECS::Utils::AnyTransformsDirty(EntityRegistry))
             {
-                while (j < Count)
-                {
-                    bool ConflictsWithBatch = Systems[j].Access.bExclusive;
-                    for (size_t k = i; !ConflictsWithBatch && k < j; ++k)
-                    {
-                        ConflictsWithBatch = FSystemAccess::Conflicts(Systems[k].Access, Systems[j].Access);
-                    }
-                    if (ConflictsWithBatch)
-                    {
-                        break;
-                    }
-                    ++j;
-                }
+                ECS::Utils::ResolveAllDirtyTransforms(EntityRegistry);
             }
 
-            const size_t BatchSize = j - i;
-            if (BatchSize <= 1)
+            if (Batch.size() == 1)
             {
-                RunOne(Systems[i], BatchIndex);
+                RunOne(Systems[Batch[0]]);
             }
             else
             {
                 // One system per job; the game thread assist-waits, nested ParallelFor inside a system
                 // nests fine on fibers.
-                Task::ParallelFor(static_cast<uint32>(BatchSize), [&](uint32 Index)
+                Task::ParallelFor(static_cast<uint32>(Batch.size()), [&](uint32 Index)
                 {
-                    DEBUG_ASSERT(!Systems[i + Index].Access.bExclusive); // scheduler invariant
-                    RunOne(Systems[i + Index], BatchIndex);
+                    DEBUG_ASSERT(!Systems[Batch[Index]].Access.bExclusive); // scheduler invariant: batched => not exclusive
+                    RunOne(Systems[Batch[Index]]);
                 }, 1);
             }
-
-            i = j;
-            ++BatchIndex;
         }
     }
 }

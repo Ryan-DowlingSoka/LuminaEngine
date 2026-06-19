@@ -534,9 +534,7 @@ namespace Lumina::RHI
 
     RUNTIME_API void        CmdBarrier(FCmdListH CL, EStageFlags Before, EStageFlags After);
 
-    // Canonical pipeline-stage barriers shared by every renderer. Thin wrappers over
-    // CmdBarrier; the name reads as producer -> consumer. Prefer these to hand-rolled
-    // stage masks so the engine has one place to reason about coarse sync.
+    // Canonical pipeline-stage barriers.
     namespace Barriers
     {
         inline void ComputeToAll(FCmdListH CL)

@@ -38,6 +38,7 @@
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "TerrainEditMode.h"
+#include "FoliageEditMode.h"
 #include "World/Entity/Components/TerrainComponent.h"
 #include "UI/Tools/EditorEntityUtils.h"
 #include "UI/Properties/EntityPropertyContext.h"
@@ -1140,6 +1141,7 @@ namespace Lumina
         EditorModes.clear();
         EditorModes.push_back(MakeUnique<FSelectionEditorMode>());
         EditorModes.push_back(MakeUnique<FTerrainEditMode>());
+        EditorModes.push_back(MakeUnique<FFoliageEditMode>());
         EditorModes.push_back(MakeUnique<FNavigationEditMode>());
 
         // Modes call back into the host for editor services (e.g. undo transactions).
@@ -4174,7 +4176,7 @@ namespace Lumina
                 *OutTrash = true;
             }
         }
-
+        
         ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 3.0f * Scale));
         return bClicked;
     }
@@ -4278,6 +4280,10 @@ namespace Lumina
             {
                 EmptyState("No systems match the filter.");
             }
+
+            // The rows finish by advancing the cursor with a bare SetCursorScreenPos; submit a real (zero-size)
+            // item as the LAST op so IsSetPos is cleared and ImGui's extend-bounds check isn't invoked at EndChild.
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
         }
         ImGui::EndChild();
     }

@@ -20,14 +20,18 @@
 #include <imgui_internal.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
+#include <climits>
 #include <random>
 
 namespace Lumina
 {
     namespace
     {
-        const char* RmlEditorWindowName  = "RmlEditor";
-        const char* RmlPreviewWindowName = "RmlPreview";
+        const char* RmlEditorWindowName      = "RmlEditor";
+        const char* RmlPreviewWindowName     = "RmlPreview";
+        const char* RmlCompositionWindowName = "RmlComposition";
 
         FString DisplayNameFromPath(FStringView Path)
         {
@@ -95,7 +99,7 @@ namespace Lumina
             { "<input checkbox>",       "<input type=\"checkbox\" name=\"\" checked/>\n" },
             { "<select / option>",      "<select name=\"\">\n\t<option value=\"a\">A</option>\n\t<option value=\"b\">B</option>\n</select>\n" },
             { "<tabset / panel>",       "<tabset>\n\t<tab>One</tab>\n\t<tab>Two</tab>\n\t<panels>\n\t\t<panel>\n\t\t\t\n\t\t</panel>\n\t\t<panel>\n\t\t\t\n\t\t</panel>\n\t</panels>\n</tabset>\n" },
-            { "<progressbar>",          "<progressbar value=\"0.5\" max-value=\"1.0\"/>\n" },
+            { "<progress>",             "<progress value=\"0.5\" max-value=\"1.0\"/>\n" },
             { "<handle> (drag)",        "<handle move-target=\"#parent\">drag</handle>\n" },
             { "<template> include",     "<template name=\"\" content=\"\" src=\"\"/>\n" },
         };
@@ -148,10 +152,11 @@ namespace Lumina
             Doc += Rcss;
             Doc +=
                 "\n</style>\n<style>\n"
-                // Guarantee a loaded font on the scaffold so the specimen never
-                // logs missing-font warnings even while the edited sheet is mid-change.
-                "body { padding: 22dp; font-family: LatoLatin; }\n"
-                ".spec-label { display:block; font-family: LatoLatin; font-size:11dp; color:#6c7086; text-transform:uppercase; letter-spacing:1dp; margin-top:16dp; margin-bottom:6dp; }\n"
+                // Don't set a font-family here: the editor context root already carries the engine default
+                // family, so the scaffold inherits a loaded font. Naming a specific family that isn't
+                // registered (the bug this replaces) makes RmlUi log "No font face defined" every frame.
+                "body { padding: 22dp; }\n"
+                ".spec-label { display:block; font-size:11dp; color:#6c7086; text-transform:uppercase; letter-spacing:1dp; margin-top:16dp; margin-bottom:6dp; }\n"
                 ".spec-row { display:flex; flex-direction:row; align-items:center; }\n"
                 ".spec-row > * { margin-right:8dp; }\n"
                 "</style>\n</head>\n<body>\n"
@@ -224,10 +229,668 @@ namespace Lumina
             return Doc;
         }
 
-        const TextEditor::Language* GetRmlLanguage()
+        // ---- Composition designer: buffer parsing + edit helpers (operate on the raw .rml text) ----
+
+        // A slot element's open tag located in the source buffer, used to read assignments and to know
+        // where to splice <template src> in. Quote-aware so attribute values containing '>' don't fool it.
+        struct FSlotTagLoc
         {
-            static bool Initialized = false;
-            static TextEditor::Language Lang;
+            bool        bFound = false;
+            size_t      TagStart = 0;        // index of '<'
+            size_t      TagEnd = 0;          // index of the open tag's closing '>'
+            bool        bSelfClosing = false;
+            std::string TagName;
+        };
+
+        FSlotTagLoc LocateSlotTag(const std::string& Text, const std::string& Id)
+        {
+            FSlotTagLoc Loc;
+            if (Id.empty())
+            {
+                return Loc;
+            }
+
+            const std::string Needles[2] = { "id=\"" + Id + "\"", "id='" + Id + "'" };
+            size_t IdPos = std::string::npos;
+            for (const std::string& N : Needles)
+            {
+                const size_t P = Text.find(N);
+                if (P != std::string::npos && (IdPos == std::string::npos || P < IdPos))
+                {
+                    IdPos = P;
+                }
+            }
+            if (IdPos == std::string::npos)
+            {
+                return Loc;
+            }
+
+            const size_t Lt = Text.rfind('<', IdPos);
+            if (Lt == std::string::npos)
+            {
+                return Loc;
+            }
+
+            bool InSingle = false, InDouble = false;
+            size_t Gt = std::string::npos;
+            for (size_t i = Lt + 1; i < Text.size(); ++i)
+            {
+                const char C = Text[i];
+                if (InSingle) { if (C == '\'') InSingle = false; continue; }
+                if (InDouble) { if (C == '"')  InDouble = false; continue; }
+                if (C == '\'') { InSingle = true; continue; }
+                if (C == '"')  { InDouble = true; continue; }
+                if (C == '>')  { Gt = i; break; }
+            }
+            if (Gt == std::string::npos)
+            {
+                return Loc;
+            }
+
+            Loc.bFound = true;
+            Loc.TagStart = Lt;
+            Loc.TagEnd = Gt;
+            Loc.bSelfClosing = (Gt > Lt + 1) && (Text[Gt - 1] == '/');
+
+            size_t N = Lt + 1;
+            while (N < Gt && !std::isspace((unsigned char)Text[N]) && Text[N] != '/' && Text[N] != '>')
+            {
+                ++N;
+            }
+            Loc.TagName = Text.substr(Lt + 1, N - (Lt + 1));
+            return Loc;
+        }
+
+        // Reads back the assignment a slot carries: the src of a <template> that is the slot's first child,
+        // mirroring how AssignWidgetToSlot splices it in. Empty if the slot is unassigned.
+        std::string ParseSlotAssignment(const std::string& Text, const std::string& Id)
+        {
+            const FSlotTagLoc Loc = LocateSlotTag(Text, Id);
+            if (!Loc.bFound || Loc.bSelfClosing)
+            {
+                return {};
+            }
+            size_t i = Loc.TagEnd + 1;
+            while (i < Text.size() && (unsigned char)Text[i] <= ' ')
+            {
+                ++i;
+            }
+            static const char* Tpl = "<template";
+            const size_t TplLen = std::strlen(Tpl);
+            if (i + TplLen > Text.size() || Text.compare(i, TplLen, Tpl) != 0)
+            {
+                return {};
+            }
+            const size_t End = Text.find('>', i);
+            if (End == std::string::npos)
+            {
+                return {};
+            }
+            const std::string Tag = Text.substr(i, End - i);
+            const size_t Sp = Tag.find("src=");
+            if (Sp == std::string::npos || Sp + 4 >= Tag.size())
+            {
+                return {};
+            }
+            const char Quote = Tag[Sp + 4];
+            if (Quote != '"' && Quote != '\'')
+            {
+                return {};
+            }
+            const size_t ValStart = Sp + 5;
+            const size_t ValEnd = Tag.find(Quote, ValStart);
+            if (ValEnd == std::string::npos)
+            {
+                return {};
+            }
+            return Tag.substr(ValStart, ValEnd - ValStart);
+        }
+
+        // Pull name= and content= off the <template ...> root tag of a widget file.
+        void ParseTemplateAttrs(const std::string& Body, FString& OutName, FString& OutContent)
+        {
+            const size_t Open = Body.find("<template");
+            if (Open == std::string::npos)
+            {
+                return;
+            }
+            const size_t End = Body.find('>', Open);
+            if (End == std::string::npos)
+            {
+                return;
+            }
+            const std::string Tag = Body.substr(Open, End - Open);
+            auto ReadAttr = [&Tag](const char* Key) -> FString
+            {
+                const size_t P = Tag.find(Key);
+                if (P == std::string::npos)
+                {
+                    return {};
+                }
+                const size_t Eq = Tag.find('=', P);
+                if (Eq == std::string::npos || Eq + 1 >= Tag.size())
+                {
+                    return {};
+                }
+                size_t V = Eq + 1;
+                while (V < Tag.size() && (unsigned char)Tag[V] <= ' ') ++V;
+                if (V >= Tag.size() || (Tag[V] != '"' && Tag[V] != '\'')) return {};
+                const char Q = Tag[V];
+                const size_t S = V + 1;
+                const size_t E = Tag.find(Q, S);
+                if (E == std::string::npos) return {};
+                return FString(Tag.c_str() + S, E - S);
+            };
+            OutName    = ReadAttr("name=");
+            OutContent = ReadAttr("content=");
+        }
+
+        // Byte offset -> (line, visual column). Columns are tab-expanded to match TextEditor coordinates.
+        void OffsetToLineCol(const std::string& Text, size_t Offset, int TabSize, int& OutLine, int& OutCol)
+        {
+            if (TabSize < 1) TabSize = 4;
+            int Line = 0;
+            size_t LineStart = 0;
+            const size_t Clamp = std::min(Offset, Text.size());
+            for (size_t i = 0; i < Clamp; ++i)
+            {
+                if (Text[i] == '\n') { ++Line; LineStart = i + 1; }
+            }
+            int Col = 0;
+            for (size_t i = LineStart; i < Clamp; ++i)
+            {
+                if (Text[i] == '\t') Col += TabSize - (Col % TabSize);
+                else ++Col;
+            }
+            OutLine = Line;
+            OutCol = Col;
+        }
+
+        // Offset just past the <head> open tag, where the template <link> is inserted. npos if no head.
+        size_t FindHeadInsertOffset(const std::string& Text)
+        {
+            const size_t Head = Text.find("<head");
+            if (Head == std::string::npos)
+            {
+                return std::string::npos;
+            }
+            const size_t Gt = Text.find('>', Head);
+            return (Gt == std::string::npos) ? std::string::npos : Gt + 1;
+        }
+
+        bool ContainsCI(const FString& Haystack, const char* Needle)
+        {
+            if (Needle == nullptr || *Needle == '\0')
+            {
+                return true;
+            }
+            std::string H(Haystack.c_str(), Haystack.size());
+            std::string N(Needle);
+            std::transform(H.begin(), H.end(), H.begin(), [](unsigned char C){ return (char)std::tolower(C); });
+            std::transform(N.begin(), N.end(), N.begin(), [](unsigned char C){ return (char)std::tolower(C); });
+            return H.find(N) != std::string::npos;
+        }
+
+        std::string TrimStr(const std::string& S)
+        {
+            size_t A = 0, B = S.size();
+            while (A < B && (unsigned char)S[A] <= ' ') ++A;
+            while (B > A && (unsigned char)S[B - 1] <= ' ') --B;
+            return S.substr(A, B - A);
+        }
+
+        // Split an inline style value ("left: 4dp; top: 8dp") into ordered key/value pairs.
+        std::vector<std::pair<std::string, std::string>> ParseStyle(const std::string& Style)
+        {
+            std::vector<std::pair<std::string, std::string>> Out;
+            size_t i = 0;
+            while (i < Style.size())
+            {
+                const size_t Semi = Style.find(';', i);
+                const std::string Decl = Style.substr(i, (Semi == std::string::npos ? Style.size() : Semi) - i);
+                const size_t Colon = Decl.find(':');
+                if (Colon != std::string::npos)
+                {
+                    const std::string Key = TrimStr(Decl.substr(0, Colon));
+                    const std::string Val = TrimStr(Decl.substr(Colon + 1));
+                    if (!Key.empty())
+                    {
+                        Out.push_back({ Key, Val });
+                    }
+                }
+                if (Semi == std::string::npos) break;
+                i = Semi + 1;
+            }
+            return Out;
+        }
+
+        std::string SerializeStyle(const std::vector<std::pair<std::string, std::string>>& Props)
+        {
+            std::string Out;
+            for (const auto& KV : Props)
+            {
+                if (!Out.empty()) Out += " ";
+                Out += KV.first + ": " + KV.second + ";";
+            }
+            return Out;
+        }
+
+        // #RGB / #RGBA / #RRGGBB / #RRGGBBAA -> RGBA float (defaults to opaque white on parse miss).
+        ImVec4 ParseHexColor(const std::string& S)
+        {
+            auto Hx = [](char C) -> int
+            {
+                if (C >= '0' && C <= '9') return C - '0';
+                if (C >= 'a' && C <= 'f') return 10 + (C - 'a');
+                if (C >= 'A' && C <= 'F') return 10 + (C - 'A');
+                return -1;
+            };
+            const size_t H = S.find('#');
+            std::string D;
+            for (size_t i = (H == std::string::npos ? 0 : H + 1); i < S.size(); ++i)
+            {
+                if (Hx(S[i]) < 0) break;
+                D.push_back(S[i]);
+            }
+            int R = 255, G = 255, B = 255, A = 255;
+            if (D.size() == 3)      { R = Hx(D[0]) * 17; G = Hx(D[1]) * 17; B = Hx(D[2]) * 17; }
+            else if (D.size() == 4) { R = Hx(D[0]) * 17; G = Hx(D[1]) * 17; B = Hx(D[2]) * 17; A = Hx(D[3]) * 17; }
+            else if (D.size() >= 6)
+            {
+                R = Hx(D[0]) * 16 + Hx(D[1]); G = Hx(D[2]) * 16 + Hx(D[3]); B = Hx(D[4]) * 16 + Hx(D[5]);
+                if (D.size() >= 8) A = Hx(D[6]) * 16 + Hx(D[7]);
+            }
+            return ImVec4(R / 255.0f, G / 255.0f, B / 255.0f, A / 255.0f);
+        }
+
+        std::string FormatHexColor(const ImVec4& C)
+        {
+            auto B = [](float V) { return (int)(std::clamp(V, 0.0f, 1.0f) * 255.0f + 0.5f); };
+            char Buf[16];
+            if (C.w >= 0.999f) std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", B(C.x), B(C.y), B(C.z));
+            else               std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X%02X", B(C.x), B(C.y), B(C.z), B(C.w));
+            return Buf;
+        }
+
+        // Value of one inline style property on a slot element ("" if absent).
+        std::string GetInlineStyleProp(const std::string& Text, const std::string& Id, const char* Prop)
+        {
+            const FSlotTagLoc Loc = LocateSlotTag(Text, Id);
+            if (!Loc.bFound)
+            {
+                return {};
+            }
+            for (const char* Key : { "style=\"", "style='" })
+            {
+                const size_t P = Text.find(Key, Loc.TagStart);
+                if (P != std::string::npos && P < Loc.TagEnd)
+                {
+                    const char Quote = Key[6];
+                    const size_t VS = P + 7;
+                    const size_t VE = Text.find(Quote, VS);
+                    if (VE != std::string::npos && VE <= Loc.TagEnd)
+                    {
+                        for (const auto& KV : ParseStyle(Text.substr(VS, VE - VS)))
+                        {
+                            if (KV.first == Prop) return KV.second;
+                        }
+                    }
+                    return {};
+                }
+            }
+            return {};
+        }
+
+        // Extract the translate offset (dp) from a `translate(Xdp, Ydp)` transform value. sscanf reads the
+        // leading number of each component and ignores the unit suffix; we only ever author dp here.
+        ImVec2 ParseTranslateDp(const std::string& Transform)
+        {
+            const size_t Open = Transform.find('(');
+            if (Open == std::string::npos)
+            {
+                return ImVec2(0.0f, 0.0f);
+            }
+            const size_t Close = Transform.find(')', Open);
+            if (Close == std::string::npos)
+            {
+                return ImVec2(0.0f, 0.0f);
+            }
+            const std::string Inner = Transform.substr(Open + 1, Close - Open - 1);
+            float X = 0.0f, Y = 0.0f;
+            std::sscanf(Inner.c_str(), "%f", &X);
+            const size_t Comma = Inner.find(',');
+            if (Comma != std::string::npos)
+            {
+                std::sscanf(Inner.c_str() + Comma + 1, "%f", &Y);
+            }
+            return ImVec2(X, Y);
+        }
+
+        // [start,end) of the close tag </name> that matches an open tag, or {npos,npos}. Depth-aware over the
+        // same tag name; nested same-tag opens raise depth, self-closing same-tag and other tags are ignored.
+        struct FCloseTagLoc { size_t Start = std::string::npos; size_t End = std::string::npos; };
+        FCloseTagLoc FindMatchingClose(const std::string& Text, const FSlotTagLoc& Open)
+        {
+            FCloseTagLoc Out;
+            if (Open.bSelfClosing)
+            {
+                return Out;
+            }
+            const std::string& Tag = Open.TagName;
+            int Depth = 1;
+            size_t Pos = Open.TagEnd + 1;
+            auto Boundary = [&](size_t After) { return After >= Text.size() || Text[After] == '>' || Text[After] == '/' || std::isspace((unsigned char)Text[After]); };
+
+            while (Pos < Text.size())
+            {
+                const size_t Lt = Text.find('<', Pos);
+                if (Lt == std::string::npos) break;
+
+                if (Lt + 1 < Text.size() && Text[Lt + 1] == '/')
+                {
+                    const size_t N = Lt + 2;
+                    if (Text.compare(N, Tag.size(), Tag) == 0 && (N + Tag.size() >= Text.size() || Text[N + Tag.size()] == '>'))
+                    {
+                        if (--Depth == 0)
+                        {
+                            const size_t Gt = Text.find('>', Lt);
+                            Out.Start = Lt;
+                            Out.End = (Gt == std::string::npos) ? Text.size() : Gt + 1;
+                            return Out;
+                        }
+                    }
+                    Pos = Lt + 2;
+                    continue;
+                }
+
+                const size_t N = Lt + 1;
+                if (Text.compare(N, Tag.size(), Tag) == 0 && Boundary(N + Tag.size()))
+                {
+                    bool InS = false, InD = false;
+                    size_t Gt = std::string::npos;
+                    for (size_t i = N + Tag.size(); i < Text.size(); ++i)
+                    {
+                        const char C = Text[i];
+                        if (InS) { if (C == '\'') InS = false; continue; }
+                        if (InD) { if (C == '"')  InD = false; continue; }
+                        if (C == '\'') { InS = true; continue; }
+                        if (C == '"')  { InD = true; continue; }
+                        if (C == '>')  { Gt = i; break; }
+                    }
+                    if (Gt != std::string::npos)
+                    {
+                        if (!((Gt > N) && Text[Gt - 1] == '/')) ++Depth;  // not self-closing -> nests
+                        Pos = Gt + 1;
+                        continue;
+                    }
+                }
+                Pos = Lt + 1;
+            }
+            return Out;
+        }
+
+        // A unique id not already present in the buffer: Base, then Base1, Base2, ...
+        std::string GenerateUniqueId(const std::string& Text, const char* Base)
+        {
+            auto Exists = [&](const std::string& Id)
+            {
+                return Text.find("id=\"" + Id + "\"") != std::string::npos
+                    || Text.find("id='" + Id + "'") != std::string::npos;
+            };
+            if (!Exists(Base)) return Base;
+            for (int i = 1; i < 100000; ++i)
+            {
+                std::string Cand = std::string(Base) + std::to_string(i);
+                if (!Exists(Cand)) return Cand;
+            }
+            return std::string(Base) + "_new";
+        }
+        
+        struct FElementPrimitive
+        {
+            const char* Category;
+            const char* Label;
+            const char* IdBase;
+            const char* Markup;
+        };
+        const char* const kElementCategories[] = { "Panels", "Common", "Input" };
+        const FElementPrimitive kElementPrimitives[] =
+        {
+            // Panels -------------------------------------------------------------------------------------
+            { "Panels", "Canvas Panel",   "canvas",   "<div id=\"%s\" style=\"position: relative; width: 100%%; height: 100%%; min-height: 80dp;\"></div>" },
+            { "Panels", "Horizontal Box", "hbox",     "<div id=\"%s\" style=\"display: flex; flex-direction: row; gap: 8dp; min-width: 140dp; min-height: 48dp;\"></div>" },
+            { "Panels", "Vertical Box",   "vbox",     "<div id=\"%s\" style=\"display: flex; flex-direction: column; gap: 8dp; min-width: 140dp; min-height: 48dp;\"></div>" },
+            { "Panels", "Overlay",        "overlay",  "<div id=\"%s\" style=\"position: relative; min-width: 120dp; min-height: 80dp;\"></div>" },
+            { "Panels", "Wrap Box",       "wrap",     "<div id=\"%s\" style=\"display: flex; flex-wrap: wrap; gap: 8dp; min-width: 140dp; min-height: 60dp;\"></div>" },
+            { "Panels", "Border",         "border",   "<div id=\"%s\" style=\"padding: 10dp; border: 1dp #45475a; border-radius: 6dp; min-width: 100dp; min-height: 48dp;\"></div>" },
+            { "Panels", "Size Box",       "sizebox",  "<div id=\"%s\" style=\"width: 200dp; height: 120dp;\"></div>" },
+            { "Panels", "Scroll Box",     "scroll",   "<div id=\"%s\" style=\"overflow-y: auto; max-height: 240dp; min-width: 120dp; min-height: 80dp;\"></div>" },
+            { "Panels", "Panel",          "panel",    "<div id=\"%s\" style=\"padding: 12dp; background-color: #1e1e2e; border: 1dp #45475a; border-radius: 8dp; min-width: 140dp; min-height: 70dp;\"></div>" },
+            // Common -------------------------------------------------------------------------------------
+            { "Common", "Text",           "text",     "<span id=\"%s\">Text</span>" },
+            { "Common", "Button",         "button",   "<button id=\"%s\" style=\"padding: 8dp 16dp; background-color: #585b70; color: #fff; border-radius: 6dp;\">Button</button>" },
+            { "Common", "Image",          "image",    "<img id=\"%s\" style=\"width: 64dp; height: 64dp;\" src=\"\"/>" },
+            { "Common", "Progress Bar",   "progress", "<progress id=\"%s\" value=\"0.5\" style=\"width: 200dp; height: 16dp; background-color: #313244; border-radius: 4dp;\"/>" },
+            // Input --------------------------------------------------------------------------------------
+            { "Input",  "Text Field",     "field",    "<input id=\"%s\" type=\"text\" style=\"width: 160dp;\"/>" },
+            { "Input",  "Check Box",      "check",    "<input id=\"%s\" type=\"checkbox\"/>" },
+            { "Input",  "Slider",         "slider",   "<input id=\"%s\" type=\"range\" min=\"0\" max=\"100\" value=\"50\" style=\"width: 160dp;\"/>" },
+        };
+
+        // Parse the tag that starts at '<' at Lt (quote-aware), filling an FSlotTagLoc. For walking siblings
+        // that may not carry an id (LocateSlotTag is id-keyed; this is position-keyed).
+        FSlotTagLoc ParseElementAt(const std::string& Text, size_t Lt)
+        {
+            FSlotTagLoc Loc;
+            if (Lt >= Text.size() || Text[Lt] != '<')
+            {
+                return Loc;
+            }
+            bool InS = false, InD = false;
+            size_t Gt = std::string::npos;
+            for (size_t i = Lt + 1; i < Text.size(); ++i)
+            {
+                const char C = Text[i];
+                if (InS) { if (C == '\'') InS = false; continue; }
+                if (InD) { if (C == '"')  InD = false; continue; }
+                if (C == '\'') { InS = true; continue; }
+                if (C == '"')  { InD = true; continue; }
+                if (C == '>')  { Gt = i; break; }
+            }
+            if (Gt == std::string::npos)
+            {
+                return Loc;
+            }
+            Loc.bFound = true;
+            Loc.TagStart = Lt;
+            Loc.TagEnd = Gt;
+            Loc.bSelfClosing = (Gt > Lt + 1) && Text[Gt - 1] == '/';
+            size_t N = Lt + 1;
+            while (N < Gt && !std::isspace((unsigned char)Text[N]) && Text[N] != '/' && Text[N] != '>')
+            {
+                ++N;
+            }
+            Loc.TagName = Text.substr(Lt + 1, N - (Lt + 1));
+            return Loc;
+        }
+
+        // Full source [OutStart, OutEnd) of an element given its open-tag loc (open tag .. matching close).
+        bool ElementRange(const std::string& Text, const FSlotTagLoc& Open, size_t& OutStart, size_t& OutEnd)
+        {
+            if (!Open.bFound)
+            {
+                return false;
+            }
+            OutStart = Open.TagStart;
+            if (Open.bSelfClosing)
+            {
+                OutEnd = Open.TagEnd + 1;
+                return true;
+            }
+            const FCloseTagLoc Close = FindMatchingClose(Text, Open);
+            if (Close.End == std::string::npos)
+            {
+                return false;
+            }
+            OutEnd = Close.End;
+            return true;
+        }
+
+        // Backward depth-match the open tag <Name ...> for a close tag </Name> at CloseLt.
+        size_t FindMatchingOpenBackward(const std::string& Text, const std::string& Name, size_t CloseLt)
+        {
+            auto Boundary = [&](size_t A) { return A >= Text.size() || Text[A] == '>' || Text[A] == '/' || std::isspace((unsigned char)Text[A]); };
+            int Depth = 1;
+            size_t Pos = CloseLt;
+            while (Pos > 0)
+            {
+                const size_t Lt = Text.rfind('<', Pos - 1);
+                if (Lt == std::string::npos) break;
+                if (Lt + 1 < Text.size() && Text[Lt + 1] == '/')
+                {
+                    if (Text.compare(Lt + 2, Name.size(), Name) == 0 && Boundary(Lt + 2 + Name.size())) ++Depth;
+                }
+                else if (Text.compare(Lt + 1, Name.size(), Name) == 0 && Boundary(Lt + 1 + Name.size()))
+                {
+                    const FSlotTagLoc T = ParseElementAt(Text, Lt);
+                    if (T.bFound && !T.bSelfClosing && --Depth == 0) return Lt;
+                }
+                Pos = Lt;
+            }
+            return std::string::npos;
+        }
+
+        // True (with OutInner) when a slot is a text leaf whose inner content can be edited inline: not
+        // self-closing, no child elements, and either a text-ish tag or it already holds text.
+        bool GetEditableInnerText(const std::string& Text, const std::string& Id, std::string& OutInner)
+        {
+            const FSlotTagLoc Open = LocateSlotTag(Text, Id);
+            if (!Open.bFound || Open.bSelfClosing)
+            {
+                return false;
+            }
+            const FCloseTagLoc Close = FindMatchingClose(Text, Open);
+            if (Close.Start == std::string::npos)
+            {
+                return false;
+            }
+            const std::string Inner = Text.substr(Open.TagEnd + 1, Close.Start - (Open.TagEnd + 1));
+            if (Inner.find('<') != std::string::npos)
+            {
+                return false; // has child elements
+            }
+            static const char* const TextTags[] = { "span","p","button","label","a","h1","h2","h3","h4","h5","h6","li","td","th","strong","em","b","i" };
+            bool bTextTag = false;
+            for (const char* T : TextTags) { if (Open.TagName == T) { bTextTag = true; break; } }
+            if (!bTextTag && TrimStr(Inner).empty())
+            {
+                return false; // a plain empty container -> don't clutter the inspector with a text field
+            }
+            OutInner = TrimStr(Inner);
+            return true;
+        }
+
+        // The id attribute on an element's open tag, or "" if none.
+        std::string ParseIdAttr(const std::string& Text, const FSlotTagLoc& Tag)
+        {
+            for (const char* Key : { "id=\"", "id='" })
+            {
+                const size_t P = Text.find(Key, Tag.TagStart);
+                if (P != std::string::npos && P < Tag.TagEnd)
+                {
+                    const char Q = Key[3];
+                    const size_t VS = P + 4;
+                    const size_t VE = Text.find(Q, VS);
+                    if (VE != std::string::npos && VE <= Tag.TagEnd)
+                    {
+                        return Text.substr(VS, VE - VS);
+                    }
+                }
+            }
+            return {};
+        }
+
+        // A node in the document's authored hierarchy (parsed from the SOURCE, not the live DOM, so it shows
+        // exactly what the user can edit -- every element, id or not -- and excludes injected widget internals).
+        struct FSourceNode
+        {
+            std::string Tag;
+            std::string Id;        // "" if the element has no id yet
+            size_t      OpenLt;    // byte offset of '<' in the source
+            int         Depth;     // nesting depth under <body>
+        };
+
+        // Walk <body>'s subtree in source order, recording each element. Depth is a simple open/close counter
+        // (assumes well-formed nesting, which the live preview already validates).
+        void ParseSourceElements(const std::string& Text, std::vector<FSourceNode>& Out)
+        {
+            Out.clear();
+            const size_t BodyOpen = Text.find("<body");
+            if (BodyOpen == std::string::npos) return;
+            size_t Pos = Text.find('>', BodyOpen);
+            if (Pos == std::string::npos) return;
+            ++Pos;
+
+            int Depth = 0;
+            while (Pos < Text.size())
+            {
+                const size_t Lt = Text.find('<', Pos);
+                if (Lt == std::string::npos) break;
+
+                if (Text.compare(Lt, 4, "<!--") == 0)
+                {
+                    const size_t E = Text.find("-->", Lt);
+                    Pos = (E == std::string::npos) ? Text.size() : E + 3;
+                    continue;
+                }
+                if (Lt + 1 < Text.size() && (Text[Lt + 1] == '!' || Text[Lt + 1] == '?'))
+                {
+                    const size_t E = Text.find('>', Lt);
+                    Pos = (E == std::string::npos) ? Text.size() : E + 1;
+                    continue;
+                }
+                if (Lt + 1 < Text.size() && Text[Lt + 1] == '/')
+                {
+                    const size_t Gt = Text.find('>', Lt);
+                    if (Gt == std::string::npos) break;
+                    size_t N = Lt + 2, E = N;
+                    while (E < Gt && !std::isspace((unsigned char)Text[E]) && Text[E] != '>') ++E;
+                    if (Text.compare(N, E - N, "body") == 0) break;
+                    if (Depth > 0) --Depth;
+                    Pos = Gt + 1;
+                    continue;
+                }
+
+                const FSlotTagLoc T = ParseElementAt(Text, Lt);
+                if (!T.bFound)
+                {
+                    Pos = Lt + 1;
+                    continue;
+                }
+                FSourceNode Node;
+                Node.Tag = T.TagName;
+                Node.Id = ParseIdAttr(Text, T);
+                Node.OpenLt = Lt;
+                Node.Depth = Depth;
+                Out.push_back(std::move(Node));
+                if (!T.bSelfClosing) ++Depth;
+                Pos = T.TagEnd + 1;
+            }
+        }
+
+        const TextEditor::Language* GetRmlLanguage(bool bStylesheet)
+        {
+            // Two variants: the TextEditor supports only ONE multi-line comment pair, and .rml vs .rcss want
+            // different ones. .rml uses HTML <!-- --> as the block style (so multi-line markup comments track
+            // across lines); .rcss uses /* */. (A .rml's inline <style> /* */ comments aren't block-tracked,
+            // an accepted edge.) Hex-color tokenizing is shared.
+            static bool InitializedDoc = false;
+            static bool InitializedCss = false;
+            static TextEditor::Language LangDoc;
+            static TextEditor::Language LangCss;
+
+            TextEditor::Language& Lang = bStylesheet ? LangCss : LangDoc;
+            bool& Initialized = bStylesheet ? InitializedCss : InitializedDoc;
             if (Initialized)
             {
                 return &Lang;
@@ -235,10 +898,18 @@ namespace Lumina
 
             Lang.name = "RML/RCSS";
             Lang.caseSensitive = false;
-            // Built-in multi-line comment is /* */ (CSS cross-line tracking); HTML <!-- --> is
-            // handled single-line by the custom tokenizer, avoiding the apostrophe spill bug.
-            Lang.commentStart = "/*";
-            Lang.commentEnd = "*/";
+            if (bStylesheet)
+            {
+                Lang.commentStart = "/*";
+                Lang.commentEnd = "*/";
+            }
+            else
+            {
+                // RML markup: HTML comments are the multi-line block style; the built-in tracker carries the
+                // in-comment state across lines (the custom tokenizer no longer touches <!--).
+                Lang.commentStart = "<!--";
+                Lang.commentEnd = "-->";
+            }
             Lang.hasSingleQuotedStrings = true;
             Lang.hasDoubleQuotedStrings = true;
             Lang.stringEscape = '\\';
@@ -248,46 +919,8 @@ namespace Lumina
             // stops `#abcdef` lexing as an identifier). Iterator only does ++/compare, step manually.
             Lang.customTokenizer = [](TextEditor::Iterator start, TextEditor::Iterator end, TextEditor::Color& color) -> TextEditor::Iterator
             {
-                // <!-- ... --> single-line HTML comment; consume to the closing -->
-                // if on this line, else to end-of-line.
-                if (start != end && *start == '<')
-                {
-                    auto cursor = start;
-                    ++cursor;
-                    if (cursor != end && *cursor == '!')
-                    {
-                        ++cursor;
-                        if (cursor != end && *cursor == '-')
-                        {
-                            ++cursor;
-                            if (cursor != end && *cursor == '-')
-                            {
-                                ++cursor;
-                                while (cursor != end)
-                                {
-                                    if (*cursor == '-')
-                                    {
-                                        auto a = cursor; ++a;
-                                        if (a != end && *a == '-')
-                                        {
-                                            auto b = a; ++b;
-                                            if (b != end && *b == '>')
-                                            {
-                                                cursor = b;
-                                                ++cursor;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    ++cursor;
-                                }
-                                color = TextEditor::Color::comment;
-                                return cursor;
-                            }
-                        }
-                    }
-                }
-
+                // HTML <!-- --> comments are handled by the built-in block-comment tracker (see commentStart),
+                // so the tokenizer only needs the CSS hex-color literal here.
                 // # followed by 3, 4, 6, or 8 hex digits, CSS color literal.
                 if (start != end && *start == '#')
                 {
@@ -328,7 +961,7 @@ namespace Lumina
                 "ul", "ol", "li",
                 "table", "tr", "td", "th", "thead", "tbody", "tfoot",
                 "form", "input", "button", "select", "option", "textarea", "label",
-                "tabset", "tab", "panels", "panel", "handle", "progressbar", "progress",
+                "tabset", "tab", "panels", "panel", "handle", "progress",
                 "dataselect", "datagrid", "datagridrow", "datagridcell", "datagridheader",
                 "template", "include",
             };
@@ -436,8 +1069,7 @@ namespace Lumina
         FAssetEditorTool::OnInitialize();
 
         ApplyEditorSettings();
-        CodeEditor.SetLanguage(GetRmlLanguage());
-        CodeEditor.SetPostRenderCallback([this] { DrawInlineColorSwatches(); });
+        CodeEditor.SetLanguage(GetRmlLanguage(bIsStylesheet));
         LoadFromDisk();
 
         // Retarget our path when the file is renamed/moved so a later save hits the new file.
@@ -538,6 +1170,13 @@ namespace Lumina
             ImGui::Separator();
             DrawPreviewCanvas();
         });
+
+        CreateToolWindow(RmlCompositionWindowName, [this](bool bFocused)
+        {
+            DrawCompositionPanel();
+        });
+
+        RefreshWidgetLibrary();
     }
 
     void FRmlUiEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
@@ -564,6 +1203,8 @@ namespace Lumina
                 LOG_WARN("[RmlUiEditor] '{}' changed on disk but buffer is dirty; ignoring.", VirtualPath.c_str());
             }
         }
+
+        RefreshCompositionSlots();
     }
 
     void FRmlUiEditorTool::DrawHelpMenu()
@@ -577,9 +1218,6 @@ namespace Lumina
         DrawHelpTextRow("Decorators",
             "FRmlUiRenderer supports CPU gradient decorators (horizontal-gradient / vertical-gradient) but NOT "
             "shader-backed ones (linear-gradient, radial-gradient). Use the supported names.");
-        DrawHelpTextRow("Color Swatches",
-            "#RRGGBB / #RRGGBBAA literals get an inline color picker, click the swatch in the gutter "
-            "to open it. Edits commit through the editor's normal undo stack.");
         DrawHelpTextRow("Resolution / Safe Zones",
             "Use the toolbar to lock canvas size to a target resolution. Safe zone overlays help align "
             "controls on TVs / consoles where overscan trims the edges.");
@@ -613,10 +1251,15 @@ namespace Lumina
         ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
 
         ImGuiID LeftDockID = 0, RightDockID = 0;
-        ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.5f, &RightDockID, &LeftDockID);
+        ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.6f, &RightDockID, &LeftDockID);
+
+        // Carve the composition panel off the far right of the preview half.
+        ImGuiID CompositionDockID = 0, PreviewDockID = 0;
+        ImGui::DockBuilderSplitNode(RightDockID, ImGuiDir_Right, 0.34f, &CompositionDockID, &PreviewDockID);
 
         ImGui::DockBuilderDockWindow(GetToolWindowName(RmlEditorWindowName).c_str(), LeftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(RmlPreviewWindowName).c_str(), RightDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(RmlPreviewWindowName).c_str(), PreviewDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(RmlCompositionWindowName).c_str(), CompositionDockID);
     }
 
     void FRmlUiEditorTool::ApplyEditorSettings()
@@ -1003,7 +1646,6 @@ namespace Lumina
                 Row("Ctrl+Wheel",    "Zoom font (in editor)");
                 Row("Tab / Shift+Tab","Indent / deindent selection");
                 Row("Alt+Up / Down", "Move line(s) up/down");
-                Row("Click swatch",  "Open color picker for #RRGGBB literal");
                 ImGui::EndTable();
             }
         }
@@ -1205,12 +1847,17 @@ namespace Lumina
         ImGui::SameLine();
         ImGui::TextUnformatted("|  DPI:");
         ImGui::SameLine();
+        ImGui::Checkbox("Auto##rml_dpi_auto", &bAutoDpi);
+        ImGuiX::TextTooltip("Match the engine dp convention (canvas height / 1080) so dp-sized UI previews at in-game scale.");
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(110.0f);
-        if (ImGui::SliderFloat("##rml_dpi", &PreviewDpiScale, 0.5f, 4.0f, "%.2fx"))
+        ImGui::BeginDisabled(bAutoDpi);
+        if (ImGui::SliderFloat("##rml_dpi", &PreviewDpiScale, 0.25f, 4.0f, "%.2fx"))
         {
             if (PreviewContext != nullptr) RmlUi::SetEditorContextDpiScale(PreviewContext, PreviewDpiScale);
         }
-        ImGuiX::TextTooltip("Density-independent pixel ratio. RML/RCSS dp-sized layout grows with this.");
+        ImGui::EndDisabled();
+        ImGuiX::TextTooltip("Density-independent pixel ratio. Turn off Auto to set it manually.");
 
         ImGui::SameLine();
         ImGui::TextUnformatted("|  View:");
@@ -1295,8 +1942,26 @@ namespace Lumina
         {
             EffW = (uint32)std::max(16.0f, Pane.x);
             EffH = (uint32)std::max(16.0f, Pane.y);
+
+            // Quantize the fit-to-pane size to a block so a continuous resize drag reuses one render
+            // target instead of recreating it every frame.
+            constexpr uint32 Block = 64u;
+            EffW = ((EffW + Block - 1) / Block) * Block;
+            EffH = ((EffH + Block - 1) / Block) * Block;
         }
         EnsurePreviewTarget(EffW, EffH);
+
+        // Auto DPI mirrors the runtime dp convention (ratio = height / 1080), so dp-sized UI previews at the
+        // same relative scale it will in-game rather than overflowing a small canvas at a fixed ratio.
+        if (bAutoDpi && PreviewContext != nullptr && PreviewHeight > 0)
+        {
+            const float AutoDpi = std::clamp(float(PreviewHeight) / 1080.0f, 0.25f, 4.0f);
+            if (std::abs(AutoDpi - PreviewDpiScale) > 0.001f)
+            {
+                PreviewDpiScale = AutoDpi;
+                RmlUi::SetEditorContextDpiScale(PreviewContext, PreviewDpiScale);
+            }
+        }
 
         if (!PreviewTarget.IsValid() || PreviewContext == nullptr)
         {
@@ -1450,6 +2115,9 @@ namespace Lumina
             DL->PopClipRect();
         }
 
+        // Slot composition overlays sit on top of everything else (and own their hit-testing).
+        DrawSlotOverlays(CanvasMin, ScalePx);
+
         // HUD line (bottom-left).
         const float HudY = PaneMin.y + PaneSize.y - ImGui::GetTextLineHeightWithSpacing();
         DL->AddText(ImVec2(PaneMin.x + 8.0f, HudY),
@@ -1491,216 +2159,6 @@ namespace Lumina
         CodeEditor.SetText(View);
         LastSyncedText.assign(Body.c_str(), Body.size());
         bBufferDirty = false;
-    }
-
-    void FRmlUiEditorTool::DrawInlineColorSwatches()
-    {
-        const int FirstLine = CodeEditor.GetFirstVisibleLine();
-        const int LastLine  = CodeEditor.GetLastVisibleLine();
-        const int LineCount = CodeEditor.GetLineCount();
-        const int TabSize   = CodeEditor.GetTabSize();
-        const float LineHeight = CodeEditor.GetLineHeight();
-        const float GlyphWidth = CodeEditor.GetGlyphWidth();
-
-        // Rebuild the line-text cache only on edits (undo index moves); the per-frame
-        // parse below reads cached strings instead of allocating one per visible line.
-        const size_t Undo = CodeEditor.GetUndoIndex();
-        if (Undo != CachedLinesUndoIndex || static_cast<int>(CachedLines.size()) != LineCount)
-        {
-            CachedLines.resize(LineCount);
-            for (int L = 0; L < LineCount; ++L)
-            {
-                CachedLines[L] = CodeEditor.GetLineText(L);
-            }
-            CachedLinesUndoIndex = Undo;
-        }
-
-        const float SwatchSize = std::max(8.0f, LineHeight - 4.0f);
-        const float SwatchPad  = 2.0f;
-
-        ImDrawList* DrawList = ImGui::GetWindowDrawList();
-
-        auto HexDigit = [](char C) -> int
-        {
-            if (C >= '0' && C <= '9') return C - '0';
-            if (C >= 'a' && C <= 'f') return 10 + (C - 'a');
-            if (C >= 'A' && C <= 'F') return 10 + (C - 'A');
-            return -1;
-        };
-
-        // Saved selection so we can restore it after ReplaceSectionText. Without
-        // this the picker drag would jump the cursor to the hex token's end.
-        const TextEditor::CursorPosition SavedCursor = CodeEditor.GetCurrentCursorPosition();
-
-        for (int Line = FirstLine; Line <= LastLine && Line < LineCount; ++Line)
-        {
-            const std::string& Text = CachedLines[Line];
-            const int Len = static_cast<int>(Text.size());
-
-            // Walk byte-by-byte tracking visual column so tabs map correctly.
-            int Column = 0;
-            for (int i = 0; i < Len; )
-            {
-                const char C = Text[i];
-
-                if (C == '#' && i + 1 < Len)
-                {
-                    // Count contiguous hex digits.
-                    int Digits = 0;
-                    while (i + 1 + Digits < Len && Digits < 8 && HexDigit(Text[i + 1 + Digits]) >= 0)
-                    {
-                        Digits++;
-                    }
-
-                    const bool ValidLength = (Digits == 3 || Digits == 4 || Digits == 6 || Digits == 8);
-                    // Require the next char isn't a hex digit or '_', so we don't match
-                    // the "#abcd" prefix of `#abcdef`.
-                    bool BoundaryOk = ValidLength;
-                    if (BoundaryOk && i + 1 + Digits < Len)
-                    {
-                        const char Next = Text[i + 1 + Digits];
-                        if (HexDigit(Next) >= 0 || Next == '_')
-                        {
-                            BoundaryOk = false;
-                        }
-                    }
-
-                    if (BoundaryOk)
-                    {
-                        // Decode RGBA. Short forms (3/4) expand each digit to two.
-                        auto Expand = [&](int Index) -> int
-                        {
-                            const int H = HexDigit(Text[i + 1 + Index]);
-                            return (H << 4) | H;
-                        };
-                        int R, G, B, A = 255;
-                        if (Digits == 3)
-                        {
-                            R = Expand(0); G = Expand(1); B = Expand(2);
-                        }
-                        else if (Digits == 4)
-                        {
-                            R = Expand(0); G = Expand(1); B = Expand(2); A = Expand(3);
-                        }
-                        else if (Digits == 6)
-                        {
-                            R = (HexDigit(Text[i + 1]) << 4) | HexDigit(Text[i + 2]);
-                            G = (HexDigit(Text[i + 3]) << 4) | HexDigit(Text[i + 4]);
-                            B = (HexDigit(Text[i + 5]) << 4) | HexDigit(Text[i + 6]);
-                        }
-                        else
-                        {
-                            R = (HexDigit(Text[i + 1]) << 4) | HexDigit(Text[i + 2]);
-                            G = (HexDigit(Text[i + 3]) << 4) | HexDigit(Text[i + 4]);
-                            B = (HexDigit(Text[i + 5]) << 4) | HexDigit(Text[i + 6]);
-                            A = (HexDigit(Text[i + 7]) << 4) | HexDigit(Text[i + 8]);
-                        }
-
-                        const int TokenLen = 1 + Digits;
-                        const int EndColumn = Column + TokenLen;
-                        const ImVec2 EndPos = CodeEditor.GetScreenPosForCoordinate(Line, EndColumn);
-
-                        const ImVec2 SwatchMin(EndPos.x + SwatchPad, EndPos.y + (LineHeight - SwatchSize) * 0.5f);
-                        const ImVec2 SwatchMax(SwatchMin.x + SwatchSize, SwatchMin.y + SwatchSize);
-
-                        // Stable per-token id so ImGui state survives reflow.
-                        ImGui::PushID(Line * 4096 + i);
-
-                        ImGui::SetCursorScreenPos(SwatchMin);
-                        ImGui::InvisibleButton("##sw", ImVec2(SwatchSize, SwatchSize));
-                        const bool Clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-                        const bool Hovered = ImGui::IsItemHovered();
-
-                        DrawList->AddRectFilled(SwatchMin, SwatchMax, IM_COL32(R, G, B, A), 2.0f);
-                        DrawList->AddRect(SwatchMin, SwatchMax,
-                            Hovered ? IM_COL32(255, 255, 255, 200) : IM_COL32(0, 0, 0, 200), 2.0f);
-
-                        if (Clicked)
-                        {
-                            ImGui::OpenPopup("##rml_color_picker");
-                        }
-
-                        if (ImGui::BeginPopup("##rml_color_picker"))
-                        {
-                            float Col[4] = { R / 255.0f, G / 255.0f, B / 255.0f, A / 255.0f };
-                            const ImGuiColorEditFlags Flags = (Digits == 4 || Digits == 8)
-                                ? ImGuiColorEditFlags_AlphaBar
-                                : ImGuiColorEditFlags_NoAlpha;
-
-                            if (ImGui::ColorPicker4("##picker", Col, Flags))
-                            {
-                                const int NewR = static_cast<int>(std::round(Col[0] * 255.0f));
-                                const int NewG = static_cast<int>(std::round(Col[1] * 255.0f));
-                                const int NewB = static_cast<int>(std::round(Col[2] * 255.0f));
-                                const int NewA = static_cast<int>(std::round(Col[3] * 255.0f));
-
-                                char Buf[10];
-                                if (Digits == 3 || Digits == 4)
-                                {
-                                    // Preserve short form when possible (high+low nibbles match).
-                                    auto Compress = [](int V) -> int { return ((V >> 4) == (V & 0xF)) ? (V >> 4) : -1; };
-                                    const int CR = Compress(NewR), CG = Compress(NewG), CB = Compress(NewB), CA = Compress(NewA);
-                                    if (CR >= 0 && CG >= 0 && CB >= 0 && (Digits == 3 || CA >= 0))
-                                    {
-                                        if (Digits == 3)
-                                        {
-                                            std::snprintf(Buf, sizeof(Buf), "#%01X%01X%01X", CR, CG, CB);
-                                        }
-                                        else
-                                        {
-                                            std::snprintf(Buf, sizeof(Buf), "#%01X%01X%01X%01X", CR, CG, CB, CA);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        // Couldn't preserve short form, promote to long.
-                                        if (Digits == 3)
-                                        {
-                                            std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", NewR, NewG, NewB);
-                                        }
-                                        else
-                                        {
-                                            std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X%02X", NewR, NewG, NewB, NewA);
-                                        }
-                                    }
-                                }
-                                else if (Digits == 6)
-                                {
-                                    std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", NewR, NewG, NewB);
-                                }
-                                else
-                                {
-                                    std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X%02X", NewR, NewG, NewB, NewA);
-                                }
-
-                                CodeEditor.ReplaceSectionText(Line, Column, Line, EndColumn, Buf);
-                                CodeEditor.SetCursor(SavedCursor.line, SavedCursor.column);
-                            }
-                            ImGui::EndPopup();
-                        }
-
-                        ImGui::PopID();
-
-                        // Advance past the entire token in one go.
-                        Column += TokenLen;
-                        i += TokenLen;
-                        continue;
-                    }
-                }
-
-                // Default advance, tabs jump to next tab stop.
-                if (C == '\t')
-                {
-                    Column += TabSize - (Column % TabSize);
-                }
-                else
-                {
-                    Column++;
-                }
-                i++;
-            }
-            (void)GlyphWidth; // silence unused
-        }
     }
 
     void FRmlUiEditorTool::ReloadDocument()
@@ -1771,10 +2229,9 @@ namespace Lumina
         PreviewWidth = Width;
         PreviewHeight = Height;
 
-        if (PreviewContext != nullptr)
-        {
-            ReloadDocument();
-        }
+        // No ReloadDocument() here: the document content is unchanged on a resize, and the context
+        // reflows to the new size automatically (TickEditorContexts -> SetDimensions(E->Size)). The new
+        // target is bound by the SetEditorContextTarget call right after EnsurePreviewTarget returns.
     }
 
     void FRmlUiEditorTool::TearDownPreview()
@@ -1865,5 +2322,1192 @@ namespace Lumina
 
             bExternalChangePending.store(true, Atomic::MemoryOrderRelease);
         }, false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    // Composition designer
+    //--------------------------------------------------------------------------------------------
+
+    void FRmlUiEditorTool::RefreshCompositionSlots()
+    {
+        CompSlots.clear();
+        if (PreviewContext == nullptr)
+        {
+            return;
+        }
+
+        TVector<RmlUi::FRmlEditorSlot> Slots;
+        RmlUi::EnumerateEditorSlots(PreviewContext, Slots);
+
+        // Re-copy the buffer for assignment parsing only when the text actually changed.
+        const size_t Undo = CodeEditor.GetUndoIndex();
+        if (Undo != CompAssignUndoIndex || bCompAssignDirty)
+        {
+            CompAssignText = CodeEditor.GetText();
+            CompAssignUndoIndex = Undo;
+            bCompAssignDirty = false;
+        }
+
+        CompSlots.reserve(Slots.size());
+        for (const RmlUi::FRmlEditorSlot& Src : Slots)
+        {
+            FCompSlot Slot;
+            Slot.Id         = Src.Id;
+            Slot.Tag        = Src.Tag;
+            Slot.OffsetPx   = ImVec2(Src.OffsetPx.x, Src.OffsetPx.y);
+            Slot.SizePx     = ImVec2(Src.SizePx.x, Src.SizePx.y);
+            Slot.Depth      = Src.Depth;
+            Slot.ChildCount = Src.ChildCount;
+
+            const std::string Id(Src.Id.c_str(), Src.Id.size());
+            const std::string Assigned = ParseSlotAssignment(CompAssignText, Id);
+            Slot.AssignedSrc = FString(Assigned.c_str(), Assigned.size());
+
+            // GetAbsoluteOffset is the layout position and excludes the CSS transform; repositioning writes
+            // an inline `transform: translate`, so add it back here for the overlay to sit on the rendered box.
+            const std::string Tf = GetInlineStyleProp(CompAssignText, Id, "transform");
+            if (!Tf.empty())
+            {
+                const ImVec2 TDp = ParseTranslateDp(Tf);
+                const float Dpi = std::max(0.01f, PreviewDpiScale);
+                Slot.OffsetPx.x += TDp.x * Dpi;
+                Slot.OffsetPx.y += TDp.y * Dpi;
+            }
+            CompSlots.push_back(std::move(Slot));
+        }
+    }
+
+    void FRmlUiEditorTool::RefreshWidgetLibrary()
+    {
+        CompWidgets.clear();
+        bWidgetLibraryDirty = false;
+        if (ParentDir.empty())
+        {
+            return;
+        }
+
+        VFS::RecursiveDirectoryIterator(FStringView(ParentDir.c_str(), ParentDir.size()),
+            [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.IsDirectory() || Info.GetExt() != ".rml")
+                {
+                    return;
+                }
+
+                const FString WidgetPath(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                if (WidgetPath == VirtualPath)
+                {
+                    return; // never list the document being edited
+                }
+
+                FString Body;
+                if (!VFS::ReadFile(Body, FStringView(WidgetPath.c_str(), WidgetPath.size())))
+                {
+                    return;
+                }
+                const std::string B(Body.c_str(), Body.size());
+                if (!IsTemplateDocument(B))
+                {
+                    return; // only <template>-rooted files are reusable widgets
+                }
+
+                FCompWidget Widget;
+                Widget.VirtualPath = WidgetPath;
+                const FStringView NameView = VFS::FileName(FStringView(WidgetPath.c_str(), WidgetPath.size()), true);
+                Widget.DisplayName = FString(NameView.data(), NameView.size());
+                ParseTemplateAttrs(B, Widget.TemplateName, Widget.ContentSlotId);
+                if (Widget.TemplateName.empty())
+                {
+                    Widget.TemplateName = Widget.DisplayName; // fall back to the file name as src
+                }
+                CompWidgets.push_back(std::move(Widget));
+            });
+
+        std::sort(CompWidgets.begin(), CompWidgets.end(),
+            [](const FCompWidget& A, const FCompWidget& B) { return A.DisplayName < B.DisplayName; });
+    }
+
+    void FRmlUiEditorTool::DrawCompositionPanel()
+    {
+        if (bWidgetLibraryDirty)
+        {
+            RefreshWidgetLibrary();
+        }
+
+        if (ImGui::Button(LE_ICON_REFRESH " Rescan"))
+        {
+            bWidgetLibraryDirty = true;
+        }
+        ImGuiX::TextTooltip("Re-scan this document's folder for <template> widgets.");
+        ImGui::SameLine();
+        ImGui::Checkbox("Overlays", &bShowSlotOverlays);
+        ImGuiX::TextTooltip("Draw slot drop-targets over the preview canvas. Ctrl+drag a slot to position it.");
+        ImGui::Separator();
+
+        // ---- Hierarchy ----
+        // The full authored tree, parsed from the SOURCE so EVERY element shows (id'd or not) and can be
+        // selected / built into. Acting on an id-less element auto-assigns it an id (EnsureElementId).
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), LE_ICON_VIEW_GRID " Hierarchy");
+
+        std::vector<FSourceNode> Nodes;
+        ParseSourceElements(CompAssignText, Nodes);
+
+        // Root row: selecting it targets the document body (new elements land at the top level).
+        if (ImGui::Selectable(LE_ICON_FOLDER " body (root)", SelectedSlotId.empty()))
+        {
+            SelectedSlotId = FString();
+        }
+
+        const std::string SelId(SelectedSlotId.c_str(), SelectedSlotId.size());
+        for (int n = 0; n < (int)Nodes.size(); ++n)
+        {
+            const FSourceNode& Node = Nodes[n];
+            if (Node.Tag == "template")
+            {
+                continue; // an assignment directive -> shown via its parent's badge, not as its own row
+            }
+
+            ImGui::PushID(n);
+            const float Indent = float(Node.Depth + 1) * 12.0f;
+            ImGui::Indent(Indent);
+
+            const bool bHasId = !Node.Id.empty();
+            const std::string Assigned = bHasId ? ParseSlotAssignment(CompAssignText, Node.Id) : std::string();
+            const bool bAssigned = !Assigned.empty();
+            const bool bSel = bHasId && (Node.Id == SelId);
+
+            char Row[200];
+            const char* Icon = bAssigned ? LE_ICON_PUZZLE : (bHasId ? LE_ICON_CHECKBOX_BLANK_OUTLINE : LE_ICON_SHAPE_OUTLINE);
+            if (bHasId) std::snprintf(Row, sizeof(Row), "%s  #%s", Icon, Node.Id.c_str());
+            else        std::snprintf(Row, sizeof(Row), "%s  <%s>", Icon, Node.Tag.c_str());
+
+            if (ImGui::Selectable(Row, bSel))
+            {
+                SelectedSlotId = bHasId ? FString(Node.Id.c_str(), Node.Id.size())
+                                        : EnsureElementId(Node.Tag, Node.OpenLt, Node.Id);
+            }
+            if (ImGui::IsItemHovered() && bHasId) HoveredSlotId = FString(Node.Id.c_str(), Node.Id.size());
+
+            if (bAssigned)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), LE_ICON_PUZZLE " %s", Assigned.c_str());
+            }
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload("RML_WIDGET"))
+                {
+                    const FString Id = EnsureElementId(Node.Tag, Node.OpenLt, Node.Id);
+                    AssignWidgetToSlot(Id, *(const int*)Payload->Data);
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            if (ImGui::BeginPopupContextItem())
+            {
+                if (bHasId) ImGui::TextDisabled("#%s  <%s>", Node.Id.c_str(), Node.Tag.c_str());
+                else        ImGui::TextDisabled("<%s>", Node.Tag.c_str());
+                ImGui::Separator();
+                if (ImGui::BeginMenu(LE_ICON_PLUS_BOX " Add child"))
+                {
+                    const int Count = (int)(sizeof(kElementPrimitives) / sizeof(kElementPrimitives[0]));
+                    for (const char* Cat : kElementCategories)
+                    {
+                        if (!ImGui::BeginMenu(Cat)) continue;
+                        for (int p = 0; p < Count; ++p)
+                        {
+                            if (std::strcmp(kElementPrimitives[p].Category, Cat) != 0) continue;
+                            if (ImGui::MenuItem(kElementPrimitives[p].Label))
+                            {
+                                AddElement(EnsureElementId(Node.Tag, Node.OpenLt, Node.Id), p);
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::BeginDisabled(!bAssigned);
+                if (ImGui::MenuItem(LE_ICON_CLOSE " Clear widget"))
+                {
+                    ClearSlotAssignment(FString(Node.Id.c_str(), Node.Id.size()));
+                }
+                ImGui::EndDisabled();
+                ImGui::Separator();
+                if (ImGui::MenuItem(LE_ICON_ARROW_UP " Move up"))
+                {
+                    MoveElement(EnsureElementId(Node.Tag, Node.OpenLt, Node.Id), true);
+                }
+                if (ImGui::MenuItem(LE_ICON_ARROW_DOWN " Move down"))
+                {
+                    MoveElement(EnsureElementId(Node.Tag, Node.OpenLt, Node.Id), false);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem(LE_ICON_TRASH_CAN_OUTLINE " Delete element"))
+                {
+                    RemoveElement(EnsureElementId(Node.Tag, Node.OpenLt, Node.Id));
+                }
+                ImGui::EndPopup();
+            }
+
+            ImGui::Unindent(Indent);
+            ImGui::PopID();
+        }
+
+        DrawSlotInspector();
+
+        // ---- Add element ----
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), LE_ICON_PLUS_BOX " Add element");
+        if (SelectedSlotId.empty())
+        {
+            ImGui::TextDisabled("Into: body  (select a container to nest)");
+        }
+        else
+        {
+            ImGui::TextDisabled("Into: #%s", SelectedSlotId.c_str());
+        }
+        {
+            const int Count = (int)(sizeof(kElementPrimitives) / sizeof(kElementPrimitives[0]));
+            const float BtnW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+            for (const char* Cat : kElementCategories)
+            {
+                if (!ImGui::CollapsingHeader(Cat, ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    continue;
+                }
+                int Col = 0;
+                for (int i = 0; i < Count; ++i)
+                {
+                    if (std::strcmp(kElementPrimitives[i].Category, Cat) != 0) continue;
+                    if (Col % 2 != 0) ImGui::SameLine();
+                    if (ImGui::Button(kElementPrimitives[i].Label, ImVec2(BtnW, 0.0f)))
+                    {
+                        AddElement(SelectedSlotId, i);
+                    }
+                    ++Col;
+                }
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // ---- Widget palette ----
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), LE_ICON_CARDS " Widgets");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##widget_search", LE_ICON_MAGNIFY " Filter", WidgetSearch, sizeof(WidgetSearch));
+
+        if (CompWidgets.empty())
+        {
+            ImGui::TextWrapped("No <template> widgets found beside this document.");
+        }
+
+        for (int i = 0; i < (int)CompWidgets.size(); ++i)
+        {
+            const FCompWidget& Widget = CompWidgets[i];
+            if (!ContainsCI(Widget.DisplayName, WidgetSearch))
+            {
+                continue;
+            }
+
+            ImGui::PushID(i);
+            char Card[160];
+            std::snprintf(Card, sizeof(Card), LE_ICON_SHAPE_OUTLINE "  %s", Widget.DisplayName.c_str());
+            ImGui::Selectable(Card);
+
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
+            {
+                ImGui::SetDragDropPayload("RML_WIDGET", &i, sizeof(int));
+                ImGui::Text(LE_ICON_DRAG_VARIANT " %s", Widget.DisplayName.c_str());
+                ImGui::EndDragDropSource();
+            }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !SelectedSlotId.empty())
+            {
+                AssignWidgetToSlot(SelectedSlotId, i);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("src=\"%s\"", Widget.TemplateName.c_str());
+            ImGui::PopID();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Drag a widget onto a slot, or select a slot then double-click a widget.");
+
+        // Delete clears the selected slot's widget (ignored while typing in a field).
+        if (!SelectedSlotId.empty() && ImGui::IsWindowFocused() && !ImGui::IsAnyItemActive()
+            && ImGui::IsKeyPressed(ImGuiKey_Delete))
+        {
+            ClearSlotAssignment(SelectedSlotId);
+        }
+    }
+
+    void FRmlUiEditorTool::DrawSlotOverlays(const ImVec2& CanvasMin, float ScalePx)
+    {
+        if (!bShowSlotOverlays || CompSlots.empty() || ScalePx <= 0.0f)
+        {
+            return;
+        }
+
+        ImDrawList* DL = ImGui::GetWindowDrawList();
+        const ImGuiIO& Io = ImGui::GetIO();
+        const bool bWindowHovered = ImGui::IsWindowHovered();
+        const ImVec2 CanvasMax(CanvasMin.x + PreviewWidth * ScalePx, CanvasMin.y + PreviewHeight * ScalePx);
+
+        // True screen rect of a slot (exact, so overlays line up with the rendered DOM); plus a hit rect
+        // expanded to a clickable minimum for empty/degenerate containers without distorting the visual.
+        auto Rects = [&](const FCompSlot& Slot, ImVec2& TrueMin, ImVec2& TrueMax, ImVec2& HitMin, ImVec2& HitMax)
+        {
+            TrueMin = ImVec2(CanvasMin.x + Slot.OffsetPx.x * ScalePx, CanvasMin.y + Slot.OffsetPx.y * ScalePx);
+            TrueMax = ImVec2(TrueMin.x + Slot.SizePx.x * ScalePx, TrueMin.y + Slot.SizePx.y * ScalePx);
+            const float MinHit = 16.0f;
+            HitMin = TrueMin;
+            HitMax = ImVec2(std::max(TrueMax.x, TrueMin.x + MinHit), std::max(TrueMax.y, TrueMin.y + MinHit));
+        };
+
+        // Hovered slot = smallest-area hit rect under the cursor (innermost wins). Suspended mid-drag.
+        if (bWindowHovered && !bDraggingSlot)
+        {
+            FString NewHover;
+            float Best = FLT_MAX;
+            for (const FCompSlot& Slot : CompSlots)
+            {
+                ImVec2 TMin, TMax, HMin, HMax;
+                Rects(Slot, TMin, TMax, HMin, HMax);
+                if (Io.MousePos.x >= HMin.x && Io.MousePos.x <= HMax.x &&
+                    Io.MousePos.y >= HMin.y && Io.MousePos.y <= HMax.y)
+                {
+                    const float Area = (HMax.x - HMin.x) * (HMax.y - HMin.y);
+                    if (Area < Best) { Best = Area; NewHover = Slot.Id; }
+                }
+            }
+            HoveredSlotId = NewHover;
+        }
+
+        // Visuals, clipped to the canvas so nothing spills onto the rest of the pane.
+        DL->PushClipRect(CanvasMin, CanvasMax, true);
+        for (const FCompSlot& Slot : CompSlots)
+        {
+            ImVec2 TMin, TMax, HMin, HMax;
+            Rects(Slot, TMin, TMax, HMin, HMax);
+
+            const bool bAssigned = !Slot.AssignedSrc.empty();
+            const bool bSel = (Slot.Id == SelectedSlotId);
+            const bool bHov = (Slot.Id == HoveredSlotId);
+            const bool bTiny = (TMax.x - TMin.x) < 6.0f || (TMax.y - TMin.y) < 6.0f;
+
+            ImU32 Line = bAssigned ? IM_COL32(55, 138, 221, 255) : IM_COL32(93, 202, 165, 255);
+            const ImU32 Fill = bAssigned ? IM_COL32(55, 138, 221, 38) : IM_COL32(29, 158, 117, 26);
+            if (bSel) Line = IM_COL32(250, 210, 90, 255);
+            const float Thick = bSel ? 2.5f : (bHov ? 2.0f : 1.0f);
+
+            char Label[160];
+            if (bAssigned) std::snprintf(Label, sizeof(Label), "#%s : %s", Slot.Id.c_str(), Slot.AssignedSrc.c_str());
+            else           std::snprintf(Label, sizeof(Label), "#%s", Slot.Id.c_str());
+            const ImVec2 Ts = ImGui::CalcTextSize(Label);
+
+            if (bTiny)
+            {
+                // Empty/zero-size container: a small pill anchored exactly at the slot's top-left so it
+                // reads as a real, placeable marker instead of an inflated box that misaligns.
+                const ImVec2 P = TMin;
+                DL->AddRectFilled(P, ImVec2(P.x + Ts.x + 8.0f, P.y + Ts.y + 4.0f), IM_COL32(18, 18, 26, 230), 3.0f);
+                DL->AddRect(P, ImVec2(P.x + Ts.x + 8.0f, P.y + Ts.y + 4.0f), Line, 3.0f, 0, Thick);
+                DL->AddText(ImVec2(P.x + 4.0f, P.y + 2.0f), Line, Label);
+            }
+            else
+            {
+                DL->AddRectFilled(TMin, TMax, Fill, 3.0f);
+                DL->AddRect(TMin, TMax, Line, 3.0f, 0, Thick);
+
+                ImVec2 TagPos(TMin.x, TMin.y - Ts.y - 3.0f);
+                if (TagPos.y < CanvasMin.y) TagPos = ImVec2(TMin.x + 3.0f, TMin.y + 3.0f);
+                DL->AddRectFilled(TagPos, ImVec2(TagPos.x + Ts.x + 6.0f, TagPos.y + Ts.y + 3.0f), IM_COL32(18, 18, 26, 220), 2.0f);
+                DL->AddText(ImVec2(TagPos.x + 3.0f, TagPos.y + 1.0f), Line, Label);
+
+                if (!bAssigned)
+                {
+                    const char* Hint = "drop widget";
+                    const ImVec2 Hs = ImGui::CalcTextSize(Hint);
+                    if (Hs.x < (TMax.x - TMin.x) && Hs.y < (TMax.y - TMin.y))
+                    {
+                        DL->AddText(ImVec2((TMin.x + TMax.x - Hs.x) * 0.5f, (TMin.y + TMax.y - Hs.y) * 0.5f),
+                                    IM_COL32(159, 225, 203, 210), Hint);
+                    }
+                }
+            }
+
+            // Drag ghost: where the slot will land on release (snapped to the grid when it's shown, so the
+            // preview matches what CommitSlotMove will write).
+            if (bDraggingSlot && Slot.Id == DraggingSlotId)
+            {
+                float NewX = Slot.OffsetPx.x + DragDeltaPx.x;
+                float NewY = Slot.OffsetPx.y + DragDeltaPx.y;
+                if (bShowGrid && GridSize > 0.0f)
+                {
+                    NewX = std::round(NewX / GridSize) * GridSize;
+                    NewY = std::round(NewY / GridSize) * GridSize;
+                }
+                const ImVec2 GMin(CanvasMin.x + NewX * ScalePx, CanvasMin.y + NewY * ScalePx);
+                const ImVec2 GMax(GMin.x + (TMax.x - TMin.x), GMin.y + (TMax.y - TMin.y));
+                DL->AddRect(GMin, GMax, IM_COL32(250, 210, 90, 255), 3.0f, 0, 2.0f);
+                DL->AddRectFilled(GMin, GMax, IM_COL32(250, 210, 90, 30), 3.0f);
+            }
+        }
+        DL->PopClipRect();
+
+        // Interaction: submit innermost-first so an overlapping parent doesn't steal the hit.
+        for (int i = (int)CompSlots.size() - 1; i >= 0; --i)
+        {
+            const FCompSlot& Slot = CompSlots[i];
+            ImVec2 TMin, TMax, HMin, HMax;
+            Rects(Slot, TMin, TMax, HMin, HMax);
+
+            ImGui::SetCursorScreenPos(HMin);
+            ImGui::PushID(i); // index, not id string: duplicate DOM ids (a widget reused N times) would collide
+            ImGui::InvisibleButton("##slot_hit", ImVec2(HMax.x - HMin.x, HMax.y - HMin.y));
+            const bool bThis = (DraggingSlotId == Slot.Id);
+
+            if (ImGui::IsItemClicked())
+            {
+                SelectedSlotId = Slot.Id;
+            }
+
+            // Ctrl+drag nudges a slot via transform:translate (no position-mode change). Plain click selects.
+            if (Io.KeyCtrl && ImGui::IsItemHovered())
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            }
+            if (ImGui::IsItemActivated() && Io.KeyCtrl)
+            {
+                SelectedSlotId = Slot.Id;
+                DraggingSlotId = Slot.Id;
+                DragDeltaPx = ImVec2(0.0f, 0.0f);
+                bDraggingSlot = false;
+            }
+            if (ImGui::IsItemActive() && bThis && ScalePx > 0.0f)
+            {
+                const ImVec2 D = Io.MouseDelta;
+                if (D.x != 0.0f || D.y != 0.0f) bDraggingSlot = true;
+                DragDeltaPx.x += D.x / ScalePx;
+                DragDeltaPx.y += D.y / ScalePx;
+            }
+            if (bThis && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+            {
+                if (bDraggingSlot)
+                {
+                    CommitSlotMove(Slot.Id, DragDeltaPx);
+                }
+                bDraggingSlot = false;
+                DraggingSlotId.clear();
+                DragDeltaPx = ImVec2(0.0f, 0.0f);
+            }
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload("RML_WIDGET"))
+                {
+                    AssignWidgetToSlot(Slot.Id, *(const int*)Payload->Data);
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::PopID();
+        }
+
+        // Delete clears the selected slot's widget while the canvas is in use (ignored while editing a field).
+        if (!SelectedSlotId.empty() && bWindowHovered && !ImGui::IsAnyItemActive()
+            && ImGui::IsKeyPressed(ImGuiKey_Delete))
+        {
+            ClearSlotAssignment(SelectedSlotId);
+        }
+    }
+
+    void FRmlUiEditorTool::AssignWidgetToSlot(const FString& SlotId, int WidgetIndex)
+    {
+        if (WidgetIndex < 0 || WidgetIndex >= (int)CompWidgets.size())
+        {
+            return;
+        }
+        const FCompWidget Widget = CompWidgets[WidgetIndex]; // copy: a clear below may rescan the library
+        const std::string Id(SlotId.c_str(), SlotId.size());
+
+        std::string Text = CodeEditor.GetText();
+        if (!LocateSlotTag(Text, Id).bFound)
+        {
+            ImGuiX::Notifications::NotifyError("Slot '#{0}' not found in the source.", SlotId.c_str());
+            return;
+        }
+
+        // Replace rather than stack if the slot already holds a widget.
+        if (!ParseSlotAssignment(Text, Id).empty())
+        {
+            ClearSlotAssignment(SlotId);
+            Text = CodeEditor.GetText();
+        }
+
+        const FSlotTagLoc Loc = LocateSlotTag(Text, Id);
+        if (!Loc.bFound)
+        {
+            return;
+        }
+
+        // <link href>: bare file name when the widget sits in the document's folder, else the absolute
+        // virtual path (the RmlUi file interface resolves both).
+        FString Href;
+        {
+            const FStringView DocDir = VFS::Parent(FStringView(VirtualPath.c_str(), VirtualPath.size()), true);
+            const FStringView WgtDir = VFS::Parent(FStringView(Widget.VirtualPath.c_str(), Widget.VirtualPath.size()), true);
+            if (DocDir == WgtDir)
+            {
+                const FStringView Name = VFS::FileName(FStringView(Widget.VirtualPath.c_str(), Widget.VirtualPath.size()));
+                Href = FString(Name.data(), Name.size());
+            }
+            else
+            {
+                Href = Widget.VirtualPath;
+            }
+        }
+        const std::string HrefStd(Href.c_str(), Href.size());
+        const std::string NameStd(Widget.TemplateName.c_str(), Widget.TemplateName.size());
+
+        struct FEdit { size_t Start; size_t End; std::string Text; };
+        std::vector<FEdit> Edits;
+
+        // 1) Ensure the template <link> in <head>.
+        if (Text.find("href=\"" + HrefStd + "\"") == std::string::npos)
+        {
+            const size_t HeadAt = FindHeadInsertOffset(Text);
+            if (HeadAt == std::string::npos)
+            {
+                ImGuiX::Notifications::NotifyError("Document has no <head> for the template <link>.");
+                return;
+            }
+            Edits.push_back({ HeadAt, HeadAt, "\n    <link type=\"text/template\" href=\"" + HrefStd + "\"/>" });
+        }
+
+        // 2) Splice <template src> as the slot's first child.
+        const std::string Tpl = "\n        <template src=\"" + NameStd + "\"/>";
+        if (Loc.bSelfClosing)
+        {
+            // <div id=.../>  ->  <div id=...><template/></div>
+            Edits.push_back({ Loc.TagEnd - 1, Loc.TagEnd + 1, ">" + Tpl + "\n    </" + Loc.TagName + ">" });
+        }
+        else
+        {
+            Edits.push_back({ Loc.TagEnd + 1, Loc.TagEnd + 1, Tpl });
+        }
+
+        // Apply highest-offset-first so earlier coordinates stay valid across edits.
+        std::sort(Edits.begin(), Edits.end(), [](const FEdit& A, const FEdit& B) { return A.Start > B.Start; });
+        const int TabSize = CodeEditor.GetTabSize();
+        for (const FEdit& E : Edits)
+        {
+            int L0, C0, L1, C1;
+            OffsetToLineCol(Text, E.Start, TabSize, L0, C0);
+            OffsetToLineCol(Text, E.End,   TabSize, L1, C1);
+            CodeEditor.ReplaceSectionText(L0, C0, L1, C1, E.Text);
+        }
+
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+        ImGuiX::Notifications::NotifySuccess("Assigned '{0}' to #{1}.", Widget.DisplayName.c_str(), SlotId.c_str());
+    }
+
+    void FRmlUiEditorTool::ClearSlotAssignment(const FString& SlotId)
+    {
+        const std::string Id(SlotId.c_str(), SlotId.size());
+        const std::string Text = CodeEditor.GetText();
+
+        const FSlotTagLoc Loc = LocateSlotTag(Text, Id);
+        if (!Loc.bFound || Loc.bSelfClosing)
+        {
+            return;
+        }
+
+        // Excise the slotted <template ...> (first child) and the whitespace before it.
+        const size_t WsStart = Loc.TagEnd + 1;
+        size_t i = WsStart;
+        while (i < Text.size() && (unsigned char)Text[i] <= ' ')
+        {
+            ++i;
+        }
+        static const char* Tpl = "<template";
+        const size_t TplLen = std::strlen(Tpl);
+        if (i + TplLen > Text.size() || Text.compare(i, TplLen, Tpl) != 0)
+        {
+            return;
+        }
+        const size_t TagClose = Text.find('>', i);
+        if (TagClose == std::string::npos)
+        {
+            return;
+        }
+        const size_t RemoveEnd = TagClose + 1;
+
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0, L1, C1;
+        OffsetToLineCol(Text, WsStart,   TabSize, L0, C0);
+        OffsetToLineCol(Text, RemoveEnd, TabSize, L1, C1);
+        CodeEditor.ReplaceSectionText(L0, C0, L1, C1, "");
+
+        // The <link> is intentionally left in place; an unused template registration is harmless and a
+        // shared widget is usually referenced from more than one slot.
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+    }
+
+    void FRmlUiEditorTool::AddElement(const FString& TargetSlotId, int PrimitiveIndex)
+    {
+        if (PrimitiveIndex < 0 || PrimitiveIndex >= (int)(sizeof(kElementPrimitives) / sizeof(kElementPrimitives[0])))
+        {
+            return;
+        }
+        const FElementPrimitive& Prim = kElementPrimitives[PrimitiveIndex];
+        std::string Text = CodeEditor.GetText();
+
+        const std::string NewId = GenerateUniqueId(Text, Prim.IdBase);
+        char Markup[640];
+        std::snprintf(Markup, sizeof(Markup), Prim.Markup, NewId.c_str());
+
+        size_t EditStart, EditEnd;
+        std::string Replacement;
+        const std::string TargetId(TargetSlotId.c_str(), TargetSlotId.size());
+
+        if (TargetId.empty())
+        {
+            // No container selected -> append to the document body.
+            const size_t BodyClose = Text.rfind("</body>");
+            if (BodyClose == std::string::npos)
+            {
+                ImGuiX::Notifications::NotifyError("Document has no <body> to add into.");
+                return;
+            }
+            EditStart = EditEnd = BodyClose;
+            Replacement = std::string("    ") + Markup + "\n";
+        }
+        else
+        {
+            const FSlotTagLoc Open = LocateSlotTag(Text, TargetId);
+            if (!Open.bFound)
+            {
+                ImGuiX::Notifications::NotifyError("Container '#{0}' not found.", TargetSlotId.c_str());
+                return;
+            }
+            if (Open.bSelfClosing)
+            {
+                // <div id=.../>  ->  <div id=...>\n    markup\n</div>
+                EditStart   = Open.TagEnd - 1;
+                EditEnd     = Open.TagEnd + 1;
+                Replacement = ">\n        " + std::string(Markup) + "\n    </" + Open.TagName + ">";
+            }
+            else
+            {
+                const FCloseTagLoc Close = FindMatchingClose(Text, Open);
+                if (Close.Start == std::string::npos)
+                {
+                    ImGuiX::Notifications::NotifyError("Couldn't find the end of '#{0}'.", TargetSlotId.c_str());
+                    return;
+                }
+                // Append as the last child, just before the close tag.
+                EditStart = EditEnd = Close.Start;
+                Replacement = std::string(Markup) + "\n        ";
+            }
+        }
+
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0, L1, C1;
+        OffsetToLineCol(Text, EditStart, TabSize, L0, C0);
+        OffsetToLineCol(Text, EditEnd,   TabSize, L1, C1);
+        CodeEditor.ReplaceSectionText(L0, C0, L1, C1, Replacement);
+
+        SelectedSlotId = FString(NewId.c_str(), NewId.size());
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+        ImGuiX::Notifications::NotifySuccess("Added {0} (#{1}).", Prim.Label, NewId.c_str());
+    }
+
+    void FRmlUiEditorTool::RemoveElement(const FString& SlotId)
+    {
+        std::string Text = CodeEditor.GetText();
+        const std::string Id(SlotId.c_str(), SlotId.size());
+        const FSlotTagLoc Open = LocateSlotTag(Text, Id);
+        if (!Open.bFound)
+        {
+            return;
+        }
+
+        size_t RemoveStart = Open.TagStart;
+        size_t RemoveEnd;
+        if (Open.bSelfClosing)
+        {
+            RemoveEnd = Open.TagEnd + 1;
+        }
+        else
+        {
+            const FCloseTagLoc Close = FindMatchingClose(Text, Open);
+            if (Close.End == std::string::npos)
+            {
+                ImGuiX::Notifications::NotifyError("Couldn't find the end of '#{0}'.", SlotId.c_str());
+                return;
+            }
+            RemoveEnd = Close.End;
+        }
+
+        // Swallow the line's leading indentation + one trailing newline so no blank line is left behind.
+        while (RemoveStart > 0 && (Text[RemoveStart - 1] == ' ' || Text[RemoveStart - 1] == '\t')) --RemoveStart;
+        if (RemoveEnd < Text.size() && Text[RemoveEnd] == '\n') ++RemoveEnd;
+
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0, L1, C1;
+        OffsetToLineCol(Text, RemoveStart, TabSize, L0, C0);
+        OffsetToLineCol(Text, RemoveEnd,   TabSize, L1, C1);
+        CodeEditor.ReplaceSectionText(L0, C0, L1, C1, "");
+
+        if (SelectedSlotId == SlotId) SelectedSlotId.clear();
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+    }
+
+    void FRmlUiEditorTool::MoveElement(const FString& SlotId, bool bUp)
+    {
+        std::string Text = CodeEditor.GetText();
+        const std::string Id(SlotId.c_str(), SlotId.size());
+        const FSlotTagLoc Open = LocateSlotTag(Text, Id);
+
+        size_t EStart, EEnd;
+        if (!ElementRange(Text, Open, EStart, EEnd))
+        {
+            return;
+        }
+        const std::string EText = Text.substr(EStart, EEnd - EStart);
+        const int TabSize = CodeEditor.GetTabSize();
+
+        if (!bUp)
+        {
+            // Swap with the next sibling element (skip the whitespace between them).
+            size_t P = EEnd;
+            while (P < Text.size() && std::isspace((unsigned char)Text[P])) ++P;
+            if (P >= Text.size() || Text[P] != '<' || (P + 1 < Text.size() && Text[P + 1] == '/'))
+            {
+                return; // no next sibling (end of parent)
+            }
+            size_t NSStart, NSEnd;
+            if (!ElementRange(Text, ParseElementAt(Text, P), NSStart, NSEnd))
+            {
+                return;
+            }
+            const std::string Sep = Text.substr(EEnd, P - EEnd);
+            const std::string New = Text.substr(NSStart, NSEnd - NSStart) + Sep + EText;
+            int L0, C0, L1, C1;
+            OffsetToLineCol(Text, EStart, TabSize, L0, C0);
+            OffsetToLineCol(Text, NSEnd,  TabSize, L1, C1);
+            CodeEditor.ReplaceSectionText(L0, C0, L1, C1, New);
+        }
+        else
+        {
+            // Swap with the previous sibling element (find its source range walking backwards).
+            size_t P = EStart;
+            while (P > 0 && std::isspace((unsigned char)Text[P - 1])) --P;
+            if (P == 0 || Text[P - 1] != '>')
+            {
+                return; // no previous sibling element
+            }
+            const size_t PrevEnd = P;
+            size_t PrevStart = std::string::npos;
+            if (PrevEnd >= 2 && Text[PrevEnd - 2] == '/')
+            {
+                PrevStart = Text.rfind('<', PrevEnd - 1); // self-closing sibling
+            }
+            else
+            {
+                const size_t Lt = Text.rfind('<', PrevEnd - 1); // '<' of the '</name>'
+                if (Lt == std::string::npos || Lt + 1 >= Text.size() || Text[Lt + 1] != '/')
+                {
+                    return;
+                }
+                size_t N = Lt + 2, E = N;
+                while (E < PrevEnd && !std::isspace((unsigned char)Text[E]) && Text[E] != '>') ++E;
+                PrevStart = FindMatchingOpenBackward(Text, Text.substr(N, E - N), Lt);
+            }
+            if (PrevStart == std::string::npos)
+            {
+                return;
+            }
+            const std::string Sep = Text.substr(PrevEnd, EStart - PrevEnd);
+            const std::string New = EText + Sep + Text.substr(PrevStart, PrevEnd - PrevStart);
+            int L0, C0, L1, C1;
+            OffsetToLineCol(Text, PrevStart, TabSize, L0, C0);
+            OffsetToLineCol(Text, EEnd,      TabSize, L1, C1);
+            CodeEditor.ReplaceSectionText(L0, C0, L1, C1, New);
+        }
+
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+    }
+
+    void FRmlUiEditorTool::SetElementInnerText(const FString& SlotId, const std::string& NewText)
+    {
+        std::string Text = CodeEditor.GetText();
+        const std::string Id(SlotId.c_str(), SlotId.size());
+        const FSlotTagLoc Open = LocateSlotTag(Text, Id);
+        if (!Open.bFound || Open.bSelfClosing)
+        {
+            return;
+        }
+        const FCloseTagLoc Close = FindMatchingClose(Text, Open);
+        if (Close.Start == std::string::npos)
+        {
+            return;
+        }
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0, L1, C1;
+        OffsetToLineCol(Text, Open.TagEnd + 1, TabSize, L0, C0);
+        OffsetToLineCol(Text, Close.Start,     TabSize, L1, C1);
+        CodeEditor.ReplaceSectionText(L0, C0, L1, C1, NewText);
+
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+    }
+
+    FString FRmlUiEditorTool::EnsureElementId(const std::string& Tag, size_t OpenLt, const std::string& ExistingId)
+    {
+        if (!ExistingId.empty())
+        {
+            return FString(ExistingId.c_str(), ExistingId.size());
+        }
+        std::string Text = CodeEditor.GetText();
+        const FSlotTagLoc T = ParseElementAt(Text, OpenLt);
+        if (!T.bFound)
+        {
+            return FString();
+        }
+        const std::string NewId = GenerateUniqueId(Text, Tag.empty() ? "node" : Tag.c_str());
+        const size_t InsertAt = OpenLt + 1 + T.TagName.size();   // just after "<tagname"
+        const std::string Attr = " id=\"" + NewId + "\"";
+
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0;
+        OffsetToLineCol(Text, InsertAt, TabSize, L0, C0);
+        CodeEditor.ReplaceSectionText(L0, C0, L0, C0, Attr);
+
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+        return FString(NewId.c_str(), NewId.size());
+    }
+
+    void FRmlUiEditorTool::SetSlotInlineStyle(const FString& SlotId, const std::vector<std::pair<std::string, std::string>>& Sets)
+    {
+        if (Sets.empty())
+        {
+            return;
+        }
+        const std::string Id(SlotId.c_str(), SlotId.size());
+        std::string Text = CodeEditor.GetText();
+        const FSlotTagLoc Loc = LocateSlotTag(Text, Id);
+        if (!Loc.bFound)
+        {
+            return;
+        }
+
+        // Find an existing style="" / style='' inside the open tag.
+        size_t AttrStart = std::string::npos, ValStart = std::string::npos, ValEnd = std::string::npos;
+        for (const char* Key : { "style=\"", "style='" })
+        {
+            const size_t P = Text.find(Key, Loc.TagStart);
+            if (P != std::string::npos && P < Loc.TagEnd)
+            {
+                const char Quote = Key[6];
+                const size_t VS = P + 7;
+                const size_t VE = Text.find(Quote, VS);
+                if (VE != std::string::npos && VE <= Loc.TagEnd)
+                {
+                    AttrStart = P;
+                    ValStart = VS;
+                    ValEnd = VE;
+                    break;
+                }
+            }
+        }
+
+        std::vector<std::pair<std::string, std::string>> Props;
+        if (ValStart != std::string::npos)
+        {
+            Props = ParseStyle(Text.substr(ValStart, ValEnd - ValStart));
+        }
+        for (const auto& Set : Sets)
+        {
+            if (Set.second.empty())
+            {
+                // Empty value = remove the property (used by "Reset position").
+                for (size_t k = 0; k < Props.size(); )
+                {
+                    if (Props[k].first == Set.first) Props.erase(Props.begin() + k);
+                    else ++k;
+                }
+                continue;
+            }
+            bool bFound = false;
+            for (auto& P : Props)
+            {
+                if (P.first == Set.first) { P.second = Set.second; bFound = true; break; }
+            }
+            if (!bFound)
+            {
+                Props.push_back(Set);
+            }
+        }
+        const std::string NewStyle = SerializeStyle(Props);
+
+        // Nothing to do: no existing style attribute and everything resolved to removals.
+        if (ValStart == std::string::npos && NewStyle.empty())
+        {
+            return;
+        }
+
+        const int TabSize = CodeEditor.GetTabSize();
+        int L0, C0, L1, C1;
+        if (ValStart != std::string::npos)
+        {
+            OffsetToLineCol(Text, ValStart, TabSize, L0, C0);
+            OffsetToLineCol(Text, ValEnd,   TabSize, L1, C1);
+            CodeEditor.ReplaceSectionText(L0, C0, L1, C1, NewStyle);
+        }
+        else
+        {
+            // No style attribute yet: splice one in just before the tag's closing '>' (or '/>').
+            const size_t InsertAt = Loc.bSelfClosing ? (Loc.TagEnd - 1) : Loc.TagEnd;
+            const std::string Attr = " style=\"" + NewStyle + "\"";
+            OffsetToLineCol(Text, InsertAt, TabSize, L0, C0);
+            CodeEditor.ReplaceSectionText(L0, C0, L0, C0, Attr);
+        }
+
+        bBufferDirty = true;
+        bCompAssignDirty = true;
+        ReloadDocument();
+    }
+
+    void FRmlUiEditorTool::CommitSlotMove(const FString& SlotId, ImVec2 DeltaPx)
+    {
+        const FCompSlot* Slot = nullptr;
+        for (const FCompSlot& S : CompSlots)
+        {
+            if (S.Id == SlotId) { Slot = &S; break; }
+        }
+        if (Slot == nullptr)
+        {
+            return;
+        }
+        // Slot.OffsetPx is the current rendered top-left (layout + existing transform); add the drag delta.
+        CommitSlotVisual(SlotId, ImVec2(Slot->OffsetPx.x + DeltaPx.x, Slot->OffsetPx.y + DeltaPx.y), bShowGrid);
+    }
+
+    void FRmlUiEditorTool::CommitSlotVisual(const FString& SlotId, ImVec2 TargetVisualPx, bool bSnapToGrid)
+    {
+        const FCompSlot* Slot = nullptr;
+        for (const FCompSlot& S : CompSlots)
+        {
+            if (S.Id == SlotId) { Slot = &S; break; }
+        }
+        if (Slot == nullptr)
+        {
+            return;
+        }
+
+        const float Dpi = std::max(0.01f, PreviewDpiScale);
+
+        if (bSnapToGrid && GridSize > 0.0f)
+        {
+            // Snap the rendered position to the canvas grid (grid units are context px, canvas-origin-aligned).
+            TargetVisualPx.x = std::round(TargetVisualPx.x / GridSize) * GridSize;
+            TargetVisualPx.y = std::round(TargetVisualPx.y / GridSize) * GridSize;
+        }
+
+        // Back out the layout position (rendered - existing transform), so the new translate moves the element
+        // from where layout naturally puts it. Repositioning is a relative nudge: no position-mode change, so
+        // the element keeps its flow/flex/anchor behavior and stays put-relative on resize.
+        const ImVec2 CurTransDp = ParseTranslateDp(GetInlineStyleProp(CodeEditor.GetText(),
+            std::string(SlotId.c_str(), SlotId.size()), "transform"));
+        const ImVec2 LayoutPx(Slot->OffsetPx.x - CurTransDp.x * Dpi, Slot->OffsetPx.y - CurTransDp.y * Dpi);
+
+        const float TransDpX = std::round((TargetVisualPx.x - LayoutPx.x) / Dpi);
+        const float TransDpY = std::round((TargetVisualPx.y - LayoutPx.y) / Dpi);
+
+        char Buf[64];
+        std::snprintf(Buf, sizeof(Buf), "translate(%gdp, %gdp)", TransDpX, TransDpY);
+        SetSlotInlineStyle(SlotId, { { "transform", Buf } });
+    }
+
+    void FRmlUiEditorTool::DrawSlotInspector()
+    {
+        if (SelectedSlotId.empty())
+        {
+            return;
+        }
+        const FCompSlot* Slot = nullptr;
+        for (const FCompSlot& S : CompSlots)
+        {
+            if (S.Id == SelectedSlotId) { Slot = &S; break; }
+        }
+        if (Slot == nullptr)
+        {
+            return;
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), LE_ICON_COG " Inspector");
+        ImGui::Text("#%s  <%s>", Slot->Id.c_str(), Slot->Tag.c_str());
+
+        // Text block for text-leaf elements (Text / Button / headings / ...): inner text + font size +
+        // color. Caches are owned by their widget while active and synced to the live value otherwise.
+        {
+            const std::string Sel(SelectedSlotId.c_str(), SelectedSlotId.size());
+            std::string Inner;
+            if (GetEditableInnerText(CompAssignText, Sel, Inner))
+            {
+                ImGui::TextDisabled(LE_ICON_FORMAT_TEXT " Text");
+
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputText("##slot_inner_text", InspText, sizeof(InspText));
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    SetElementInnerText(SelectedSlotId, InspText);
+                }
+                if (!ImGui::IsItemActive())
+                {
+                    std::snprintf(InspText, sizeof(InspText), "%s", Inner.c_str());
+                }
+
+                // Font size (font-size, dp).
+                const std::string FsStr = GetInlineStyleProp(CompAssignText, Sel, "font-size");
+                float CurFs = 16.0f;
+                if (!FsStr.empty()) std::sscanf(FsStr.c_str(), "%f", &CurFs);
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::DragFloat("Size", &InspFontSize, 0.5f, 1.0f, 300.0f, "%.0f dp");
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    char Buf[32];
+                    std::snprintf(Buf, sizeof(Buf), "%gdp", std::round(InspFontSize));
+                    SetSlotInlineStyle(SelectedSlotId, { { "font-size", Buf } });
+                }
+                if (!ImGui::IsItemActive())
+                {
+                    InspFontSize = std::round(CurFs);
+                }
+
+                // Color (color). Synced on selection change (a ColorEdit popup leaves the item inactive, so a
+                // per-frame sync would fight the picker).
+                const std::string ColStr = GetInlineStyleProp(CompAssignText, Sel, "color");
+                if (SelectedSlotId != InspColorSyncId)
+                {
+                    InspColor = ColStr.empty() ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ParseHexColor(ColStr);
+                    InspColorSyncId = SelectedSlotId;
+                }
+                ImGui::ColorEdit4("Color", &InspColor.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    SetSlotInlineStyle(SelectedSlotId, { { "color", FormatHexColor(InspColor) } });
+                }
+            }
+        }
+
+        const float Dpi = std::max(0.01f, PreviewDpiScale);
+        const float CurX = std::round(Slot->OffsetPx.x / Dpi);
+        const float CurY = std::round(Slot->OffsetPx.y / Dpi);
+        const float CurW = std::round(Slot->SizePx.x / Dpi);
+        const float CurH = std::round(Slot->SizePx.y / Dpi);
+
+        // Drag to scrub, Ctrl+click to type. Cached members are owned by DragFloat while active and snap to
+        // the live DOM value otherwise (so canvas drags / reloads / reselects flow in). Commit on release.
+        // X/Y nudge the RENDERED position via transform (CommitSlotVisual) -- no position:absolute, so the
+        // element keeps its layout/anchor and stays responsive. Width/Height write directly.
+        auto SizeField = [&](const char* Label, float* Cached, float Current, const char* Prop)
+        {
+            ImGui::SetNextItemWidth(110.0f);
+            ImGui::DragFloat(Label, Cached, 0.5f, 0.0f, 0.0f, "%.0f dp");
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                char Buf[32];
+                std::snprintf(Buf, sizeof(Buf), "%gdp", std::round(*Cached));
+                SetSlotInlineStyle(SelectedSlotId, { { Prop, Buf } });
+            }
+            if (!ImGui::IsItemActive())
+            {
+                *Cached = Current;
+            }
+        };
+
+        auto PosField = [&](const char* Label, float* Cached, float Current, bool bAxisX)
+        {
+            ImGui::SetNextItemWidth(110.0f);
+            ImGui::DragFloat(Label, Cached, 0.5f, 0.0f, 0.0f, "%.0f dp");
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                const ImVec2 Target(
+                    bAxisX ? std::round(*Cached) * Dpi : Slot->OffsetPx.x,
+                    bAxisX ? Slot->OffsetPx.y          : std::round(*Cached) * Dpi);
+                CommitSlotVisual(SelectedSlotId, Target, false);
+            }
+            if (!ImGui::IsItemActive())
+            {
+                *Cached = Current;
+            }
+        };
+
+        PosField ("X",      &InspLeft,   CurX, true);
+        PosField ("Y",      &InspTop,    CurY, false);
+        SizeField("Width",  &InspWidth,  CurW, "width");
+        SizeField("Height", &InspHeight, CurH, "height");
+
+        ImGui::Spacing();
+        if (ImGui::Button(LE_ICON_ARROW_UP " Up"))
+        {
+            MoveElement(SelectedSlotId, true);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_ARROW_DOWN " Down"))
+        {
+            MoveElement(SelectedSlotId, false);
+        }
+        ImGuiX::TextTooltip("Reorder this element among its siblings.");
+
+        ImGui::Spacing();
+        if (ImGui::Button(LE_ICON_BACKUP_RESTORE " Reset position"))
+        {
+            // Strip every inline positioning prop so the element falls back to its RCSS layout. Also clears
+            // stale position:absolute+left/top that an earlier build's drag may have left behind.
+            SetSlotInlineStyle(SelectedSlotId, {
+                { "transform", "" }, { "position", "" },
+                { "left", "" }, { "top", "" }, { "right", "" }, { "bottom", "" } });
+        }
+        ImGuiX::TextTooltip("Clear inline position/transform and return the element to its stylesheet layout.");
+
+        if (!Slot->AssignedSrc.empty())
+        {
+            ImGui::Spacing();
+            if (ImGui::Button(LE_ICON_CLOSE " Clear widget"))
+            {
+                ClearSlotAssignment(SelectedSlotId);
+            }
+            ImGuiX::TextTooltip("Remove the assigned widget (or select the slot and press Delete).");
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button(LE_ICON_TRASH_CAN_OUTLINE " Delete element"))
+        {
+            RemoveElement(SelectedSlotId);
+        }
+        ImGuiX::TextTooltip("Delete this element (and its children) from the document.");
+
+        ImGui::TextDisabled("Drag to scrub, Ctrl+click to type. Writes inline style.");
     }
 }

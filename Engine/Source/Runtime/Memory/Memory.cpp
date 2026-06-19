@@ -6,6 +6,7 @@
 #include "Core/Assertions/Assert.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Templates/Align.h"
+#include <mutex>
 
 namespace Lumina
 {
@@ -130,6 +131,69 @@ namespace Lumina
         static constexpr SIZE_T ScratchBlockSize = 256 * 1024;
         thread_local FBlockLinearAllocator GScratch(ScratchBlockSize);
         return GScratch;
+    }
+
+    namespace
+    {
+        // Intrusive registry of every live thread frame arena, so the frame-boundary reset can reclaim
+        // all of them from one thread. Register/unregister happen once per thread (first touch / exit);
+        // ResetAll runs once per frame. All low frequency, so a plain mutex is plenty.
+        struct FFrameArenaNode
+        {
+            FBlockLinearAllocator* Arena = nullptr;
+            FFrameArenaNode*       Next  = nullptr;
+        };
+
+        std::mutex       GFrameArenaMutex;
+        FFrameArenaNode* GFrameArenaHead = nullptr;
+
+        // thread_local owner: constructs the arena, links it into the registry, unlinks on thread exit.
+        struct FThreadFrameArena
+        {
+            // 8 MB blocks: a single container growth (skinned bone vectors dominate) must fit one block,
+            // and the dedup hash tables allocate large bucket arrays from here too. Chains beyond on demand.
+            static constexpr SIZE_T FrameBlockSize = 8 * 1024 * 1024;
+
+            FBlockLinearAllocator Allocator{ FrameBlockSize };
+            FFrameArenaNode       Node;
+
+            FThreadFrameArena()
+            {
+                Node.Arena = &Allocator;
+                std::lock_guard<std::mutex> Lock(GFrameArenaMutex);
+                Node.Next       = GFrameArenaHead;
+                GFrameArenaHead = &Node;
+            }
+
+            ~FThreadFrameArena()
+            {
+                std::lock_guard<std::mutex> Lock(GFrameArenaMutex);
+                FFrameArenaNode** Link = &GFrameArenaHead;
+                while (*Link && *Link != &Node)
+                {
+                    Link = &(*Link)->Next;
+                }
+                if (*Link == &Node)
+                {
+                    *Link = Node.Next;
+                }
+            }
+        };
+    }
+
+    FBlockLinearAllocator& GetThreadFrameAllocator()
+    {
+        thread_local FThreadFrameArena GFrameArena;
+        return GFrameArena.Allocator;
+    }
+
+    void ResetThreadFrameAllocators()
+    {
+        std::lock_guard<std::mutex> Lock(GFrameArenaMutex);
+        for (FFrameArenaNode* N = GFrameArenaHead; N != nullptr; N = N->Next)
+        {
+            N->Arena->Reset();
+        }
     }
 }
 

@@ -49,39 +49,11 @@ namespace Lumina
         if (bInEnabled && !bWas)
         {
             // Fresh start so a stale partial frame can't leak in.
-            {
-                std::lock_guard<std::mutex> Lock(Mutex);
-                GOpenStack.clear();
-                IndexOf.clear();
-                Current = FGameplayProfileFrame{};
-            }
-            std::lock_guard<std::mutex> SpanLock(SpanMutex);
-            SystemCurrent = FSystemSpanFrame{};
+            std::lock_guard<std::mutex> Lock(Mutex);
+            GOpenStack.clear();
+            IndexOf.clear();
+            Current = FGameplayProfileFrame{};
         }
-    }
-
-    double FGameplayProfiler::NowMilliseconds()
-    {
-        return NowMs();
-    }
-
-    void FGameplayProfiler::RecordSystemSpan(FStringView Name, uint8 Stage, uint8 Batch, bool bExclusive, double StartMs, double EndMs, uint16 Worker)
-    {
-        if (!IsEnabled())
-        {
-            return;
-        }
-        FSystemSpan Span;
-        Span.Name       = FFixedString(Name.data(), Name.size());
-        Span.StartMs    = StartMs;
-        Span.EndMs      = EndMs;
-        Span.Worker     = Worker;
-        Span.Stage      = Stage;
-        Span.Batch      = Batch;
-        Span.bExclusive = bExclusive;
-
-        std::lock_guard<std::mutex> Lock(SpanMutex);
-        SystemCurrent.Spans.push_back(std::move(Span));
     }
 
     void FGameplayProfiler::BeginFrame()
@@ -90,21 +62,12 @@ namespace Lumina
         {
             return;
         }
-        {
-            std::lock_guard<std::mutex> Lock(Mutex);
-            Current.Entries.clear();
-            IndexOf.clear();
-            GOpenStack.clear();
-            Current.TotalMs = 0.0;
-            Current.FrameNumber = ++FrameCounter;
-        }
-        {
-            std::lock_guard<std::mutex> Lock(SpanMutex);
-            SystemCurrent.Spans.clear();
-            SystemCurrent.FrameStartMs = NowMs();
-            SystemCurrent.FrameEndMs   = 0.0;
-            SystemCurrent.FrameNumber  = FrameCounter;
-        }
+        std::lock_guard<std::mutex> Lock(Mutex);
+        Current.Entries.clear();
+        IndexOf.clear();
+        GOpenStack.clear();
+        Current.TotalMs = 0.0;
+        Current.FrameNumber = ++FrameCounter;
     }
 
     void FGameplayProfiler::EndFrame()
@@ -150,13 +113,6 @@ namespace Lumina
                 Ring.push_back(static_cast<float>(E.InclusiveMs));
                 EntryHistory[E.Hash] = std::move(Ring);
             }
-        }
-
-        // Roll the system-span frame (separate lock; worker threads only ever push into SystemCurrent).
-        {
-            std::lock_guard<std::mutex> SpanLock(SpanMutex);
-            SystemCurrent.FrameEndMs = NowMs();
-            SystemLatest = SystemCurrent;
         }
     }
 

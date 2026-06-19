@@ -20,6 +20,7 @@ namespace Lumina::EditorColors
     inline ImVec4 Warning()       { return ToImVec4(Palette().Warning); }
     inline ImVec4 Danger()        { return ToImVec4(Palette().Danger); }
     inline ImVec4 SectionHeader() { return ToImVec4(Palette().SectionHeader); }
+    inline ImVec4 EntityIcon()    { return ToImVec4(Palette().EntityIcon); }
     inline ImVec4 TextPrimary()   { return ToImVec4(Palette().TextPrimary); }
     inline ImVec4 TextDim()       { return ToImVec4(Palette().TextDim); }
     inline ImVec4 TextMuted()     { return ToImVec4(Palette().TextMuted); }

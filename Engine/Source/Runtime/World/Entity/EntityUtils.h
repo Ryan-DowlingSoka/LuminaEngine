@@ -61,6 +61,11 @@ namespace Lumina::ECS::Utils
 	// same WorldTransform; the per-entity work fans out via Task::ParallelFor for large sets.
 	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
 
+	// True if any transform has been dirtied since the last resolve (one relaxed atomic load). Lets the
+	// scheduler skip the resolve barrier when nothing moved. After ResolveAllDirtyTransforms this is false,
+	// so subsequent GetWorld* reads take the guard-free fast path (pure cached reads => safe in parallel).
+	RUNTIME_API bool AnyTransformsDirty(FEntityRegistry& Registry);
+
 	// Opaque per-registry transform dirty state (lock-free dirty queues + resolve guard). Lives in the
 	// registry context; cached on each STransformComponent at Bind so setters enqueue without a lookup.
 	struct FTransformDirtyState;

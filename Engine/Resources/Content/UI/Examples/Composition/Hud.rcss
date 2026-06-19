@@ -1,0 +1,40 @@
+div { display: block; box-sizing: border-box; }
+
+body
+{
+	width: 100%;
+	height: 100%;
+}
+
+/* Slots are absolutely positioned with EXPLICIT width+height so the right/bottom anchors resolve
+   (RmlUi falls back to the left/top edge when the opposing size is auto). Edge-anchored so the HUD
+   stays on-screen at any canvas size. */
+#topbar
+{
+	position: absolute;
+	top: 24dp;
+	left: 0dp;
+	width: 100%;
+	height: 48dp;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+
+#hp
+{
+	position: absolute;
+	left: 24dp;
+	bottom: 24dp;
+	width: 220dp;
+	height: 78dp;
+}
+
+#minimap
+{
+	position: absolute;
+	right: 24dp;
+	top: 24dp;
+	width: 150dp;
+	height: 150dp;
+}

@@ -1,0 +1,49 @@
+<rml>
+<!-- Whole-document composition (<body template="window">) framed by the window chrome, now MVVM: the rows
+     are TWO-WAY bound to a SettingsModel. Editing a control writes straight back into the C# view-model
+     (data-value on the text inputs, data-checked on the checkboxes); the {{ }} readouts refresh live. -->
+<head>
+    <title>Settings</title>
+    <link type="text/template" href="Window.rml"/>
+    <style>
+        div { display: block; box-sizing: border-box; }
+        body { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+        .row { display: flex; justify-content: space-between; align-items: center; padding: 8dp 0dp; font-size: 16dp; }
+        .row .val { color: #a6e3a1; }
+        .ctrl { display: flex; align-items: center; }
+        /* Text input: two-way via data-value. */
+        .num { width: 64dp; height: 24dp; margin-right: 8dp; padding: 0dp 6dp; background-color: #313244; color: #cdd6f4; border-radius: 4dp; }
+        /* Checkbox: two-way via data-checked; :checked makes the bound bool visible. */
+        .check { width: 20dp; height: 20dp; background-color: #313244; border-radius: 4dp; }
+        .check:checked { background-color: #a6e3a1; }
+        /* Preset buttons pass an argument to a command: data-event-click="ApplyPreset('low')". */
+        .preset { padding: 4dp 12dp; margin-left: 8dp; background-color: #585b70; color: #ffffff; border-radius: 4dp; }
+        .preset:hover { background-color: #6c7086; }
+    </style>
+</head>
+<body template="window" data-model="settings">
+    <div class="row">
+        <span>Master Volume</span>
+        <span class="ctrl"><input type="text" class="num" data-value="MasterVolume"/><span class="val">{{ MasterVolume }}%</span></span>
+    </div>
+    <div class="row">
+        <span>Fullscreen</span>
+        <input type="checkbox" class="check" data-checked="Fullscreen"/>
+    </div>
+    <div class="row">
+        <span>VSync</span>
+        <input type="checkbox" class="check" data-checked="VSync"/>
+    </div>
+    <div class="row">
+        <span>Field of View</span>
+        <span class="ctrl"><input type="text" class="num" data-value="FieldOfView"/><span class="val">{{ FieldOfView }}</span></span>
+    </div>
+    <div class="row">
+        <span>Quality preset</span>
+        <span class="ctrl">
+            <div class="preset" data-event-click="ApplyPreset('low')">Low</div>
+            <div class="preset" data-event-click="ApplyPreset('high')">High</div>
+        </span>
+    </div>
+</body>
+</rml>

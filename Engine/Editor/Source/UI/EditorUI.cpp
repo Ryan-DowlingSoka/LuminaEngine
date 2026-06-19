@@ -276,9 +276,10 @@ namespace Lumina
                     *OutCloseClicked = true;
                 }
             }
-
-            // Advance cursor past the row + a small gap.
-            ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 6.0f));
+            
+            const ImVec2 NextRow(P0.x, P1.y + 6.0f);
+            ImGui::SetCursorScreenPos(NextRow);
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
             ImGui::PopID();
             return bRowClicked;
         }
@@ -298,13 +299,10 @@ namespace Lumina
             auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
 
             // Drop legacy name-only entries and any prior occurrence of this path.
-            Recents.erase(std::remove_if(Recents.begin(), Recents.end(),
-                [&](const std::string& Entry)
-                {
-                    return Entry == NewEntry ||
-                           Entry.find(".lproject") == std::string::npos;
-                }),
-                Recents.end());
+            std::erase_if(Recents, [&](const std::string& Entry)
+            {
+                return Entry == NewEntry || Entry.find(".lproject") == std::string::npos;
+            });
 
             Recents.insert(Recents.begin(), NewEntry);
             if (Recents.size() > kMaxRecents)
@@ -318,7 +316,7 @@ namespace Lumina
         void RemoveRecentProject(const std::string& LprojPath)
         {
             auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
-            Recents.erase(std::remove(Recents.begin(), Recents.end(), LprojPath), Recents.end());
+            std::erase(Recents, LprojPath);
             GConfig->Set("Editor.RecentProjects", Recents);
         }
 
@@ -329,17 +327,15 @@ namespace Lumina
             auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
             const size_t Before = Recents.size();
 
-            Recents.erase(std::remove_if(Recents.begin(), Recents.end(),
-                [](const std::string& Entry)
+            std::erase_if(Recents, [](const std::string& Entry)
+            {
+                if (Entry.find(".lproject") == std::string::npos)
                 {
-                    if (Entry.find(".lproject") == std::string::npos)
-                    {
-                        return true;
-                    }
-                    std::error_code Ec;
-                    return !std::filesystem::exists(Entry, Ec);
-                }),
-                Recents.end());
+                    return true;
+                }
+                std::error_code Ec;
+                return !std::filesystem::exists(Entry, Ec);
+            });
 
             if (Recents.size() != Before)
             {
@@ -359,10 +355,6 @@ namespace Lumina
 
     bool FEditorUI::OnEvent(FEvent& Event)
     {
-        // Shift+F1 toggles game-input focus GLOBALLY, handled before the ImGui-capture gate below so it works
-        // no matter which preview window holds keyboard focus (otherwise WantCaptureKeyboard eats it and you
-        // can never hand input back / switch windows). It flips one registry flag gating the active viewport's
-        // world; the ImGui stand-down flags follow it in OnStartFrame.
         if (Event.IsA<FKeyPressedEvent>())
         {
             FKeyPressedEvent& Key = Event.As<FKeyPressedEvent>();
@@ -1836,8 +1828,7 @@ namespace Lumina
             // leading checkbox and trailing status badge, sharing kProjDialog colors.
             ImGui::PushStyleColor(ImGuiCol_ChildBg, kProjDialogPanelBg);
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
-            if (ImGui::BeginChild("##PackagesBody", ImVec2(0, -68), true,
-                ImGuiWindowFlags_AlwaysVerticalScrollbar))
+            if (ImGui::BeginChild("##PackagesBody", ImVec2(0, -68), true, ImGuiWindowFlags_AlwaysVerticalScrollbar))
             {
                 for (size_t i = 0; i < Packages.size(); ++i)
                 {
@@ -1868,18 +1859,22 @@ namespace Lumina
                     }
 
                     ImDrawList* DL = ImGui::GetWindowDrawList();
-                    const ImU32 BgCol = ImGui::ColorConvertFloat4ToU32(
-                        bHovered ? kProjDialogRowBgHover : kProjDialogRowBg);
+                    const ImU32 BgCol = ImGui::ColorConvertFloat4ToU32(bHovered ? kProjDialogRowBgHover : kProjDialogRowBg);
                     DL->AddRectFilled(P0, P1, BgCol, 4.0f);
-                    DL->AddRectFilled(P0, ImVec2(P0.x + 3.0f, P1.y),
-                        ImGui::ColorConvertFloat4ToU32(Accent), 4.0f);
+                    DL->AddRectFilled(P0, ImVec2(P0.x + 3.0f, P1.y), ImGui::ColorConvertFloat4ToU32(Accent), 4.0f);
 
                     // Checkbox (gets click priority over the row-wide
                     // invisible button thanks to ImGui's per-widget rect).
                     ImGui::SetCursorScreenPos(ImVec2(P0.x + 14.0f, P0.y + 16.0f));
-                    if (States[i] != ESaveState::Idle) ImGui::BeginDisabled();
+                    if (States[i] != ESaveState::Idle)
+                    {
+                        ImGui::BeginDisabled();
+                    }
                     ImGui::Checkbox("##sel", &Selection[i]);
-                    if (States[i] != ESaveState::Idle) ImGui::EndDisabled();
+                    if (States[i] != ESaveState::Idle)
+                    {
+                        ImGui::EndDisabled();
+                    }
 
                     // Title + path stacked.
                     const float TextX = P0.x + 48.0f;
@@ -1925,14 +1920,17 @@ namespace Lumina
                         const ImVec2 LabelSize = ImGui::CalcTextSize(StatusText);
                         const ImVec2 IconSize  = ImGui::CalcTextSize(StatusIcon);
                         const float  StatusW   = LabelSize.x + IconSize.x + 10.0f;
-                        ImGui::SetCursorScreenPos(ImVec2(P1.x - StatusW - 12.0f,
-                            P0.y + (Height - LabelSize.y) * 0.5f));
+                        ImGui::SetCursorScreenPos(ImVec2(P1.x - StatusW - 12.0f, P0.y + (Height - LabelSize.y) * 0.5f));
                         ImGui::PushStyleColor(ImGuiCol_Text, StatusCol);
                         ImGui::Text("%s %s", StatusIcon, StatusText);
                         ImGui::PopStyleColor();
                     }
 
-                    ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 6.0f));
+                    // End the row on a real (zero-size) item so IsSetPos is cleared; otherwise the last row's
+                    // bare trailing SetCursorScreenPos trips ImGui's extend-bounds assert at EndChild.
+                    const ImVec2 PkgNextRow(P0.x, P1.y + 6.0f);
+                    ImGui::SetCursorScreenPos(PkgNextRow);
+                    ImGui::Dummy(ImVec2(0.0f, 0.0f));
                     ImGui::PopID();
                 }
             }
@@ -2130,10 +2128,10 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.6f, 0.4f, 1.0f));
         if (ImGui::BeginMenu(LE_ICON_HAMMER " Shaders"))
         {
-            if (ImGui::MenuItem(LE_ICON_HAMMER " Recompile All", "F5"))
-            {
-                CMaterial::CreateDefaultMaterial();
-            }
+            //if (ImGui::MenuItem(LE_ICON_HAMMER " Recompile All", "F5"))
+            //{
+            //    CMaterial::CreateDefaultMaterial();
+            //}
             
             if (ImGui::MenuItem(LE_ICON_MATERIAL_DESIGN " Recompile Default Material"))
             {
@@ -2144,36 +2142,7 @@ namespace Lumina
             {
                 Platform::LaunchURL(StringUtils::ToWideString(Paths::GetEngineShadersDirectory()).c_str());
             }
-
-            ImGui::Separator();
-
-            for (auto& Directory : std::filesystem::recursive_directory_iterator(Paths::GetEngineShadersDirectory().c_str()))
-            {
-                if (Directory.is_regular_file())
-                {
-                    FString FileName = Directory.path().filename().string().c_str();
-                    if (ImGui::BeginMenu(FileName.c_str()))
-                    {
-                        if (ImGui::MenuItem(LE_ICON_HAMMER " Recompile"))
-                        {
-                            // Commit refreshes the entry in place and bumps its generation; scene
-                            // pipeline caches key on it, so new pipelines build on next use.
-                            GShaderCompiler->CompileShaderPath(Directory.path().string().c_str(), {}, [](const FShaderHeader& Header)
-                            {
-                                FShaderLibrary::Commit(Header);
-                            });
-                        }
-
-                        if (ImGui::MenuItem(LE_ICON_FOLDER " Open"))
-                        {
-                            Platform::LaunchURL(Directory.path().c_str());
-                        }
-
-                        ImGui::EndMenu();
-                    }
-                }
-            }
-
+            
             ImGui::EndMenu();
         }
         ImGui::PopStyleColor();

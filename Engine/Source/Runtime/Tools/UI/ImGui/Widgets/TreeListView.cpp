@@ -288,7 +288,9 @@ namespace Lumina
             ImGui::Indent(Node.Depth * kIndentPerDepth);
         }
 
-        ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DrawLinesFull
+        // DrawLinesNone: this is a flattened list (NoTreePushOnOpen + manual indent), so ImGui's built-in
+        // tree lines have no nesting to draw from. The connector elbows are drawn by hand below instead.
+        ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DrawLinesNone
             | ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
         if (!bDeclaresChildren)
@@ -326,9 +328,70 @@ namespace Lumina
             ImGui::GetWindowDrawList()->AddText(ImVec2(IconX, IconY), ImGui::GetColorU32(Display.IconColor), Display.IconText.c_str());
         }
 
-        // Right-click selects the row first (unless it's already part of the selection), so the
-        // context menu and details panel act on what was clicked instead of the prior selection.
-        // Done while the tree node is still the "last item" so IsItemHovered() targets it.
+        // Hierarchy connector lines. ImGui's built-in tree lines need real TreePush nesting, which this
+        // flattened list doesn't use, so draw the elbows by hand: a vertical passes through each ancestor
+        // level that still has siblings below, and an elbow joins this row to its parent's drop line.
+        {
+            ImDrawList* DL = ImGui::GetWindowDrawList();
+            const ImGuiStyle& LineStyle = ImGui::GetStyle();
+            const ImVec2 ItemMin = ImGui::GetItemRectMin();
+            const ImVec2 ItemMax = ImGui::GetItemRectMax();
+            // Half the inter-row gap from each side so adjacent rows' verticals meet flush (no break, no overlap).
+            const float RowBridge = LineStyle.CellPadding.y + LineStyle.ItemSpacing.y * 0.5f;
+            const float LineTop = ItemMin.y - RowBridge;
+            const float LineBot = ItemMax.y + RowBridge;
+            const float MidY    = (ItemMin.y + ItemMax.y) * 0.5f;
+            const float BaseX   = RowCursorScreenPos.x - Node.Depth * kIndentPerDepth;
+            const float Gutter  = ImGui::GetFontSize() * 0.5f + LineStyle.FramePadding.x;
+            const ImU32 LineCol = ImGui::GetColorU32(ImGuiCol_Text, 0.45f);
+            constexpr float LineThickness = 2.5f;
+
+            if (Node.Depth > 0)
+            {
+                // Record, per level on the path to this node, whether that ancestor is its parent's last child.
+                bool LastChild[64];
+                const int32 MaxDepth = Node.Depth < 63 ? Node.Depth : 63;
+                int32 Cur = NodeIdx;
+                for (int32 d = MaxDepth; d >= 1; --d)
+                {
+                    const int32 PIdx = Nodes[Cur].ParentIdx;
+                    LastChild[d] = (PIdx < 0) || (Nodes[PIdx].Children.back() == Cur);
+                    Cur = PIdx;
+                }
+
+                for (int32 d = 1; d <= MaxDepth; ++d)
+                {
+                    const float VLineX = BaseX + (d - 1) * kIndentPerDepth + Gutter;
+                    if (d < MaxDepth)
+                    {
+                        // Ancestor gutter: keep the line going only while that ancestor has siblings below.
+                        if (!LastChild[d])
+                        {
+                            DL->AddLine(ImVec2(VLineX, LineTop), ImVec2(VLineX, LineBot), LineCol, LineThickness);
+                        }
+                    }
+                    else
+                    {
+                        // This node's own level: drop in from above, elbow across to the arrow, continue down if not last.
+                        DL->AddLine(ImVec2(VLineX, LineTop), ImVec2(VLineX, MidY), LineCol, LineThickness);
+                        DL->AddLine(ImVec2(VLineX, MidY), ImVec2(BaseX + d * kIndentPerDepth + Gutter, MidY), LineCol, LineThickness);
+                        if (!LastChild[d])
+                        {
+                            DL->AddLine(ImVec2(VLineX, MidY), ImVec2(VLineX, LineBot), LineCol, LineThickness);
+                        }
+                    }
+                }
+            }
+
+            // Drop a stub from this node's own arrow down toward its first visible child.
+            if (bNowExpanded && !Node.Children.empty())
+            {
+                const float ChildLineX = BaseX + Node.Depth * kIndentPerDepth + Gutter;
+                DL->AddLine(ImVec2(ChildLineX, MidY), ImVec2(ChildLineX, LineBot), LineCol, LineThickness);
+            }
+        }
+
+
         if (Context.ItemContextMenuFunction
             && ImGui::IsItemHovered()
             && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
@@ -336,11 +399,7 @@ namespace Lumina
         {
             SetSelection(FTreeNodeID{NodeIdx}, Context, true);
         }
-
-        // Open the row's context menu HERE, while the tree node is still the "last item".
-        // The tooltip / drag-drop calls further down submit their own items, so deferring
-        // this to a trailing BeginPopupContextItem makes its implicit IsItemHovered() test
-        // target the wrong item and the menu silently fails to open (the flaky right-click).
+        
         if (Context.ItemContextMenuFunction)
         {
             ImGui::OpenPopupOnItemClick("ItemContextMenu", ImGuiPopupFlags_MouseButtonRight);
@@ -455,11 +514,7 @@ namespace Lumina
                 ImGui::EndPopup();
             }
         }
-
-        // Trailing right-aligned toggle buttons: the optional secondary toggle (e.g. script
-        // enable) sits left of the visibility eye. Fixed-width, gap-free, transparent-background
-        // buttons give a reliable full-slot click target over the span-full-width tree node
-        // (icon-only SmallButtons leave dead space where clicks fall through to the row).
+        
         bool bMouseOverTrailingButton = false;
         {
             const int32 TrailingCount = (Display.bShowSecondaryIcon ? 1 : 0) + (Display.bShowDisabledIcon ? 1 : 0);
@@ -490,9 +545,7 @@ namespace Lumina
                     {
                         ImGui::PopStyleColor();
                     }
-                    // Fire on press (ActiveId transition), not release: a button overlapping the
-                    // span-full-width tree node can lose hover between press and release under
-                    // AllowOverlap, dropping the release-based click.
+
                     const bool bSecondaryClicked = ImGui::IsItemActivated();
                     bMouseOverTrailingButton |= ImGui::IsItemHovered();
                     ImGuiX::TextTooltip("{}", Display.SecondaryTooltip);

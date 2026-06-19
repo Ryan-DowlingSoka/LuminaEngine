@@ -910,7 +910,6 @@ namespace Lumina::RHI
 
             VkValidationFeatureEnableEXT ValidationEnables[] =
             {
-                VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT,
                 VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
             };
 
@@ -1045,9 +1044,6 @@ namespace Lumina::RHI
             bNvDiagnostics = EnableIfPresent(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
             // Vendor-agnostic device fault info on VK_ERROR_DEVICE_LOST.
             bDeviceFault = EnableIfPresent(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
-            // Keeps the all-GENERAL layout model on the fast path on supporting drivers. An active
-            // validation layer older than 1.4.311 predates the extension: it flags the feature struct
-            // as unknown and validation behavior becomes undefined, so skip it there.
             const bool bLayerKnowsUnifiedLayouts = ValidationLayerVersion == 0 || ValidationLayerVersion >= VK_MAKE_API_VERSION(0, 1, 4, 311);
             GDevice->bUnifiedImageLayouts = bLayerKnowsUnifiedLayouts && EnableIfPresent(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
             // VMA memory priority + pageable device-local memory.
@@ -1079,9 +1075,7 @@ namespace Lumina::RHI
                 }
             }
         }
-
-        // ---- Features ----
-        // Probe support so strictly-optional bits (wide lines, smooth lines) enable only when present.
+        
         VkPhysicalDeviceVulkan14Features Supported14{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
         VkPhysicalDeviceVulkan13Features Supported13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &Supported14 };
         VkPhysicalDeviceVulkan12Features Supported12{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &Supported13 };
@@ -1209,7 +1203,6 @@ namespace Lumina::RHI
             .features = Features10,
         };
 
-        // ---- Queue families: graphics always; dedicated compute/transfer when distinct families exist ----
         uint32 GraphicsFamily = UINT32_MAX;
         uint32 ComputeFamily  = UINT32_MAX;
         uint32 TransferFamily = UINT32_MAX;
@@ -1250,7 +1243,6 @@ namespace Lumina::RHI
             }
         }
 
-        // ---- Logical device ----
         {
             const float Priority = 1.0f;
             TVector<VkDeviceQueueCreateInfo> QueueInfos;
@@ -1296,7 +1288,6 @@ namespace Lumina::RHI
 
         GDevice->CrashTracker->Initialize(GDevice->Device, GDevice->PhysicsDevice);
 
-        // ---- Queues: dedicated when the family is distinct, else alias graphics (one mutex-owned VkQueue each) ----
         {
             VkQueue GraphicsQueue = VK_NULL_HANDLE;
             vkGetDeviceQueue(GDevice->Device, GraphicsFamily, 0, &GraphicsQueue);
@@ -1334,7 +1325,6 @@ namespace Lumina::RHI
             GDevice->QueueFamilies[(uint32)EQueueType::Transfer] = TransferQueueFamily;
         }
 
-        // ---- Allocator ----
         {
             VmaVulkanFunctions Functions = {};
             Functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
@@ -2803,7 +2793,6 @@ namespace Lumina::RHI
 
         const FTexture& Image = GDevice->Textures[SC.Images[SC.CurrentImageIndex]];
 
-        // GENERAL -> PRESENT_SRC for the presentation engine.
         SwapchainImageBarrier(CL.CommandBuffer, Image.Image,
             VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -3829,9 +3818,6 @@ namespace Lumina::RHI
         }
 
 #if defined(TRACY_ENABLE)
-        // Open a GPU zone bracketing the same region as the debug label. The scope writes a
-        // begin timestamp now and an end timestamp when destroyed in CmdEndMarker. Depth is
-        // tracked even past the cap so begin/end stay balanced; only in-range zones are emitted.
         if (GTracyGPUContext != nullptr && List.GPUZoneDepth < kMaxGPUZoneDepth)
         {
             void* Slot = &List.GPUZoneStack[List.GPUZoneDepth * sizeof(tracy::VkCtxScope)];

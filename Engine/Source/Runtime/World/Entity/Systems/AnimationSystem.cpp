@@ -21,7 +21,7 @@
 namespace Lumina
 {
     // Mutates the simple-anim / graph / blackboard state (time advance, VM state, lazy init), so they are
-    // WRITES, not reads — the system is their sole writer but the declaration must be honest for scheduling.
+    // WRITES, not reads, the system is their sole writer but the declaration must be honest for scheduling.
     FSystemAccess SAnimationSystem::Access = FSystemAccess{}
         .Write<SSkeletalMeshComponent, STransformComponent, SSimpleAnimationComponent, SAnimationGraphComponent, SBlackboardComponent>();
 

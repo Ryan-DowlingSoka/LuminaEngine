@@ -89,7 +89,10 @@ namespace Lumina
             ImGui::TextUnformatted(Label);
             ImGui::PopStyleColor();
 
+            // End the row on a real (zero-size) item so IsSetPos is cleared; otherwise a bare trailing
+            // SetCursorScreenPos on the last row trips ImGui's extend-bounds assert at End()/EndChild.
             ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 2.0f * Scale));
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
             return bClicked;
         }
     }

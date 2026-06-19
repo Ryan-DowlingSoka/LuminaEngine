@@ -18,7 +18,7 @@ body
 	font-size: 16dp;
 }
 
-#panel
+.panel
 {
 	width: 340dp;
 	padding: 28dp;
@@ -28,6 +28,17 @@ body
 	border-radius: 10dp;
 	text-align: center;
 }
+
+/* Light theme: toggled live by data-class-light="!Dark" on the panel (no script style-poking). */
+.panel.light
+{
+	background-color: #eff1f5ff;
+	border-color: #ccd0da;
+	color: #1e1e2e;
+}
+
+.panel.light .title  { color: #8839ef; }
+.panel.light .status { color: #5c5f77; }
 
 .title
 {

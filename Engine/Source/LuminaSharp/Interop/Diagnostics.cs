@@ -6,7 +6,7 @@ namespace LuminaSharp;
 /// Snapshot of C# runtime state for the editor's C# Diagnostics tool: managed heap, GC counters, and
 /// the collectible-ALC / script-generation health that reveals a hot-reload unload leak. Native owns the
 /// storage; <see cref="Host.GetRuntimeDiagnostics"/> writes through a pointer to it. The layout mirrors
-/// the native Lumina::DotNet::FScriptDiagnostics field-for-field (Sequential, 8-byte fields first) — keep
+/// the native Lumina::DotNet::FScriptDiagnostics field-for-field (Sequential, 8-byte fields first), keep
 /// the two in sync. Editor-only consumer; nothing on the runtime path reads it.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]

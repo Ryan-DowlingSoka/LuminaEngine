@@ -1,4 +1,7 @@
 #include "FSceneEditorTool.h"
+
+#include <execution>
+
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
@@ -705,8 +708,10 @@ namespace Lumina
         PendingOutlinerAdds.clear();
 
         FEntityRegistry& Registry = GetSceneRegistry();
-        TVector<entt::entity> Roots;
         auto View = Registry.view<SNameComponent>(entt::exclude<FHideInSceneOutliner>);
+        
+        TVector<entt::entity> Roots;
+        Roots.reserve(View.size_hint());
         for (entt::entity Entity : View)
         {
             if (!IsOutlinerEntityVisible(Entity))
@@ -724,15 +729,16 @@ namespace Lumina
             Roots.push_back(Entity);
         }
 
-        eastl::sort(Roots.begin(), Roots.end(), [&](entt::entity LHS, entt::entity RHS)
+        std::sort(std::execution::par, Roots.begin(), Roots.end(), [&](entt::entity LHS, entt::entity RHS)
         {
-            const FFixedString A = View.get<SNameComponent>(LHS).Name.c_str();
-            const FFixedString B = View.get<SNameComponent>(RHS).Name.c_str();
+            const FName& A = View.get<SNameComponent>(LHS).Name;
+            const FName& B = View.get<SNameComponent>(RHS).Name;
 
             if (A != B)
             {
                 return A < B;
             }
+            
             return LHS < RHS;
         });
 
@@ -769,7 +775,6 @@ namespace Lumina
                 }
                 else
                 {
-                    // Parent not in tree yet; defer to avoid attaching as root then relocating.
                     return InvalidTreeNode;
                 }
             }
@@ -806,6 +811,13 @@ namespace Lumina
                                                       : LE_ICON_CUBE;
         Display.TooltipTitle = FString(TypeIcon) + " " + NameComponent.Name.c_str();
 
+        // Tint the entity's box glyph with the editor accent so plain entities stand out in the outliner.
+        if (!bIsPrefabInstanceRoot && !bIsLockedPrefabChild)
+        {
+            Display.IconText = LE_ICON_CUBE;
+            Display.IconColor = EditorColors::EntityIcon();
+        }
+
         if (bIsLockedPrefabChild)
         {
             Display.TooltipSubtitle = FString("Prefab child #" + eastl::to_string(entt::to_integral(Entity)) + ", hierarchy locked");
@@ -819,7 +831,6 @@ namespace Lumina
             Display.TooltipSubtitle = FString("Entity #" + eastl::to_string(entt::to_integral(Entity)));
         }
 
-        // Components shown on hover only, they no longer clutter the outliner tree.
         Display.TooltipChipHeader = "COMPONENTS";
         Display.TooltipChips.clear();
         ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, const entt::basic_sparse_set<>& /*Set*/, entt::meta_type Meta)

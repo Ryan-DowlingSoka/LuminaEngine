@@ -50,6 +50,13 @@ namespace Lumina
         int32   PreparedChunkResolution = 0;
         int32   PreparedLayerCount      = -1;
 
+        /** Bumped on every height edit. Foliage compares against this to know when to re-project. */
+        uint32  HeightmapVersion = 0;
+
+        /** Sample-space rect of height changes not yet consumed by the foliage follow pass (union of edits). */
+        FIntVector2  FoliageDirtyMin = FIntVector2(INT32_MAX);
+        FIntVector2  FoliageDirtyMax = FIntVector2(INT32_MIN);
+
         /** CPU mirror of the per-chunk/meshlet metadata; partial edits re-bound in place. */
         TVector<FTerrainChunkInfo>      Chunks;
         TVector<FTerrainMeshletInfo>    Meshlets;
@@ -150,6 +157,21 @@ namespace Lumina
             CPUState.HeightDirtyMax = Math::Max(CPUState.HeightDirtyMax, Max);
             // Heights drive chunk/meshlet bounds; cull must test against fresh geometry.
             CPUState.bChunksDirty = true;
+
+            // Foliage follow: accumulate the changed region + bump the version it watches.
+            CPUState.FoliageDirtyMin = Math::Min(CPUState.FoliageDirtyMin, Min);
+            CPUState.FoliageDirtyMax = Math::Max(CPUState.FoliageDirtyMax, Max);
+            ++CPUState.HeightmapVersion;
+        }
+
+        // Whole-heightmap replacement (import / resize / load): flags a full upload + a full foliage re-project.
+        void MarkHeightmapReplaced()
+        {
+            CPUState.bFullHeightmapDirty = true;
+            CPUState.bChunksDirty        = true;
+            CPUState.FoliageDirtyMin     = FIntVector2(0, 0);
+            CPUState.FoliageDirtyMax     = FIntVector2(Resolution - 1, Resolution - 1);
+            ++CPUState.HeightmapVersion;
         }
 
         void MarkWeightsDirty(uint32 LayerIndex, const FIntVector2& Min, const FIntVector2& Max)

@@ -33,7 +33,7 @@ public readonly unsafe partial struct Animation
 
     /// <summary>Play (or restart) <paramref name="Clip"/> on <paramref name="Target"/>. A null clip stops
     /// playback. <paramref name="Loop"/> false plays once and then reports <see cref="IsFinished"/>.</summary>
-    public void Play(Entity Target, CAnimation Clip, bool Loop = false, float Speed = 1.0f)
+    public void Play(Entity Target, CAnimation? Clip, bool Loop = false, float Speed = 1.0f)
         => PlayRaw(Target.Id, Clip is null ? IntPtr.Zero : Clip.Handle, Loop ? 1 : 0, Speed);
 
     /// <summary>Stop playback and snap back to the start (mesh returns to bind pose).</summary>

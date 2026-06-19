@@ -1,0 +1,19 @@
+<template name="window" content="window-content">
+<!-- Reusable window chrome. A document can wrap its whole body in this with <body template="window">,
+     or slot it inline with <template src="window">. Children land in #window-content. -->
+<head>
+    <style>
+        div { display: block; box-sizing: border-box; }
+        .window { width: 440dp; background-color: #1e1e2e; border-width: 1dp; border-color: #45475a; border-radius: 10dp; }
+        .window .titlebar { padding: 12dp 18dp; background-color: #313244; color: #cdd6f4; font-size: 18dp; border-top-left-radius: 10dp; border-top-right-radius: 10dp; }
+        .window .content { padding: 18dp; color: #bac2de; }
+    </style>
+</head>
+<body>
+    <!-- {{ Title }} binds to the composing document's model (Settings sets it to "Settings"). -->
+    <div class="window">
+        <div class="titlebar">{{ Title }}</div>
+        <div id="window-content" class="content"/>
+    </div>
+</body>
+</template>

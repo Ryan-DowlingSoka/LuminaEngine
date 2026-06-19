@@ -15,6 +15,9 @@
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/Input.h>
 #include <RmlUi/Core/SystemInterface.h>
+#include <RmlUi/Core/DataModelHandle.h>
+#include <RmlUi/Core/DataVariable.h>
+#include <RmlUi/Core/Variant.h>
 #include <RmlUi/Debugger.h>
 
 #include "FileSystem/FileSystem.h"
@@ -196,6 +199,120 @@ namespace Lumina::RmlUi
             bool                 bAttached = false;
         };
 
+        // A list (array-of-struct) bound for data-for. Backed by a snapshot of string cells the managed side
+        // pushes on change (pull from RmlUi would mean a managed crossing per cell per refresh). Owns the
+        // three custom VariableDefinitions that expose Rows to RmlUi; RmlUi only references them (it does not
+        // own custom-bound DataVariables), so their lifetime is this struct's. Element/member identity is
+        // packed into the DataVariable's void* handle: row in the high 32 bits, column in the low 32.
+        struct FListField
+        {
+            Rml::String                             Name;
+            TVector<Rml::String>                    MemberNames;   // column names ({{ item.Name }})
+            TVector<TVector<Rml::Variant>>          Rows;          // Rows[row][col] -- string variants
+            Rml::UniquePtr<Rml::VariableDefinition> ArrayDef;
+            Rml::UniquePtr<Rml::VariableDefinition> StructDef;
+            Rml::UniquePtr<Rml::VariableDefinition> MemberDef;
+        };
+
+        // Leaf: reads one cell. The handle packs (row << 32 | col).
+        class FListMemberDef final : public Rml::VariableDefinition
+        {
+        public:
+            explicit FListMemberDef(FListField* InList) : Rml::VariableDefinition(Rml::DataVariableType::Scalar), List(InList) {}
+            bool Get(void* Ptr, Rml::Variant& Out) override
+            {
+                const uintptr_t V = reinterpret_cast<uintptr_t>(Ptr);
+                const int Row = (int)(V >> 32);
+                const int Col = (int)(V & 0xFFFFFFFFu);
+                if (Row >= 0 && Row < (int)List->Rows.size() && Col >= 0 && Col < (int)List->Rows[Row].size())
+                {
+                    Out = List->Rows[Row][Col];
+                    return true;
+                }
+                return false;
+            }
+        private:
+            FListField* List;
+        };
+
+        // One row: resolves {{ item.<member> }} to a member-cell handle. Incoming handle carries the row index.
+        class FListStructDef final : public Rml::VariableDefinition
+        {
+        public:
+            explicit FListStructDef(FListField* InList) : Rml::VariableDefinition(Rml::DataVariableType::Struct), List(InList) {}
+            Rml::DataVariable Child(void* Ptr, const Rml::DataAddressEntry& Address) override
+            {
+                const uintptr_t Row = reinterpret_cast<uintptr_t>(Ptr) & 0xFFFFFFFFu;
+                for (size_t Col = 0; Col < List->MemberNames.size(); ++Col)
+                {
+                    if (List->MemberNames[Col] == Address.name)
+                    {
+                        const uintptr_t Encoded = (Row << 32) | (uintptr_t)Col;
+                        return Rml::DataVariable(List->MemberDef.get(), reinterpret_cast<void*>(Encoded));
+                    }
+                }
+                return Rml::DataVariable();
+            }
+        private:
+            FListField* List;
+        };
+
+        // The array: Size + index -> row handle. ".size" is handled by RmlUi via the literal int path.
+        class FListArrayDef final : public Rml::VariableDefinition
+        {
+        public:
+            explicit FListArrayDef(FListField* InList) : Rml::VariableDefinition(Rml::DataVariableType::Array), List(InList) {}
+            int Size(void* /*Ptr*/) override { return (int)List->Rows.size(); }
+            Rml::DataVariable Child(void* /*Ptr*/, const Rml::DataAddressEntry& Address) override
+            {
+                const int Count = (int)List->Rows.size();
+                const int Index = Address.index;
+                if (Index < 0 || Index >= Count)
+                {
+                    if (Address.name == "size")
+                    {
+                        return Rml::MakeLiteralIntVariable(Count);
+                    }
+                    return Rml::DataVariable();
+                }
+                return Rml::DataVariable(List->StructDef.get(), reinterpret_cast<void*>((uintptr_t)Index));
+            }
+        private:
+            FListField* List;
+        };
+
+        // A managed ViewModel's data model bound to a world context (World.UI.AddModel). Owns the per-variable
+        // Variant cache the bound getters read; C# pushes values down and dirties them. Owned by the bridge
+        // (FState::DataModels), reaped per-world on teardown like FManagedUIListener. Variant::Set is private,
+        // so values are assigned through the public templated operator=.
+        struct FManagedDataModel
+        {
+            CWorld*                   World = nullptr;
+            Rml::String               Name;
+            Rml::DataModelConstructor Constructor;        // held for the model's life so binding can continue
+            Rml::DataModelHandle      Handle;
+            TVector<Rml::Variant>     Values;             // per-field value cache (index == field id)
+            TVector<int32>            Types;              // per-field EUIVarType
+            TVector<Rml::String>      VarNames;           // per-field name, for DirtyVariable
+            TVector<TUniquePtr<FListField>> Lists;        // list fields (own id space, index == list field id)
+            void*                     Context = nullptr;  // managed GCHandle handed back to the thunks
+            FManagedDataSetThunk      SetThunk = nullptr;
+            FManagedDataEventThunk    EventThunk = nullptr;
+        };
+
+        // Coerce a double into a Variant typed per EUIVarType so views format/compare against the right type.
+        void StoreNumber(Rml::Variant& V, int32 Type, double Value)
+        {
+            switch ((EUIVarType)Type)
+            {
+            case EUIVarType::Bool:   V = (Value != 0.0);    break;
+            case EUIVarType::Int:    V = (int)Value;        break;
+            case EUIVarType::Float:  V = (float)Value;      break;
+            case EUIVarType::Double: V = Value;             break;
+            default:                 V = Value;             break;
+            }
+        }
+
         struct FState
         {
             TUniquePtr<FLuminaSystemInterface>  System;
@@ -217,6 +334,9 @@ namespace Lumina::RmlUi
             // Script-registered UI event listeners (World.UI). Owned here; reaped per-world on DestroyWorldUI
             // and en masse on Shutdown. Small N (a handful per screen), so linear scan on add/remove is fine.
             TVector<FManagedUIListener*>        UIListeners;
+
+            // Script-registered data models (World.UI.AddModel). Owned here; reaped per-world like UIListeners.
+            TVector<FManagedDataModel*>         DataModels;
 
             // Backing bytes for the default UI font. RmlUi's memory LoadFontFace references this buffer for the
             // face's lifetime (it does not copy), so it must outlive the font engine -- kept here until Shutdown.
@@ -433,6 +553,27 @@ namespace Lumina::RmlUi
             }
         }
 
+        // Delete every data model bound to this world. Callers hold StateMutex. The model's context is being
+        // (or was already) destroyed by RemoveContext, which tears down the underlying Rml::DataModel too, so
+        // we only free the wrapper here -- never touch Rml. An undisposed managed binding leaks its GCHandle.
+        void ReapWorldDataModels(FState& State, CWorld* World)
+        {
+            for (size_t i = 0; i < State.DataModels.size(); )
+            {
+                FManagedDataModel* M = State.DataModels[i];
+                if (M->World == World)
+                {
+                    State.DataModels[i] = State.DataModels.back();
+                    State.DataModels.pop_back();
+                    delete M;
+                }
+                else
+                {
+                    ++i;
+                }
+            }
+        }
+
         void OnContentFileModified(FStringView VirtualPath)
         {
             auto EndsWith = [&](FStringView Suffix)
@@ -563,6 +704,13 @@ namespace Lumina::RmlUi
         }
         State.UIListeners.clear();
 
+        // Same for data models (their contexts were destroyed by Rml::Shutdown above).
+        for (FManagedDataModel* M : State.DataModels)
+        {
+            delete M;
+        }
+        State.DataModels.clear();
+
         // Font faces are destroyed; the default-font bytes RmlUi referenced are now safe to release.
         State.DefaultFontData.clear();
         State.DefaultFontData.shrink_to_fit();
@@ -642,6 +790,7 @@ namespace Lumina::RmlUi
         if (!State.bInitialized)
         {
             ReapWorldUIListeners(State, World);
+            ReapWorldDataModels(State, World);
             UI->Context = nullptr;
             UI->Documents.clear();
             if (State.ActiveWorld == World)
@@ -666,6 +815,8 @@ namespace Lumina::RmlUi
         }
         // Elements are gone now (RemoveContext fired OnDetach); free the script listener objects.
         ReapWorldUIListeners(State, World);
+        // The context (and its data models) is destroyed; free the data-model wrappers for this world.
+        ReapWorldDataModels(State, World);
         UI->Documents.clear();
 
         if (State.ActiveWorld == World)
@@ -1298,6 +1449,62 @@ namespace Lumina::RmlUi
         }
     }
 
+    void EnumerateEditorSlots(Rml::Context* Context, TVector<FRmlEditorSlot>& OutSlots)
+    {
+        OutSlots.clear();
+
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || Context == nullptr)
+        {
+            return;
+        }
+        Rml::Element* Root = Context->GetRootElement();
+        if (Root == nullptr)
+        {
+            return;
+        }
+
+        // Iterative pre-order walk; an element is a slot only if it carries an id (the assignment anchor).
+        struct FFrame { Rml::Element* Element; int32 Depth; };
+        TVector<FFrame> Stack;
+        Stack.push_back({Root, 0});
+
+        while (!Stack.empty())
+        {
+            const FFrame Frame = Stack.back();
+            Stack.pop_back();
+
+            Rml::Element* E = Frame.Element;
+            const Rml::String& Id = E->GetId();
+            if (!Id.empty())
+            {
+                FRmlEditorSlot Slot;
+                Slot.Id.assign(Id.c_str(), Id.size());
+                const Rml::String& Tag = E->GetTagName();
+                Slot.Tag.assign(Tag.c_str(), Tag.size());
+
+                const Rml::Vector2f Off  = E->GetAbsoluteOffset(Rml::BoxArea::Border);
+                const Rml::Vector2f Size = E->GetBox().GetSize(Rml::BoxArea::Border);
+                Slot.OffsetPx   = FVector2(Off.x, Off.y);
+                Slot.SizePx     = FVector2(Size.x, Size.y);
+                Slot.Depth      = Frame.Depth;
+                Slot.ChildCount = E->GetNumChildren();
+                OutSlots.push_back(Move(Slot));
+            }
+
+            // Push children in reverse so the pop order stays document order.
+            const int NumChildren = E->GetNumChildren();
+            for (int i = NumChildren - 1; i >= 0; --i)
+            {
+                if (Rml::Element* Child = E->GetChild(i))
+                {
+                    Stack.push_back({Child, Frame.Depth + 1});
+                }
+            }
+        }
+    }
+
     //--------------------------------------------------------------------------------------------
     // Scripting surface implementation (World.UI). All take the bridge lock; handles are raw
     // Rml::ElementDocument* / Rml::Element*. Game thread only.
@@ -1573,6 +1780,345 @@ namespace Lumina::RmlUi
             State.UIListeners[i] = State.UIListeners.back();
             State.UIListeners.pop_back();
             delete L;
+            return;
+        }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    // Data binding (MVVM) implementation. Backs LuminaSharp's ViewModel / World.UI.AddModel.
+    //--------------------------------------------------------------------------------------------
+
+    void* CreateDataModel(CWorld* World, FStringView Name, void* Context, FManagedDataSetThunk SetThunk, FManagedDataEventThunk EventThunk)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr || Name.empty())
+        {
+            return nullptr;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return nullptr;
+        }
+
+        const Rml::String ModelName(Name.data(), Name.size());
+        Rml::DataModelConstructor Ctor = UI->Context->CreateDataModel(ModelName);
+        if (!Ctor)
+        {
+            LOG_WARN("[RmlUi] CreateDataModel('{}') failed (a model with that name already exists?).", ModelName.c_str());
+            return nullptr;
+        }
+
+        FManagedDataModel* M = new FManagedDataModel();
+        M->World       = World;
+        M->Name        = ModelName;
+        M->Constructor = Ctor;
+        M->Handle      = Ctor.GetModelHandle();
+        M->Context     = Context;
+        M->SetThunk    = SetThunk;
+        M->EventThunk  = EventThunk;
+        State.DataModels.push_back(M);
+        return M;
+    }
+
+    int32 DataModelBindScalar(void* ModelPtr, FStringView Name, int32 Type)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || ModelPtr == nullptr || Name.empty())
+        {
+            return -1;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+
+        // The field id == the slot this variable WILL occupy. Register the bound funcs first; only commit to
+        // the cache vectors on success, so a failed bind never burns an id (keeps it dense for the C# side).
+        const int32       Field = (int32)M->Values.size();
+        const Rml::String VarName(Name.data(), Name.size());
+        const bool        bString = ((EUIVarType)Type == EUIVarType::String);
+
+        const bool bOk = M->Constructor.BindFunc(VarName,
+            // Getter: hand RmlUi the cached value (no managed crossing on read).
+            [M, Field](Rml::Variant& Out) { Out = M->Values[Field]; },
+            // Setter: two-way controllers (data-value / data-checked) write here. Coerce the incoming value
+            // (a form control hands back a string) to the registered type before caching, so the getter keeps
+            // returning a consistently-typed Variant; then push the change to the managed property.
+            [M, Field, bString](const Rml::Variant& In)
+            {
+                if (bString)
+                {
+                    const Rml::String Str = In.Get<Rml::String>();
+                    M->Values[Field] = Str;
+                    if (M->SetThunk != nullptr)
+                    {
+                        M->SetThunk(M->Context, Field, (int32)EUIVarType::String, 0.0, Str.c_str(), (int32)Str.size());
+                    }
+                }
+                else
+                {
+                    const double Num = In.Get<double>(0.0);
+                    StoreNumber(M->Values[Field], M->Types[Field], Num);
+                    if (M->SetThunk != nullptr)
+                    {
+                        M->SetThunk(M->Context, Field, M->Types[Field], Num, nullptr, 0);
+                    }
+                }
+            });
+
+        if (!bOk)
+        {
+            LOG_WARN("[RmlUi] DataModelBindScalar('{}') failed on model '{}'.", VarName.c_str(), M->Name.c_str());
+            return -1;
+        }
+
+        // Commit (BindFunc only registers the funcs, it never invokes the getter, so seeding now is safe).
+        M->Values.emplace_back();
+        M->Types.push_back(Type);
+        M->VarNames.push_back(VarName);
+        if (bString)
+        {
+            M->Values[Field] = Rml::String();
+        }
+        else
+        {
+            StoreNumber(M->Values[Field], Type, 0.0);
+        }
+        return Field;
+    }
+
+    void DataModelBindCommand(void* ModelPtr, FStringView Name, int32 CommandId)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || ModelPtr == nullptr || Name.empty())
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        const Rml::String CmdName(Name.data(), Name.size());
+        M->Constructor.BindEventCallback(CmdName,
+            [M, CommandId](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& Arguments)
+            {
+                if (M->EventThunk == nullptr)
+                {
+                    return;
+                }
+                // Stringify each RML argument uniformly; keep the storage alive across the dispatch call.
+                TVector<Rml::String> Strings;
+                Strings.reserve(Arguments.size());
+                for (const Rml::Variant& Arg : Arguments)
+                {
+                    Strings.push_back(Arg.Get<Rml::String>());
+                }
+                TVector<FUIArg> Argv;
+                Argv.reserve(Strings.size());
+                for (const Rml::String& Str : Strings)
+                {
+                    Argv.push_back(FUIArg{ Str.c_str(), (int32)Str.size() });
+                }
+                M->EventThunk(M->Context, CommandId, (int32)Argv.size(), Argv.empty() ? nullptr : Argv.data());
+            });
+    }
+
+    int32 DataModelBindList(void* ModelPtr, FStringView Name)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || ModelPtr == nullptr || Name.empty())
+        {
+            return -1;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+
+        TUniquePtr<FListField> List = MakeUnique<FListField>();
+        List->Name = Rml::String(Name.data(), Name.size());
+        FListField* LP = List.get();
+        List->MemberDef = Rml::MakeUnique<FListMemberDef>(LP);
+        List->StructDef = Rml::MakeUnique<FListStructDef>(LP);
+        List->ArrayDef  = Rml::MakeUnique<FListArrayDef>(LP);
+
+        if (!M->Constructor.BindCustomDataVariable(List->Name, Rml::DataVariable(List->ArrayDef.get(), nullptr)))
+        {
+            LOG_WARN("[RmlUi] DataModelBindList('{}') failed on model '{}'.", List->Name.c_str(), M->Name.c_str());
+            return -1;
+        }
+
+        const int32 Field = (int32)M->Lists.size();
+        M->Lists.push_back(Move(List));
+        return Field;
+    }
+
+    int32 DataModelBindListMember(void* ModelPtr, int32 ListField, FStringView MemberName)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr || MemberName.empty())
+        {
+            return -1;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (ListField < 0 || ListField >= (int32)M->Lists.size())
+        {
+            return -1;
+        }
+        FListField* L = M->Lists[ListField].get();
+        const int32 Col = (int32)L->MemberNames.size();
+        L->MemberNames.emplace_back(MemberName.data(), MemberName.size());
+        return Col;
+    }
+
+    void DataModelListResize(void* ModelPtr, int32 ListField, int32 RowCount)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr || RowCount < 0)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (ListField < 0 || ListField >= (int32)M->Lists.size())
+        {
+            return;
+        }
+        FListField* L = M->Lists[ListField].get();
+        const size_t Cols = L->MemberNames.size();
+        L->Rows.assign((size_t)RowCount, TVector<Rml::Variant>());
+        for (TVector<Rml::Variant>& Row : L->Rows)
+        {
+            Row.resize(Cols);
+            for (Rml::Variant& Cell : Row)
+            {
+                Cell = Rml::String();
+            }
+        }
+    }
+
+    void DataModelListSetCell(void* ModelPtr, int32 ListField, int32 Row, int32 Col, FStringView Value)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (ListField < 0 || ListField >= (int32)M->Lists.size())
+        {
+            return;
+        }
+        FListField* L = M->Lists[ListField].get();
+        if (Row >= 0 && Row < (int32)L->Rows.size() && Col >= 0 && Col < (int32)L->Rows[Row].size())
+        {
+            L->Rows[Row][Col] = Rml::String(Value.data(), Value.size());
+        }
+    }
+
+    void DataModelListDirty(void* ModelPtr, int32 ListField)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (M->Handle && ListField >= 0 && ListField < (int32)M->Lists.size())
+        {
+            M->Handle.DirtyVariable(M->Lists[ListField]->Name);
+        }
+    }
+
+    void DataModelSetNumber(void* ModelPtr, int32 Field, double Value)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (Field >= 0 && Field < (int32)M->Values.size())
+        {
+            StoreNumber(M->Values[Field], M->Types[Field], Value);
+        }
+    }
+
+    void DataModelSetString(void* ModelPtr, int32 Field, FStringView Value)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (Field >= 0 && Field < (int32)M->Values.size())
+        {
+            M->Values[Field] = Rml::String(Value.data(), Value.size());
+        }
+    }
+
+    void DataModelDirty(void* ModelPtr, int32 Field)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (M->Handle && Field >= 0 && Field < (int32)M->VarNames.size())
+        {
+            M->Handle.DirtyVariable(M->VarNames[Field]);
+        }
+    }
+
+    void DataModelDirtyAll(void* ModelPtr)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        FManagedDataModel* M = static_cast<FManagedDataModel*>(ModelPtr);
+        if (M->Handle)
+        {
+            M->Handle.DirtyAllVariables();
+        }
+    }
+
+    void DestroyDataModel(void* ModelPtr)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (ModelPtr == nullptr)
+        {
+            return;
+        }
+        // Validate against the live set rather than dereferencing blindly: if the world already tore down,
+        // the model was reaped and this pointer is stale -- a disposed managed binding then no-ops safely.
+        for (size_t i = 0; i < State.DataModels.size(); ++i)
+        {
+            FManagedDataModel* M = State.DataModels[i];
+            if (M != ModelPtr)
+            {
+                continue;
+            }
+            if (State.bInitialized && M->World != nullptr)
+            {
+                if (FWorldUIContext* UI = M->World->GetUIContext())
+                {
+                    if (UI->Context != nullptr)
+                    {
+                        UI->Context->RemoveDataModel(M->Name);
+                    }
+                }
+            }
+            State.DataModels[i] = State.DataModels.back();
+            State.DataModels.pop_back();
+            delete M;
             return;
         }
     }

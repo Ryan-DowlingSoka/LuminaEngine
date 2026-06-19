@@ -6,7 +6,7 @@ namespace LuminaSharp;
 /// Ambient access to the world the current gameplay callback belongs to. The runtime sets this around every
 /// EntityScript and EntitySystem callback, so the static engine APIs (<see cref="Time"/>, <see cref="Sound"/>,
 /// <see cref="Trace"/>, <see cref="Gizmo"/>) and the entity extension methods resolve their world without you
-/// threading one through. Game-thread only — never touch it from a worker Task body.
+/// threading one through. Game-thread only, never touch it from a worker Task body.
 /// </summary>
 public static class Game
 {

@@ -11,6 +11,7 @@ namespace Lumina;
 // M[c] is column c; M[c, r] is the element at column c, row r. A transform is applied as M * V.
 
 [StructLayout(LayoutKind.Sequential)]
+[LuminaSharp.NativeLayout("FMatrix")]
 public struct FMatrix : IEquatable<FMatrix>
 {
     public FVector4 C0;

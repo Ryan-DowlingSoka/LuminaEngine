@@ -11,7 +11,7 @@ namespace Lumina
     // Payload for the OnTargetPerceived / OnTargetLost EntityScript callbacks. Self-oriented: Perceiver is
     // this entity, Target is the sensed/lost entity. Every field is blittable (entt::entity surfaces as the
     // C# Entity handle), so the Reflector auto-generates the LuminaSharp SPerceptionEvent value mirror + a
-    // native size assert — no hand-written mirror.
+    // native size assert, no hand-written mirror.
     REFLECT(Event)
     struct SPerceptionEvent
     {

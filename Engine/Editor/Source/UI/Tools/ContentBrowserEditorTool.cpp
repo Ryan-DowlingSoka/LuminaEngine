@@ -694,8 +694,13 @@ namespace Lumina
             }
         case EIconKind::Markup:
             {
-                const FString Ext = FileInfo.GetExt();
-                ImGui::TextColored(kMenuTextDim, "%s", Ext == ".rcss" ? "UI Stylesheet (.rcss)" : "UI Document (.rml)");
+                ImGui::TextColored(kMenuTextDim, "UI Document (.rml)");
+                DrawItemSizeLine(FileInfo);
+                break;
+            }
+        case EIconKind::Stylesheet:
+            {
+                ImGui::TextColored(kMenuTextDim, "UI Stylesheet (.rcss)");
                 DrawItemSizeLine(FileInfo);
                 break;
             }
@@ -861,7 +866,6 @@ namespace Lumina
             
             ImVec4 TintColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 
-            // Cache static icon refs; asset thumbnails are re-queried per frame until they stream in.
             ImTextureRef ImTexture;
             switch (ContentItem->GetIconKind())
             {
@@ -885,15 +889,17 @@ namespace Lumina
                 }
             case EIconKind::CSharpScript:
                 {
-                    // No dedicated C# logo yet; a tinted generic file icon keeps it visually distinct
-                    // until one is added.
-                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/File.png");
-                    TintColor = ImVec4(0.62f, 0.46f, 0.80f, 1.0f);
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/CSharpScript.png");
                     break;
                 }
             case EIconKind::Markup:
                 {
-                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/HTML.png");
+                    break;
+                }
+            case EIconKind::Stylesheet:
+                {
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/CSS.png");
                     break;
                 }
             case EIconKind::Audio:
@@ -987,7 +993,7 @@ namespace Lumina
                     ToolContext->OpenAssetEditor(Asset->AssetGUID);
                 }
             }
-            else if (ContentItem->GetIconKind() == EIconKind::Markup)
+            else if (ContentItem->GetIconKind() == EIconKind::Markup || ContentItem->GetIconKind() == EIconKind::Stylesheet)
             {
                 // Files with an in-engine editor (.rml/.rcss) open as editor tabs.
                 ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
@@ -2132,8 +2138,9 @@ namespace Lumina
         const bool bIsDirectory  = ContentItem->IsDirectory();
         const bool bIsCSharp     = ContentItem->GetIconKind() == EIconKind::CSharpScript;
         const bool bIsProtected  = ContentItem->IsProtected();
-        // UI markup has an in-engine editor; everything else opens externally.
-        const bool bHasInEngineEditor = ContentItem->GetIconKind() == EIconKind::Markup;
+        // UI markup (.rml document + .rcss stylesheet) has an in-engine editor; everything else opens externally.
+        const bool bHasInEngineEditor = ContentItem->GetIconKind() == EIconKind::Markup
+                                     || ContentItem->GetIconKind() == EIconKind::Stylesheet;
         const FString  Extension = ContentItem->GetExtension();
 
         const char* HeaderIcon;
@@ -2304,6 +2311,11 @@ namespace Lumina
 
         DrawMenuHeader(LE_ICON_FOLDER_OPEN, FolderTitle.c_str(), SelectedPath.c_str(), kMenuAccentFolder);
 
+        // Scripts and Content are kept strictly separate: a Scripts/ folder only offers C# scripts, and
+        // every other folder only offers assets/UI/imports. This is what stops scripts from landing outside
+        // Scripts/ and assets from landing inside it.
+        const bool bScriptDir = IsScriptDirectory(FStringView(SelectedPath.c_str(), SelectedPath.size()));
+
         DrawMenuSection("CREATE");
 
         if (ImGui::MenuItem(LE_ICON_FOLDER_PLUS " New Folder"))
@@ -2315,7 +2327,7 @@ namespace Lumina
 
         // Aggregated asset creation submenu (factory-driven), grouped into per-category submenus.
         const TVector<CFactory*>& Factories = CFactoryRegistry::Get().GetFactories();
-        if (ImGui::BeginMenu(LE_ICON_PLUS_BOX " New Asset"))
+        if (!bScriptDir && ImGui::BeginMenu(LE_ICON_PLUS_BOX " New Asset"))
         {
             auto CreateFromFactory = [this](CFactory* Factory)
             {
@@ -2412,8 +2424,7 @@ namespace Lumina
             ImGui::EndMenu();
         }
         
-        if (IsScriptDirectory(FStringView(SelectedPath.c_str(), SelectedPath.size()))
-            && ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " New C# Script"))
+        if (bScriptDir && ImGui::MenuItem(LE_ICON_LANGUAGE_CSHARP " New C# Script"))
         {
             FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.cs";
             NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
@@ -2450,7 +2461,7 @@ namespace Lumina
             RefreshContentBrowser();
         }
 
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Widget"))
+        if (!bScriptDir && ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Widget"))
         {
             FFixedString NewWidgetPath = SelectedPath + "/" + "NewWidget.rml";
             NewWidgetPath = VFS::MakeUniqueFilePath(NewWidgetPath);
@@ -2458,7 +2469,7 @@ namespace Lumina
             RefreshContentBrowser();
         }
 
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Stylesheet"))
+        if (!bScriptDir && ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Stylesheet"))
         {
             FFixedString NewSheetPath = SelectedPath + "/" + "NewStylesheet.rcss";
             NewSheetPath = VFS::MakeUniqueFilePath(NewSheetPath);
@@ -2476,15 +2487,19 @@ namespace Lumina
         }
 
         // IMPORT -----------------------------------------------------------
-        DrawMenuSection("IMPORT");
-
-        if (ImGui::MenuItem(LE_ICON_IMPORT " Import Asset..."))
+        // Imports bring in assets, so they're offered only outside Scripts/.
+        if (!bScriptDir)
         {
-            FFixedString SelectedFile;
-            const char* Filter = "Supported Assets (*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf)\0*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf\0All Files (*.*)\0*.*\0";
-            if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
+            DrawMenuSection("IMPORT");
+
+            if (ImGui::MenuItem(LE_ICON_IMPORT " Import Asset..."))
             {
-                TryImport(SelectedFile);
+                FFixedString SelectedFile;
+                const char* Filter = "Supported Assets (*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf)\0*.wav;*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj;*.ttf;*.otf\0All Files (*.*)\0*.*\0";
+                if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
+                {
+                    TryImport(SelectedFile);
+                }
             }
         }
 

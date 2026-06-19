@@ -5,7 +5,7 @@ namespace LuminaSharp;
 
 /// <summary>
 /// Fluent physics query (s&amp;box-style <c>Trace.Ray(a, b).Ignore(self).Run()</c>). Composes over the world's
-/// physics facade; no allocation until <see cref="Run"/>/<see cref="RunAll"/>. A mutable builder — chain and
+/// physics facade; no allocation until <see cref="Run"/>/<see cref="RunAll"/>. A mutable builder, chain and
 /// run on one line. Uses the ambient <see cref="Game.World"/>.
 /// </summary>
 public struct Trace

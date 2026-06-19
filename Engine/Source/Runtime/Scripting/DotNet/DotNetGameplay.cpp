@@ -9,6 +9,7 @@
 #include "World/Entity/Systems/NavMeshSystem.h"
 #include "World/Entity/Systems/CameraSystem.h"
 #include "World/Entity/Components/CSharpScriptComponent.h"
+#include "World/Entity/Components/RelationshipComponent.h"
 #include "AI/Navigation/NavTypes.h"
 #include "GameplayTags/GameplayTagRegistry.h"
 #include "GameplayTags/GameplayTagComponent.h"
@@ -100,6 +101,41 @@ LUMINA_DOTNET_EXPORT(void, World_SetActiveCamera)(uint64 World, uint32 Entity)
     {
         W->SetActiveCamera(AsEntity(Entity));
     }
+}
+
+// Scene-graph traversal for World.Messages SendUp/SendDown. Parent/first-child/next-sibling read straight
+// from FRelationshipComponent so the C# bus can walk ancestors and descendants. entt::null -> 0 (Entity.Null).
+LUMINA_DOTNET_EXPORT(uint32, World_GetParentEntity)(uint64 World, uint32 Entity)
+{
+    CWorld* W = AsWorld(World);
+    if (W == nullptr)
+    {
+        return ToId(entt::null);
+    }
+    const FRelationshipComponent* Rel = W->GetEntityRegistry().try_get<FRelationshipComponent>(AsEntity(Entity));
+    return ToId(Rel ? Rel->Parent : entt::null);
+}
+
+LUMINA_DOTNET_EXPORT(uint32, World_GetFirstChildEntity)(uint64 World, uint32 Entity)
+{
+    CWorld* W = AsWorld(World);
+    if (W == nullptr)
+    {
+        return ToId(entt::null);
+    }
+    const FRelationshipComponent* Rel = W->GetEntityRegistry().try_get<FRelationshipComponent>(AsEntity(Entity));
+    return ToId(Rel ? Rel->First : entt::null);
+}
+
+LUMINA_DOTNET_EXPORT(uint32, World_GetNextSiblingEntity)(uint64 World, uint32 Entity)
+{
+    CWorld* W = AsWorld(World);
+    if (W == nullptr)
+    {
+        return ToId(entt::null);
+    }
+    const FRelationshipComponent* Rel = W->GetEntityRegistry().try_get<FRelationshipComponent>(AsEntity(Entity));
+    return ToId(Rel ? Rel->Next : entt::null);
 }
 
 //================================================================================================
@@ -1148,6 +1184,78 @@ LUMINA_DOTNET_EXPORT(void*, UI_AddEventListener)(uint64 World, void* Element, co
 LUMINA_DOTNET_EXPORT(void, UI_RemoveEventListener)(uint64 World, void* Listener)
 {
     RmlUi::RemoveElementEventListener(AsWorld(World), Listener);
+}
+
+// Data binding (MVVM). Backs LuminaSharp's ViewModel / World.UI.AddModel: a named data model on the world
+// context with scalar variables and command callbacks, bound declaratively in RML (data-model, {{ var }},
+// data-event-*). Variables are registered before the document loads; values cross as double (coerced to the
+// registered type natively) or (ptr,len) strings. SetThunk/EventThunk are managed function pointers.
+LUMINA_DOTNET_EXPORT(void*, UI_CreateDataModel)(uint64 World, const char* Name, int32 Len, void* Context, void* SetThunk, void* EventThunk)
+{
+    return RmlUi::CreateDataModel(AsWorld(World), UIView(Name, Len), Context,
+        reinterpret_cast<RmlUi::FManagedDataSetThunk>(SetThunk),
+        reinterpret_cast<RmlUi::FManagedDataEventThunk>(EventThunk));
+}
+
+LUMINA_DOTNET_EXPORT(int32, UI_ModelBindScalar)(void* Model, const char* Name, int32 Len, int32 Type)
+{
+    return RmlUi::DataModelBindScalar(Model, UIView(Name, Len), Type);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelBindCommand)(void* Model, const char* Name, int32 Len, int32 CommandId)
+{
+    RmlUi::DataModelBindCommand(Model, UIView(Name, Len), CommandId);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelSetNumber)(void* Model, int32 Field, double Value)
+{
+    RmlUi::DataModelSetNumber(Model, Field, Value);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelSetString)(void* Model, int32 Field, const char* Value, int32 Len)
+{
+    RmlUi::DataModelSetString(Model, Field, UIView(Value, Len));
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelDirty)(void* Model, int32 Field)
+{
+    RmlUi::DataModelDirty(Model, Field);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelDirtyAll)(void* Model)
+{
+    RmlUi::DataModelDirtyAll(Model);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_DestroyDataModel)(void* Model)
+{
+    RmlUi::DestroyDataModel(Model);
+}
+
+// Lists (data-for): array-of-struct variables with string cells, pushed as a snapshot on change.
+LUMINA_DOTNET_EXPORT(int32, UI_ModelBindList)(void* Model, const char* Name, int32 Len)
+{
+    return RmlUi::DataModelBindList(Model, UIView(Name, Len));
+}
+
+LUMINA_DOTNET_EXPORT(int32, UI_ModelBindListMember)(void* Model, int32 ListField, const char* Name, int32 Len)
+{
+    return RmlUi::DataModelBindListMember(Model, ListField, UIView(Name, Len));
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelListResize)(void* Model, int32 ListField, int32 RowCount)
+{
+    RmlUi::DataModelListResize(Model, ListField, RowCount);
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelListSetCell)(void* Model, int32 ListField, int32 Row, int32 Col, const char* Value, int32 Len)
+{
+    RmlUi::DataModelListSetCell(Model, ListField, Row, Col, UIView(Value, Len));
+}
+
+LUMINA_DOTNET_EXPORT(void, UI_ModelListDirty)(void* Model, int32 ListField)
+{
+    RmlUi::DataModelListDirty(Model, ListField);
 }
 
 // Cursor + input routing so a script can switch a game world between "camera look" and "click the UI".

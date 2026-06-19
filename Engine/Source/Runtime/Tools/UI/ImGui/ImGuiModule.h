@@ -10,7 +10,7 @@
 // (null GImGui deref, or a cross-heap free of memory the engine allocated).
 //
 // An editor module/plugin that draws ImGui opts in by invoking this macro ONCE at file scope in its
-// module .cpp. It defines an exported hook that the module manager calls — automatically — once the
+// module .cpp. It defines an exported hook that the module manager calls, automatically, once the
 // engine's ImGui context is ready (FModuleManager::NotifyImGuiReady), and for modules loaded after
 // that, at load time. The hook runs IN the module's binary, so it points that binary's ImGui/ImPlot
 // globals + allocator at the engine's single shared copy (ImGuiMemAlloc/Free route through the

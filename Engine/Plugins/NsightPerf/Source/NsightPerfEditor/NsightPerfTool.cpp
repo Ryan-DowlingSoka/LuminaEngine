@@ -97,9 +97,22 @@ namespace Lumina
         State->HudDataModel.Initialize(1.0 / (double)SamplingFrequency, PlotTimeWidthSeconds, MetricConfigObject);
         State->Sampler.SetConfig(&State->HudDataModel.GetCounterConfiguration());
         State->HudDataModel.PrepareSampleProcessing(State->Sampler.GetCounterData());
+        
+        ImGuiStyle& Style = ImGui::GetStyle();
+        const ImVec4 SavedWindowBg    = Style.Colors[ImGuiCol_WindowBg];
+        const ImVec4 SavedScrollbarBg = Style.Colors[ImGuiCol_ScrollbarBg];
+        const ImVec4 SavedPopupBg     = Style.Colors[ImGuiCol_PopupBg];
+        const ImVec4 SavedBorder      = Style.Colors[ImGuiCol_Border];
+        const ImVec4 SavedFrameBg     = Style.Colors[ImGuiCol_FrameBg];
 
-        // Reuses the editor's existing ImPlot context (created in ImGuiRenderer). Style is global.
         nv::perf::hud::HudImPlotRenderer::SetStyle();
+
+        Style.Colors[ImGuiCol_WindowBg]    = SavedWindowBg;
+        Style.Colors[ImGuiCol_ScrollbarBg] = SavedScrollbarBg;
+        Style.Colors[ImGuiCol_PopupBg]     = SavedPopupBg;
+        Style.Colors[ImGuiCol_Border]      = SavedBorder;
+        Style.Colors[ImGuiCol_FrameBg]     = SavedFrameBg;
+
         State->HudRenderer.Initialize(State->HudDataModel);
 
         State->bSessionActive = true;

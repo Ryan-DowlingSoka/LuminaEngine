@@ -156,7 +156,7 @@ public readonly unsafe struct UIElement
     /// </summary>
     public UIEventSubscription On(string EventType, Action<UIEvent> Handler)
     {
-        if (!IsValid || Handler == null || string.IsNullOrEmpty(EventType))
+        if (!IsValid || string.IsNullOrEmpty(EventType))
         {
             return UIEventSubscription.Empty;
         }

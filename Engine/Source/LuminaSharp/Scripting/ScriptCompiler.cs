@@ -85,14 +85,10 @@ internal static class ScriptCompiler
             AllReferences,
             new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
-                optimizationLevel: OptimizationLevel.Debug,
+                optimizationLevel: OptimizationLevel.Release,
                 allowUnsafe: true,
-                // Enable the nullable annotations context so scripts can use `T?` without CS8632.
                 nullableContextOptions: NullableContextOptions.Enable));
 
-        // Run the source generators (the [NativeCall] glue) so bindings the Reflector routed into a
-        // plugin/game assembly get their bodies. LuminaSharp.dll gets this at MSBuild time via the analyzer
-        // ProjectReference; a runtime-compiled script assembly must do the same itself.
         Compilation Compiled = Compilation;
         ImmutableArray<ISourceGenerator> Generators = SourceGenerators;
         if (Generators.Length > 0)
@@ -154,7 +150,7 @@ internal static class ScriptCompiler
             }
 
             // Load into LuminaSharp's OWN ALC (not Default), so the generator's Microsoft.CodeAnalysis binds
-            // to the exact instance LuminaSharp uses — otherwise IIncrementalGenerator has a different type
+            // to the exact instance LuminaSharp uses, otherwise IIncrementalGenerator has a different type
             // identity and nothing matches.
             AssemblyLoadContext Context = AssemblyLoadContext.GetLoadContext(typeof(Host).Assembly) ?? AssemblyLoadContext.Default;
             Assembly GeneratorAssembly = Context.LoadFromAssemblyPath(GeneratorPath);

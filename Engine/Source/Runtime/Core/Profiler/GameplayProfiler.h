@@ -27,29 +27,6 @@ namespace Lumina
         uint64 FrameNumber = 0;
     };
 
-    // One ECS system execution within a frame: the time span it ran and the worker thread slot it ran on, so
-    // the editor can lay systems out per-thread (the "slotted in threads" timeline). Captured for native AND
-    // C# systems uniformly at the scheduler dispatch site (CWorld::TickSystems).
-    struct RUNTIME_API FSystemSpan
-    {
-        FFixedString Name;
-        double       StartMs    = 0.0;
-        double       EndMs      = 0.0;
-        uint16       Worker     = 0;       // Jobs::GetWorkerIndex() slot the Update ran on
-        uint8        Stage      = 0;       // EUpdateStage
-        uint8        Batch      = 0;       // index of the parallel batch within the stage
-        bool         bExclusive = false;   // ran alone (no declared access), vs in a parallel batch
-    };
-
-    // A frame's worth of system spans plus the frame's wall-clock window (for the timeline x-axis).
-    struct RUNTIME_API FSystemSpanFrame
-    {
-        TVector<FSystemSpan> Spans;
-        double FrameStartMs = 0.0;
-        double FrameEndMs   = 0.0;
-        uint64 FrameNumber  = 0;
-    };
-
     // A lightweight CPU profiler for GAMEPLAY work: per-frame, name-aggregated scope timings with call counts
     // and inclusive/exclusive ms, plus rolling history for sparklines. Drives the editor "Gameplay Profiler"
     // tool and the C# Profiler API. Near-zero cost when disabled (one atomic check).
@@ -76,15 +53,7 @@ namespace Lumina
         void BeginScope(FStringView Name);
         void EndScope();
 
-        // Records one system execution span (thread-safe; called from worker threads during TickSystems).
-        // Cheap no-op when disabled.
-        void RecordSystemSpan(FStringView Name, uint8 Stage, uint8 Batch, bool bExclusive, double StartMs, double EndMs, uint16 Worker);
-
-        // Current wall-clock in ms on the profiler's clock (so callers can time spans on the same base).
-        static double NowMilliseconds();
-
         const FGameplayProfileFrame& GetLatest() const { return Latest; }
-        const FSystemSpanFrame& GetLatestSystemSpans() const { return SystemLatest; }
         const TVector<float>& GetFrameTotalHistory() const { return FrameTotalHistory; }
         const TVector<float>* GetEntryHistory(uint64 Hash) const;
 
@@ -98,10 +67,6 @@ namespace Lumina
         TVector<float>                          FrameTotalHistory;
         THashMap<uint64, TVector<float>>        EntryHistory;     // hash -> rolling inclusive-ms ring
         uint64                                  FrameCounter = 0;
-
-        std::mutex                              SpanMutex;        // guards SystemCurrent.Spans (worker pushes)
-        FSystemSpanFrame                        SystemCurrent;
-        FSystemSpanFrame                        SystemLatest;
     };
 
     // RAII scope for native gameplay code: GAMEPLAY_PROFILE_SCOPE("Name"). No-op when the profiler is off.

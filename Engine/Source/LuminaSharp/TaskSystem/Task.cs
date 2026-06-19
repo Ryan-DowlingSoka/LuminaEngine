@@ -26,7 +26,7 @@ public static unsafe partial class Task
     /// </summary>
     public static void ParallelFor(int Count, Action<int> Body)
     {
-        if (Count <= 0 || Body == null)
+        if (Count <= 0)
         {
             return;
         }
@@ -80,11 +80,6 @@ public static unsafe partial class Task
     /// </summary>
     public static TaskHandle Run(Action Body)
     {
-        if (Body == null)
-        {
-            return new TaskHandle(IntPtr.Zero);
-        }
-
         GCHandle Gc = GCHandle.Alloc(Body);
         IntPtr Handle = NativeRun(
             (IntPtr)(delegate* unmanaged[Cdecl]<void*, uint, uint, uint, void>)&RunThunk,

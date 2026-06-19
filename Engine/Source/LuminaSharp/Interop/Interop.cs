@@ -71,11 +71,6 @@ internal static unsafe class Interop
             Length = 0;
             bHeap = false;
 
-            if (Value == null)
-            {
-                return;
-            }
-
             int ByteCount = Encoding.UTF8.GetByteCount(Value);
             if (ByteCount + 1 <= ScratchBuffer.Length)
             {

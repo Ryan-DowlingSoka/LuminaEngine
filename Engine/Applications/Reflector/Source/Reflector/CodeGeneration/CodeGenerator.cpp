@@ -201,7 +201,7 @@ namespace Lumina::Reflection
         // Headers whose ONLY reflection is SCRIPT_EXPORT free functions (no reflected type) aren't in
         // ReflectedTypes, so the loop above skips them. Process them here: they need a .generated.cpp (the
         // thunks) and a .generated.cs (the bindings), but NO .generated.h (no types, and they don't include
-        // it — SCRIPT_EXPORT doesn't set bHasReflectionMacros).
+        // it, SCRIPT_EXPORT doesn't set bHasReflectionMacros).
         for (const auto& [Header, Fns] : ReflectionDatabase->FreeFunctions)
         {
             if (Fns.empty() || ReflectionDatabase->ReflectedTypes.find(Header) != ReflectionDatabase->ReflectedTypes.end())
@@ -284,8 +284,8 @@ namespace Lumina::Reflection
                 Expected, ".generated.cs", nullptr);
 
             // A routed project (plugin/game) also has a Scripts/Generated dir holding its free-function
-            // (SCRIPT_EXPORT) bindings; sweep it too so a binding that's removed — or a type-header binding
-            // that was wrongly routed before this scoping — gets cleaned out of the plugin's assembly input.
+            // (SCRIPT_EXPORT) bindings; sweep it too so a binding that's removed, or a type-header binding
+            // that was wrongly routed before this scoping, gets cleaned out of the plugin's assembly input.
             if (!Project->CSharpBindingsDir.empty())
             {
                 const auto RIt = RoutedArtifacts.find(Project.get());

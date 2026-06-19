@@ -1,5 +1,29 @@
 namespace LuminaSharp;
 
+/// <summary>The physics phase an <see cref="EntityScript"/>'s <see cref="EntityScript.OnUpdate"/> runs in.
+/// PrePhysics (the default) runs before the physics step, apply input, movement, forces. PostPhysics runs
+/// after, read the settled physics results, e.g. follow cameras or sync visuals to bodies.</summary>
+public enum EScriptPhase
+{
+    PrePhysics,
+    PostPhysics,
+}
+
+/// <summary>Declares which physics phase an <see cref="EntityScript"/>'s OnUpdate runs in. Without it a script
+/// updates in <see cref="EScriptPhase.PrePhysics"/>. Scripts are dispatched in two groups (pre- and post-physics)
+/// so you can choose to act before or after the physics step:
+/// <code>[UpdatePhase(EScriptPhase.PostPhysics)] public class FollowCamera : EntityScript { ... }</code></summary>
+[System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
+public sealed class UpdatePhaseAttribute : System.Attribute
+{
+    public EScriptPhase Phase { get; }
+
+    public UpdatePhaseAttribute(EScriptPhase Phase)
+    {
+        this.Phase = Phase;
+    }
+}
+
 /// <summary>
 /// Base class for a script attached to a single entity.
 /// </summary>
@@ -54,6 +78,14 @@ public abstract class EntityScript
 
     /// <summary>Called every frame on the game thread while the owning entity is enabled.</summary>
     public virtual void OnUpdate(float DeltaTime)
+    {
+    }
+
+    /// <summary>Called at the FIXED physics timestep (0..N times per frame, before the physics step), so it
+    /// stays in step with the simulation and is framerate-independent. Use it for physics-affecting logic,
+    /// applying forces/impulses, character movement. <paramref name="FixedDeltaTime"/> is the fixed step
+    /// (1 / physics Hz), NOT the frame delta. Independent of <see cref="OnUpdate"/> (which runs once per frame).</summary>
+    public virtual void OnFixedUpdate(float FixedDeltaTime)
     {
     }
 

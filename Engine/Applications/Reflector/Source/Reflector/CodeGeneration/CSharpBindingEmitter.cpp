@@ -220,7 +220,7 @@ namespace Lumina::Reflection
         }
 
         // An entt::entity / FEntity field (the reflector classifies it as Int32, so it stays a 4-byte
-        // blittable mirror field) surfaces as the C# Entity handle — same mapping the function path uses.
+        // blittable mirror field) surfaces as the C# Entity handle, same mapping the function path uses.
         bool IsEntityField(const FReflectedProperty& Prop)
         {
             return Prop.RawTypeName.find("entt::entity") != eastl::string::npos
@@ -929,7 +929,7 @@ namespace Lumina::Reflection
                 if (F.Flags == N.Flag)
                 {
                     // Accept either the canonical spelling (Bare, from RawFieldType) or the engine alias
-                    // (TypeName) — clang canonicalizes int32 -> int, so the alias is what the source wrote.
+                    // (TypeName), clang canonicalizes int32 -> int, so the alias is what the source wrote.
                     if (Bare != N.Cpp && StripQualifiers(F.TypeName) != N.Cpp)
                     {
                         return false; // strong type spelled differently than its int -> skip

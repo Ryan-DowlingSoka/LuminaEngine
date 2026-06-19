@@ -1,13 +1,11 @@
 #include "GameplayInsightsEditorTool.h"
 
 #include <cfloat>
-#include <cstdio>
 #include <EASTL/algorithm.h>
 
 #include "imgui.h"
 #include "Core/Profiler/GameplayProfiler.h"
 #include "Core/UpdateStage.h"
-#include "TaskSystem/Scheduler/JobScheduler.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "World/Entity/Systems/SystemAccess.h"
 #include "World/WorldManager.h"
@@ -127,17 +125,11 @@ namespace Lumina
         if (!bFrozen)
         {
             DisplayFrame = Prof.GetLatest();
-            DisplaySpans = Prof.GetLatestSystemSpans();
             RefreshSchedule();
         }
 
         if (ImGui::BeginTabBar("##insights"))
         {
-            if (ImGui::BeginTabItem(LE_ICON_CHART_TIMELINE " Timeline"))
-            {
-                DrawTimeline();
-                ImGui::EndTabItem();
-            }
             if (ImGui::BeginTabItem(LE_ICON_SITEMAP " Schedule"))
             {
                 DrawSchedule();
@@ -155,120 +147,6 @@ namespace Lumina
             }
             ImGui::EndTabBar();
         }
-    }
-
-    // ---- Timeline: every system execution laid out per worker thread (the chain of execution) ---------
-    void FGameplayInsightsEditorTool::DrawTimeline()
-    {
-        const FSystemSpanFrame& F = DisplaySpans;
-        const double T0 = F.FrameStartMs;
-        const double T1 = F.FrameEndMs;
-        if (T1 <= T0 || F.Spans.empty())
-        {
-            ImGui::TextDisabled("No system spans captured yet. Enter Play (or tick a world) with this window open.");
-            ImGui::TextDisabled("Each bar is one system Update; rows are the worker threads they ran on.");
-            return;
-        }
-
-        ImGui::SetNextItemWidth(160); ImGui::SliderFloat("Zoom", &ZoomT, 0.05f, 1.0f, "%.2f");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(160); ImGui::SliderFloat("Pan", &PanT, 0.0f, 1.0f, "%.2f");
-        ImGui::SameLine();
-        ImGui::Text("Frame: %.3f ms  |  %d spans", T1 - T0, (int)F.Spans.size());
-
-        const double WinDur  = T1 - T0;
-        const double ViewDur = eastl::max(1e-6, WinDur * (double)ZoomT);
-        const double ViewT0  = T0 + (double)PanT * (WinDur - ViewDur);
-
-        // Map worker slots -> compact rows.
-        const uint32 Slots = Jobs::GetNumThreadSlots();
-        TVector<int> RowOf;
-        RowOf.resize(Slots == 0 ? 64 : Slots, -1);
-        int RowCount = 0;
-        auto RowFor = [&](uint16 Id) -> int
-        {
-            if (Id >= RowOf.size()) return -1;
-            if (RowOf[Id] < 0) RowOf[Id] = RowCount++;
-            return RowOf[Id];
-        };
-        for (const FSystemSpan& S : F.Spans)
-        {
-            RowFor(S.Worker);
-        }
-        if (RowCount == 0) { ImGui::TextDisabled("No spans."); return; }
-
-        const float LabelW = 52.0f;
-        const float Height = RowCount * RowHeight + 8.0f;
-        ImGui::BeginChild("##gantt", ImVec2(0, eastl::min(Height + 4.0f, 420.0f)), true, ImGuiWindowFlags_HorizontalScrollbar);
-
-        ImDrawList* DL = ImGui::GetWindowDrawList();
-        const ImVec2 Origin = ImGui::GetCursorScreenPos();
-        const float  Width  = ImGui::GetContentRegionAvail().x - LabelW;
-        const ImVec2 Mouse  = ImGui::GetIO().MousePos;
-        const FSystemSpan* Hover = nullptr;
-
-        for (int r = 0; r < RowCount; ++r)
-        {
-            const float Y = Origin.y + r * RowHeight;
-            DL->AddRectFilled(ImVec2(Origin.x, Y), ImVec2(Origin.x + LabelW + Width, Y + RowHeight - 1),
-                (r & 1) ? IM_COL32(36, 38, 42, 255) : IM_COL32(30, 32, 36, 255));
-        }
-        for (uint32 Id = 0; Id < RowOf.size(); ++Id)
-        {
-            if (RowOf[Id] < 0) continue;
-            const float Y = Origin.y + RowOf[Id] * RowHeight;
-            char Lbl[16];
-            snprintf(Lbl, sizeof(Lbl), "W%u", Id);
-            DL->AddText(ImVec2(Origin.x + 4, Y + 2), IM_COL32(180, 180, 185, 255), Lbl);
-        }
-
-        const float PlotX = Origin.x + LabelW;
-        for (const FSystemSpan& S : F.Spans)
-        {
-            const int Row = RowOf[S.Worker];
-            if (Row < 0) continue;
-            const double A = (S.StartMs - ViewT0) / ViewDur;
-            const double B = (S.EndMs   - ViewT0) / ViewDur;
-            if (B < 0.0 || A > 1.0) continue;
-            const float X0 = PlotX + (float)eastl::max(0.0, A) * Width;
-            const float X1 = PlotX + (float)eastl::min(1.0, B) * Width;
-            const float Y  = Origin.y + Row * RowHeight;
-            const ImVec2 Min(X0, Y + 1), Max(eastl::max(X1, X0 + 1.0f), Y + RowHeight - 2);
-
-            DL->AddRectFilled(Min, Max, StageColor(S.Stage), 2.0f);
-            if (S.bExclusive)
-            {
-                // A thin dark left edge marks a system that ran alone (exclusive / serial).
-                DL->AddRectFilled(Min, ImVec2(Min.x + 2, Max.y), IM_COL32(20, 20, 22, 255));
-            }
-            if ((Max.x - Min.x) > 28.0f)
-            {
-                DL->PushClipRect(Min, Max, true);
-                DL->AddText(ImVec2(Min.x + 4, Min.y + 1), IM_COL32(15, 15, 18, 255), S.Name.c_str());
-                DL->PopClipRect();
-            }
-            if (Mouse.x >= Min.x && Mouse.x < Max.x && Mouse.y >= Min.y && Mouse.y < Max.y)
-            {
-                Hover = &S;
-            }
-        }
-
-        ImGui::EndChild();
-
-        if (Hover != nullptr)
-        {
-            ImGui::BeginTooltip();
-            ImGui::TextUnformatted(Hover->Name.c_str());
-            ImGui::Separator();
-            ImGui::Text("Stage:    %s", StageName(Hover->Stage));
-            ImGui::Text("Batch:    %u %s", Hover->Batch, Hover->bExclusive ? "(exclusive / serial)" : "(parallel)");
-            ImGui::Text("Worker:   W%u", Hover->Worker);
-            ImGui::Text("Duration: %.4f ms", Hover->EndMs - Hover->StartMs);
-            ImGui::EndTooltip();
-        }
-
-        ImGui::Spacing();
-        ImGui::TextDisabled("Bars colored by stage. Dark left edge = ran exclusively (alone). Hover for detail.");
     }
 
     // ---- Schedule: parallel batches per stage with each system's declared access -----------------------
@@ -311,8 +189,8 @@ namespace Lumina
                     ImGui::TextColored(ImVec4(0.55f, 0.82f, 0.60f, 1.0f), "  Batch %u  (x%u parallel)", E.Batch, E.BatchSize);
                 }
             }
-
-            const char* Label = E.bManaged ? "<C# system>" : E.Name.ToString().c_str();
+            
+            const FString NameStr = E.bManaged ? FString("<C# system>") : E.Name.ToString();
             ImGui::PushID(&E);
             const bool bSel = Selected == E.Name && !E.bManaged;
             if (ImGui::Selectable("##row", bSel, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, 0)) && !E.bManaged)
@@ -320,7 +198,7 @@ namespace Lumina
                 Selected = E.Name;
             }
             ImGui::SameLine(28.0f);
-            ImGui::TextUnformatted(Label);
+            ImGui::TextUnformatted(NameStr.c_str());
             ImGui::SameLine(280.0f);
             if (E.bExclusive)
             {
@@ -489,12 +367,12 @@ namespace Lumina
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.92f, 0.55f, 0.45f, 1.0f), "Writes");
         const FString W = AccessList(Entry->Writes);
-        ImGui::TextUnformatted(Entry->bExclusive ? "(everything — exclusive)" : (W.empty() ? "(none)" : W.c_str()));
+        ImGui::TextUnformatted(Entry->bExclusive ? "(everything, exclusive)" : (W.empty() ? "(none)" : W.c_str()));
 
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.55f, 0.72f, 0.92f, 1.0f), "Reads");
         const FString R = AccessList(Entry->Reads);
-        ImGui::TextUnformatted(Entry->bExclusive ? "(everything — exclusive)" : (R.empty() ? "(none)" : R.c_str()));
+        ImGui::TextUnformatted(Entry->bExclusive ? "(everything, exclusive)" : (R.empty() ? "(none)" : R.c_str()));
 
         // Aggregate timing for this system, if it shows up in the scope table (C# systems do).
         for (const FGameplayProfileEntry& Stat : DisplayFrame.Entries)

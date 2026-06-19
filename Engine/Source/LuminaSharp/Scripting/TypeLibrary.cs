@@ -319,7 +319,7 @@ internal sealed class TypeDescription
     }
 
     /// <summary>Resolves each [RequireComponent] member (adding the component if missing) and assigns the
-    /// wrapper before OnReady. Reflection-free per instance — the member set is precomputed.</summary>
+    /// wrapper before OnReady. Reflection-free per instance, the member set is precomputed.</summary>
     public void InjectRequiredComponents(EntityScript Script)
     {
         if (RequiredComponents.Count == 0)
@@ -452,6 +452,16 @@ internal sealed class TypeDescription
             Flags |= 1 << 6;
         }
 
+        // OnFixedUpdate (bit 9): runs at the fixed physics timestep (see the fixed-update loop in the native
+        // SCSharpScriptSystem). Only scripts that override it are dispatched. Bit index must match native.
+        MethodInfo? Fixed = Type.GetMethod("OnFixedUpdate",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(float) }, null);
+        if (Fixed != null && Fixed.DeclaringType != typeof(EntityScript))
+        {
+            Flags |= 1 << 9;
+        }
+
         // OnTargetPerceived (bit 7) / OnTargetLost (bit 8): AI perception callbacks (signature:
         // SPerceptionEvent). The bit indices must match the native perception dispatch in SPerceptionSystem.
         MethodInfo? Perceived = Type.GetMethod("OnTargetPerceived",
@@ -468,6 +478,15 @@ internal sealed class TypeDescription
         if (Lost != null && Lost.DeclaringType != typeof(EntityScript))
         {
             Flags |= 1 << 8;
+        }
+
+        // Update phase (bit 16): a [UpdatePhase(EScriptPhase.PostPhysics)] script runs its OnUpdate in the
+        // PostPhysics group instead of the default PrePhysics group. This bit index must match the native
+        // SCSharpScriptSystem (PostPhysicsPhaseBit). Folded into the callback flags so it rides the existing
+        // GetScriptCallbackFlags path onto the native component with no extra crossing or ABI change.
+        if (Type.GetCustomAttribute<UpdatePhaseAttribute>() is { Phase: EScriptPhase.PostPhysics })
+        {
+            Flags |= 1 << 16;
         }
 
         return Flags;

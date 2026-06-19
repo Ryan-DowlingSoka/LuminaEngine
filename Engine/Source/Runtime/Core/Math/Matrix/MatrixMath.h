@@ -23,6 +23,24 @@ namespace Lumina::Math
         return Result;
     }
 
+    // SIMD fast path: 4x4 float transpose via a single shuffle network.
+    [[nodiscard]] inline TMat<float, 4, 4> Transpose(const TMat<float, 4, 4>& M)
+    {
+        using namespace SIMD;
+        __m128 R0 = VFloat4::Load(&M.Cols[0][0]);
+        __m128 R1 = VFloat4::Load(&M.Cols[1][0]);
+        __m128 R2 = VFloat4::Load(&M.Cols[2][0]);
+        __m128 R3 = VFloat4::Load(&M.Cols[3][0]);
+        _MM_TRANSPOSE4_PS(R0, R1, R2, R3);
+
+        TMat<float, 4, 4> Out;
+        VFloat4(R0).Store(&Out.Cols[0][0]);
+        VFloat4(R1).Store(&Out.Cols[1][0]);
+        VFloat4(R2).Store(&Out.Cols[2][0]);
+        VFloat4(R3).Store(&Out.Cols[3][0]);
+        return Out;
+    }
+
     template<typename T>
     [[nodiscard]] constexpr T Determinant(const TMat<T, 3, 3>& M)
     {
@@ -197,6 +215,38 @@ namespace Lumina::Math
         Result[2] = M[2] * V.z;
         Result[3] = M[3];
         return Result;
+    }
+
+    // SIMD fast paths for FMatrix4 (exact-type overloads win over the templates above and
+    // match their scalar result); the hot per-entity TRS path lives in VTransform/VQuat1.
+    [[nodiscard]] inline TMat<float, 4, 4> Translate(const TMat<float, 4, 4>& M, const TVec<float, 3>& V)
+    {
+        using namespace SIMD;
+        const VFloat4 C0 = VFloat4::Load(&M.Cols[0][0]);
+        const VFloat4 C1 = VFloat4::Load(&M.Cols[1][0]);
+        const VFloat4 C2 = VFloat4::Load(&M.Cols[2][0]);
+        const VFloat4 C3 = VFloat4::Load(&M.Cols[3][0]);
+
+        TMat<float, 4, 4> Out;
+        C0.Store(&Out.Cols[0][0]);
+        C1.Store(&Out.Cols[1][0]);
+        C2.Store(&Out.Cols[2][0]);
+        // Column 3 += M[0]*x + M[1]*y + M[2]*z; columns 0..2 pass through.
+        MulAdd(C2, VFloat4::Broadcast(V.z),
+        MulAdd(C1, VFloat4::Broadcast(V.y),
+        MulAdd(C0, VFloat4::Broadcast(V.x), C3))).Store(&Out.Cols[3][0]);
+        return Out;
+    }
+
+    [[nodiscard]] inline TMat<float, 4, 4> Scale(const TMat<float, 4, 4>& M, const TVec<float, 3>& V)
+    {
+        using namespace SIMD;
+        TMat<float, 4, 4> Out;
+        (VFloat4::Load(&M.Cols[0][0]) * VFloat4::Broadcast(V.x)).Store(&Out.Cols[0][0]);
+        (VFloat4::Load(&M.Cols[1][0]) * VFloat4::Broadcast(V.y)).Store(&Out.Cols[1][0]);
+        (VFloat4::Load(&M.Cols[2][0]) * VFloat4::Broadcast(V.z)).Store(&Out.Cols[2][0]);
+        VFloat4::Load(&M.Cols[3][0]).Store(&Out.Cols[3][0]);
+        return Out;
     }
 
     template<typename T>

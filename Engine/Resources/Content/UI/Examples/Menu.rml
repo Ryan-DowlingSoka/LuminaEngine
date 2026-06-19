@@ -3,12 +3,15 @@
     <title>Lumina Menu</title>
     <link type="text/rcss" href="Menu.rcss"/>
 </head>
-<body>
-    <div id="panel">
+<!-- data-model="menu" binds this subtree to the MenuModel registered by MenuExample.cs (World.UI.AddModel).
+     {{ Prop }} interpolates a bound property; data-event-click calls a [BindCommand]; data-class-light adds
+     the "light" class while the expression is true. No ids, no element lookups -- the view-model drives it. -->
+<body data-model="menu">
+    <div class="panel" data-class-light="!Dark">
         <div class="title">LUMINA</div>
-        <div id="play" class="button">Play</div>
-        <div id="toggle" class="button secondary">Toggle Theme</div>
-        <div id="status" class="status">Click Play to begin.</div>
+        <div class="button" data-event-click="Play()">Play</div>
+        <div class="button secondary" data-event-click="ToggleTheme()">{{ ThemeLabel }}</div>
+        <div class="status">{{ Status }}</div>
     </div>
 </body>
 </rml>

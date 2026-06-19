@@ -169,7 +169,7 @@ float2 CascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
 
 // PCSS tuning: scale the PCF radius by receiver-to-blocker depth so the kernel collapses to a
 // near-point sample at contact and opens to a soft penumbra at distance.
-#define PCSS_BLOCKER_SEARCH_TAPS   16
+#define PCSS_BLOCKER_SEARCH_TAPS   8
 static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search (scaled by CascadeScale)
 static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
 // Filter radius bounds in SHADOW TEXELS (per-cascade), not UV: a floor so contact shadows still get
@@ -296,16 +296,18 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
 
-    float Shadow = 0.0;
+    // FP16 the disk offset: a sub-texel kernel radius (~<0.004 UV) that fp16 resolves to ~1e-6, and the
+    // offset packs into one register. The UVs and depth-compare ref stay fp32 for atlas addressing.
+    half Shadow = half(0.0);
     [loop]
     for (int i = 0; i < SampleCount; ++i)
     {
-        float2 Offset    = VogelDiskSample(i, SampleCount, Angle + PI) * FilterRadius;
-        float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
+        half2  Offset    = half2(VogelDiskSample(i, SampleCount, Angle + PI)) * half(FilterRadius);
+        float2 CascadeUV = clamp(ProjectionUV + float2(Offset), 0.001, 0.999);
         float2 AtlasUV   = CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        Shadow += ShadowCascade().SampleCmp(AtlasUV, RefDepth);
+        Shadow          += half(ShadowCascade().SampleCmp(AtlasUV, RefDepth));
     }
-    return Shadow / float(SampleCount);
+    return float(Shadow) / float(SampleCount);
 }
 
 float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)

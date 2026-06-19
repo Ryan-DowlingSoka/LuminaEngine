@@ -107,7 +107,7 @@ public readonly struct EntityRegistry
 
     private RegistrySubscription Subscribe(IntPtr Token, int Kind, Action<Entity> Callback)
     {
-        if (Token == IntPtr.Zero || Callback == null)
+        if (Token == IntPtr.Zero)
         {
             return RegistrySubscription.Empty;
         }

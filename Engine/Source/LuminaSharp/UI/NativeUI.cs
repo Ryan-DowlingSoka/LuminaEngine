@@ -40,6 +40,24 @@ public static unsafe partial class Native
     [NativeCall] public static partial IntPtr UI_AddEventListener(ulong World, IntPtr Element, string Type, IntPtr Thunk, IntPtr Context);
     [NativeCall] public static partial void   UI_RemoveEventListener(ulong World, IntPtr Listener);
 
+    // Data binding (MVVM). A named data model on the world context (Model is an opaque FManagedDataModel*).
+    // SetThunk/EventThunk are managed function pointers; Context is the GCHandle handed back to them.
+    [NativeCall] public static partial IntPtr UI_CreateDataModel(ulong World, string Name, IntPtr Context, IntPtr SetThunk, IntPtr EventThunk);
+    [NativeCall] public static partial int    UI_ModelBindScalar(IntPtr Model, string Name, int Type);
+    [NativeCall] public static partial void   UI_ModelBindCommand(IntPtr Model, string Name, int CommandId);
+    [NativeCall] public static partial void   UI_ModelSetNumber(IntPtr Model, int Field, double Value);
+    [NativeCall] public static partial void   UI_ModelSetString(IntPtr Model, int Field, string Value);
+    [NativeCall] public static partial void   UI_ModelDirty(IntPtr Model, int Field);
+    [NativeCall] public static partial void   UI_ModelDirtyAll(IntPtr Model);
+    [NativeCall] public static partial void   UI_DestroyDataModel(IntPtr Model);
+
+    // Lists (data-for): array-of-struct variables; cells pushed as strings on change.
+    [NativeCall] public static partial int    UI_ModelBindList(IntPtr Model, string Name);
+    [NativeCall] public static partial int    UI_ModelBindListMember(IntPtr Model, int ListField, string Name);
+    [NativeCall] public static partial void   UI_ModelListResize(IntPtr Model, int ListField, int RowCount);
+    [NativeCall] public static partial void   UI_ModelListSetCell(IntPtr Model, int ListField, int Row, int Col, string Value);
+    [NativeCall] public static partial void   UI_ModelListDirty(IntPtr Model, int ListField);
+
     // Cursor + input routing for this world's viewport.
     [NativeCall] public static partial void   UI_SetInputMode(ulong World, int Mode);
     [NativeCall] public static partial void   UI_SetMouseMode(ulong World, int Mode);

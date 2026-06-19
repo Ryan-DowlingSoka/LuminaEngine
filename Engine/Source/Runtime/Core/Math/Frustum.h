@@ -10,61 +10,95 @@
 
 namespace Lumina
 {
+    // CPU-side frustum. Carries the 6 AoS planes PLUS a SoA mirror (SoaN*/SoaD, 8 lanes: 6 used +
+    // 2 inert) so the per-object tests evaluate all planes at once, branchless. This is NOT the
+    // GPU upload type -- the shader's `struct FFrustum { float4 Planes[6]; }` is mirrored by the
+    // 96-byte FGPUFrustum (SceneRenderTypes.h); convert via AsGPU/FromGPU. Never embed FFrustum
+    // (with its SoA tail) in a GPU-uploaded struct.
     struct FFrustum
     {
         enum ESide { LEFT = 0, RIGHT = 1, TOP = 2, BOTTOM = 3, BACK = 4, FRONT = 5, NUM = 6};
+
         TArray<FVector4, NUM> Planes;
 
-        NODISCARD bool IsInside(const FVector3& Point)
-        {
-            for (int i = 0; i < NUM; i++)
-            {
-                const FVector4& p = Planes[i];
-                float dist = p.x * Point.x + p.y * Point.y + p.z * Point.z + p.w;
-                if (dist < 0)
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
+        static constexpr int PlaneMask = (1 << NUM) - 1;
+        float SoaNx[8] = {};
+        float SoaNy[8] = {};
+        float SoaNz[8] = {};
+        float SoaD[8]  = {};
 
-        /** Conservative sphere-vs-frustum; false positives near corners are acceptable for broad-phase. */
-        NODISCARD bool IntersectsSphere(const FVector3& Center, float Radius) const
+        // Repacks the AoS planes into the SoA mirror. Call after any direct edit to Planes.
+        void RebuildSoA()
         {
             for (int i = 0; i < NUM; ++i)
             {
-                const FVector4& P = Planes[i];
-                const float Dist = P.x * Center.x + P.y * Center.y + P.z * Center.z + P.w;
-                if (Dist < -Radius)
-                {
-                    return false;
-                }
+                SoaNx[i] = Planes[i].x;
+                SoaNy[i] = Planes[i].y;
+                SoaNz[i] = Planes[i].z;
+                SoaD[i]  = Planes[i].w;
             }
-            return true;
+            for (int i = NUM; i < 8; ++i)
+            {
+                SoaNx[i] = 0.0f;
+                SoaNy[i] = 0.0f;
+                SoaNz[i] = 0.0f;
+                SoaD[i]  = 1.0f; // inert: positive distance, never rejects; masked out regardless
+            }
         }
 
-        NODISCARD bool IsInside(const FAABB& aabb)
+        // Signed distance of a SIMD center (x,y,z in lanes 0..2; w ignored) to all 8 planes.
+        // Center stays register-resident -- lanes are broadcast via shuffles, no store/reload.
+        FORCEINLINE SIMD::VFloat8 SignedDistances(SIMD::VFloat4 Center) const
         {
-            for (int i = 0; i < NUM; i++)
-            {
-                const FVector4& p = Planes[i];
-                FVector3 normal(p.x, p.y, p.z);
+            using namespace SIMD;
+            const __m128 Cx4 = SplatX(Center), Cy4 = SplatY(Center), Cz4 = SplatZ(Center);
+            const VFloat8 Cx = _mm256_insertf128_ps(_mm256_castps128_ps256(Cx4), Cx4, 1);
+            const VFloat8 Cy = _mm256_insertf128_ps(_mm256_castps128_ps256(Cy4), Cy4, 1);
+            const VFloat8 Cz = _mm256_insertf128_ps(_mm256_castps128_ps256(Cz4), Cz4, 1);
+            return MulAdd(VFloat8::Load(SoaNx), Cx,
+                   MulAdd(VFloat8::Load(SoaNy), Cy,
+                   MulAdd(VFloat8::Load(SoaNz), Cz, VFloat8::Load(SoaD))));
+        }
 
-                FVector3 positive;
-                positive.x = (normal.x >= 0.0f) ? aabb.Max.x : aabb.Min.x;
-                positive.y = (normal.y >= 0.0f) ? aabb.Max.y : aabb.Min.y;
-                positive.z = (normal.z >= 0.0f) ? aabb.Max.z : aabb.Min.z;
+        FORCEINLINE SIMD::VFloat8 SignedDistances(const FVector3& Point) const
+        {
+            using namespace SIMD;
+            return MulAdd(VFloat8::Load(SoaNx), VFloat8::Broadcast(Point.x),
+                   MulAdd(VFloat8::Load(SoaNy), VFloat8::Broadcast(Point.y),
+                   MulAdd(VFloat8::Load(SoaNz), VFloat8::Broadcast(Point.z), VFloat8::Load(SoaD))));
+        }
 
-                float dist = Math::Dot(normal, positive) + p.w;
+        /** Conservative sphere-vs-frustum; false positives near corners are acceptable for broad-phase. */
+        NODISCARD bool IntersectsSphere(SIMD::VFloat4 Center, float Radius) const
+        {
+            using namespace SIMD;
+            return (MoveMask(CmpLt(SignedDistances(Center), VFloat8::Broadcast(-Radius))) & PlaneMask) == 0;
+        }
 
-                if (dist < 0.0f)
-                {
-                    return false;
-                }
-            }
+        NODISCARD bool IntersectsSphere(const FVector3& Center, float Radius) const
+        {
+            using namespace SIMD;
+            return (MoveMask(CmpLt(SignedDistances(Center), VFloat8::Broadcast(-Radius))) & PlaneMask) == 0;
+        }
 
-            return true;
+        // Point-in-frustum is the radius-0 sphere test (reject on any negative signed distance).
+        NODISCARD bool IsInside(SIMD::VFloat4 Point) const   { return IntersectsSphere(Point, 0.0f); }
+        NODISCARD bool IsInside(const FVector3& Point) const { return IntersectsSphere(Point, 0.0f); }
+
+        NODISCARD bool IsInside(const FAABB& aabb) const
+        {
+            using namespace SIMD;
+            const VFloat8 Nx = VFloat8::Load(SoaNx);
+            const VFloat8 Ny = VFloat8::Load(SoaNy);
+            const VFloat8 Nz = VFloat8::Load(SoaNz);
+
+            // Positive vertex per plane: pick Max where the normal component is >= 0, else Min.
+            const VFloat8 Px = Select(CmpGe(Nx, VFloat8::Zero()), VFloat8::Broadcast(aabb.Max.x), VFloat8::Broadcast(aabb.Min.x));
+            const VFloat8 Py = Select(CmpGe(Ny, VFloat8::Zero()), VFloat8::Broadcast(aabb.Max.y), VFloat8::Broadcast(aabb.Min.y));
+            const VFloat8 Pz = Select(CmpGe(Nz, VFloat8::Zero()), VFloat8::Broadcast(aabb.Max.z), VFloat8::Broadcast(aabb.Min.z));
+
+            const VFloat8 Dist = MulAdd(Nx, Px, MulAdd(Ny, Py, MulAdd(Nz, Pz, VFloat8::Load(SoaD))));
+            return (MoveMask(CmpLt(Dist, VFloat8::Zero())) & PlaneMask) == 0;
         }
 
         /** Sweeps the frustum along SweepDir for shadow culling; SweepDir points toward the light. */
@@ -78,6 +112,7 @@ namespace Lumina
                 const float Push = Math::Max(0.0f, SweepDistance * Math::Dot(N, -SweepDir));
                 Out.Planes[i] = FVector4(N, P.w + Push);
             }
+            Out.RebuildSoA();
             return Out;
         }
 
@@ -101,33 +136,52 @@ namespace Lumina
                     Out.Planes[i] /= Length;
                 }
             }
+            Out.RebuildSoA();
             return Out;
         }
 
         static void ComputeFrustumCorners(const FMatrix4& ViewProjection, FVector3 OutCorners[8])
         {
             LUMINA_PROFILE_SCOPE();
+            using namespace SIMD;
 
-            FMatrix4 InverseVP = Math::Inverse(ViewProjection);
+            const FMatrix4 InverseVP = Math::Inverse(ViewProjection);
 
-            for (int x = 0; x < 2; ++x)
+            // Columns of the inverse VP, loaded once. NDC corner coords are all +/-1, so
+            // each corner is C3 +/- C0 +/- C1 +/- C2.
+            const VFloat4 C0 = VFloat4::Load(&InverseVP.Cols[0][0]);
+            const VFloat4 C1 = VFloat4::Load(&InverseVP.Cols[1][0]);
+            const VFloat4 C2 = VFloat4::Load(&InverseVP.Cols[2][0]);
+            const VFloat4 C3 = VFloat4::Load(&InverseVP.Cols[3][0]);
+
+            for (int z = 0; z < 2; ++z)
             {
+                const VFloat4 Pz = z ? C3 + C2 : C3 - C2;
                 for (int y = 0; y < 2; ++y)
                 {
-                    for (int z = 0; z < 2; ++z)
+                    const VFloat4 Pzy = y ? Pz + C1 : Pz - C1;
+                    for (int x = 0; x < 2; ++x)
                     {
                         const int Index = x + y * 2 + z * 4;
 
-                        const FVector4 Pt = InverseVP * FVector4(
-                            2.0f * x - 1.0f,
-                            2.0f * y - 1.0f, 
-                            2.0f * z - 1.0f, 
-                            1.0f);
-                        
-                        OutCorners[Index] = Pt / Pt.w;
+                        const VFloat4 Pt = x ? Pzy + C0 : Pzy - C0;
+                        const VFloat4 Corner = Pt / SplatW(Pt);
+
+                        LUMINA_SIMD_ALIGN16 float Tmp[4];
+                        Corner.StoreAligned(Tmp);
+                        OutCorners[Index] = FVector3(Tmp[0], Tmp[1], Tmp[2]);
                     }
                 }
             }
         }
     };
+
+    // 96-byte GPU upload mirror of the shader's `struct FFrustum { float4 Planes[6]; }`. The rich
+    // CPU FFrustum (above) carries a SoA tail and must NEVER be embedded in a GPU struct; embed
+    // this instead and convert with AsGPU/FromGPU (SceneRenderTypes.h).
+    struct FGPUFrustum
+    {
+        FVector4 Planes[FFrustum::NUM];
+    };
+    static_assert(sizeof(FGPUFrustum) == 6 * sizeof(FVector4), "FGPUFrustum must match the shader's float4 Planes[6] (96 bytes)");
 }

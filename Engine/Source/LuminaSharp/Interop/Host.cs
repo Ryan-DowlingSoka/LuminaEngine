@@ -66,6 +66,13 @@ public static unsafe partial class Host
             Native.Log(Sum == 5 ? ELogLevel.Info : ELogLevel.Error,
                 Sum == 5 ? "C#->native function-pointer path OK." : $"C# interop self-test FAILED (got {Sum}).");
 
+            // Cross-check every blittable C#/C++ mirror's size before any of them crosses the boundary. A
+            // mismatch here means a struct layout drifted; running anyway would silently corrupt memory.
+            if (!LayoutValidator.ValidateAll())
+            {
+                return 4;
+            }
+
             Scripts = new ScriptManager();
             Native.Log(ELogLevel.Info, $"LuminaSharp online (runtime {RuntimeInformation.FrameworkDescription}).");
             return 0;
@@ -79,7 +86,7 @@ public static unsafe partial class Host
 
     /// <summary>Resolves a native->managed export to its function pointer by name (engine or script/plugin),
     /// or IntPtr.Zero if unknown. Native resolves this entry itself via hostfxr (like Bootstrap), then uses it
-    /// to look up every other managed entry — so there is no hand-mirrored export struct.</summary>
+    /// to look up every other managed entry, so there is no hand-mirrored export struct.</summary>
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr ResolveManagedExport(byte* Name, int Length)
     {
@@ -160,7 +167,7 @@ public static unsafe partial class Host
     /// <summary>Fills the editor's C# Diagnostics snapshot (managed heap, GC counters, and collectible-ALC /
     /// generation health). Returns 1 on success. Editor-only caller; never invoked on the runtime path, so it
     /// costs nothing in a packaged game. GC + ALC reads are always valid even with no scripts loaded. When
-    /// ForceCollect != 0 it runs a full blocking GC first (the tool's "Force GC" button only — never on the
+    /// ForceCollect != 0 it runs a full blocking GC first (the tool's "Force GC" button only, never on the
     /// periodic poll), which both reclaims and lets a pending collectible ALC actually unload.</summary>
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
@@ -277,6 +284,22 @@ public static unsafe partial class Host
         try
         {
             Scripts?.EntityScripts?.Update(Handles, Count, DeltaTime);
+        }
+        catch (Exception Exception)
+        {
+            Interop.LogException(Exception);
+        }
+    }
+
+    /// <summary>Dispatches OnFixedUpdate to a batch of scripts (one call per fixed step per world). Driven by
+    /// the native fixed-update accumulator at the physics fixed rate, before the physics step.</summary>
+    [ManagedExport]
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    public static void FixedUpdateScripts(IntPtr* Handles, int Count, float FixedDeltaTime)
+    {
+        try
+        {
+            Scripts?.EntityScripts?.FixedUpdate(Handles, Count, FixedDeltaTime);
         }
         catch (Exception Exception)
         {

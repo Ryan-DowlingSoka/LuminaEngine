@@ -13,11 +13,12 @@
 
 namespace Lumina
 {
-    // STransformComponent is a WRITE: ResolveAllDirtyTransforms mutates WorldTransform (and walks parent
-    // chains via FRelationshipComponent). FindPath reads the navmesh component.
+    // STransformComponent is now READ-only: the scheduler's per-batch transform barrier resolves transforms,
+    // so this system only does pure cached GetWorld* reads (no inline resolve = no transform write). That lets
+    // it batch in PARALLEL with other transform readers. FindPath reads the navmesh component.
     FSystemAccess SPathFollowSystem::Access = FSystemAccess{}
-        .Write<SPathFollowComponent, SCharacterControllerComponent, STransformComponent>()
-        .Read<FRelationshipComponent, SNavMeshComponent>();
+        .Write<SPathFollowComponent, SCharacterControllerComponent>()
+        .Read<STransformComponent, FRelationshipComponent, SNavMeshComponent>();
 
     namespace
     {
@@ -69,17 +70,17 @@ namespace Lumina
         {
             return;
         }
-
-        // Bulk-resolve before the parallel body; body must NOT mutate any transform.
-        ECS::Utils::ResolveAllDirtyTransforms(Context.GetRegistry());
-
-        // Resolve the navmesh once; the per-follower body queries it directly (no per-tick view build).
+        
         FNavMesh* const NavMesh = Nav::GetReadyNavMesh(Context);
 
         auto&& TransformStorage = Context.GetRegistry().storage<STransformComponent>();
         Task::ParallelFor((uint32)Handle->size(), [&](uint32 Index)
         {
             entt::entity Entity = (*Handle)[Index];
+            if (!View.contains(Entity))
+            {
+                return;
+            }
             
             SPathFollowComponent& Comp  = View.get<SPathFollowComponent>(Entity);
             STransformComponent&  Xform = TransformStorage.get(Entity);
