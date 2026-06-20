@@ -1243,19 +1243,16 @@ namespace Lumina
                 }
             }, ETaskPriority::High); // critical path (gates MergeNode)
 
-            const bool bGPUDriven = RenderSettings.bGPUDriven;
-            FTaskGraph::FNodeHandle MergeNode = Graph.Add([&, bGPUDriven]
+            FTaskGraph::FNodeHandle MergeNode = Graph.Add([&]
             {
-                if (bGPUDriven)
-                {
-                    EmitDrawData_GPUDriven(ThreadLocal);
-                }
-                else
-                {
-                    MergeMeshDrawData(ThreadLocal);
-                }
+                MergeMeshDrawData(ThreadLocal);
             }, ETaskPriority::High); // tail of the critical path: grab a worker the instant its inputs are done
-            
+
+            // Foliage: mostly-static instance soup. The heavy per-instance precompute (world transform +
+            // bounds) lives in a persistent BakedInstances cache rebuilt ONLY when the foliage changes
+            // (EnsureRenderCache, here on the game thread, a no-op when unchanged). The per-frame parallel
+            // task then just culls the cached sphere and emits, so it rides the GPU meshlet cull + indirect
+            // draw with no per-frame geometry recompute. Component pointers are stable (in_place_delete).
             FoliageView.each([&](entt::entity FoliageEntity, SFoliageComponent& Foliage)
             {
                 if (Foliage.Types.empty() || Foliage.Instances.empty())
@@ -2131,19 +2128,12 @@ namespace Lumina
 
         // Buffers are reached only by device address; a resize swaps the allocation (old one
         // retires on this slot's deferred-free list) with no descriptor work.
-        // GPU-driven: one uint32 count per indirect-arg slot (= per (view,bucket)). Same element count as IndirectArgs.
-        const SIZE_T BucketCountSize = Math::Max<SIZE_T>(sizeof(uint32), IndirectArgs.size() * sizeof(uint32));
-
         ResizeBufferIfNeeded(PreSkinnedVerticesBuffer, PreSkinnedSize, 1.2f, PreSkinnedVerticesLowUsage);
         for (uint32 Slot = 0; Slot < RHI::kFramesInFlight; ++Slot)
         {
             ResizeBufferIfNeeded(IndirectArgsRing[Slot], IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
             ResizeBufferIfNeeded(MeshletDrawListRing[Slot], MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
             ResizeBufferIfNeeded(MeshletDeferListRing[Slot], DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
-            if (RenderSettings.bGPUDriven)
-            {
-                ResizeBufferIfNeeded(BucketCountRing[Slot], BucketCountSize, 1.2f, BucketCountRingLowUsage[Slot]);
-            }
         }
 
         {
@@ -2498,6 +2488,7 @@ namespace Lumina
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
+        // GPUPtr is the BDA; dead-mesh safety comes from Core::DeferredFree, no pinning needed.
         const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer;
 
         constexpr float kMinAngularSize = 0.05f;
@@ -2991,18 +2982,18 @@ namespace Lumina
     {
         LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");
 
-        FFrameData& Frame = *ExtractFrame;
-        auto& Instances             = Frame.Geometry.Instances;
-        auto& BonesData            = Frame.Geometry.BonesData;
-        auto& DrawCommands     = Frame.Geometry.DrawCommands;
+        FFrameData& Frame               = *ExtractFrame;
+        auto& Instances                 = Frame.Geometry.Instances;
+        auto& BonesData                 = Frame.Geometry.BonesData;
+        auto& DrawCommands              = Frame.Geometry.DrawCommands;
         auto& OpaqueDrawList            = Frame.Geometry.OpaqueDrawList;
         auto& OpaqueOccluderDrawList    = Frame.Geometry.OpaqueOccluderDrawList;
         auto& TranslucentDrawList       = Frame.Geometry.TranslucentDrawList;
         auto& DrawMeshletStartOffsets   = Frame.Geometry.DrawMeshletStartOffsets;
         auto& InstanceMeshletPrefix     = Frame.Geometry.InstanceMeshletPrefix;
-        auto& FrameStats             = Frame.FrameStats;
-        uint32& TotalMeshletBound    = Frame.Views.TotalMeshletBound;
-        uint32& NumDrawsPerView      = Frame.Views.NumDrawsPerView;
+        auto& FrameStats                = Frame.FrameStats;
+        uint32& TotalMeshletBound       = Frame.Views.TotalMeshletBound;
+        uint32& NumDrawsPerView         = Frame.Views.NumDrawsPerView;
 
         const uint32 NumThreads = (uint32)ThreadLocal.size();
 
@@ -3335,236 +3326,6 @@ namespace Lumina
         OpaqueOccluderDrawList.reserve(NumBatches);
         TranslucentDrawList.reserve(NumBatches);
         for (uint32 i = 0; i < NumBatches; ++i)
-        {
-            const FMeshDrawCommand& Cmd = DrawCommands[i];
-            if (Cmd.bTranslucent)
-            {
-                TranslucentDrawList.push_back(i);
-            }
-            else
-            {
-                OpaqueDrawList.push_back(i);
-                if (Cmd.bDrawInDepthPass)
-                {
-                    OpaqueOccluderDrawList.push_back(i);
-                }
-            }
-        }
-    }
-
-    void FForwardRenderScene::EmitDrawData_GPUDriven(TVector<FThreadLocalDrawData>& ThreadLocal)
-    {
-        LUMINA_PROFILE_SECTION("Emit Draw Data (GPU-driven)");
-
-        FFrameData& Frame = *ExtractFrame;
-        auto& Instances               = Frame.Geometry.Instances;
-        auto& BonesData               = Frame.Geometry.BonesData;
-        auto& DrawCommands            = Frame.Geometry.DrawCommands;
-        auto& OpaqueDrawList          = Frame.Geometry.OpaqueDrawList;
-        auto& OpaqueOccluderDrawList  = Frame.Geometry.OpaqueOccluderDrawList;
-        auto& TranslucentDrawList     = Frame.Geometry.TranslucentDrawList;
-        auto& DrawMeshletStartOffsets = Frame.Geometry.DrawMeshletStartOffsets;
-        auto& InstanceMeshletPrefix   = Frame.Geometry.InstanceMeshletPrefix;
-        auto& FrameStats              = Frame.FrameStats;
-        uint32& TotalMeshletBound     = Frame.Views.TotalMeshletBound;
-        uint32& NumDrawsPerView       = Frame.Views.NumDrawsPerView;
-
-        const uint32 NumThreads = (uint32)ThreadLocal.size();
-
-        // Bones merged serially (identical to the legacy path): skinned meshes reference by absolute index.
-        TVector<uint32>& ThreadBoneBase = MergeThreadBoneBase;
-        ThreadBoneBase.assign(NumThreads, 0u);
-        uint32 TotalInstances = 0;
-        uint64 TotalInstancesCulled = 0;
-        for (uint32 t = 0; t < NumThreads; ++t)
-        {
-            FThreadLocalDrawData& Local = ThreadLocal[t];
-            ThreadBoneBase[t] = (uint32)BonesData.size();
-            BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
-
-            for (FEntityRecord& Rec : Local.EntityRecords)
-            {
-                if (Rec.LocalBoneOffset == ~0u || Rec.SkinSliceSize == 0u)
-                {
-                    continue;
-                }
-                const uint32 CompactedBase = Frame.Geometry.TotalPreSkinnedVertices;
-                Rec.GlobalSkinnedBase      = CompactedBase - Rec.SkinSpanStart;
-
-                const uint32 BoneOffset = ThreadBoneBase[t] + Rec.LocalBoneOffset;
-                const uint32 MeshletEnd = Rec.SkinMeshletStart + Rec.SkinMeshletCount;
-                for (uint32 m = Rec.SkinMeshletStart; m < MeshletEnd; ++m)
-                {
-                    FSkinDescriptor& Desc     = Frame.Geometry.SkinDescriptors.emplace_back();
-                    Desc.MeshletHeaderAddress = Rec.MeshletHeaderAddress;
-                    Desc.BoneOffset           = BoneOffset;
-                    Desc.SkinnedVertexBase    = Rec.GlobalSkinnedBase;
-                    Desc.MeshletIndex         = m;
-                    Desc.Pad                  = 0u;
-                }
-
-                Frame.Geometry.TotalPreSkinnedVertices += Rec.SkinSliceSize;
-            }
-
-            TotalInstances += (uint32)Local.Items.size();
-            TotalInstancesCulled += Local.Stats.NumInstancesCulled;
-        }
-        FrameStats.NumInstancesCulled += TotalInstancesCulled;
-
-        if (TotalInstances == 0)
-        {
-            return;
-        }
-
-        // Merge per-thread batches into one global FMeshDrawCommand per bucket (=PSO). Identical to the legacy
-        // batch merge -- a bucket is exactly a FDrawBatchKey -- but here every bucket is a single indirect draw
-        // (the per-surface FDrawKey dedup the legacy path does is deliberately skipped: the GPU compacts).
-        MergeGlobalBatchKeys.clear();
-        if (MergeGlobalBatchKeys.capacity() < 64)
-        {
-            MergeGlobalBatchKeys.reserve(64);
-        }
-        if (DrawCommands.capacity() < 64)
-        {
-            DrawCommands.reserve(64);
-        }
-        for (FThreadLocalDrawData& Local : ThreadLocal)
-        {
-            for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
-            {
-                uint32 GlobalIdx = ~0u;
-                const uint32 NumGlobal = (uint32)MergeGlobalBatchKeys.size();
-                for (uint32 g = 0; g < NumGlobal; ++g)
-                {
-                    if (MergeGlobalBatchKeys[g] == LocalBatch.Key)
-                    {
-                        GlobalIdx = g;
-                        break;
-                    }
-                }
-                if (GlobalIdx == ~0u)
-                {
-                    GlobalIdx = NumGlobal;
-                    MergeGlobalBatchKeys.push_back(LocalBatch.Key);
-
-                    FMeshDrawCommand& NewCmd = DrawCommands.emplace_back();
-                    NewCmd.VertexShader       = LocalBatch.VertexShader;
-                    NewCmd.PixelShader        = LocalBatch.PixelShader;
-                    NewCmd.DepthVertexShader  = LocalBatch.DepthVertexShader;
-                    NewCmd.ShadowVertexShader = LocalBatch.ShadowVertexShader;
-                    // One bucket == one indirect-arg slot: IndirectDrawOffset = bucket index, DrawCount = 1.
-                    NewCmd.IndirectDrawOffset = GlobalIdx;
-                    NewCmd.DrawCount          = 1u;
-                    NewCmd.bDrawInDepthPass   = LocalBatch.Key.bDrawInDepthPass;
-                    NewCmd.bTranslucent       = LocalBatch.Key.bTranslucent;
-                    NewCmd.bMasked            = LocalBatch.Key.bMasked;
-                    NewCmd.bAdditive          = LocalBatch.Key.bAdditive;
-                }
-                LocalBatch.GlobalBatchIndex = GlobalIdx;
-            }
-        }
-
-        const uint32 NumBuckets = (uint32)MergeGlobalBatchKeys.size();
-        NumDrawsPerView = NumBuckets;
-
-        // Per-bucket meshlet sum -> exclusive prefix (the per-bucket capacity in the shared draw list). Mirrors
-        // the legacy DrawMeshletStartOffsets but keyed by bucket, not by deduped draw. CullMeshlets packs each
-        // (view,bucket)'s survivors densely from FirstInstance = viewBase + DrawMeshletStartOffsets[bucket].
-        TVector<uint32>& BucketMeshletSum = MergeMeshletCountsPerDraw;
-        BucketMeshletSum.assign(NumBuckets, 0u);
-        for (FThreadLocalDrawData& Local : ThreadLocal)
-        {
-            for (const FProcessedDrawItem& Item : Local.Items)
-            {
-                const uint32 Bucket = Local.LocalBatches[Item.LocalBatchIndex].GlobalBatchIndex;
-                BucketMeshletSum[Bucket] += Item.SurfaceMeshletCount;
-            }
-        }
-
-        DrawMeshletStartOffsets.resize(NumBuckets);
-        uint32 MeshletRunning = 0u;
-        for (uint32 b = 0; b < NumBuckets; ++b)
-        {
-            DrawMeshletStartOffsets[b] = MeshletRunning;
-            MeshletRunning            += BucketMeshletSum[b];
-        }
-        TotalMeshletBound = MeshletRunning;
-
-        Instances.resize(TotalInstances);
-
-        // Each thread's items write to a disjoint, monotonic instance range -- no per-draw cursor.
-        TVector<uint32>& ThreadInstanceBase = MergeDrawCursor;
-        ThreadInstanceBase.assign(NumThreads, 0u);
-        {
-            uint32 Running = 0u;
-            for (uint32 t = 0; t < NumThreads; ++t)
-            {
-                ThreadInstanceBase[t] = Running;
-                Running += (uint32)ThreadLocal[t].Items.size();
-            }
-            DEBUG_ASSERT(Running == TotalInstances);
-        }
-
-        const bool bParallelWrite = TotalInstances > 4096;
-        {
-            LUMINA_PROFILE_SECTION("Parallel Instance Write (GPU-driven)");
-
-            auto InstanceWriteBody = [&](const Task::FParallelRange& Range)
-            {
-                for (uint32 t = Range.Start; t < Range.End; ++t)
-                {
-                    FThreadLocalDrawData& Local = ThreadLocal[t];
-                    const uint32 BoneBase = ThreadBoneBase[t];
-                    uint32 WriteIdx = ThreadInstanceBase[t];
-
-                    for (const FProcessedDrawItem& Item : Local.Items)
-                    {
-                        const FLocalBatchEntry& LocalBatch = Local.LocalBatches[Item.LocalBatchIndex];
-                        const FEntityRecord& Entity = Local.EntityRecords[Item.EntityRecordIndex];
-
-                        const uint32 GlobalBoneOffset = Entity.LocalBoneOffset != ~0u ? (BoneBase + Entity.LocalBoneOffset) : 0u;
-
-                        FGPUInstance& Out = Instances[WriteIdx++];
-                        Out.Transform            = Entity.Transform;
-                        Out.SphereBounds         = Entity.SphereBounds;
-                        Out.ShadowMeshletOffset  = Item.ShadowMeshletOffset;
-                        Out.ShadowMeshletCount   = Item.ShadowMeshletCount;
-                        Out.MeshletHeaderAddress = Entity.MeshletHeaderAddress;
-                        // BucketID rides the 24-bit DrawID field; the GPU routes by view*NumBuckets + bucket.
-                        Out.DrawIDAndFlags       = PackDrawIDAndFlags(LocalBatch.GlobalBatchIndex, Item.Flags);
-                        Out.SurfaceMeshletOffset = Item.SurfaceMeshletOffset;
-                        Out.SurfaceMeshletCount  = Item.SurfaceMeshletCount;
-                        Out.CustomData           = Entity.CustomData;
-                        Out.BoneOffset           = GlobalBoneOffset;
-                        Out.MaterialIndex        = Item.MaterialIndex;
-                        Out.EntityID             = Entity.EntityID;
-                        Out.SkinnedVertexBase    = Entity.GlobalSkinnedBase;
-                    }
-                }
-            };
-            if (bParallelWrite) { Task::ParallelFor(NumThreads, InstanceWriteBody, 1); }
-            else                { InstanceWriteBody(Task::FParallelRange{ 0u, NumThreads, 0u }); }
-        }
-
-        // Inclusive per-instance meshlet prefix; the cull pass binary-searches it to recover (instance, meshletLocal).
-        {
-            const size_t NumInstancesLocal = Instances.size();
-            InstanceMeshletPrefix.resize(NumInstancesLocal + 1);
-            uint32 RunningInstanceMeshlets = 0u;
-            for (size_t i = 0; i < NumInstancesLocal; ++i)
-            {
-                InstanceMeshletPrefix[i] = RunningInstanceMeshlets;
-                RunningInstanceMeshlets += Instances[i].SurfaceMeshletCount;
-            }
-            InstanceMeshletPrefix[NumInstancesLocal] = RunningInstanceMeshlets;
-            DEBUG_ASSERT(RunningInstanceMeshlets == TotalMeshletBound);
-        }
-
-        FrameStats.NumBatches = NumBuckets;
-        OpaqueDrawList.reserve(NumBuckets);
-        OpaqueOccluderDrawList.reserve(NumBuckets);
-        TranslucentDrawList.reserve(NumBuckets);
-        for (uint32 i = 0; i < NumBuckets; ++i)
         {
             const FMeshDrawCommand& Cmd = DrawCommands[i];
             if (Cmd.bTranslucent)
@@ -4873,15 +4634,12 @@ namespace Lumina
         uint32 NumViews;
         uint32 Phase;
         uint32 CameraLateViewIndex;
-        // GPU-driven: 1 => EmitMeshlet sets BucketCount[slot]=1 on a bucket's first survivor. 0 (legacy) skips it.
-        uint32 WriteBucketCount;
+        uint32 Pad;
         // Device addresses of the cull-private scratch buffers (matches the
         // pointer fields in CullMeshlets.slang's pass block, 8-byte aligned).
         uint64 IndirectArgsAddr;
         uint64 DeferListAddr;
         uint64 DeferCountAddr;
-        // GPU-driven per-(view,bucket) count buffer; 0 under the legacy path (never dereferenced then).
-        uint64 BucketCountAddr;
     };
 
     void FForwardRenderScene::CullPassEarly(RHI::FCmdListH CL)
@@ -4906,12 +4664,6 @@ namespace Lumina
         }
 
         RHI::CmdMemset(CL, GetDeferCount().Ptr, GetDeferCount().Size, 0u);
-        // Zero the per-(view,bucket) counts so empty buckets stay count=0 (CmdDrawIndirectCount skips them).
-        // One zero here covers the camera-late view's slots too (the late phase only sets, never reads stale).
-        if (RenderSettings.bGPUDriven)
-        {
-            RHI::CmdMemset(CL, GetBucketCount().Ptr, GetBucketCount().Size, 0u);
-        }
         Barriers::TransferToAll(CL);
 
         RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(CullShader));
@@ -4923,8 +4675,6 @@ namespace Lumina
         PC.IndirectArgsAddr    = GetIndirectArgs().GetAddress();
         PC.DeferListAddr       = GetMeshletDeferList().GetAddress();
         PC.DeferCountAddr      = GetDeferCount().GetAddress();
-        PC.WriteBucketCount    = RenderSettings.bGPUDriven ? 1u : 0u;
-        PC.BucketCountAddr     = RenderSettings.bGPUDriven ? GetBucketCount().GetAddress() : 0ull;
 
         // Flat thread-per-meshlet; workgroups beyond the 65535 X cap fold into Y.
         const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
@@ -4974,8 +4724,6 @@ namespace Lumina
         PC.IndirectArgsAddr    = GetIndirectArgs().GetAddress();
         PC.DeferListAddr       = GetMeshletDeferList().GetAddress();
         PC.DeferCountAddr      = GetDeferCount().GetAddress();
-        PC.WriteBucketCount    = RenderSettings.bGPUDriven ? 1u : 0u;
-        PC.BucketCountAddr     = RenderSettings.bGPUDriven ? GetBucketCount().GetAddress() : 0ull;
 
         // Same X/Y fold as CullPassEarly so Vulkan's 65535 per-axis workgroup
         // limit doesn't cap us on very large scenes.
@@ -5211,7 +4959,9 @@ namespace Lumina
             }
 
             RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
-            DrawMeshBatchIndirect(CL, MakeArgs(), ViewBase, Batch);
+            RHI::CmdDrawIndirect(CL, MakeArgs(),
+                GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
         }
 
         RHI::CmdEndRenderPass(CL);
@@ -5441,7 +5191,9 @@ namespace Lumina
                     Key.DepthFormat = EFormat::D32;
                     RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                    DrawMeshBatchIndirect(CL, MakeArgs(PointPush), FaceBase, Batch);
+                    RHI::CmdDrawIndirect(CL, MakeArgs(PointPush),
+                        GetIndirectArgs().Ptr, (FaceBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                        Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
                 }
             }
         }
@@ -5531,7 +5283,9 @@ namespace Lumina
                 Key.DepthFormat = EFormat::D32;
                 RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                DrawMeshBatchIndirect(CL, MakeArgs(SpotPush), ViewBase, Batch);
+                RHI::CmdDrawIndirect(CL, MakeArgs(SpotPush),
+                    GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
 
@@ -5621,7 +5375,9 @@ namespace Lumina
                 Key.DepthFormat = EFormat::D32;
                 RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-                DrawMeshBatchIndirect(CL, MakeArgs(CascadePush), ViewBase, Batch);
+                RHI::CmdDrawIndirect(CL, MakeArgs(CascadePush),
+                    GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
 
@@ -5816,12 +5572,16 @@ namespace Lumina
             RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
 
             const uint32 EarlyBase = CameraEarlyViewIndex * NumDrawsPerView;
-            DrawMeshBatchIndirect(CL, Args, EarlyBase, Batch);
+            RHI::CmdDrawIndirect(CL, Args,
+                GetIndirectArgs().Ptr, (EarlyBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
 
             if (CameraLateViewIndex != ~0u)
             {
                 const uint32 LateBase = CameraLateViewIndex * NumDrawsPerView;
-                DrawMeshBatchIndirect(CL, Args, LateBase, Batch);
+                RHI::CmdDrawIndirect(CL, Args,
+                    GetIndirectArgs().Ptr, (LateBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                    Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
             }
         }
 
@@ -7609,7 +7369,9 @@ namespace Lumina
             Key.ColorTargets.push_back({ Picker.Desc.Format, {} });
             RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
-            DrawMeshBatchIndirect(CL, MakeArgs(), ViewBase, Batch);
+            RHI::CmdDrawIndirect(CL, MakeArgs(),
+                GetIndirectArgs().Ptr, (ViewBase + Batch.IndirectDrawOffset) * sizeof(RHI::FDrawIndirectArguments),
+                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
         }
 
         RHI::CmdEndRenderPass(CL);
@@ -9737,26 +9499,6 @@ namespace Lumina
         RHI::FTransientAlloc Staging = RHI::Core::AllocTransient(Size);
         Memory::Memcpy(Staging.Cpu, Data, Size);
         RHI::CmdMemcpy(CL, Dst, Staging.Gpu, Size);
-    }
-
-    void FForwardRenderScene::DrawMeshBatchIndirect(RHI::FCmdListH CL, RHI::GPUPtr Args, uint32 ViewBase, const FMeshDrawCommand& Batch)
-    {
-        const uint32 ArgSlot = ViewBase + Batch.IndirectDrawOffset;
-        if (RenderSettings.bGPUDriven)
-        {
-            // One bucket == one indirect arg (InstanceCount written by CullMeshlets). The count is 0 for an empty
-            // (view,bucket), so CmdDrawIndirectCount skips it without a pipeline-bound zero-instance draw.
-            RHI::CmdDrawIndirectCount(CL, Args,
-                GetIndirectArgs().Ptr, ArgSlot * sizeof(RHI::FDrawIndirectArguments),
-                GetBucketCount().Ptr, ArgSlot * sizeof(uint32),
-                1u, sizeof(RHI::FDrawIndirectArguments));
-        }
-        else
-        {
-            RHI::CmdDrawIndirect(CL, Args,
-                GetIndirectArgs().Ptr, ArgSlot * sizeof(RHI::FDrawIndirectArguments),
-                Batch.DrawCount, sizeof(RHI::FDrawIndirectArguments));
-        }
     }
 
     void FForwardRenderScene::ResizeBufferIfNeeded(FSceneBuffer& Buffer, uint64 NeededSize, float SlackFactor, uint32& LowUsageCounter)

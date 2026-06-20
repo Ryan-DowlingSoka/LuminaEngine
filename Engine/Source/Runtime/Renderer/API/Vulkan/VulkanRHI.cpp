@@ -184,9 +184,12 @@ namespace Lumina::RHI
         Out |= EnumHasAnyFlags(Flags, EStageFlags::FragmentTests)   ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT 
                                                                            | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT : 0;
         
-        Out |= EnumHasAnyFlags(Flags, EStageFlags::VertexShader)    ? VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT 
+        Out |= EnumHasAnyFlags(Flags, EStageFlags::VertexShader)    ? VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
                                                                            | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT : 0;
-        
+
+        Out |= EnumHasAnyFlags(Flags, EStageFlags::MeshShader)      ? VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT : 0;
+        Out |= EnumHasAnyFlags(Flags, EStageFlags::TaskShader)      ? VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT : 0;
+
         Out |= EnumHasAnyFlags(Flags, EStageFlags::Host)            ? VK_PIPELINE_STAGE_2_HOST_BIT : 0;
         Out |= EnumHasAnyFlags(Flags, EStageFlags::AllCommands)     ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : 0;
 
@@ -505,6 +508,7 @@ namespace Lumina::RHI
         TVector<const char*>            EnabledDeviceExtensions;
         bool                            bUnifiedImageLayouts = false;
         bool                            bMemoryPriority = false;
+        bool                            bMeshShaderSupported = false;
         TUniquePtr<FVulkanCrashTracker> CrashTracker;
 
         VkDevice                        Device;
@@ -1002,6 +1006,7 @@ namespace Lumina::RHI
         bool bDeviceFault    = false;
         bool bNvDiagnostics  = false;
         bool bMemoryPriority = false;
+        bool bMeshShader     = false;
         {
             uint32 ExtCount = 0;
             vkEnumerateDeviceExtensionProperties(GDevice->PhysicsDevice, nullptr, &ExtCount, nullptr);
@@ -1053,6 +1058,9 @@ namespace Lumina::RHI
                 EnableIfPresent(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
             }
 
+            // Mesh/task shader pipeline. Feature support is confirmed (and the feature enabled) below.
+            bMeshShader = EnableIfPresent(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+
             // Device extensions requested by native-access clients (see Renderer/RHINative.h). Only
             // enabled if the driver advertises them and they aren't already in the list.
             for (const Native::FDeviceCreationRequest& Request : GPendingDeviceRequests)
@@ -1082,6 +1090,16 @@ namespace Lumina::RHI
         VkPhysicalDeviceVulkan11Features Supported11{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &Supported12 };
         VkPhysicalDeviceFeatures2        Supported2 { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,          .pNext = &Supported11 };
         vkGetPhysicalDeviceFeatures2(GDevice->PhysicsDevice, &Supported2);
+
+        // Mesh shader features queried separately so the struct is only chained when the extension is present.
+        VkPhysicalDeviceMeshShaderFeaturesEXT SupportedMesh{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT };
+        if (bMeshShader)
+        {
+            VkPhysicalDeviceFeatures2 MeshQuery{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &SupportedMesh };
+            vkGetPhysicalDeviceFeatures2(GDevice->PhysicsDevice, &MeshQuery);
+        }
+        GDevice->bMeshShaderSupported = bMeshShader && SupportedMesh.meshShader;
+        LOG_DISPLAY("Mesh/task shaders: {}", GDevice->bMeshShaderSupported ? "supported" : "unavailable");
 
         VkPhysicalDeviceFeatures Features10             = {};
         Features10.fragmentStoresAndAtomics             = VK_TRUE;
@@ -1120,7 +1138,6 @@ namespace Lumina::RHI
         Features12.runtimeDescriptorArray                       = VK_TRUE;
         Features12.shaderInt8                                   = VK_TRUE;
         Features12.shaderFloat16                                = VK_TRUE;
-        Features12.drawIndirectCount                            = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features Features13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         Features13.dynamicRendering = VK_TRUE;
@@ -1166,6 +1183,14 @@ namespace Lumina::RHI
             PageableFeatures.pageableDeviceLocalMemory = VK_TRUE;
             Chain(PageableFeatures);
             GDevice->bMemoryPriority = true;
+        }
+
+        VkPhysicalDeviceMeshShaderFeaturesEXT MeshShaderFeatures{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT };
+        if (GDevice->bMeshShaderSupported)
+        {
+            MeshShaderFeatures.meshShader = VK_TRUE;
+            MeshShaderFeatures.taskShader = SupportedMesh.taskShader;
+            Chain(MeshShaderFeatures);
         }
 
         VkDeviceDiagnosticsConfigCreateInfoNV* NvDiagnostics = nullptr;
@@ -2158,6 +2183,260 @@ namespace Lumina::RHI
         vkDestroyShaderModule(*GDevice, ShaderModule, nullptr);
 
         return GDevice->Pipelines.Emplace(Pipeline, VK_PIPELINE_BIND_POINT_COMPUTE);
+    }
+
+    bool SupportsMeshShaders()
+    {
+        return GDevice != nullptr && GDevice->bMeshShaderSupported;
+    }
+
+    FPipelineH CreateMeshShaderPipeline(const FShaderSource& Task, const FShaderSource& Mesh, const FShaderSource& Fragment, const FRasterDesc& Desc, TSpan<const FSpecializationConstant> Constants)
+    {
+        if (!GDevice->bMeshShaderSupported)
+        {
+            LOG_ERROR("CreateMeshShaderPipeline called but the device does not support mesh shaders.");
+            return {};
+        }
+
+        auto MakeModule = [](const FShaderSource& Src) -> VkShaderModule
+        {
+            if (Src.Source.empty())
+            {
+                return VK_NULL_HANDLE;
+            }
+
+            VkShaderModuleCreateInfo Info
+            {
+                .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .pNext    = nullptr,
+                .flags    = 0,
+                .codeSize = Src.Source.size(),
+                .pCode    = reinterpret_cast<const uint32*>(Src.Source.data()),
+            };
+
+            VkShaderModule Module;
+            VK_CHECK(vkCreateShaderModule(*GDevice, &Info, nullptr, &Module));
+            return Module;
+        };
+
+        // Mesh stage is required; task and fragment are optional.
+        VkShaderModule TaskModule = MakeModule(Task);
+        VkShaderModule MeshModule = MakeModule(Mesh);
+        VkShaderModule FragModule = MakeModule(Fragment);
+
+        FMemMark Mark;
+        const VkSpecializationInfo SpecializationInfo = ConstructSpecializationInfo(Mark, Constants);
+
+        VkPipelineShaderStageCreateInfo Stages[3];
+        uint32 StageCount = 0;
+        if (TaskModule != VK_NULL_HANDLE)
+        {
+            Stages[StageCount++] = VkPipelineShaderStageCreateInfo
+            {
+                .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext               = nullptr,
+                .flags               = 0,
+                .stage               = VK_SHADER_STAGE_TASK_BIT_EXT,
+                .module              = TaskModule,
+                .pName               = "main",
+                .pSpecializationInfo = &SpecializationInfo,
+            };
+        }
+        Stages[StageCount++] = VkPipelineShaderStageCreateInfo
+        {
+            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext               = nullptr,
+            .flags               = 0,
+            .stage               = VK_SHADER_STAGE_MESH_BIT_EXT,
+            .module              = MeshModule,
+            .pName               = "main",
+            .pSpecializationInfo = &SpecializationInfo,
+        };
+        if (FragModule != VK_NULL_HANDLE)
+        {
+            Stages[StageCount++] = VkPipelineShaderStageCreateInfo
+            {
+                .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext               = nullptr,
+                .flags               = 0,
+                .stage               = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module              = FragModule,
+                .pName               = "main",
+                .pSpecializationInfo = &SpecializationInfo,
+            };
+        }
+
+        VkFormat DepthAttachmentFormat   = ConvertFormat(Desc.DepthFormat);
+        VkFormat StencilAttachmentFormat = ConvertFormat(Desc.StencilFormat);
+
+        const uint32 ColorTargetCount = static_cast<uint32>(Desc.ColorTargets.size());
+
+        auto* ColorBlendAttachments  = Mark.AllocArray<VkPipelineColorBlendAttachmentState>(ColorTargetCount);
+        auto* ColorAttachmentFormats = Mark.AllocArray<VkFormat>(ColorTargetCount);
+
+        for (uint32 i = 0; i < ColorTargetCount; ++i)
+        {
+            const FBlendDesc& Blend = Desc.ColorTargets[i].Blend;
+
+            ColorBlendAttachments[i].blendEnable         = Blend.bBlendEnable;
+            ColorBlendAttachments[i].srcColorBlendFactor = ToVkBlendFactor(Blend.SrcColorFactor);
+            ColorBlendAttachments[i].dstColorBlendFactor = ToVkBlendFactor(Blend.DstColorFactor);
+            ColorBlendAttachments[i].colorBlendOp        = ToVkBlendOp(Blend.ColorOp);
+            ColorBlendAttachments[i].srcAlphaBlendFactor = ToVkBlendFactor(Blend.SrcAlphaFactor);
+            ColorBlendAttachments[i].dstAlphaBlendFactor = ToVkBlendFactor(Blend.DstAlphaFactor);
+            ColorBlendAttachments[i].alphaBlendOp        = ToVkBlendOp(Blend.AlphaOp);
+            ColorBlendAttachments[i].colorWriteMask      = static_cast<VkColorComponentFlags>(Blend.ColorWriteMask & 0xF);
+
+            ColorAttachmentFormats[i] = ConvertFormat(Desc.ColorTargets[i].Format);
+        }
+
+        VkPipelineColorBlendStateCreateInfo ColorBlendStates
+        {
+            .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .pNext           = nullptr,
+            .flags           = 0,
+            .logicOpEnable   = false,
+            .logicOp         = VK_LOGIC_OP_NO_OP,
+            .attachmentCount = ColorTargetCount,
+            .pAttachments    = ColorBlendAttachments,
+            .blendConstants  = {1.f, 1.f, 1.f, 1.f},
+        };
+
+        VkPipelineRasterizationStateCreateInfo RasterState
+        {
+            .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext                   = nullptr,
+            .flags                   = 0,
+            .depthClampEnable        = false,
+            .rasterizerDiscardEnable = false,
+            .polygonMode             = Desc.bWireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
+            .cullMode                = VK_CULL_MODE_BACK_BIT,
+            .frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .depthBiasEnable         = true,
+            .depthBiasConstantFactor = 0,
+            .depthBiasClamp          = 0,
+            .depthBiasSlopeFactor    = 0,
+            .lineWidth               = 1.0f,
+        };
+
+        const VkSampleCountFlagBits SampleCount = static_cast<VkSampleCountFlagBits>(Desc.SampleCount == 0 ? 1 : Desc.SampleCount);
+
+        VkPipelineMultisampleStateCreateInfo MultiSampleState
+        {
+            .sType                 = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .pNext                 = nullptr,
+            .flags                 = 0,
+            .rasterizationSamples  = SampleCount,
+            .sampleShadingEnable   = false,
+            .minSampleShading      = 1.0f,
+            .pSampleMask           = nullptr,
+            .alphaToCoverageEnable = Desc.bAlphaToCoverage,
+            .alphaToOneEnable      = false,
+        };
+
+        VkPipelineDepthStencilStateCreateInfo DepthStencilState
+        {
+            .sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext                 = nullptr,
+            .flags                 = 0,
+            .depthTestEnable       = VK_FALSE,
+            .depthWriteEnable      = VK_FALSE,
+            .depthCompareOp        = VK_COMPARE_OP_ALWAYS,
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable     = VK_FALSE,
+            .minDepthBounds        = 0.0f,
+            .maxDepthBounds        = 1.0f,
+        };
+
+        VkDynamicState DynamicState[] =
+        {
+            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+            VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+            VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE,
+            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
+            VK_DYNAMIC_STATE_STENCIL_OP,
+            VK_DYNAMIC_STATE_DEPTH_BOUNDS,
+            VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
+            VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+            VK_DYNAMIC_STATE_CULL_MODE,
+            VK_DYNAMIC_STATE_FRONT_FACE,
+            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+            VK_DYNAMIC_STATE_DEPTH_BIAS,
+            VK_DYNAMIC_STATE_LINE_WIDTH,
+        };
+
+        VkPipelineViewportStateCreateInfo ViewportState
+        {
+            .sType          = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext          = nullptr,
+            .flags          = 0,
+            .viewportCount  = 0,
+            .pViewports     = nullptr,
+            .scissorCount   = 0,
+            .pScissors      = nullptr
+        };
+
+        VkPipelineDynamicStateCreateInfo DynamicStateInfo
+        {
+            .sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .pNext             = nullptr,
+            .flags             = 0,
+            .dynamicStateCount = std::size(DynamicState),
+            .pDynamicStates    = DynamicState,
+        };
+
+        VkPipelineRenderingCreateInfo PipelineCreate
+        {
+            .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .pNext                   = nullptr,
+            .viewMask                = 0,
+            .colorAttachmentCount    = ColorTargetCount,
+            .pColorAttachmentFormats = ColorAttachmentFormats,
+            .depthAttachmentFormat   = DepthAttachmentFormat,
+            .stencilAttachmentFormat = StencilAttachmentFormat,
+        };
+
+        // Mesh pipelines have no input assembler: pVertexInputState / pInputAssemblyState are ignored (left null).
+        VkGraphicsPipelineCreateInfo CreateInfo
+        {
+            .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext               = &PipelineCreate,
+            .flags               = 0,
+            .stageCount          = StageCount,
+            .pStages             = Stages,
+            .pVertexInputState   = nullptr,
+            .pInputAssemblyState = nullptr,
+            .pTessellationState  = nullptr,
+            .pViewportState      = &ViewportState,
+            .pRasterizationState = &RasterState,
+            .pMultisampleState   = &MultiSampleState,
+            .pDepthStencilState  = &DepthStencilState,
+            .pColorBlendState    = &ColorBlendStates,
+            .pDynamicState       = &DynamicStateInfo,
+            .layout              = GDevice->PipelineLayout,
+            .renderPass          = VK_NULL_HANDLE,
+            .subpass             = 0,
+            .basePipelineHandle  = VK_NULL_HANDLE,
+            .basePipelineIndex   = 0,
+        };
+
+        VkPipeline VulkanPipeline;
+        VK_CHECK(vkCreateGraphicsPipelines(*GDevice, nullptr, 1, &CreateInfo, nullptr, &VulkanPipeline));
+
+        if (TaskModule != VK_NULL_HANDLE)
+        {
+            vkDestroyShaderModule(*GDevice, TaskModule, nullptr);
+        }
+        vkDestroyShaderModule(*GDevice, MeshModule, nullptr);
+        if (FragModule != VK_NULL_HANDLE)
+        {
+            vkDestroyShaderModule(*GDevice, FragModule, nullptr);
+        }
+
+        return GDevice->Pipelines.Emplace(VulkanPipeline, VK_PIPELINE_BIND_POINT_GRAPHICS);
     }
 
     FSemaphoreH CreateSemaphore(uint64 Value)
@@ -3801,14 +4080,49 @@ namespace Lumina::RHI
         vkCmdDrawIndexedIndirect(VkCmdBuf, ArgsBuffer, BufferOffset, DrawCount, Stride);
     }
 
-    void CmdDrawIndirectCount(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 IndirectOffset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride)
+    void CmdDrawMeshTasks(FCmdListH CL, GPUPtr DrawArgs, uint32 GroupCountX, uint32 GroupCountY, uint32 GroupCountZ)
+    {
+        VkCommandBuffer VkCmdBuf = GDevice->CommandLists[CL].CommandBuffer;
+        if (DrawArgs != NULL)
+        {
+            vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &DrawArgs);
+        }
+
+        vkCmdDrawMeshTasksEXT(VkCmdBuf, GroupCountX, GroupCountY, GroupCountZ);
+    }
+
+    void CmdDrawMeshTasksIndirect(FCmdListH CL, GPUPtr DrawArgs, GPUPtr IndirectBuffer, uint32 Offset, uint32 DrawCount, uint32 Stride)
     {
         VkCommandBuffer VkCmdBuf = GDevice->CommandLists[CL].CommandBuffer;
 
-        VkBuffer     ArgsVkBuffer;
-        VkDeviceSize ArgsBufferOffset;
-        VkBuffer     CountVkBuffer;
-        VkDeviceSize CountBufferOffset;
+        VkBuffer ArgsBuffer;
+        VkDeviceSize BufferOffset;
+
+        {
+            FScopeLock Lock(GDevice->MemoryMutex);
+            const FMemoryBlock* BufferIt = FindMemory(IndirectBuffer);
+            if (BufferIt == nullptr)
+            {
+                return;
+            }
+
+            ArgsBuffer   = BufferIt->Buffer;
+            BufferOffset = (IndirectBuffer - BufferIt->Device) + Offset;
+        }
+
+        if (DrawArgs != 0)
+        {
+            vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &DrawArgs);
+        }
+        vkCmdDrawMeshTasksIndirectEXT(VkCmdBuf, ArgsBuffer, BufferOffset, DrawCount, Stride);
+    }
+
+    void CmdDrawMeshTasksIndirectCount(FCmdListH CL, GPUPtr DrawArgs, GPUPtr IndirectBuffer, uint32 Offset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride)
+    {
+        VkCommandBuffer VkCmdBuf = GDevice->CommandLists[CL].CommandBuffer;
+
+        VkBuffer ArgsBuffer;     VkDeviceSize ArgsOffset;
+        VkBuffer CountVkBuffer;  VkDeviceSize CountVkOffset;
 
         {
             FScopeLock Lock(GDevice->MemoryMutex);
@@ -3819,17 +4133,17 @@ namespace Lumina::RHI
                 return;
             }
 
-            ArgsVkBuffer      = ArgsIt->Buffer;
-            ArgsBufferOffset  = (IndirectBuffer - ArgsIt->Device) + IndirectOffset;
-            CountVkBuffer     = CountIt->Buffer;
-            CountBufferOffset = (CountBuffer - CountIt->Device) + CountOffset;
+            ArgsBuffer    = ArgsIt->Buffer;
+            ArgsOffset    = (IndirectBuffer - ArgsIt->Device) + Offset;
+            CountVkBuffer = CountIt->Buffer;
+            CountVkOffset = (CountBuffer - CountIt->Device) + CountOffset;
         }
 
-        if (Args != 0)
+        if (DrawArgs != 0)
         {
-            vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &Args);
+            vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &DrawArgs);
         }
-        vkCmdDrawIndirectCount(VkCmdBuf, ArgsVkBuffer, ArgsBufferOffset, CountVkBuffer, CountBufferOffset, MaxDrawCount, Stride);
+        vkCmdDrawMeshTasksIndirectCountEXT(VkCmdBuf, ArgsBuffer, ArgsOffset, CountVkBuffer, CountVkOffset, MaxDrawCount, Stride);
     }
 
     void CmdBeginMarker(FCmdListH CL, const char* Name)

@@ -17,6 +17,9 @@ struct PSInput
     float4 FragPos      : FRAG_POS;
     float2 UV           : TEXCOORD0;
     uint InstanceIndex  : INSTANCE;
+    nointerpolation uint EntityID      : ENTITY_ID;
+    nointerpolation uint MaterialIndex : MATERIAL_INDEX;
+    nointerpolation uint InstanceFlags : INSTANCE_FLAGS;
     nointerpolation uint MeshletIndex : MESHLET_INDEX;
     float4 Position     : SV_Position;
 };
@@ -693,10 +696,10 @@ float3 EvaluateLightContribution(FLight Light, FShadingContext S, float3 L, floa
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    FGPUInstance Inst = GetInstance(Input.InstanceIndex);
-
-    uint EntityID           = Inst.EntityID;
-    uint MaterialIndex      = Inst.MaterialIndex;
+    // Per-instance constants come in flat from the VS -- no per-pixel 128B FGPUInstance global load.
+    uint EntityID           = Input.EntityID;
+    uint MaterialIndex      = Input.MaterialIndex;
+    bool bReceiveShadow     = (Input.InstanceFlags & (uint)EInstanceFlags::ReceiveShadow) != 0u;
     float3 WorldNormal      = normalize(Input.NormalWS.xyz);
     float3 ViewPosition     = Input.FragPos.xyz;
     float3 WorldPosition    = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
@@ -797,7 +800,7 @@ PSOutput FragmentMain(PSInput Input)
         float  SunNdotL = dot(N, SunL);
         if (SunNdotL > 0.0)
         {
-            float Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
+            float Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, bReceiveShadow);
             Lo += EvaluateLightContribution(Light, Ctx, SunL, 0.0) * Shadow;
         }
     }
@@ -844,7 +847,7 @@ PSOutput FragmentMain(PSInput Input)
         float Shadow = 1.0;
         if (Light.ShadowDataIndex != INDEX_NONE)
         {
-            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
+            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, bReceiveShadow);
         }
 
         Lo += EvaluateLightContribution(Light, Ctx, L, DistToLight) * Shadow;

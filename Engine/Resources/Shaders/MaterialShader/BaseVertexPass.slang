@@ -13,6 +13,10 @@ struct VSOutput
     float2 UV                       : TEXCOORD0;
 
     uint InstanceIndex              : INSTANCE;
+    // Per-instance constants forwarded flat so the pixel shader never re-reads the 128B FGPUInstance per pixel.
+    nointerpolation uint EntityID      : ENTITY_ID;
+    nointerpolation uint MaterialIndex : MATERIAL_INDEX;
+    nointerpolation uint InstanceFlags : INSTANCE_FLAGS;
     nointerpolation uint MeshletIndex : MESHLET_INDEX;
 
     // Position math must match DepthPrePass.slang for the equal-depth test.
@@ -33,6 +37,9 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
 
     VSOutput Output;
     Output.InstanceIndex = Draw.InstanceID;
+    Output.EntityID      = Inst.EntityID;
+    Output.MaterialIndex = Inst.MaterialIndex;
+    Output.InstanceFlags = (uint)Inst.Flags;
     Output.MeshletIndex  = GlobalMeshletIdx;
 
     if (TriIdx >= M.TriangleCount)

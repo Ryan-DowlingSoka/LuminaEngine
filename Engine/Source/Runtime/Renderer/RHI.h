@@ -88,6 +88,8 @@ namespace Lumina::RHI
         VertexShader      = BIT(7),
         Host              = BIT(8),
         AllCommands       = BIT(9),
+        MeshShader        = BIT(10),
+        TaskShader        = BIT(11),
     };
     
     ENUM_CLASS_FLAGS(EStageFlags);
@@ -300,7 +302,15 @@ namespace Lumina::RHI
         uint32 GroupY;
         uint32 GroupZ;
     };
-    
+
+    // VkDrawMeshTasksIndirectCommandEXT mirror: one mesh/task workgroup grid per indirect draw.
+    struct FDrawMeshTasksIndirectArguments
+    {
+        uint32 GroupCountX;
+        uint32 GroupCountY;
+        uint32 GroupCountZ;
+    };
+
     struct FTextureDesc
     {
         ETextureType Type = ETextureType::Tex2D;
@@ -455,6 +465,9 @@ namespace Lumina::RHI
     RUNTIME_API void           GetGPUMemoryStats(FGPUMemoryStats& Out);
     RUNTIME_API FGPUDeviceInfo GetDeviceInfo();
 
+    // True when VK_EXT_mesh_shader (mesh stage) is available and enabled on the device.
+    RUNTIME_API bool           SupportsMeshShaders();
+
     RUNTIME_API void        CreateDevice(const FDeviceDesc& Desc = {});
     RUNTIME_API void        FreeDevice();
     RUNTIME_API void        TickFrame();
@@ -492,6 +505,8 @@ namespace Lumina::RHI
     RUNTIME_API FDepthStencilH  CreateDepthStencil(const FDepthStencilDesc& Desc);
     RUNTIME_API FPipelineH      CreateGraphicsPipeline(const FShaderSource& Vertex, const FShaderSource& Fragment, const FRasterDesc& Desc, TSpan<const FSpecializationConstant> Constants = {});
     RUNTIME_API FPipelineH      CreateComputePipeline(const FShaderSource& Compute, TSpan<const FSpecializationConstant> Constants = {});
+    // Task stage is optional (empty Source = mesh-only). Requires SupportsMeshShaders(); returns an invalid handle otherwise.
+    RUNTIME_API FPipelineH      CreateMeshShaderPipeline(const FShaderSource& Task, const FShaderSource& Mesh, const FShaderSource& Fragment, const FRasterDesc& Desc, TSpan<const FSpecializationConstant> Constants = {});
     RUNTIME_API FSemaphoreH     CreateSemaphore(uint64 Value);
     RUNTIME_API FTextureH       CreateTexture(const FTextureDesc& Desc, GPUPtr Location = 0);
     RUNTIME_API FTextureHeapH   CreateTextureHeap(uint32 TextureCount, uint32 RWTextureCount, uint32 SamplerCount);
@@ -599,10 +614,11 @@ namespace Lumina::RHI
     RUNTIME_API void        CmdDrawIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset, uint32 DrawCount, uint32 Stride);
     RUNTIME_API void        CmdDispatchIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset);
 
-    // GPU-driven draw: the draw count is read from CountBuffer at CountOffset (written by a prior compute
-    // pass), capped at MaxDrawCount. IndirectBuffer holds MaxDrawCount FDrawIndirectArguments at IndirectOffset.
-    // Both buffers must carry indirect-buffer usage. Requires the drawIndirectCount device feature.
-    RUNTIME_API void        CmdDrawIndirectCount(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 IndirectOffset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride);
+    // Mesh/task shader draws (require a CreateMeshShaderPipeline pipeline bound). DrawArgs is the push-constant
+    // GPUPtr (shader args), as with the other Cmd* draws. The indirect buffers hold FDrawMeshTasksIndirectArguments.
+    RUNTIME_API void        CmdDrawMeshTasks(FCmdListH CL, GPUPtr DrawArgs, uint32 GroupCountX, uint32 GroupCountY, uint32 GroupCountZ);
+    RUNTIME_API void        CmdDrawMeshTasksIndirect(FCmdListH CL, GPUPtr DrawArgs, GPUPtr IndirectBuffer, uint32 Offset, uint32 DrawCount, uint32 Stride);
+    RUNTIME_API void        CmdDrawMeshTasksIndirectCount(FCmdListH CL, GPUPtr DrawArgs, GPUPtr IndirectBuffer, uint32 Offset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride);
 
     RUNTIME_API void        CmdBeginMarker(FCmdListH CL, const char* Name);
     RUNTIME_API void        CmdEndMarker(FCmdListH CL);

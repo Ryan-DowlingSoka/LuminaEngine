@@ -120,19 +120,6 @@ namespace Lumina
         }
     };
 
-    // Per-surface descriptor for the GPU-driven expand pass: it reads this to pick a LOD and its meshlet
-    // range. Mirror of FGeometrySurface's LOD payload. Pointed at by FMeshletHeaderGPU::SurfacesAddress.
-    struct alignas(16) FSurfaceDescGPU
-    {
-        uint32 StartIndex;
-        uint32 IndexCount;
-        int32  MaterialSlot;                        // FGeometrySurface::MaterialIndex (default slot; -1 ok)
-        uint32 NumLODs;
-        uint32 LODMeshletOffset[MAX_MESH_LODS];
-        uint32 LODMeshletCount[MAX_MESH_LODS];
-        float  LODScreenThreshold[MAX_MESH_LODS];
-    };
-
     // Per-mesh GPU header. Reached through FGPUInstance's MeshletHeader BDA.
     // MeshOrigin/MeshGridStep are per-LOD; the VS indexes them by FMeshlet::LODIndex.
     struct alignas(16) FMeshletHeaderGPU
@@ -143,14 +130,6 @@ namespace Lumina
         uint64    TrianglesAddress;                 // uint32*
         FVector4 MeshOrigin[MAX_MESH_LODS];        // xyz = per-LOD grid origin
         FVector4 MeshGridStep[MAX_MESH_LODS];      // xyz = per-LOD grid cell size
-        // GPU-driven expand fields (append-only: the offsets above are read by the cull/draw shaders and
-        // must not shift). Local-space AABB + the per-surface descriptor table for on-GPU cull/LOD.
-        FVector4  AABBMin;                          // xyz = local AABB min
-        FVector4  AABBMax;                          // xyz = local AABB max
-        uint64    SurfacesAddress;                  // FSurfaceDescGPU* (SurfaceCount entries)
-        uint32    SurfaceCount;
-        uint32    bSkinned;
-        uint32    _ExpandPad[2];
     };
 
     struct FGeometrySurface final
@@ -189,7 +168,6 @@ namespace Lumina
             RHI::GPUPtr MeshletVertexBuffer = 0;
             RHI::GPUPtr MeshletTriangleBuffer = 0;
             RHI::GPUPtr MeshletHeaderBuffer = 0;
-            RHI::GPUPtr SurfaceDescBuffer = 0;
 
             ~FMeshBuffers()
             {
@@ -198,7 +176,6 @@ namespace Lumina
                 RHI::Core::DeferredFree(MeshletVertexBuffer);
                 RHI::Core::DeferredFree(MeshletTriangleBuffer);
                 RHI::Core::DeferredFree(MeshletHeaderBuffer);
-                RHI::Core::DeferredFree(SurfaceDescBuffer);
             }
         };
 

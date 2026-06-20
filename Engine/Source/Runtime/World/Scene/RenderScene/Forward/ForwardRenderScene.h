@@ -472,8 +472,6 @@ namespace Lumina
         FSceneBuffer GetMeshletDeferList() const { return MeshletDeferListRing[CurrentFrameSlot]; }
         FSceneBuffer GetDeferCount()       const { return DeferCountRing[CurrentFrameSlot]; }
         FSceneBuffer GetSpdCounter()       const { return SpdCounterRing[CurrentFrameSlot]; }
-        // GPU-driven: per-(view,bucket) draw count (0 = empty, skipped by CmdDrawIndirectCount). Cull-written.
-        FSceneBuffer GetBucketCount()      const { return BucketCountRing[CurrentFrameSlot]; }
 
         // MSAA scratch RT when enabled, else the 1x image; use for the render-target
         // binding on geometry passes that participate in MSAA. 1x image is the resolve target.
@@ -595,14 +593,6 @@ namespace Lumina
         void BuildSceneCullContext();
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
 
-        // GPU-driven path (RenderSettings.bGPUDriven): merges per-thread batches into one draw command per
-        // bucket (=PSO) and writes a flat FGPUInstance stream tagged with its bucket index in DrawID, skipping
-        // the per-surface dedup/prefix the legacy MergeMeshDrawData does. The GPU then culls + compacts into
-        // per-(view,bucket) indirect draws. Each FMeshDrawCommand is one bucket: IndirectDrawOffset = bucket,
-        // DrawCount = 1, NumDrawsPerView = NumBuckets, so BuildCullViews/CullMeshlets/the draw passes are reused
-        // unchanged (they are already driven by those fields).
-        void EmitDrawData_GPUDriven(TVector<FThreadLocalDrawData>& ThreadLocal);
-
         // Bind this worker's draw-data slot to its thread frame arena on the first touch of a gather pass,
         // then accumulate. Must be called from inside a parallel-for body (Slot == Range.Thread); the arena
         // is thread-local, so Slot's OS thread and the arena it allocates from are one and the same.
@@ -661,10 +651,6 @@ namespace Lumina
 
         static void WriteBuffer(RHI::FCmdListH CL, RHI::GPUPtr Dst, const void* Data, uint64 Size);
 
-        // Single mesh draw-submission seam: issues one indirect draw for batch slot (ViewBase + Batch.IndirectDrawOffset).
-        // GPU-driven uses CmdDrawIndirectCount (bucket count skips empties); legacy uses CmdDrawIndirect(Batch.DrawCount).
-        void DrawMeshBatchIndirect(RHI::FCmdListH CL, RHI::GPUPtr Args, uint32 ViewBase, const FMeshDrawCommand& Batch);
-
         // Grow/shrink-with-hysteresis for the persistent GPU buffers; the replaced
         // allocation is queued on DeferredFrees for the current slot.
         void ResizeBufferIfNeeded(FSceneBuffer& Buffer, uint64 NeededSize, float SlackFactor, uint32& LowUsageCounter);
@@ -680,7 +666,6 @@ namespace Lumina
         TArray<uint32, RHI::kFramesInFlight>                IndirectArgsRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshletDrawListRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshletDeferListRingLowUsage = {};
-        TArray<uint32, RHI::kFramesInFlight>                BucketCountRingLowUsage = {};
         TArray<FSceneImage, (int)ENamedImage::Num>          NamedImages = {};
 
         /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */
@@ -748,8 +733,6 @@ namespace Lumina
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDeferListRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          DeferCountRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          SpdCounterRing = {};
-        // GPU-driven only: NumViews*NumBuckets uint32 draw counts, written by CullMeshlets, read by CmdDrawIndirectCount.
-        TArray<FSceneBuffer, RHI::kFramesInFlight>                          BucketCountRing = {};
         
         uint8                                                           CurrentFrameSlot = 0;
 
