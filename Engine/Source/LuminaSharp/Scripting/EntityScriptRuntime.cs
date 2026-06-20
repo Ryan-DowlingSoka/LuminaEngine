@@ -4,18 +4,9 @@ using System.Runtime.InteropServices;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// Owns the live EntityScript instances for one loaded generation. The link to native is a
-/// <see cref="GCHandle"/> stored on the native SCSharpScriptComponent, every per-instance call
-/// (ready/update/destroy/dispatch/apply) dereferences that handle directly, so there is NO per-handle
-/// or per-world lookup dictionary. The only collection kept is a flat set of live handles, used solely
-/// to free them before the ALC unloads (a strong GCHandle pins its target, so they must all be freed
-/// or the collectible context can't unload). Reflection lives in the <see cref="TypeLibrary"/>.
-///
-/// Lifecycle is driven entirely by the native ECS view: native creates on attach, calls OnReady once
-/// the whole world's batch is attached, batches OnUpdate into one crossing per world, and destroys on
-/// detach. This type holds no per-world state.
-/// </summary>
+// Owns the live EntityScript instances for one loaded generation. Native links each via a GCHandle stored on
+// SCSharpScriptComponent (dereferenced directly per call, no lookup map); LiveHandles only exists to free them
+// all before the collectible ALC unloads. Lifecycle is driven entirely by the native ECS view.
 internal sealed class EntityScriptRuntime
 {
     private readonly TypeLibrary Library;
@@ -54,6 +45,7 @@ internal sealed class EntityScriptRuntime
 
         Script.Entity = new Entity(Entity);
         Script.World = new Lumina.CWorld(new IntPtr(unchecked((long)World)));
+        Script.Description = Description;
 
         try
         {
@@ -83,7 +75,7 @@ internal sealed class EntityScriptRuntime
         {
             try
             {
-                Library.Describe(Script.GetType()).InjectRequiredComponents(Script);
+                Script.Description.InjectRequiredComponents(Script);
             }
             catch (Exception Exception)
             {
@@ -101,8 +93,8 @@ internal sealed class EntityScriptRuntime
         }
     }
 
-    /// <summary>One crossing per world per frame: OnUpdate every ready script via direct virtual
-    /// dispatch over the handle array native hands us.</summary>
+    /// <summary>One crossing per world per frame: OnUpdate the handles native gathered (only scripts that override
+    /// OnUpdate, pre-filtered by the callback flag).</summary>
     public unsafe void Update(IntPtr* Handles, int Count, float DeltaTime)
     {
         bool Profiling = Profiler.Enabled;
@@ -117,7 +109,7 @@ internal sealed class EntityScriptRuntime
             {
                 if (Profiling)
                 {
-                    Profiler.Begin(Script.GetType().Name);
+                    Profiler.Begin(Script.Description.ProfileLabel);
                 }
                 try
                 {
@@ -157,7 +149,7 @@ internal sealed class EntityScriptRuntime
             {
                 if (Profiling)
                 {
-                    Profiler.Begin(Script.GetType().Name + ".FixedUpdate");
+                    Profiler.Begin(Script.Description.FixedProfileLabel);
                 }
                 try
                 {
@@ -322,7 +314,7 @@ internal sealed class EntityScriptRuntime
         {
             return 0;
         }
-        return Library.Describe(Script.GetType()).CollisionCallbackFlags;
+        return Script.Description.CallbackFlags;
     }
 
     public unsafe void ApplyProperties(IntPtr Handle, byte* Blob, int Length)
@@ -331,8 +323,7 @@ internal sealed class EntityScriptRuntime
         {
             return;
         }
-        TypeDescription Description = Library.Describe(Script.GetType());
-        Serializer.ApplyValues(Script, Description.Properties, Blob, Length);
+        Serializer.ApplyValues(Script, Script.Description.Properties, Blob, Length);
     }
 
     public byte[]? Schema(string TypeName)

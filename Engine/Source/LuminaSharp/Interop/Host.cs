@@ -6,38 +6,24 @@ using System.Runtime.Loader;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// The managed entry surface FDotNetHost calls. Every entry is [UnmanagedCallersOnly] (blittable args
-/// only) and guards the boundary: nothing may unwind into native code, so each catch funnels through
-/// <see cref="Interop.LogException"/>. The entry method names here are a name-based ABI contract with
-/// the native host (FDotNetHost looks them up by string) and must not be renamed.
-///
-/// The per-instance entries take an IntPtr that IS a strong GCHandle to the managed EntityScript,
-/// stored on the native SCSharpScriptComponent, no managed lookup table. The world's native ECS
-/// system drives create -> ready -> update -> destroy and batches OnUpdate into one UpdateScripts call.
-/// </summary>
+/// Managed entry surface for FDotNetHost. Entry method names are a name-based ABI contract and must not be renamed. Per-instance entries take an IntPtr that IS a strong GCHandle to the managed EntityScript.
 public static unsafe partial class Host
 {
-    // Must equal Lumina::DotNet::GAbiVersion.
-    // v4: LoadScripts takes per-unit assembly buckets (FSourceAssembly) instead of a flat source list.
-    // v5: native->managed exports resolved by name (ManagedExportRegistry) instead of a mirrored struct/hash.
-    // v6: EnumerateEntitySystems sink carries declared read/write component-ops tokens (parallel C# systems).
+    // Must equal Lumina::DotNet::GAbiVersion. Bump on ABI breaks.
     private const int AbiVersion = 6;
 
-    // The logical module name for the engine module that hosts this assembly (Runtime). NativeBindings
-    // resolves it to the loaded native handle via ModuleHandle; per-module bindings use their own names.
+    // Logical name for the engine module hosting this assembly (Runtime); resolved to a native handle via ModuleHandle.
     public const string NativeLibrary = "LuminaNative";
 
     private static ScriptManager? Scripts;
     private static IntPtr NativeModule;
     private static readonly Dictionary<string, IntPtr> ModuleHandles = new();
 
-    // Bootstrap-critical exports, resolved directly from the host (Runtime) module. Every other binding
-    // resolves lazily through ModuleHandle (which uses ResolveModuleHandlePtr). No [DllImport] anywhere.
+    // Bootstrap-critical exports, resolved directly from the host (Runtime) module.
     private static delegate* unmanaged[Cdecl]<int, int, int> NativeSelfTestPtr;
     private static delegate* unmanaged[Cdecl]<byte*, int, IntPtr> ResolveModuleHandlePtr;
 
-    // Bootstrap is the ONE entry the native host resolves by name (hostfxr); it is not in the export table.
+    // The ONE entry the native host resolves by name (hostfxr); not in the export table.
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int Bootstrap(FBootstrapArgs* Args)
     {
@@ -56,7 +42,6 @@ public static unsafe partial class Host
             NativeModule = Args->NativeModule;
             Native.SetExports(*Args->Exports);
 
-            // Register every engine [ManagedExport] by name; native resolves each via ResolveManagedExport.
             ManagedExportTable.RegisterEngineExports();
 
             NativeSelfTestPtr = (delegate* unmanaged[Cdecl]<int, int, int>)NativeBindings.ResolveFrom(NativeModule, "LuminaSharp_NativeSelfTest");
@@ -66,8 +51,7 @@ public static unsafe partial class Host
             Native.Log(Sum == 5 ? ELogLevel.Info : ELogLevel.Error,
                 Sum == 5 ? "C#->native function-pointer path OK." : $"C# interop self-test FAILED (got {Sum}).");
 
-            // Cross-check every blittable C#/C++ mirror's size before any of them crosses the boundary. A
-            // mismatch here means a struct layout drifted; running anyway would silently corrupt memory.
+            // Cross-check every blittable C#/C++ mirror's size before any crosses the boundary; a mismatch corrupts memory.
             if (!LayoutValidator.ValidateAll())
             {
                 return 4;
@@ -84,9 +68,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Resolves a native->managed export to its function pointer by name (engine or script/plugin),
-    /// or IntPtr.Zero if unknown. Native resolves this entry itself via hostfxr (like Bootstrap), then uses it
-    /// to look up every other managed entry, so there is no hand-mirrored export struct.</summary>
+    /// Resolves a native->managed export to its function pointer by name, or IntPtr.Zero if unknown.
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr ResolveManagedExport(byte* Name, int Length)
     {
@@ -101,8 +83,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Resolves (and caches) a native module's loaded handle by name; "LuminaNative" is the host
-    /// (Runtime) module. The generated bindings call this through <see cref="NativeBindings.Resolve"/>.</summary>
+    /// Resolves (and caches) a native module's loaded handle by name; "LuminaNative" is the host (Runtime) module.
     public static IntPtr ModuleHandle(string Name)
     {
         if (Name == NativeLibrary)
@@ -118,9 +99,7 @@ public static unsafe partial class Host
             }
 
             Handle = ResolveModule(Name);
-            // Only cache a SUCCESSFUL resolve. A miss can be transient -- e.g. a binding whose static
-            // initializer runs during early bootstrap, before ResolveModuleHandlePtr is wired -- so retry
-            // on the next call rather than poisoning every future lookup of this module with a zero handle.
+            // Only cache a SUCCESSFUL resolve; a miss can be transient during early bootstrap, so retry next call.
             if (Handle != IntPtr.Zero)
             {
                 ModuleHandles[Name] = Handle;
@@ -148,15 +127,13 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Resolves a type from the loaded script generation by full name (used by the dynamic invoker
-    /// in <see cref="ManagedCalls"/>; engine types resolve from LuminaSharp.dll directly). Null if not found
-    /// / no scripts loaded.</summary>
+    /// Resolves a type from the loaded script generation by full name, or null if not found.
     internal static Type? ResolveScriptType(string Name)
     {
         return Scripts?.EntityScripts?.FindType(Name);
     }
 
-    /// <summary>Current script generation; the native side rebinds entity scripts when it changes (hot reload).</summary>
+    /// Current script generation; native rebinds entity scripts when it changes (hot reload).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int GetGeneration()
@@ -164,11 +141,7 @@ public static unsafe partial class Host
         return Scripts?.Generation ?? 0;
     }
 
-    /// <summary>Fills the editor's C# Diagnostics snapshot (managed heap, GC counters, and collectible-ALC /
-    /// generation health). Returns 1 on success. Editor-only caller; never invoked on the runtime path, so it
-    /// costs nothing in a packaged game. GC + ALC reads are always valid even with no scripts loaded. When
-    /// ForceCollect != 0 it runs a full blocking GC first (the tool's "Force GC" button only, never on the
-    /// periodic poll), which both reclaims and lets a pending collectible ALC actually unload.</summary>
+    /// Fills the editor's C# Diagnostics snapshot (heap, GC, ALC health). Returns 1 on success. ForceCollect != 0 runs a blocking GC first.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int GetRuntimeDiagnostics(IntPtr OutPtr, int ForceCollect)
@@ -213,9 +186,7 @@ public static unsafe partial class Host
             Diag.LoadedTypeCount   = Scripts?.LoadedTypeCount ?? 0;
             Diag.ScriptsOnline     = Scripts?.EntityScripts != null ? 1 : 0;
 
-            // How many collectible script generations CoreCLR still has loaded. 1 == healthy (only the
-            // current generation). A count that climbs across reloads is a real ALC unload leak; a brief
-            // residual right after a reload is the normal asynchronous unload settling.
+            // Collectible script generations CoreCLR still has loaded; 1 == healthy. A count climbing across reloads is a real ALC unload leak.
             int Alive = 0;
             int Oldest = int.MaxValue;
             const string Prefix = "GameScripts.Gen";
@@ -243,8 +214,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Instantiates an EntityScript of the given full type name for an entity; returns a strong
-    /// GCHandle (as IntPtr) the native component stores, or IntPtr.Zero on failure.</summary>
+    /// Instantiates an EntityScript for an entity; returns a strong GCHandle (as IntPtr) the native component stores, or IntPtr.Zero on failure.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr CreateEntityScript(byte* TypeName, int TypeNameLength, ulong World, uint Entity)
@@ -260,7 +230,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Runs OnReady on a freshly-attached script (after all of the world's siblings attached).</summary>
+    /// Runs OnReady on a freshly-attached script (after all of the world's siblings attached).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void OnReadyScript(IntPtr Handle)
@@ -275,8 +245,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Ticks a batch of scripts (one call per world per frame). Handles points at Count strong
-    /// GCHandles; the managed loop dispatches OnUpdate directly.</summary>
+    /// Ticks a batch of scripts (one call per world per frame). Handles points at Count strong GCHandles.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void UpdateScripts(IntPtr* Handles, int Count, float DeltaTime)
@@ -291,8 +260,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Dispatches OnFixedUpdate to a batch of scripts (one call per fixed step per world). Driven by
-    /// the native fixed-update accumulator at the physics fixed rate, before the physics step.</summary>
+    /// Dispatches OnFixedUpdate to a batch of scripts at the physics fixed rate, before the physics step.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void FixedUpdateScripts(IntPtr* Handles, int Count, float FixedDeltaTime)
@@ -321,8 +289,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Routes a collision/overlap callback to a script instance (kind: 0=ContactBegin,
-    /// 1=ContactEnd, 2=OverlapBegin, 3=OverlapEnd). Called on the game thread after the physics step.</summary>
+    /// Routes a collision/overlap callback to a script (kind: 0=ContactBegin, 1=ContactEnd, 2=OverlapBegin, 3=OverlapEnd).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void DispatchCollision(IntPtr Handle, int Kind, Lumina.SCollisionEvent* Event)
@@ -337,9 +304,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Routes one discrete input event to a script's OnInput. Flat args (no struct marshaling):
-    /// Type = EInputEventType, KeyCode = EKey/EMouseKey, IsMouse/Mods/Repeat flags, mouse pos/delta/scroll.
-    /// Called on the game thread during the world update for each event this frame.</summary>
+    /// Routes one discrete input event to a script's OnInput (flat args, no struct marshaling).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void DispatchInput(IntPtr Handle, int Type, int KeyCode, int IsMouse, int Mods, int Repeat,
@@ -357,8 +322,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Routes an AI perception callback to a script instance (kind: 7=OnTargetPerceived,
-    /// 8=OnTargetLost). Called on the game thread during the world update by SPerceptionSystem.</summary>
+    /// Routes an AI perception callback to a script (kind: 7=OnTargetPerceived, 8=OnTargetLost).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void DispatchPerception(IntPtr Handle, int Kind, Lumina.SPerceptionEvent* Event)
@@ -373,8 +337,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Bitmask of collision callbacks the script overrides, so native skips the crossing for
-    /// the rest (bit (1&lt;&lt;kind), matching DispatchCollision's kinds).</summary>
+    /// Bitmask of collision callbacks the script overrides (bit 1&lt;&lt;kind), so native skips the crossing for the rest.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int GetScriptCallbackFlags(IntPtr Handle)
@@ -390,8 +353,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Writes a script type's [Property] schema + defaults to a recursive blob (supports nested
-    /// structs + arrays) and hands it to a native sink. sink(ctx, bytes, len) is called once.</summary>
+    /// Writes a script type's [Property] schema + defaults to a recursive blob and hands it to a native sink (called once).
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void GetScriptSchema(byte* ScriptClass, int ClassLength, IntPtr Sink, IntPtr Context)
@@ -416,8 +378,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Writes a script type's [Button] methods (method name + label + tooltip, flat) to a native
-    /// sink. sink(ctx, bytes, len) is called once. Drives the inspector's clickable action buttons.</summary>
+    /// Writes a script type's [Button] methods to a native sink (called once); drives the inspector's action buttons.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void GetScriptButtons(byte* ScriptClass, int ClassLength, IntPtr Sink, IntPtr Context)
@@ -442,8 +403,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Applies a recursive override-value blob (native-serialized FScriptPropertyOverrides) onto
-    /// a live script instance via reflection. Supports nested structs + arrays.</summary>
+    /// Applies a recursive override-value blob onto a live script instance via reflection.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void ApplyScriptProperties(IntPtr Handle, byte* Blob, int Length)
@@ -458,8 +418,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Resumes an Asset.LoadAsync continuation: Callback is the GCHandle to an Action&lt;IntPtr&gt;
-    /// trampoline (captures the requested type), Object is the loaded CObject* (or zero). Freed here.</summary>
+    /// Resumes an Asset.LoadAsync continuation; Callback is the GCHandle to an Action&lt;IntPtr&gt; trampoline, freed here.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void InvokeAssetCallback(IntPtr Callback, IntPtr Object)
@@ -477,8 +436,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Reports every loaded EntityScript type's full name to a native sink (for the editor's
-    /// script-picker dropdown). sink(ctx, utf8Name, byteLen) is called once per type.</summary>
+    /// Reports every loaded EntityScript type's full name to a native sink (once per type), for the editor's script picker.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void EnumerateEntityScripts(IntPtr Sink, IntPtr Context)
@@ -512,12 +470,9 @@ public static unsafe partial class Host
         }
     }
 
-    //~ EntitySystem bridge: a C# system the native stage scheduler ticks as a first-class system. Mirrors
-    //  the EntityScript entries but one instance per WORLD (not per entity); the GCHandle is the FStageSlot
-    //  Self the shared native shim forwards OnUpdate to.
+    // EntitySystem bridge: one instance per world; the GCHandle is the FStageSlot Self.
 
-    /// <summary>Reports every discovered EntitySystem to a native sink as (full name, stage, priority, declared
-    /// write-ops tokens, declared read-ops tokens). Called once per type; see EntitySystemRuntime.Enumerate.</summary>
+    /// Reports every discovered EntitySystem to a native sink as (full name, stage, priority, write-ops, read-ops). Once per type.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void EnumerateEntitySystems(IntPtr Sink, IntPtr Context)
@@ -532,8 +487,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Instantiates an EntitySystem of the given full type name for a world; returns a strong
-    /// GCHandle (as IntPtr) the native FStageSlot stores as Self, or IntPtr.Zero on failure.</summary>
+    /// Instantiates an EntitySystem for a world; returns a strong GCHandle (as IntPtr) the native FStageSlot stores as Self, or IntPtr.Zero on failure.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static IntPtr CreateEntitySystem(byte* TypeName, int TypeNameLength, ulong World)
@@ -549,7 +503,7 @@ public static unsafe partial class Host
         }
     }
 
-    /// <summary>Ticks one EntitySystem instance: forwards to OnUpdate with the native FSystemContext*.</summary>
+    /// Ticks one EntitySystem instance: forwards to OnUpdate with the native FSystemContext*.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static void TickEntitySystem(IntPtr Handle, IntPtr SystemContext)
@@ -578,9 +532,7 @@ public static unsafe partial class Host
         }
     }
 
-    // Native has already gathered + read every Scripts/*.cs across all mounts, bucketed per compilation unit
-    // (game, each enabled plugin, the engine library) with each unit's dependency names. Each bucket becomes
-    // one assembly in the shared collectible ALC. Replaces the live generation (compile new, then unload old).
+    // Native passes script sources bucketed per compilation unit with each unit's deps; each bucket becomes one assembly in the shared collectible ALC.
     [ManagedExport]
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int LoadScripts(FSourceAssembly* Units, int Count)

@@ -1,18 +1,14 @@
 namespace LuminaSharp;
 
-/// <summary>The physics phase an <see cref="EntityScript"/>'s <see cref="EntityScript.OnUpdate"/> runs in.
-/// PrePhysics (the default) runs before the physics step, apply input, movement, forces. PostPhysics runs
-/// after, read the settled physics results, e.g. follow cameras or sync visuals to bodies.</summary>
+/// <summary>The physics phase an <see cref="EntityScript"/>'s OnUpdate runs in: PrePhysics (default) before the
+/// physics step, PostPhysics after (read settled results, e.g. follow cameras).</summary>
 public enum EScriptPhase
 {
     PrePhysics,
     PostPhysics,
 }
 
-/// <summary>Declares which physics phase an <see cref="EntityScript"/>'s OnUpdate runs in. Without it a script
-/// updates in <see cref="EScriptPhase.PrePhysics"/>. Scripts are dispatched in two groups (pre- and post-physics)
-/// so you can choose to act before or after the physics step:
-/// <code>[UpdatePhase(EScriptPhase.PostPhysics)] public class FollowCamera : EntityScript { ... }</code></summary>
+/// <summary>Declares which physics phase a script's OnUpdate runs in (default PrePhysics).</summary>
 [System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
 public sealed class UpdatePhaseAttribute : System.Attribute
 {
@@ -24,11 +20,11 @@ public sealed class UpdatePhaseAttribute : System.Attribute
     }
 }
 
-/// <summary>
-/// Base class for a script attached to a single entity.
-/// </summary>
+/// <summary>Base class for a script attached to a single entity.</summary>
 public abstract class EntityScript
 {
+    internal TypeDescription Description = null!; // set at Create; cached labels + callback flags, no per-frame reflection
+
     /// <summary>This script's entity (mirrors C++ entt::entity).</summary>
     public Entity Entity { get; internal set; }
 
@@ -56,8 +52,7 @@ public abstract class EntityScript
 
     private Lumina.STransformComponent? CachedTransform;
 
-    /// <summary>This entity's transform, resolved once and cached (every entity has one). Reusing the wrapper
-    /// avoids a per-frame Registry.Get crossing and allocation.</summary>
+    /// <summary>This entity's transform, resolved once and cached (avoids a per-frame Get crossing + alloc).</summary>
     public Lumina.STransformComponent Transform => CachedTransform ??= Registry.Get<Lumina.STransformComponent>(Entity);
 
     /// <summary>Get the script of type T on another entity (or this one), or null.</summary>
@@ -81,24 +76,18 @@ public abstract class EntityScript
     {
     }
 
-    /// <summary>Called at the FIXED physics timestep (0..N times per frame, before the physics step), so it
-    /// stays in step with the simulation and is framerate-independent. Use it for physics-affecting logic,
-    /// applying forces/impulses, character movement. <paramref name="FixedDeltaTime"/> is the fixed step
-    /// (1 / physics Hz), NOT the frame delta. Independent of <see cref="OnUpdate"/> (which runs once per frame).</summary>
+    /// <summary>Called at the fixed physics timestep (0..N times/frame, before physics) for framerate-independent
+    /// physics logic. <paramref name="FixedDeltaTime"/> is the fixed step (1 / physics Hz), not the frame delta.</summary>
     public virtual void OnFixedUpdate(float FixedDeltaTime)
     {
     }
 
-    /// <summary>Called for each discrete input event (key/mouse) this frame while the entity is RECEIVING
-    /// input. Override to LISTEN for input as it happens; or poll the SInputComponent in OnUpdate. Needs an
-    /// enabled SInputComponent on the entity (see <see cref="EnableInput"/>).</summary>
+    /// <summary>Called per discrete input event while the entity is receiving input (needs <see cref="EnableInput"/>).</summary>
     public virtual void OnInput(Lumina.InputEvent Event)
     {
     }
 
-    /// <summary>Add an SInputComponent to this entity (idempotent) and return it, so the script can read
-    /// input. Call in OnReady. Required both for OnInput to fire and for the SInputComponent poll queries
-    /// (IsActionPressed, IsKeyDown, GetMouseDeltaX, ...).</summary>
+    /// <summary>Add (idempotent) and return this entity's SInputComponent so it can receive input. Call in OnReady.</summary>
     protected Lumina.SInputComponent EnableInput()
     {
         return Registry.Emplace<Lumina.SInputComponent>(Entity) ?? Registry.Get<Lumina.SInputComponent>(Entity);
@@ -115,8 +104,7 @@ public abstract class EntityScript
     {
     }
 
-    // Collision callbacks (game thread, after the physics step). Contact = solid impact; Overlap = a
-    // sensor/trigger on either side. The event is oriented for this entity.
+    // Collision callbacks (after the physics step). Contact = solid impact; Overlap = sensor/trigger.
 
     public virtual void OnContactBegin(Lumina.SCollisionEvent Event)
     {
@@ -134,9 +122,7 @@ public abstract class EntityScript
     {
     }
 
-    // Sleep/wake callbacks (game thread). The physics body went active (started moving / was disturbed) or
-    // went to sleep (came to rest). Useful for AI/audio/VFX level-of-detail: only do expensive work for
-    // awake bodies, or react to the moment something settles. OnWake also fires when the body first spawns.
+    // Physics sleep/wake callbacks (OnWake also fires on spawn).
 
     /// <summary>The entity's physics body just became active (woke up or spawned).</summary>
     public virtual void OnWake()
@@ -148,9 +134,7 @@ public abstract class EntityScript
     {
     }
 
-    // AI perception callbacks (game thread, during the world update). Fire when this entity's
-    // SPerceptionComponent gains or loses awareness of another entity. The event is self-oriented
-    // (Perceiver is this entity).
+    // AI perception callbacks: this entity's SPerceptionComponent gained/lost awareness of another (self-oriented event).
 
     /// <summary>This entity first became aware of Event.Target (Event.Sense is the sense that detected it).</summary>
     public virtual void OnTargetPerceived(Lumina.SPerceptionEvent Event)

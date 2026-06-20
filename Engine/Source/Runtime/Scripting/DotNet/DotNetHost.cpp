@@ -50,6 +50,13 @@
 #include "coreclr_delegates.h"
 #include "hostfxr.h"
 
+namespace Lumina
+{
+    // Defined in CSharpLayoutChecks.cpp: validates the EASTL FString/TVector byte layout that
+    // LuminaSharp.NativeMarshal reads in place (Dev/Debug self-test; a no-op in Shipping).
+    void VerifyEASTLInteropLayout();
+}
+
 namespace Lumina::DotNet
 {
     namespace
@@ -739,6 +746,10 @@ namespace Lumina::DotNet
             LOG_ERROR("C# scripting disabled: managed bootstrap handshake failed (returned {}). ABI mismatch?", Result);
             return;
         }
+
+        // C# now reads reflected FString/TVector properties in place by hard-coding the EASTL layout
+        // (LuminaSharp.NativeMarshal). Validate that layout against the real accessors once (Dev/Debug).
+        VerifyEASTLInteropLayout();
 
         // Resolve the managed export resolver by name (like Bootstrap itself), then fill the engine entry cache
         // through it. There is no hand-mirrored table: each field is resolved by its own name, and a missing

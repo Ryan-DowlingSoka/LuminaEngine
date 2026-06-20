@@ -138,6 +138,62 @@ LUMINA_DOTNET_EXPORT(uint32, World_GetNextSiblingEntity)(uint64 World, uint32 En
     return ToId(Rel ? Rel->Next : entt::null);
 }
 
+// Batched scene-graph traversal for SendUp/SendDown: one crossing returns the whole chain/subtree instead of a
+// P/Invoke per hop. Both write [Entity, ...] into OutIds (up to Max) and return the TOTAL count; if it exceeds
+// Max the caller re-fetches with a larger buffer. The relationship graph is engine-maintained (acyclic).
+LUMINA_DOTNET_EXPORT(int32, World_GetAncestorChain)(uint64 World, uint32 Entity, uint32* OutIds, int32 Max)
+{
+    CWorld* W = AsWorld(World);
+    if (W == nullptr)
+    {
+        return 0;
+    }
+    FEntityRegistry& R = W->GetEntityRegistry();
+    int32 Count = 0;
+    for (entt::entity Cur = AsEntity(Entity); Cur != entt::null; )
+    {
+        if (Count < Max)
+        {
+            OutIds[Count] = ToId(Cur);
+        }
+        ++Count;
+        const FRelationshipComponent* Rel = R.try_get<FRelationshipComponent>(Cur);
+        Cur = Rel ? Rel->Parent : entt::null;
+    }
+    return Count;
+}
+
+LUMINA_DOTNET_EXPORT(int32, World_GetSubtree)(uint64 World, uint32 Entity, uint32* OutIds, int32 Max)
+{
+    CWorld* W = AsWorld(World);
+    if (W == nullptr)
+    {
+        return 0;
+    }
+    FEntityRegistry& R = W->GetEntityRegistry();
+    int32 Count = 0;
+    TVector<entt::entity> Stack;
+    Stack.push_back(AsEntity(Entity));
+    while (!Stack.empty())
+    {
+        entt::entity Node = Stack.back();
+        Stack.pop_back();
+        if (Count < Max)
+        {
+            OutIds[Count] = ToId(Node);
+        }
+        ++Count;
+        const FRelationshipComponent* Rel = R.try_get<FRelationshipComponent>(Node);
+        for (entt::entity Child = Rel ? Rel->First : entt::null; Child != entt::null; )
+        {
+            Stack.push_back(Child);
+            const FRelationshipComponent* CRel = R.try_get<FRelationshipComponent>(Child);
+            Child = CRel ? CRel->Next : entt::null;
+        }
+    }
+    return Count;
+}
+
 //================================================================================================
 // Camera (World.Camera) -- additive camera shake on the active view. Multiple shakes sum; each Play
 // returns a handle to stop it. Game thread only.

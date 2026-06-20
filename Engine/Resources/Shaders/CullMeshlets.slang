@@ -9,12 +9,13 @@ struct FPushConstants
     uint NumViews;
     uint Phase;              // CULL_PHASE_EARLY or CULL_PHASE_LATE
     uint CameraLateViewIndex; // Only consumed in LATE; index into CullViews().
-    uint _Pad;
+    uint WriteBucketCount;   // GPU-driven: 1 => set BucketCount[slot]=1 on a bucket's first survivor; 0 (legacy) skips it.
     // Cull-private scratch, addressed by device pointer (not a descriptor) so draw/post passes
     // never bind or transition them. State tracked CPU-side via State.Writes; 8-byte aligned here.
     FDrawIndirectArguments* IndirectArgs;
     FMeshletDeferred*       DeferList;
     uint*                   DeferCount;
+    uint*                   BucketCount;  // GPU-driven per-(view,bucket) draw count; unused when WriteBucketCount==0.
 };
 
 FPushConstants* Pass() { return GetPassArgs<FPushConstants>(); }
@@ -25,6 +26,13 @@ void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocal
     uint IndirectIndex = View.IndirectArgsOffset + DrawID;
     uint OldCount;
     InterlockedAdd(Pass().IndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
+
+    // GPU-driven: this (view,bucket)'s first survivor flips its draw count to 1 (MaxDrawCount is 1), so empty
+    // buckets stay 0 and CmdDrawIndirectCount skips them. IndirectIndex == the bucket's slot.
+    if (Pass().WriteBucketCount != 0u && OldCount == 0u)
+    {
+        Pass().BucketCount[IndirectIndex] = 1u;
+    }
 
     uint Slot = Pass().IndirectArgs[IndirectIndex].FirstInstance + OldCount;
 

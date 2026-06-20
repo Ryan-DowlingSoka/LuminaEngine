@@ -3,22 +3,15 @@ using System.Buffers;
 
 namespace LuminaSharp;
 
-// entt-style typed views authored in C#. A View is a lightweight description (world handle + the include
-// component-ops tokens + an Exclude filter); iteration is done natively (entt::runtime_view in DotNetView.cpp)
-// and gathered into parallel CHUNK buffers. ONE boundary crossing per chunk (ViewNextChunk), not per entity.
-//
-// Per chunk, C# rebinds ONE reused wrapper per component type to each gathered live component pointer (no
-// per-element managed allocation) and either invokes the Each callback or yields it from the enumerator.
-//
-// WRAPPER LIFETIME: the wrappers a foreach/Each hands back are VIEWS valid only for the current iteration
-// step -- their handle is overwritten on the next step. Do not store them; copy out any field you need.
+// entt-style typed views authored in C#; native gathers entities + live component pointers in chunks (one crossing per chunk).
+// WRAPPER LIFETIME: wrappers handed back are valid only for the current iteration step; do not store them, copy out fields you need.
 
 internal static class ViewConst
 {
     public const int ChunkSize = 1024; // entities gathered per native crossing
 }
 
-/// <summary>A typed entt-style view over one component type. <c>Each</c> + <c>foreach</c>.</summary>
+/// A typed entt-style view over one component type. Each + foreach.
 public readonly unsafe struct View<T1>
     where T1 : NativeStruct
 {
@@ -145,7 +138,7 @@ public readonly unsafe struct View<T1>
     }
 }
 
-/// <summary>A typed entt-style view over two component types. <c>Each</c> + <c>foreach</c>.</summary>
+/// A typed entt-style view over two component types. Each + foreach.
 public readonly unsafe struct View<T1, T2>
     where T1 : NativeStruct
     where T2 : NativeStruct
@@ -280,7 +273,7 @@ public readonly unsafe struct View<T1, T2>
     }
 }
 
-/// <summary>A typed entt-style view over three component types. <c>Each</c> + <c>foreach</c>.</summary>
+/// A typed entt-style view over three component types. Each + foreach.
 public readonly unsafe struct View<T1, T2, T3>
     where T1 : NativeStruct
     where T2 : NativeStruct
@@ -423,7 +416,7 @@ public readonly unsafe struct View<T1, T2, T3>
     }
 }
 
-/// <summary>A typed entt-style view over four component types. <c>Each</c> + <c>foreach</c>.</summary>
+/// A typed entt-style view over four component types. Each + foreach.
 public readonly unsafe struct View<T1, T2, T3, T4>
     where T1 : NativeStruct
     where T2 : NativeStruct

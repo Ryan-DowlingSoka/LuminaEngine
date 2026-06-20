@@ -12,10 +12,7 @@ using Microsoft.CodeAnalysis.Text;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// Compiles loose C# script sources into one in-memory assembly with Roslyn. No csproj required:
-/// scripts reference the framework (the TPA set) plus this engine assembly.
-/// </summary>
+/// Compiles loose C# script sources into one in-memory assembly with Roslyn; scripts reference the TPA set plus this engine assembly.
 internal static class ScriptCompiler
 {
     private static MetadataReference[]? CachedReferences;
@@ -49,8 +46,7 @@ internal static class ScriptCompiler
                 }
             }
 
-            // The engine API assembly (LuminaSharp) so scripts can reference its archetype base classes
-            // + generated bindings.
+            // The engine API assembly (LuminaSharp) so scripts can reference its base classes + generated bindings.
             string SelfPath = typeof(Host).Assembly.Location;
             if (!string.IsNullOrEmpty(SelfPath) && File.Exists(SelfPath))
             {
@@ -62,9 +58,7 @@ internal static class ScriptCompiler
         }
     }
 
-    /// <summary>Compiles all sources into PE bytes, or returns null on error (diagnostics logged).
-    /// <paramref name="ExtraReferences"/> are the emitted images of the unit's dependency assemblies, so a
-    /// dependent plugin compiles against the exact metadata of the plugins it builds on.</summary>
+    /// Compiles all sources into PE bytes, or null on error (diagnostics logged). ExtraReferences are the dependency units' emitted images.
     public static byte[]? Compile(string AssemblyName, IReadOnlyList<(string Path, string Text)> Sources,
         IReadOnlyList<MetadataReference>? ExtraReferences = null)
     {
@@ -131,9 +125,7 @@ internal static class ScriptCompiler
 
     private static ImmutableArray<ISourceGenerator>? CachedGenerators;
 
-    // The source generators to run on every script compile, loaded once. Only the [NativeCall] glue
-    // generator: the ManagedExport generator is engine-only (it emits the engine's RegisterEngineExports and
-    // would collide if run on a script assembly).
+    // Source generators run on every script compile (loaded once). Only the [NativeCall] glue generator; ManagedExport is engine-only.
     private static ImmutableArray<ISourceGenerator> SourceGenerators => CachedGenerators ??= LoadGenerators();
 
     private static ImmutableArray<ISourceGenerator> LoadGenerators()
@@ -149,9 +141,7 @@ internal static class ScriptCompiler
                 return ImmutableArray<ISourceGenerator>.Empty;
             }
 
-            // Load into LuminaSharp's OWN ALC (not Default), so the generator's Microsoft.CodeAnalysis binds
-            // to the exact instance LuminaSharp uses, otherwise IIncrementalGenerator has a different type
-            // identity and nothing matches.
+            // Load into LuminaSharp's OWN ALC (not Default) so the generator's Microsoft.CodeAnalysis binds to the same instance, else IIncrementalGenerator has a different type identity.
             AssemblyLoadContext Context = AssemblyLoadContext.GetLoadContext(typeof(Host).Assembly) ?? AssemblyLoadContext.Default;
             Assembly GeneratorAssembly = Context.LoadFromAssemblyPath(GeneratorPath);
             Type[] AllTypes;

@@ -6,13 +6,8 @@ using Lumina;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// The managed reflection registry for one loaded script generation, the single source of truth the
-/// rest of the binding layer queries (modeled on s&amp;box's TypeLibrary, right-sized for a binding
-/// layer over a C++ ECS). Indexes the EntityScript types and resolves any type to a cached
-/// <see cref="TypeDescription"/>; replaces the hand-rolled type/property dictionaries. Rebuilt wholesale
-/// each (re)load, so there is no per-entry invalidation.
-/// </summary>
+// The managed reflection registry for one loaded script generation: indexes EntityScript types and resolves
+// any type to a cached TypeDescription. Rebuilt wholesale each (re)load, so there is no per-entry invalidation.
 internal sealed class TypeLibrary
 {
     private readonly Dictionary<string, TypeDescription> EntityScripts = new();
@@ -252,14 +247,9 @@ internal sealed class TypeLibrary
     }
 }
 
-/// <summary>
-/// Cached, immutable-after-Build description of one script type: the recursive [Property] member set
-/// and the precomputed collision-callback bitmask. The instance is always passed in at call time, one
-/// description serves every entity carrying the type. Instantiation uses <see cref="Activator"/>
-/// deliberately: a compiled Expression factory would JIT into the process-wide dynamic-methods assembly
-/// referencing this (collectible) script ALC's constructor and pin it, so the ALC could never unload on
-/// hot reload. Scripts spawn on attach (not per frame), so the Activator cost is irrelevant.
-/// </summary>
+// Cached, immutable-after-Build description of one script type: the recursive [Property] member set and the
+// precomputed callback bitmask; one description serves every entity carrying the type. Create() uses Activator
+// deliberately: a compiled factory would pin this collectible ALC's ctor and block hot-reload unload.
 internal sealed class TypeDescription
 {
     private static readonly string[] CollisionCallbacks = { "OnContactBegin", "OnContactEnd", "OnOverlapBegin", "OnOverlapEnd" };
@@ -267,19 +257,23 @@ internal sealed class TypeDescription
     public Type Type { get; }
     public IReadOnlyList<ScriptProperty> Properties { get; private set; } = Array.Empty<ScriptProperty>();
     public IReadOnlyList<ScriptButton> Buttons { get; private set; } = Array.Empty<ScriptButton>();
-    public int CollisionCallbackFlags { get; private set; }
+    public int CallbackFlags { get; private set; }
+    public string ProfileLabel { get; }
+    public string FixedProfileLabel { get; }
     private IReadOnlyList<RequiredComponent> RequiredComponents = Array.Empty<RequiredComponent>();
 
     public TypeDescription(Type Type)
     {
         this.Type = Type;
+        ProfileLabel = Type.Name;
+        FixedProfileLabel = Type.Name + ".FixedUpdate";
     }
 
     public void Build(TypeLibrary Library)
     {
         Properties = Library.BuildMembers(Type, true, 0, new HashSet<Type>());
         Buttons = ComputeButtons(Type);
-        CollisionCallbackFlags = ComputeCollisionFlags(Type);
+        CallbackFlags = ComputeCallbackFlags(Type);
         RequiredComponents = ComputeRequiredComponents(Type);
     }
 
@@ -417,7 +411,7 @@ internal sealed class TypeDescription
         }
     }
 
-    private static int ComputeCollisionFlags(Type Type)
+    private static int ComputeCallbackFlags(Type Type)
     {
         int Flags = 0;
         for (int Index = 0; Index < CollisionCallbacks.Length; Index++)
@@ -452,14 +446,23 @@ internal sealed class TypeDescription
             Flags |= 1 << 6;
         }
 
-        // OnFixedUpdate (bit 9): runs at the fixed physics timestep (see the fixed-update loop in the native
-        // SCSharpScriptSystem). Only scripts that override it are dispatched. Bit index must match native.
+        // OnFixedUpdate (bit 9): runs at the fixed physics timestep. Only overriding scripts are dispatched.
         MethodInfo? Fixed = Type.GetMethod("OnFixedUpdate",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
             null, new[] { typeof(float) }, null);
         if (Fixed != null && Fixed.DeclaringType != typeof(EntityScript))
         {
             Flags |= 1 << 9;
+        }
+
+        // OnUpdate (bit 10): the per-frame tick. Gating it lets native skip non-overriding scripts entirely
+        // (no crossing, no virtual call). Bit index must match native CSharpScriptSystem.
+        MethodInfo? Update = Type.GetMethod("OnUpdate",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(float) }, null);
+        if (Update != null && Update.DeclaringType != typeof(EntityScript))
+        {
+            Flags |= 1 << 10;
         }
 
         // OnTargetPerceived (bit 7) / OnTargetLost (bit 8): AI perception callbacks (signature:

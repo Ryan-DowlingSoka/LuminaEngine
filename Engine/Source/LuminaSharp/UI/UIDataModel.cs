@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 
 namespace LuminaSharp;
 
-/// <summary>Scalar wire type for a bound variable. Mirrors the native <c>RmlUi::EUIVarType</c>.</summary>
+/// Scalar wire type for a bound variable; mirrors native RmlUi::EUIVarType.
 internal enum UIVarType
 {
     Bool = 0,
@@ -18,7 +18,7 @@ internal enum UIVarType
     String = 4,
 }
 
-/// <summary>One argument of a <c>data-event-*</c> call; mirrors the native <c>RmlUi::FUIArg</c> (UTF-8 ptr+len).</summary>
+/// One argument of a data-event-* call; mirrors native RmlUi::FUIArg (UTF-8 ptr+len).
 [StructLayout(LayoutKind.Sequential)]
 internal struct UIArg
 {
@@ -26,15 +26,7 @@ internal struct UIArg
     public int Len;
 }
 
-/// <summary>
-/// A live MVVM binding between a <see cref="ViewModel"/> and an RmlUi data model on a world's UI context
-/// (created by <see cref="UI.AddModel"/>). It enumerates the view-model's <see cref="BindAttribute">[Bind]</see>
-/// properties (scalars and lists) and <see cref="BindCommandAttribute">[BindCommand]</see> methods once at
-/// bind time using cached <see cref="PropertyAccessor"/> delegates, registers them natively, then pushes
-/// property changes into the view and dispatches RML events back to commands. Dispose it to remove the model
-/// and free the callback (before the world tears down, e.g. in <see cref="EntityScript.OnDetach"/>); a missed
-/// dispose only leaks the managed handle, like a UI listener.
-/// </summary>
+/// A live MVVM binding between a ViewModel and an RmlUi data model on a world's UI context. Dispose it (before the world tears down) to remove the model and free the callback.
 public sealed unsafe class UIDataModel : IDisposable
 {
     // Game-thread only, so a plain dictionary is fine. Lets World.UI.GetModel re-fetch a model by name.
@@ -126,16 +118,16 @@ public sealed unsafe class UIDataModel : IDisposable
         PushAll();   // seed the view with the initial values
     }
 
-    /// <summary>False if the model failed to register or has been disposed.</summary>
+    /// False if the model failed to register or has been disposed.
     public bool IsValid => _native != IntPtr.Zero;
 
-    /// <summary>The data-model name on the world's UI context.</summary>
+    /// The data-model name on the world's UI context.
     public string Name => _name;
 
-    /// <summary>The view-model this binding drives.</summary>
+    /// The view-model this binding drives.
     public ViewModel ViewModel => _viewModel;
 
-    /// <summary>Re-fetch a registered model by name (backs <see cref="UI.GetModel"/>). Null if none.</summary>
+    /// Re-fetch a registered model by name (backs UI.GetModel); null if none.
     internal static UIDataModel? Find(ulong World, string Name)
         => Registry.TryGetValue((World, Name), out UIDataModel? Model) ? Model : null;
 
@@ -200,7 +192,7 @@ public sealed unsafe class UIDataModel : IDisposable
         }
     }
 
-    /// <summary>Push one property (scalar or list) to the view by name (called by <see cref="ViewModel.Set{T}"/>).</summary>
+    /// Push one property (scalar or list) to the view by name (called by ViewModel.Set).
     internal void OnPropertyChanged(string Name)
     {
         if (_applyingFromNative || _native == IntPtr.Zero)
@@ -219,7 +211,7 @@ public sealed unsafe class UIDataModel : IDisposable
         }
     }
 
-    /// <summary>Re-push every bound property (scalars + lists) and mark the whole model dirty.</summary>
+    /// Re-push every bound property (scalars + lists) and mark the whole model dirty.
     public void PushAll()
     {
         if (_native == IntPtr.Zero)

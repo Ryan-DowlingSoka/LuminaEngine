@@ -599,6 +599,11 @@ namespace Lumina::RHI
     RUNTIME_API void        CmdDrawIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset, uint32 DrawCount, uint32 Stride);
     RUNTIME_API void        CmdDispatchIndirect(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 Offset);
 
+    // GPU-driven draw: the draw count is read from CountBuffer at CountOffset (written by a prior compute
+    // pass), capped at MaxDrawCount. IndirectBuffer holds MaxDrawCount FDrawIndirectArguments at IndirectOffset.
+    // Both buffers must carry indirect-buffer usage. Requires the drawIndirectCount device feature.
+    RUNTIME_API void        CmdDrawIndirectCount(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 IndirectOffset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride);
+
     RUNTIME_API void        CmdBeginMarker(FCmdListH CL, const char* Name);
     RUNTIME_API void        CmdEndMarker(FCmdListH CL);
 

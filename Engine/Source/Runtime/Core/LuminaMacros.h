@@ -89,14 +89,14 @@ inline constexpr bool  operator! (Enum  E)             { return !(__underlying_t
 inline constexpr Enum  operator~ (Enum  E)             { return (Enum)~(__underlying_type(Enum))E; }
 
 template<typename Enum>
-constexpr bool EnumHasAllFlags(Enum Flags, Enum Contains)
+[[nodiscard]] constexpr bool EnumHasAllFlags(Enum Flags, Enum Contains)
 {
     using UnderlyingType = __underlying_type(Enum);
     return ((UnderlyingType)Flags & (UnderlyingType)Contains) == (UnderlyingType)Contains;
 }
 
 template<typename Enum>
-constexpr bool EnumHasAnyFlags(Enum Flags, Enum Contains)
+[[nodiscard]] constexpr bool EnumHasAnyFlags(Enum Flags, Enum Contains)
 {
     using UnderlyingType = __underlying_type(Enum);
     return ((UnderlyingType)Flags & (UnderlyingType)Contains) != 0;

@@ -177,6 +177,38 @@ namespace Lumina
                 Header.MeshGridStep[i] = FVector4(MData.MeshGridStep[i], 0.0f);
             }
 
+            // GPU-driven expand descriptor: per-surface LOD/meshlet table + local AABB. Read only by the
+            // expand pass; the cull/draw shaders ignore these appended fields.
+            TVector<FSurfaceDescGPU> Surfaces;
+            Surfaces.reserve(MeshResources->GeometrySurfaces.size());
+            for (const FGeometrySurface& Surface : MeshResources->GeometrySurfaces)
+            {
+                FSurfaceDescGPU& Out = Surfaces.emplace_back();
+                Out.StartIndex   = Surface.StartIndex;
+                Out.IndexCount   = Surface.IndexCount;
+                Out.MaterialSlot = Surface.MaterialIndex;
+                Out.NumLODs      = Surface.NumLODs;
+                for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+                {
+                    Out.LODMeshletOffset[i]   = Surface.LODMeshletOffset[i];
+                    Out.LODMeshletCount[i]    = Surface.LODMeshletCount[i];
+                    Out.LODScreenThreshold[i] = Surface.LODScreenThreshold[i];
+                }
+            }
+            if (!Surfaces.empty())
+            {
+                MB.SurfaceDescBuffer = CreateAndUpload(Surfaces.data(), sizeof(FSurfaceDescGPU) * Surfaces.size());
+            }
+
+            const FAABB& MeshAABB  = GetAABB();
+            Header.AABBMin         = FVector4(MeshAABB.Min, 0.0f);
+            Header.AABBMax         = FVector4(MeshAABB.Max, 0.0f);
+            Header.SurfacesAddress = MB.SurfaceDescBuffer;
+            Header.SurfaceCount    = (uint32)Surfaces.size();
+            Header.bSkinned        = bSkinned ? 1u : 0u;
+            Header._ExpandPad[0]   = 0u;
+            Header._ExpandPad[1]   = 0u;
+
             MB.MeshletHeaderBuffer = CreateAndUpload(&Header, sizeof(FMeshletHeaderGPU));
         }
 

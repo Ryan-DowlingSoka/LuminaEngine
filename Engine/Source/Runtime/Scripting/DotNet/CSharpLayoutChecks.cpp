@@ -4,6 +4,10 @@
 #include "Core/Math/Vector/VectorTypes.h"
 #include "Core/Math/Matrix/Matrix.h"
 #include "Core/Math/Transform.h"
+#include "Containers/String.h"
+#include "Containers/Array.h"
+#include "Containers/ContainerOps.h"
+#include "Core/Assertions/Assert.h"
 #include "Scripting/DotNet/LayoutRegistry.h"
 
 namespace Lumina
@@ -37,4 +41,64 @@ namespace Lumina
     LE_REGISTER_LAYOUT("FUIntVector3", FUIntVector3);
     LE_REGISTER_LAYOUT("FIntVector2",  FIntVector2);
     LE_REGISTER_LAYOUT("FIntVector3",  FIntVector3);
+
+    // LuminaSharp.NativeMarshal reads FString / TVector<T> in place from C# by hard-coding the EASTL byte
+    // layout (SSO flag at byte 23, heap ptr@0 / size@8; vector mpBegin@0 / mpEnd@8). size_type is 64-bit.
+    static_assert(sizeof(size_t) == 8, "NativeMarshal assumes a 64-bit eastl size_type.");
+
+    // LuminaSharp.VectorOps (NativeList.cs) overlays FVectorOps and calls these three by offset.
+    static_assert(offsetof(FVectorOps, PushBack) == 16, "VectorOps.PushBack offset drift (update NativeList.cs).");
+    static_assert(offsetof(FVectorOps, RemoveAt) == 24, "VectorOps.RemoveAt offset drift (update NativeList.cs).");
+    static_assert(offsetof(FVectorOps, Clear)    == 32, "VectorOps.Clear offset drift (update NativeList.cs).");
+
+#if defined(LE_DEBUG) || defined(LE_DEVELOPMENT)
+    namespace
+    {
+        // Replays NativeMarshal.ReadString's decode against the real eastl accessors. A layout/config drift
+        // (SSO flag offset, heap ptr/size offsets, endianness) is caught here at host init rather than
+        // silently corrupting a managed string field.
+        bool FStringDecodeMatches(const FString& S)
+        {
+            const uint8* Base = reinterpret_cast<const uint8*>(&S);
+            const uint8 Flag = Base[23];
+            const char* Data;
+            size_t Length;
+            if (Flag & 0x80)
+            {
+                Data = *reinterpret_cast<const char* const*>(Base);
+                Length = *reinterpret_cast<const size_t*>(Base + 8);
+            }
+            else
+            {
+                Data = reinterpret_cast<const char*>(Base);
+                Length = static_cast<size_t>(23 - Flag);
+            }
+            return Data == S.data() && Length == S.length();
+        }
+    }
+
+    // Called once from the C# host bootstrap (DotNetHost::Initialize) before any managed code reads a
+    // reflected FString/TVector property through the zero-crossing NativeMarshal path.
+    void VerifyEASTLInteropLayout()
+    {
+        const FString Empty;
+        const FString SSO = "short";
+        const FString Heap = "this string is comfortably longer than the twenty-three character SSO buffer";
+        LUMINA_DEBUG_ASSERT(FStringDecodeMatches(Empty), "NativeMarshal FString (empty) layout drift.");
+        LUMINA_DEBUG_ASSERT(FStringDecodeMatches(SSO),   "NativeMarshal FString (SSO) layout drift.");
+        LUMINA_DEBUG_ASSERT(FStringDecodeMatches(Heap),  "NativeMarshal FString (heap) layout drift.");
+
+        TVector<int32> V;
+        V.push_back(10);
+        V.push_back(20);
+        V.push_back(30);
+        const uint8* H = reinterpret_cast<const uint8*>(&V);
+        const int32* Begin = *reinterpret_cast<const int32* const*>(H);
+        const int32* End = *reinterpret_cast<const int32* const*>(H + sizeof(void*));
+        LUMINA_DEBUG_ASSERT(Begin == V.data(), "NativeMarshal TVector mpBegin offset drift.");
+        LUMINA_DEBUG_ASSERT(static_cast<size_t>(End - Begin) == V.size(), "NativeMarshal TVector mpEnd offset drift.");
+    }
+#else
+    void VerifyEASTLInteropLayout() {}
+#endif
 }

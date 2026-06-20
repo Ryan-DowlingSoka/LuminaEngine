@@ -1,15 +1,13 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Lumina;
 
-// Hand-written blittable mirrors of the engine's core math types (FVector*/FQuat are ManualStub + 
-// in C++, so they aren't auto-generated). The field layout (declared first, in order) is validated against
-// the native types by static_asserts in CSharpLayoutChecks.cpp; if those fail, these are wrong. Operators
-// and helpers below are pure managed math and don't affect layout.
-//
-// Conventions mirror C++ (Core/Math): left-handed, +Z forward, +Y up, +X right. Angles are radians unless
-// a member says otherwise. Tolerances match LE_SMALL_NUMBER (1e-8) and LE_KINDA_SMALL_NUMBER (1e-4).
+// Blittable mirrors of the engine's core math types. Field layout (declared first, in order) is validated
+// against the native types by static_asserts in CSharpLayoutChecks.cpp. Conventions mirror C++ (Core/Math):
+// left-handed, +Z forward, +Y up, +X right. Angles are radians; tolerances match LE_SMALL_NUMBER (1e-8) and
+// LE_KINDA_SMALL_NUMBER (1e-4).
 
 [StructLayout(LayoutKind.Sequential)]
 [LuminaSharp.NativeLayout("FVector2")]
@@ -41,37 +39,48 @@ public struct FVector2 : IEquatable<FVector2>
         set { if (Index == 0) { X = value; } else { Y = value; } }
     }
 
-    public float Length => MathF.Sqrt(X * X + Y * Y);
-    public float LengthSquared => X * X + Y * Y;
+    public float Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => MathF.Sqrt(X * X + Y * Y);
+    }
+    public float LengthSquared
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => X * X + Y * Y;
+    }
 
     public bool IsNearlyZero(float Epsilon = 1e-4f) => LengthSquared <= Epsilon * Epsilon;
     public bool IsNormalized(float Epsilon = 1e-4f) => MathF.Abs(LengthSquared - 1.0f) <= Epsilon;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FVector2 Normalized()
     {
         float L = Length;
         return L > 1e-8f ? this / L : Zero;
     }
 
-    /// <summary>Unit vector, or <paramref name="Fallback"/> when too short to normalize.</summary>
+    // Unit vector, or Fallback when too short to normalize.
     public FVector2 NormalizedOr(FVector2 Fallback)
     {
         float L = Length;
         return L > 1e-8f ? this / L : Fallback;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Dot(FVector2 A, FVector2 B)
     {
         return A.X * B.X + A.Y * B.Y;
     }
 
-    /// <summary>2D cross product (scalar): the z of the 3D cross.</summary>
+    // 2D cross product (scalar): the z of the 3D cross.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Cross(FVector2 A, FVector2 B)
     {
         return A.X * B.Y - A.Y * B.X;
     }
 
-    /// <summary>Left-hand perpendicular (-Y, X).</summary>
+    // Left-hand perpendicular (-Y, X).
     public FVector2 Perpendicular() => new(-Y, X);
 
     public static float Distance(FVector2 A, FVector2 B)
@@ -84,7 +93,7 @@ public struct FVector2 : IEquatable<FVector2>
         return (A - B).LengthSquared;
     }
 
-    /// <summary>Unsigned angle between two vectors, in radians.</summary>
+    // Unsigned angle between two vectors, in radians.
     public static float Angle(FVector2 A, FVector2 B)
     {
         float Denom = MathF.Sqrt(A.LengthSquared * B.LengthSquared);
@@ -95,6 +104,7 @@ public struct FVector2 : IEquatable<FVector2>
         return MathF.Acos(Math.Clamp(Dot(A, B) / Denom, -1.0f, 1.0f));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Lerp(FVector2 A, FVector2 B, float T)
     {
         return A + (B - A) * T;
@@ -105,7 +115,7 @@ public struct FVector2 : IEquatable<FVector2>
         return Lerp(A, B, Math.Clamp(T, 0.0f, 1.0f));
     }
 
-    /// <summary>Moves <paramref name="Current"/> toward <paramref name="Target"/> by at most <paramref name="MaxDelta"/>.</summary>
+    // Moves Current toward Target by at most MaxDelta.
     public static FVector2 MoveTowards(FVector2 Current, FVector2 Target, float MaxDelta)
     {
         FVector2 To = Target - Current;
@@ -117,29 +127,35 @@ public struct FVector2 : IEquatable<FVector2>
         return Current + To / Dist * MaxDelta;
     }
 
-    /// <summary>Reflects <paramref name="Incident"/> about the (unit) <paramref name="Normal"/>.</summary>
+    // Reflects Incident about the (unit) Normal.
     public static FVector2 Reflect(FVector2 Incident, FVector2 Normal)
     {
         return Incident - Normal * (2.0f * Dot(Incident, Normal));
     }
 
-    /// <summary>Projection of <paramref name="V"/> onto <paramref name="Onto"/>.</summary>
+    // Projection of V onto Onto.
     public static FVector2 Project(FVector2 V, FVector2 Onto)
     {
         float D = Dot(Onto, Onto);
         return D < 1e-12f ? Zero : Onto * (Dot(V, Onto) / D);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Min(FVector2 A, FVector2 B) => new(MathF.Min(A.X, B.X), MathF.Min(A.Y, B.Y));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Max(FVector2 A, FVector2 B) => new(MathF.Max(A.X, B.X), MathF.Max(A.Y, B.Y));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Min(FVector2 V, float S) => new(MathF.Min(V.X, S), MathF.Min(V.Y, S));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Max(FVector2 V, float S) => new(MathF.Max(V.X, S), MathF.Max(V.Y, S));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Clamp(FVector2 V, FVector2 Lo, FVector2 Hi) => Min(Max(V, Lo), Hi);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Clamp(FVector2 V, float Lo, float Hi)
         => new(Math.Clamp(V.X, Lo, Hi), Math.Clamp(V.Y, Lo, Hi));
 
-    /// <summary>Clamps the magnitude to <paramref name="MaxLength"/>, keeping direction.</summary>
+    // Clamps the magnitude to MaxLength, keeping direction.
     public FVector2 ClampLength(float MaxLength)
     {
         float LenSq = LengthSquared;
@@ -161,6 +177,7 @@ public struct FVector2 : IEquatable<FVector2>
         return this * (Clamped / Len);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 Abs(FVector2 V) => new(MathF.Abs(V.X), MathF.Abs(V.Y));
     public static FVector2 Floor(FVector2 V) => new(MathF.Floor(V.X), MathF.Floor(V.Y));
     public static FVector2 Ceil(FVector2 V) => new(MathF.Ceiling(V.X), MathF.Ceiling(V.Y));
@@ -174,15 +191,25 @@ public struct FVector2 : IEquatable<FVector2>
     public static bool IsNearlyEqual(FVector2 A, FVector2 B, float Epsilon = 1e-4f)
         => MathF.Abs(A.X - B.X) <= Epsilon && MathF.Abs(A.Y - B.Y) <= Epsilon;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator +(FVector2 A, FVector2 B) => new(A.X + B.X, A.Y + B.Y);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator -(FVector2 A, FVector2 B) => new(A.X - B.X, A.Y - B.Y);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator -(FVector2 A) => new(-A.X, -A.Y);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator *(FVector2 A, FVector2 B) => new(A.X * B.X, A.Y * B.Y);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator *(FVector2 A, float S) => new(A.X * S, A.Y * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator *(float S, FVector2 A) => new(A.X * S, A.Y * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator /(FVector2 A, FVector2 B) => new(A.X / B.X, A.Y / B.Y);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector2 operator /(FVector2 A, float S) => new(A.X / S, A.Y / S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(FVector2 A, FVector2 B) => A.X == B.X && A.Y == B.Y;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(FVector2 A, FVector2 B) => !(A == B);
 
     public bool Equals(FVector2 Other) => this == Other;
@@ -253,12 +280,21 @@ public struct FVector3 : IEquatable<FVector3>
         }
     }
 
-    public float Length => MathF.Sqrt(X * X + Y * Y + Z * Z);
-    public float LengthSquared => X * X + Y * Y + Z * Z;
+    public float Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => MathF.Sqrt(X * X + Y * Y + Z * Z);
+    }
+    public float LengthSquared
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => X * X + Y * Y + Z * Z;
+    }
 
     public bool IsNearlyZero(float Epsilon = 1e-4f) => LengthSquared <= Epsilon * Epsilon;
     public bool IsNormalized(float Epsilon = 1e-4f) => MathF.Abs(LengthSquared - 1.0f) <= Epsilon;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FVector3 Normalized()
     {
         float L = Length;
@@ -271,11 +307,13 @@ public struct FVector3 : IEquatable<FVector3>
         return L > 1e-8f ? this / L : Fallback;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Dot(FVector3 A, FVector3 B)
     {
         return A.X * B.X + A.Y * B.Y + A.Z * B.Z;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Cross(FVector3 A, FVector3 B)
     {
         return new FVector3(
@@ -294,7 +332,7 @@ public struct FVector3 : IEquatable<FVector3>
         return (A - B).LengthSquared;
     }
 
-    /// <summary>Unsigned angle between two vectors, in radians.</summary>
+    // Unsigned angle between two vectors, in radians.
     public static float Angle(FVector3 A, FVector3 B)
     {
         float Denom = MathF.Sqrt(A.LengthSquared * B.LengthSquared);
@@ -305,7 +343,7 @@ public struct FVector3 : IEquatable<FVector3>
         return MathF.Acos(Math.Clamp(Dot(A, B) / Denom, -1.0f, 1.0f));
     }
 
-    /// <summary>Signed angle (radians) from <paramref name="A"/> to <paramref name="B"/> about <paramref name="Axis"/>.</summary>
+    // Signed angle (radians) from A to B about Axis.
     public static float SignedAngle(FVector3 A, FVector3 B, FVector3 Axis)
     {
         float Unsigned = Angle(A, B);
@@ -313,6 +351,7 @@ public struct FVector3 : IEquatable<FVector3>
         return Unsigned * (Sign == 0.0f ? 1.0f : Sign);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Lerp(FVector3 A, FVector3 B, float T)
     {
         return A + (B - A) * T;
@@ -323,7 +362,7 @@ public struct FVector3 : IEquatable<FVector3>
         return Lerp(A, B, Math.Clamp(T, 0.0f, 1.0f));
     }
 
-    /// <summary>Normalized linear interpolation of two directions (cheap great-arc approximation).</summary>
+    // Normalized linear interpolation of two directions (cheap great-arc approximation).
     public static FVector3 Slerp(FVector3 A, FVector3 B, float T)
     {
         float CosTheta = Math.Clamp(Dot(A.Normalized(), B.Normalized()), -1.0f, 1.0f);
@@ -352,7 +391,7 @@ public struct FVector3 : IEquatable<FVector3>
         return Incident - Normal * (2.0f * Dot(Incident, Normal));
     }
 
-    /// <summary>Refracts <paramref name="Incident"/> (unit) about <paramref name="Normal"/> with index ratio <paramref name="Eta"/>; zero on total internal reflection.</summary>
+    // Refracts Incident (unit) about Normal with index ratio Eta; zero on total internal reflection.
     public static FVector3 Refract(FVector3 Incident, FVector3 Normal, float Eta)
     {
         float DotNI = Dot(Normal, Incident);
@@ -370,18 +409,24 @@ public struct FVector3 : IEquatable<FVector3>
         return D < 1e-12f ? Zero : Onto * (Dot(V, Onto) / D);
     }
 
-    /// <summary>Component of <paramref name="V"/> in the plane with the given (unit) <paramref name="Normal"/>.</summary>
+    // Component of V in the plane with the given (unit) Normal.
     public static FVector3 ProjectOnPlane(FVector3 V, FVector3 Normal)
     {
         return V - Project(V, Normal);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Min(FVector3 A, FVector3 B) => new(MathF.Min(A.X, B.X), MathF.Min(A.Y, B.Y), MathF.Min(A.Z, B.Z));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Max(FVector3 A, FVector3 B) => new(MathF.Max(A.X, B.X), MathF.Max(A.Y, B.Y), MathF.Max(A.Z, B.Z));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Min(FVector3 V, float S) => new(MathF.Min(V.X, S), MathF.Min(V.Y, S), MathF.Min(V.Z, S));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Max(FVector3 V, float S) => new(MathF.Max(V.X, S), MathF.Max(V.Y, S), MathF.Max(V.Z, S));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Clamp(FVector3 V, FVector3 Lo, FVector3 Hi) => Min(Max(V, Lo), Hi);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Clamp(FVector3 V, float Lo, float Hi)
         => new(Math.Clamp(V.X, Lo, Hi), Math.Clamp(V.Y, Lo, Hi), Math.Clamp(V.Z, Lo, Hi));
 
@@ -406,6 +451,7 @@ public struct FVector3 : IEquatable<FVector3>
         return this * (Clamped / Len);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 Abs(FVector3 V) => new(MathF.Abs(V.X), MathF.Abs(V.Y), MathF.Abs(V.Z));
     public static FVector3 Floor(FVector3 V) => new(MathF.Floor(V.X), MathF.Floor(V.Y), MathF.Floor(V.Z));
     public static FVector3 Ceil(FVector3 V) => new(MathF.Ceiling(V.X), MathF.Ceiling(V.Y), MathF.Ceiling(V.Z));
@@ -419,15 +465,25 @@ public struct FVector3 : IEquatable<FVector3>
     public static bool IsNearlyEqual(FVector3 A, FVector3 B, float Epsilon = 1e-4f)
         => MathF.Abs(A.X - B.X) <= Epsilon && MathF.Abs(A.Y - B.Y) <= Epsilon && MathF.Abs(A.Z - B.Z) <= Epsilon;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator +(FVector3 A, FVector3 B) => new(A.X + B.X, A.Y + B.Y, A.Z + B.Z);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator -(FVector3 A, FVector3 B) => new(A.X - B.X, A.Y - B.Y, A.Z - B.Z);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator -(FVector3 A) => new(-A.X, -A.Y, -A.Z);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator *(FVector3 A, FVector3 B) => new(A.X * B.X, A.Y * B.Y, A.Z * B.Z);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator *(FVector3 A, float S) => new(A.X * S, A.Y * S, A.Z * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator *(float S, FVector3 A) => new(A.X * S, A.Y * S, A.Z * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator /(FVector3 A, FVector3 B) => new(A.X / B.X, A.Y / B.Y, A.Z / B.Z);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator /(FVector3 A, float S) => new(A.X / S, A.Y / S, A.Z / S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(FVector3 A, FVector3 B) => A.X == B.X && A.Y == B.Y && A.Z == B.Z;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(FVector3 A, FVector3 B) => !(A == B);
 
     public bool Equals(FVector3 Other) => this == Other;
@@ -498,15 +554,25 @@ public struct FVector4 : IEquatable<FVector4>
         }
     }
 
-    public float Length => MathF.Sqrt(X * X + Y * Y + Z * Z + W * W);
-    public float LengthSquared => X * X + Y * Y + Z * Z + W * W;
+    public float Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => MathF.Sqrt(X * X + Y * Y + Z * Z + W * W);
+    }
+    public float LengthSquared
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => X * X + Y * Y + Z * Z + W * W;
+    }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FVector4 Normalized()
     {
         float L = Length;
         return L > 1e-8f ? this / L : Zero;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Dot(FVector4 A, FVector4 B)
     {
         return A.X * B.X + A.Y * B.Y + A.Z * B.Z + A.W * B.W;
@@ -515,6 +581,7 @@ public struct FVector4 : IEquatable<FVector4>
     public static float Distance(FVector4 A, FVector4 B) => (A - B).Length;
     public static float DistanceSquared(FVector4 A, FVector4 B) => (A - B).LengthSquared;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Lerp(FVector4 A, FVector4 B, float T)
     {
         return A + (B - A) * T;
@@ -525,13 +592,18 @@ public struct FVector4 : IEquatable<FVector4>
         return Lerp(A, B, Math.Clamp(T, 0.0f, 1.0f));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Min(FVector4 A, FVector4 B) => new(MathF.Min(A.X, B.X), MathF.Min(A.Y, B.Y), MathF.Min(A.Z, B.Z), MathF.Min(A.W, B.W));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Max(FVector4 A, FVector4 B) => new(MathF.Max(A.X, B.X), MathF.Max(A.Y, B.Y), MathF.Max(A.Z, B.Z), MathF.Max(A.W, B.W));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Clamp(FVector4 V, FVector4 Lo, FVector4 Hi) => Min(Max(V, Lo), Hi);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Clamp(FVector4 V, float Lo, float Hi)
         => new(Math.Clamp(V.X, Lo, Hi), Math.Clamp(V.Y, Lo, Hi), Math.Clamp(V.Z, Lo, Hi), Math.Clamp(V.W, Lo, Hi));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 Abs(FVector4 V) => new(MathF.Abs(V.X), MathF.Abs(V.Y), MathF.Abs(V.Z), MathF.Abs(V.W));
 
     public float MinComponent => MathF.Min(MathF.Min(X, Y), MathF.Min(Z, W));
@@ -541,15 +613,25 @@ public struct FVector4 : IEquatable<FVector4>
         => MathF.Abs(A.X - B.X) <= Epsilon && MathF.Abs(A.Y - B.Y) <= Epsilon
         && MathF.Abs(A.Z - B.Z) <= Epsilon && MathF.Abs(A.W - B.W) <= Epsilon;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator +(FVector4 A, FVector4 B) => new(A.X + B.X, A.Y + B.Y, A.Z + B.Z, A.W + B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator -(FVector4 A, FVector4 B) => new(A.X - B.X, A.Y - B.Y, A.Z - B.Z, A.W - B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator -(FVector4 A) => new(-A.X, -A.Y, -A.Z, -A.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator *(FVector4 A, FVector4 B) => new(A.X * B.X, A.Y * B.Y, A.Z * B.Z, A.W * B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator *(FVector4 A, float S) => new(A.X * S, A.Y * S, A.Z * S, A.W * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator *(float S, FVector4 A) => new(A.X * S, A.Y * S, A.Z * S, A.W * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator /(FVector4 A, FVector4 B) => new(A.X / B.X, A.Y / B.Y, A.Z / B.Z, A.W / B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator /(FVector4 A, float S) => new(A.X / S, A.Y / S, A.Z / S, A.W / S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(FVector4 A, FVector4 B) => A.X == B.X && A.Y == B.Y && A.Z == B.Z && A.W == B.W;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(FVector4 A, FVector4 B) => !(A == B);
 
     public bool Equals(FVector4 Other) => this == Other;
@@ -577,10 +659,10 @@ public struct FQuat : IEquatable<FQuat>
 
     public static FQuat Identity => new(0.0f, 0.0f, 0.0f, 1.0f);
 
-    /// <summary>The imaginary (vector) part.</summary>
+    // The imaginary (vector) part.
     public FVector3 Vector => new(X, Y, Z);
 
-    /// <summary>A rotation of <paramref name="AngleRadians"/> about the (normalized) <paramref name="Axis"/>.</summary>
+    // A rotation of AngleRadians about the (normalized) Axis.
     public static FQuat AngleAxis(float AngleRadians, FVector3 Axis)
     {
         FVector3 N = Axis.Normalized();
@@ -589,10 +671,10 @@ public struct FQuat : IEquatable<FQuat>
         return new FQuat(N.X * S, N.Y * S, N.Z * S, MathF.Cos(Half));
     }
 
-    /// <summary>Alias of <see cref="AngleAxis"/> with axis-first argument order (matches C++ Math::FromAxisAngle).</summary>
+    // Alias of AngleAxis with axis-first argument order (matches C++ Math::FromAxisAngle).
     public static FQuat FromAxisAngle(FVector3 Axis, float AngleRadians) => AngleAxis(AngleRadians, Axis);
 
-    /// <summary>From euler angles in radians (pitch=X, yaw=Y, roll=Z). Matches C++ TQuat(euler).</summary>
+    // From euler angles in radians (pitch=X, yaw=Y, roll=Z). Matches C++ TQuat(euler).
     public static FQuat FromEuler(FVector3 EulerRadians)
     {
         float Cx = MathF.Cos(EulerRadians.X * 0.5f), Sx = MathF.Sin(EulerRadians.X * 0.5f);
@@ -609,7 +691,7 @@ public struct FQuat : IEquatable<FQuat>
     public static FQuat FromEuler(float PitchRadians, float YawRadians, float RollRadians)
         => FromEuler(new FVector3(PitchRadians, YawRadians, RollRadians));
 
-    /// <summary>Euler angles in radians (pitch=X, yaw=Y, roll=Z). Matches C++ Math::EulerAngles.</summary>
+    // Euler angles in radians (pitch=X, yaw=Y, roll=Z). Matches C++ Math::EulerAngles.
     public FVector3 ToEuler()
     {
         float Pitch = MathF.Atan2(2.0f * (Y * Z + W * X), W * W - X * X - Y * Y + Z * Z);
@@ -619,7 +701,7 @@ public struct FQuat : IEquatable<FQuat>
         return new FVector3(Pitch, Yaw, Roll);
     }
 
-    /// <summary>Shortest-arc rotation that maps <paramref name="From"/> onto <paramref name="To"/> (both should be unit).</summary>
+    // Shortest-arc rotation that maps From onto To (both should be unit).
     public static FQuat FromToRotation(FVector3 From, FVector3 To)
     {
         From = From.Normalized();
@@ -646,7 +728,7 @@ public struct FQuat : IEquatable<FQuat>
         return new FQuat(C.X * InvS, C.Y * InvS, C.Z * InvS, S * 0.5f);
     }
 
-    /// <summary>Look-rotation from a forward <paramref name="Direction"/> and an <paramref name="Up"/> hint (left-handed, +Z forward).</summary>
+    // Look-rotation from a forward Direction and an Up hint (left-handed, +Z forward).
     public static FQuat LookRotation(FVector3 Direction, FVector3 Up)
     {
         FVector3 F = Direction.Normalized();
@@ -683,18 +765,28 @@ public struct FQuat : IEquatable<FQuat>
         }
     }
 
-    public float Length => MathF.Sqrt(X * X + Y * Y + Z * Z + W * W);
-    public float LengthSquared => X * X + Y * Y + Z * Z + W * W;
+    public float Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => MathF.Sqrt(X * X + Y * Y + Z * Z + W * W);
+    }
+    public float LengthSquared
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => X * X + Y * Y + Z * Z + W * W;
+    }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FQuat Normalized()
     {
         float L = Length;
         return L > 1e-8f ? new FQuat(X / L, Y / L, Z / L, W / L) : Identity;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FQuat Conjugate() => new(-X, -Y, -Z, W);
 
-    /// <summary>Inverse rotation (conjugate / |q|^2; equals the conjugate for a unit quaternion).</summary>
+    // Inverse rotation (conjugate / |q|^2; equals the conjugate for a unit quaternion).
     public FQuat Inverse()
     {
         float LenSq = LengthSquared;
@@ -706,9 +798,10 @@ public struct FQuat : IEquatable<FQuat>
         return new FQuat(-X * Inv, -Y * Inv, -Z * Inv, W * Inv);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Dot(FQuat A, FQuat B) => A.X * B.X + A.Y * B.Y + A.Z * B.Z + A.W * B.W;
 
-    /// <summary>Total rotation angle of this quaternion, in radians (0..PI).</summary>
+    // Total rotation angle of this quaternion, in radians (0..PI).
     public float Angle()
     {
         float Norm = Length;
@@ -716,14 +809,14 @@ public struct FQuat : IEquatable<FQuat>
         return 2.0f * MathF.Acos(Math.Clamp(WAbs, -1.0f, 1.0f));
     }
 
-    /// <summary>Angle between two rotations, in radians.</summary>
+    // Angle between two rotations, in radians.
     public static float Angle(FQuat A, FQuat B)
     {
         float D = MathF.Abs(Dot(A.Normalized(), B.Normalized()));
         return 2.0f * MathF.Acos(Math.Clamp(D, -1.0f, 1.0f));
     }
 
-    /// <summary>Normalized linear interpolation (cheap; shortest arc). Result is normalized.</summary>
+    // Normalized linear interpolation (cheap; shortest arc). Result is normalized.
     public static FQuat Nlerp(FQuat A, FQuat B, float T)
     {
         if (Dot(A, B) < 0.0f)
@@ -733,7 +826,7 @@ public struct FQuat : IEquatable<FQuat>
         return (A + (B - A) * T).Normalized();
     }
 
-    /// <summary>Spherical interpolation along the shortest arc. Matches C++ Math::Slerp.</summary>
+    // Spherical interpolation along the shortest arc. Matches C++ Math::Slerp.
     public static FQuat Slerp(FQuat A, FQuat B, float Alpha)
     {
         float CosTheta = Dot(A, B);
@@ -757,7 +850,7 @@ public struct FQuat : IEquatable<FQuat>
         return A * WA + End * WB;
     }
 
-    /// <summary>Rotates <paramref name="From"/> toward <paramref name="To"/> by at most <paramref name="MaxRadians"/>.</summary>
+    // Rotates From toward To by at most MaxRadians.
     public static FQuat RotateTowards(FQuat From, FQuat To, float MaxRadians)
     {
         float Theta = Angle(From, To);
@@ -768,7 +861,7 @@ public struct FQuat : IEquatable<FQuat>
         return Slerp(From, To, MathF.Min(1.0f, MaxRadians / Theta));
     }
 
-    /// <summary>Clamps the rotation magnitude (angle from identity) to <paramref name="MaxRadians"/>.</summary>
+    // Clamps the rotation magnitude (angle from identity) to MaxRadians.
     public static FQuat ClampAngle(FQuat Q, float MaxRadians)
     {
         Q = Q.Normalized();
@@ -780,7 +873,7 @@ public struct FQuat : IEquatable<FQuat>
         return Slerp(Identity, Q, MaxRadians / Theta);
     }
 
-    /// <summary>Decomposes into axis (unit) and angle (radians).</summary>
+    // Decomposes into axis (unit) and angle (radians).
     public void ToAxisAngle(out FVector3 Axis, out float AngleRadians)
     {
         FQuat Q = Normalized();
@@ -789,7 +882,8 @@ public struct FQuat : IEquatable<FQuat>
         Axis = S < 1e-6f ? FVector3.UnitX : new FVector3(Q.X / S, Q.Y / S, Q.Z / S);
     }
 
-    /// <summary>Rotates <paramref name="V"/> by this quaternion (assumes a unit quaternion).</summary>
+    // Rotates V by this quaternion (assumes a unit quaternion).
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FVector3 Rotate(FVector3 V)
     {
         FVector3 U = new(X, Y, Z);
@@ -803,7 +897,8 @@ public struct FQuat : IEquatable<FQuat>
         => MathF.Abs(A.X - B.X) <= Epsilon && MathF.Abs(A.Y - B.Y) <= Epsilon
         && MathF.Abs(A.Z - B.Z) <= Epsilon && MathF.Abs(A.W - B.W) <= Epsilon;
 
-    /// <summary>Quaternion composition (apply <paramref name="B"/> then <paramref name="A"/>).</summary>
+    // Quaternion composition (apply B then A).
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator *(FQuat A, FQuat B)
     {
         return new FQuat(
@@ -813,16 +908,24 @@ public struct FQuat : IEquatable<FQuat>
             A.W * B.W - A.X * B.X - A.Y * B.Y - A.Z * B.Z);
     }
 
-    /// <summary>Rotates a vector by the quaternion.</summary>
+    // Rotates a vector by the quaternion.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector3 operator *(FQuat Q, FVector3 V) => Q.Rotate(V);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator *(FQuat Q, float S) => new(Q.X * S, Q.Y * S, Q.Z * S, Q.W * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator *(float S, FQuat Q) => new(Q.X * S, Q.Y * S, Q.Z * S, Q.W * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator +(FQuat A, FQuat B) => new(A.X + B.X, A.Y + B.Y, A.Z + B.Z, A.W + B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator -(FQuat A, FQuat B) => new(A.X - B.X, A.Y - B.Y, A.Z - B.Z, A.W - B.W);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FQuat operator -(FQuat Q) => new(-Q.X, -Q.Y, -Q.Z, -Q.W);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(FQuat A, FQuat B) => A.X == B.X && A.Y == B.Y && A.Z == B.Z && A.W == B.W;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(FQuat A, FQuat B) => !(A == B);
 
     public bool Equals(FQuat Other) => this == Other;

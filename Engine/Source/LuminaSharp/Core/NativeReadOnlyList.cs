@@ -4,21 +4,20 @@ using System.Collections.Generic;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// A read-only view over a native TVector&lt;T&gt; member, surfaced by the generated bindings. Backed by
-/// a count and a per-index projection (which reads the element through a native thunk and, for
-/// object/struct elements, wraps it). The view is a snapshot of the count at construction; it does not
-/// own the native storage, so don't retain it past the owner's lifetime.
-/// </summary>
-public readonly struct NativeReadOnlyList<T> : IReadOnlyList<T>
+/// <summary>A read-only view over a native TVector&lt;T&gt; with a non-blittable element (string / opaque-struct
+/// wrapper). Holds the container context + a static projector function pointer, so a property read allocates no
+/// closure. Snapshots the count; does not own the storage, so don't retain it past the owner's lifetime.</summary>
+public readonly unsafe struct NativeReadOnlyList<T> : IReadOnlyList<T>
 {
     private readonly int Length;
-    private readonly Func<int, T> Getter;
+    private readonly nint Context;
+    private readonly delegate*<nint, int, T> Projector;
 
-    public NativeReadOnlyList(int Count, Func<int, T> Get)
+    public NativeReadOnlyList(int Count, nint Context, delegate*<nint, int, T> Projector)
     {
         Length = Count < 0 ? 0 : Count;
-        Getter = Get;
+        this.Context = Context;
+        this.Projector = Projector;
     }
 
     public int Count => Length;
@@ -31,20 +30,36 @@ public readonly struct NativeReadOnlyList<T> : IReadOnlyList<T>
             {
                 throw new ArgumentOutOfRangeException(nameof(Index));
             }
-            return Getter(Index);
+            return Projector(Context, Index);
         }
     }
 
-    public IEnumerator<T> GetEnumerator()
+    public Enumerator GetEnumerator() => new(this);
+
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() => GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    /// <summary>Allocation-free struct enumerator.</summary>
+    public struct Enumerator : IEnumerator<T>
     {
-        for (int Index = 0; Index < Length; Index++)
+        private readonly NativeReadOnlyList<T> List;
+        private int Index;
+
+        internal Enumerator(NativeReadOnlyList<T> list)
         {
-            yield return Getter(Index);
+            List = list;
+            Index = -1;
         }
-    }
 
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
+        public T Current => List.Projector(List.Context, Index);
+
+        object IEnumerator.Current => Current!;
+
+        public bool MoveNext() => ++Index < List.Length;
+
+        public void Reset() => Index = -1;
+
+        public void Dispose() { }
     }
 }

@@ -1,9 +1,9 @@
+using System.Runtime.CompilerServices;
 using Lumina;
 
 namespace LuminaSharp;
 
-/// <summary>An RGBA color (0..1). Converts implicitly to <see cref="FVector4"/>, so it drops into every
-/// engine API that takes a color.</summary>
+// An RGBA color (0..1). Converts implicitly to FVector4, so it drops into every engine API that takes a color.
 public readonly struct Color
 {
     public readonly float R;
@@ -19,8 +19,10 @@ public readonly struct Color
         this.A = A;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Color WithAlpha(float Alpha) => new(R, G, B, Alpha);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static implicit operator FVector4(Color C) => new(C.R, C.G, C.B, C.A);
 
     public static Color White => new(1.0f, 1.0f, 1.0f);

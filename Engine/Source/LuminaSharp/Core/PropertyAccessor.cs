@@ -4,19 +4,13 @@ using System.Reflection;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// Cached, fast property get/set delegates. Building an open-instance delegate once and reusing it is far
-/// cheaper than calling <see cref="PropertyInfo.GetValue(object)"/> / <see cref="PropertyInfo.SetValue(object, object)"/>
-/// repeatedly (those re-walk reflection metadata every call). Value-type properties still box on the
-/// boundary, but the per-call reflection cost is gone. General-purpose: anything reflecting over properties
-/// (UI data binding, serialization, the property system) can share this instead of rolling its own.
-/// </summary>
+/// Cached open-instance property get/set delegates; far cheaper than repeated PropertyInfo.GetValue/SetValue.
 public static class PropertyAccessor
 {
     private static readonly ConcurrentDictionary<PropertyInfo, Func<object, object?>> Getters = new();
     private static readonly ConcurrentDictionary<PropertyInfo, Action<object, object?>?> Setters = new();
 
-    /// <summary>A cached getter for <paramref name="Property"/>. Throws if the property has no getter.</summary>
+    /// A cached getter; throws if the property has no getter.
     public static Func<object, object?> Getter(PropertyInfo Property)
     {
         return Getters.GetOrAdd(Property, static P =>
@@ -33,7 +27,7 @@ public static class PropertyAccessor
         });
     }
 
-    /// <summary>A cached setter for <paramref name="Property"/>, or null if it is read-only.</summary>
+    /// A cached setter, or null if the property is read-only.
     public static Action<object, object?>? Setter(PropertyInfo Property)
     {
         return Setters.GetOrAdd(Property, static P =>

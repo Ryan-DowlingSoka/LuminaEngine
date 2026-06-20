@@ -661,6 +661,61 @@ namespace Lumina
     static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
 
+    // GPU-driven expand (RenderSettings.bGPUExpand): the CPU emits ONE of these per renderable (a trivial
+    // component copy -- no cull/LOD/material-resolve), and ExpandRenderables.slang reads it + the mesh
+    // descriptor to produce the FGPUInstance[] the cull pass consumes. Must match FRenderableRecord in
+    // GPUExpand.slang. ComponentFlags bits: 0 CastShadow, 1 ReceiveShadow, 2 IgnoreOcclusion, 3 Skinned.
+    struct alignas(16) FRenderableRecord
+    {
+        FMatrix4   Transform;             // STransformComponent.CachedMatrix, verbatim
+        uint64     MeshDescriptorAddr;    // FMeshBuffers::MeshletHeaderBuffer (the extended descriptor BDA)
+        uint32     MaterialSlotBase;      // base into the flat per-surface material-index stream
+        uint32     SurfaceCount;          // Resource.GeometrySurfaces.size()
+        uint32     ComponentFlags;
+        int32      ForcedLODIndex;        // -1 = auto
+        float      BoundsScale;
+        float      MaxDrawDistance;       // 0 = unlimited
+        uint32     EntityID;
+        uint32     CustomData;            // CustomPrimitiveData.Packed
+        uint32     InstanceBase;          // exclusive prefix of SurfaceCount: deterministic output slot base
+        uint32     BoneOrSkinBase;        // ~0u static; global bone base for skinned
+        uint32     _Pad[4];
+    };
+    static_assert(sizeof(FRenderableRecord) == 128, "FRenderableRecord must match GPUExpand.slang");
+    VERIFY_SSBO_ALIGNMENT(FRenderableRecord)
+
+    // Per-material GPU table (indexed by CMaterialInterface::GetMaterialIndex()): the bucket(=PSO) the GPU
+    // assigns each surface to + the material's blend/shadow flags. Filled CPU-side from the bucket cache.
+    // Flags bits: 0 Translucent, 1 Masked, 2 Additive, 3 TwoSided, 4 CastsShadows.
+    struct FMaterialFlagsGPU
+    {
+        uint32 BucketIndex;
+        uint32 Flags;
+    };
+
+    namespace EExpandMaterialFlags
+    {
+        enum Type : uint32
+        {
+            Translucent  = BIT(0),
+            Masked       = BIT(1),
+            Additive     = BIT(2),
+            TwoSided     = BIT(3),
+            CastsShadows = BIT(4),
+        };
+    }
+
+    namespace EExpandComponentFlags
+    {
+        enum Type : uint32
+        {
+            CastShadow      = BIT(0),
+            ReceiveShadow   = BIT(1),
+            IgnoreOcclusion = BIT(2),
+            Skinned         = BIT(3),
+        };
+    }
+
     // One per skinned vertex, produced by the skinning pass and read by every draw VS. Holds the COMPLETE
     // vertex so the VS never touches the source. Position full-precision; normal/tangent octahedral. 28 B.
     struct FPreSkinnedVertex
@@ -935,6 +990,15 @@ namespace Lumina
         uint8 bCPUInstanceCull:1        = true;
         // Disabled = always LOD 0 (full detail).
         uint8 bUseLODs:1                = true;
+
+        // GPU-driven path: CPU emits a flat per-surface instance stream tagged with a bucket (=PSO) and the
+        // GPU culls + compacts into per-(view,bucket) indirect draws (CmdDrawIndirectCount), skipping the CPU
+        // per-surface dedup/merge. Off = the legacy per-draw CPU merge path. Requires drawIndirectCount.
+        uint8 bGPUDriven:1              = false;
+
+        // GPU-driven EXPAND (requires bGPUDriven): the CPU emits flat FRenderableRecord[] and a GPU compute
+        // pass does AABB/cull/LOD/material/meshlet + writes FGPUInstance[]. Off = CPU EmitDrawData_GPUDriven.
+        uint8 bGPUExpand:1              = false;
 
         // Camera LOD + bias picks shadow LOD; capped at MAX_SHADOW_LOD. 0 = no saving, 1-2 typical.
         int8  ShadowLODBias             = 1;

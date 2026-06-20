@@ -560,53 +560,84 @@ namespace Lumina::Reflection
             return false; // SoftObject and anything else: not bound yet
         }
 
-        // A read-only TVector<T> view: NativeReadOnlyList<element> backed by count + per-index thunks.
+        // An array element of one of these kinds is bit-for-bit identical in C# (primitive / 1-byte bool /
+        // width-matched enum mirror / blittable value-struct mirror), so the whole TVector<T> can be read as
+        // a zero-copy ReadOnlySpan<T> directly over the native storage instead of one crossing per element.
+        static bool IsBlittableElementKind(EBind Kind)
+        {
+            return Kind == EBind::Number || Kind == EBind::Bool || Kind == EBind::Enum || Kind == EBind::StructValue;
+        }
+
+        // A read-only TVector<T> view. For a blittable element type it is a zero-copy ReadOnlySpan<T> read in
+        // place at the property's offset (no boundary crossing, no native thunk). Otherwise (FString/FName or
+        // an opaque struct element) it falls back to NativeReadOnlyList<element> backed by count + per-index
+        // thunks.
         void EmitCSharpArray(FCodeWriter& Writer, FReflectedProperty& Prop, const FBinding& B,
-            const eastl::string& Friendly, const eastl::string& Module)
+            const eastl::string& Friendly, const eastl::string& Module, const eastl::string& TypeName)
         {
             const eastl::string& Member = Prop.Name;
             const eastl::string PropName = SafeIdentifier(Member);
+
+            if (IsBlittableElementKind(B.Elem->Kind))
+            {
+                const eastl::string OffName = "__off_" + Member;
+                Writer.Linef("private static readonly nint %s = (nint)global::LuminaSharp.NativeBindings.PropertyOffset(\"%s\", \"%s\");",
+                    OffName.c_str(), TypeName.c_str(), Member.c_str());
+
+                if (IsReadOnlyProp(Prop))
+                {
+                    // Read-only: a zero-copy ReadOnlySpan<T> over the native storage.
+                    Writer.Linef("public global::System.ReadOnlySpan<%s> %s =>", B.Elem->CSharp.c_str(), PropName.c_str());
+                    Writer.Linef("    global::LuminaSharp.NativeMarshal.ReadVector<%s>(Handle, %s);", B.Elem->CSharp.c_str(), OffName.c_str());
+                }
+                else
+                {
+                    // Writable: a NativeList<T> view = (vector pointer, element-type ops table). Reads decode
+                    // the header in place (zero crossing); Add/Remove/Clear call the ops fn-ptrs.
+                    const eastl::string OpsFn = "__vecopsfn_" + Member;
+                    const eastl::string OpsField = "__ops_" + Member;
+                    const eastl::string OpsThunk = "LuminaSharp_VecOps_" + Friendly + "_" + Member;
+                    Writer.Linef("public global::LuminaSharp.NativeList<%s> %s =>", B.Elem->CSharp.c_str(), PropName.c_str());
+                    Writer.Linef("    new global::LuminaSharp.NativeList<%s>((nint)Handle + %s, %s);", B.Elem->CSharp.c_str(), OffName.c_str(), OpsField.c_str());
+                    Writer.Linef("private static readonly delegate* unmanaged[Cdecl]<nint> %s =", OpsFn.c_str());
+                    Writer.Linef("    (delegate* unmanaged[Cdecl]<nint>)global::LuminaSharp.NativeBindings.Resolve(\"%s\", \"%s\");",
+                        Module.c_str(), OpsThunk.c_str());
+                    Writer.Linef("private static readonly nint %s = %s();", OpsField.c_str(), OpsFn.c_str());
+                }
+                return;
+            }
+
             const eastl::string CountFn = "__count_" + Member;
             const eastl::string GetAtFn = "__getat_" + Member;
+            const eastl::string ProjFn = "__proj_" + Member;
             const eastl::string CountThunk = "LuminaSharp_Count_" + Friendly + "_" + Member;
             const eastl::string GetAtThunk = "LuminaSharp_GetAt_" + Friendly + "_" + Member;
             const eastl::string& ECS = B.Elem->CSharp;
 
-            eastl::string Lambda;
-            eastl::string GetAtRet;
+            // Only non-blittable elements reach here (blittable returned above): an opaque-struct element wraps the
+            // element pointer, an FString/FName element decodes via the two-pass buffer thunk. The projector is a
+            // static method (managed function pointer) so the property read allocates no closure.
+            eastl::string ProjBody;
             bool bStr = false;
-            switch (B.Elem->Kind)
+            if (B.Elem->Kind == EBind::StructOpaque)
             {
-                case EBind::Number:
-                case EBind::StructValue:
-                    Lambda = "__i => " + GetAtFn + "(Handle, __i)";
-                    GetAtRet = ECS;
-                    break;
-                case EBind::Bool:
-                    Lambda = "__i => " + GetAtFn + "(Handle, __i) != 0";
-                    GetAtRet = "byte";
-                    break;
-                case EBind::Enum:
-                    Lambda = "__i => (" + ECS + ")" + GetAtFn + "(Handle, __i)";
-                    GetAtRet = "int";
-                    break;
-                case EBind::StructOpaque:
-                    Lambda = "__i => new " + ECS + "(" + GetAtFn + "(Handle, __i))";
-                    GetAtRet = "System.IntPtr";
-                    break;
-                case EBind::Str:
-                    bStr = true;
-                    Lambda = "__i => { int __n = " + GetAtFn + "(Handle, __i, (byte*)null, 0); if (__n <= 0) return string.Empty;"
-                        " byte[] __b = new byte[__n]; fixed (byte* __p = __b) { " + GetAtFn + "(Handle, __i, __p, __n); }"
-                        " return global::System.Text.Encoding.UTF8.GetString(__b); }";
-                    GetAtRet = "int";
-                    break;
-                default:
-                    return;
+                ProjBody = " => new " + ECS + "(" + GetAtFn + "(__h, __i));";
+            }
+            else if (B.Elem->Kind == EBind::Str)
+            {
+                bStr = true;
+                ProjBody = " { int __n = " + GetAtFn + "(__h, __i, (byte*)null, 0); if (__n <= 0) { return string.Empty; }"
+                    " byte[] __b = new byte[__n]; fixed (byte* __p = __b) { " + GetAtFn + "(__h, __i, __p, __n); }"
+                    " return global::System.Text.Encoding.UTF8.GetString(__b); }";
+            }
+            else
+            {
+                return;
             }
 
             Writer.Linef("public global::LuminaSharp.NativeReadOnlyList<%s> %s =>", ECS.c_str(), PropName.c_str());
-            Writer.Linef("    new global::LuminaSharp.NativeReadOnlyList<%s>(%s(Handle), %s);", ECS.c_str(), CountFn.c_str(), Lambda.c_str());
+            Writer.Linef("    new global::LuminaSharp.NativeReadOnlyList<%s>(%s(Handle), (nint)Handle, &%s);", ECS.c_str(), CountFn.c_str(), ProjFn.c_str());
+            Writer.Linef("private static %s %s(nint __h, int __i)%s", ECS.c_str(), ProjFn.c_str(), ProjBody.c_str());
 
             EmitThunkField(Writer, Module, CountThunk, CountFn, "System.IntPtr", "int");
             if (bStr)
@@ -615,8 +646,32 @@ namespace Lumina::Reflection
             }
             else
             {
-                EmitThunkField(Writer, Module, GetAtThunk, GetAtFn, "System.IntPtr, int", GetAtRet);
+                EmitThunkField(Writer, Module, GetAtThunk, GetAtFn, "System.IntPtr, int", "System.IntPtr");
             }
+        }
+
+        // The C++ element type spelling to instantiate GetVectorOps<T> with, for a blittable array element.
+        eastl::string VectorElementCpp(const FBinding& Elem)
+        {
+            switch (Elem.Kind)
+            {
+                case EBind::Bool:        return "bool";
+                case EBind::Number:      return Elem.Cpp;        // "int32", "float", ...
+                case EBind::Enum:        return Elem.TargetCpp;  // qualified enum type
+                case EBind::StructValue: return Elem.TargetCpp;  // qualified struct type
+                default:                 return eastl::string();
+            }
+        }
+
+        // A writable blittable-element TVector<T> exposes its element-type ops table to C# (NativeList<T>):
+        // one nullary export per writable array property returning the shared GetVectorOps<T>() pointer.
+        void EmitVectorOpsExport(FCodeWriter& Writer, FReflectedProperty& Prop, const FBinding& B,
+            const eastl::string& Friendly, const char* Api)
+        {
+            const eastl::string Thunk = "LuminaSharp_VecOps_" + Friendly + "_" + Prop.Name;
+            const eastl::string ElemCpp = VectorElementCpp(*B.Elem);
+            Writer.Linef("extern \"C\" %s const void* %s() { return ::Lumina::GetVectorOps<%s>(); }",
+                Api, Thunk.c_str(), ElemCpp.c_str());
         }
 
         void EmitNativeArray(FCodeWriter& Writer, FReflectedProperty& Prop, const FBinding& B,
@@ -722,17 +777,36 @@ namespace Lumina::Reflection
                 }
                 case EBind::Str:
                 {
-                    const char* Get = B.bIsName ? "PropGetName" : "PropGetString";
-                    const char* Set = B.bIsName ? "PropSetName" : "PropSetString";
                     Writer.Linef("public string %s", PropName.c_str());
                     Writer.BeginBlock();
-                    Writer.Linef("get => global::LuminaSharp.Native.%s(Handle, %s);", Get, PropFieldName.c_str());
-                    if (!bRO)
+                    if (B.bIsName)
                     {
-                        Writer.Linef("set => global::LuminaSharp.Native.%s(Handle, %s, value);", Set, PropFieldName.c_str());
+                        // FName is an interned id, not an eastl::string, so resolving it to text still goes
+                        // through the name table on the native side (one crossing each way).
+                        Writer.Linef("get => global::LuminaSharp.Native.PropGetName(Handle, %s);", PropFieldName.c_str());
+                        if (!bRO)
+                        {
+                            Writer.Linef("set => global::LuminaSharp.Native.PropSetName(Handle, %s, value);", PropFieldName.c_str());
+                        }
+                        Writer.EndBlock();
+                        EmitTokenField(Writer, PropFieldName, TypeName, Member);
                     }
-                    Writer.EndBlock();
-                    EmitTokenField(Writer, PropFieldName, TypeName, Member);
+                    else
+                    {
+                        // FString: read the eastl::basic_string in place (no crossing). The set still assigns
+                        // through the native allocator via the generic exporter.
+                        Writer.Linef("get => global::LuminaSharp.NativeMarshal.ReadString((nint)Handle + %s);", OffName.c_str());
+                        if (!bRO)
+                        {
+                            Writer.Linef("set => global::LuminaSharp.Native.PropSetString(Handle, %s, value);", PropFieldName.c_str());
+                        }
+                        Writer.EndBlock();
+                        EmitOffsetField(Writer, OffName, TypeName, Member);
+                        if (!bRO)
+                        {
+                            EmitTokenField(Writer, PropFieldName, TypeName, Member);
+                        }
+                    }
                     break;
                 }
                 case EBind::Object:
@@ -761,23 +835,35 @@ namespace Lumina::Reflection
                     break;
                 }
                 case EBind::Array:
-                    EmitCSharpArray(Writer, Prop, B, Friendly, Module);
+                    EmitCSharpArray(Writer, Prop, B, Friendly, Module, TypeName);
                     break;
                 case EBind::None:
                     break;
             }
         }
 
-        // The native `extern "C" <API>` thunk(s) backing one bound property. Only Array still needs them:
-        // the blittable kinds are read/written directly at the offset from C#, and the non-blittable kinds
-        // (Str/Object) route through the fixed generic per-type exporters in DotNetProperty.cpp. So the
-        // per-property native-export count is now O(array properties), not O(properties).
+        // The native `extern "C" <API>` thunk(s) backing one bound property. Only an array with a
+        // non-blittable element (FString/FName or an opaque struct) still needs them: blittable scalars and
+        // blittable-element arrays are read directly at the offset from C#, and the non-blittable scalar
+        // kinds (Str/Object) route through the fixed generic per-type exporters in DotNetProperty.cpp. So the
+        // per-property native-export count is now O(non-blittable-element array properties), not O(properties).
         void EmitNativeThunk(FCodeWriter& Writer, FReflectedProperty& Prop, const FBinding& B,
             const eastl::string& Friendly, const char* Qualified, const char* Api)
         {
-            if (B.Kind == EBind::Array)
+            if (B.Kind != EBind::Array)
             {
+                return;
+            }
+            if (!IsBlittableElementKind(B.Elem->Kind))
+            {
+                // Non-blittable element (FString/FName/opaque struct): per-index count/getat thunks.
                 EmitNativeArray(Writer, Prop, B, Friendly, Qualified, Api);
+            }
+            else if (!IsReadOnlyProp(Prop))
+            {
+                // Writable blittable element: the element-type ops table for NativeList<T>. Read-only
+                // blittable arrays need no export (C# reads the header directly as a ReadOnlySpan).
+                EmitVectorOpsExport(Writer, Prop, B, Friendly, Api);
             }
         }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Lumina;
@@ -7,7 +8,6 @@ namespace Lumina;
 // laid out column-by-column (C0.X, C0.Y, C0.Z, C0.W, C1.X, ...), identical to the native type, so this can
 // be passed across interop without conversion. Conventions match C++ (Core/Math/Matrix): LEFT-HANDED,
 // +Z forward, ZERO-TO-ONE clip depth. Math is ported 1:1 from MatrixMath.h. Do not "fix" the conventions.
-//
 // M[c] is column c; M[c, r] is the element at column c, row r. A transform is applied as M * V.
 
 [StructLayout(LayoutKind.Sequential)]
@@ -27,7 +27,7 @@ public struct FMatrix : IEquatable<FMatrix>
         this.C3 = C3;
     }
 
-    /// <summary>Diagonal matrix (pass 1 for identity).</summary>
+    // Diagonal matrix (pass 1 for identity).
     public FMatrix(float Diagonal)
     {
         C0 = new FVector4(Diagonal, 0.0f, 0.0f, 0.0f);
@@ -39,7 +39,7 @@ public struct FMatrix : IEquatable<FMatrix>
     public static FMatrix Identity => new(1.0f);
     public static FMatrix Zero => new(0.0f);
 
-    /// <summary>Column accessor (M[c] is column c).</summary>
+    // Column accessor (M[c] is column c).
     public FVector4 this[int Column]
     {
         get
@@ -64,7 +64,7 @@ public struct FMatrix : IEquatable<FMatrix>
         }
     }
 
-    /// <summary>Element accessor (column, row).</summary>
+    // Element accessor (column, row).
     public float this[int Column, int Row]
     {
         get => this[Column][Row];
@@ -79,10 +79,11 @@ public struct FMatrix : IEquatable<FMatrix>
     public FVector4 GetColumn(int Column) => this[Column];
     public FVector4 GetRow(int Row) => new(C0[Row], C1[Row], C2[Row], C3[Row]);
 
-    /// <summary>Translation component (the fourth column's xyz).</summary>
+    // Translation component (the fourth column's xyz).
     public FVector3 GetTranslation() => C3.XYZ;
 
     // M (R x C) * column vector -> column vector: linear combination of columns.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FVector4 operator *(FMatrix M, FVector4 V)
     {
         return M.C0 * V.X + M.C1 * V.Y + M.C2 * V.Z + M.C3 * V.W;
@@ -93,15 +94,21 @@ public struct FMatrix : IEquatable<FMatrix>
         return new FMatrix(A * B.C0, A * B.C1, A * B.C2, A * B.C3);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FMatrix operator *(FMatrix M, float S) => new(M.C0 * S, M.C1 * S, M.C2 * S, M.C3 * S);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FMatrix operator *(float S, FMatrix M) => M * S;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FMatrix operator +(FMatrix A, FMatrix B) => new(A.C0 + B.C0, A.C1 + B.C1, A.C2 + B.C2, A.C3 + B.C3);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FMatrix operator -(FMatrix A, FMatrix B) => new(A.C0 - B.C0, A.C1 - B.C1, A.C2 - B.C2, A.C3 - B.C3);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator ==(FMatrix A, FMatrix B) => A.C0 == B.C0 && A.C1 == B.C1 && A.C2 == B.C2 && A.C3 == B.C3;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool operator !=(FMatrix A, FMatrix B) => !(A == B);
 
-    /// <summary>Transforms a point (implicit w = 1, with perspective divide if needed).</summary>
+    // Transforms a point (implicit w = 1, with perspective divide if needed).
     public FVector3 TransformPoint(FVector3 P)
     {
         FVector4 R = this * new FVector4(P.X, P.Y, P.Z, 1.0f);
@@ -113,7 +120,7 @@ public struct FMatrix : IEquatable<FMatrix>
         return new FVector3(R.X, R.Y, R.Z);
     }
 
-    /// <summary>Transforms a direction (implicit w = 0; ignores translation).</summary>
+    // Transforms a direction (implicit w = 0; ignores translation).
     public FVector3 TransformDirection(FVector3 V)
     {
         FVector4 R = this * new FVector4(V.X, V.Y, V.Z, 0.0f);
@@ -146,7 +153,7 @@ public struct FMatrix : IEquatable<FMatrix>
         return C0.X * Cof0 - C0.Y * Cof1 + C0.Z * Cof2 - C0.W * Cof3;
     }
 
-    /// <summary>Full general 4x4 inverse (cofactor/adjugate). Ported 1:1 from C++ Math::Inverse.</summary>
+    // Full general 4x4 inverse (cofactor/adjugate). Ported 1:1 from C++ Math::Inverse.
     public FMatrix Inverse()
     {
         float C00 = C2.Z * C3.W - C3.Z * C2.W;
@@ -206,8 +213,7 @@ public struct FMatrix : IEquatable<FMatrix>
         return new FMatrix(Inv0 * OneOverDet, Inv1 * OneOverDet, Inv2 * OneOverDet, Inv3 * OneOverDet);
     }
 
-    // --- Builders -------------------------------------------------------------------------------
-
+    // Builders.
     public static FMatrix Translation(FVector3 T)
     {
         FMatrix M = Identity;
@@ -224,7 +230,7 @@ public struct FMatrix : IEquatable<FMatrix>
             new FVector4(0.0f, 0.0f, 0.0f, 1.0f));
     }
 
-    /// <summary>Rotation about a (normalized) axis by an angle in radians.</summary>
+    // Rotation about a (normalized) axis by an angle in radians.
     public static FMatrix RotationAxis(float AngleRadians, FVector3 Axis)
     {
         float Cos = MathF.Cos(AngleRadians);
@@ -239,7 +245,7 @@ public struct FMatrix : IEquatable<FMatrix>
             new FVector4(0.0f, 0.0f, 0.0f, 1.0f));
     }
 
-    /// <summary>Rotation matrix from a quaternion (the rotation in the upper-left 3x3).</summary>
+    // Rotation matrix from a quaternion (the rotation in the upper-left 3x3).
     public static FMatrix FromQuat(FQuat Q)
     {
         float XX = Q.X * Q.X, YY = Q.Y * Q.Y, ZZ = Q.Z * Q.Z;
@@ -253,7 +259,7 @@ public struct FMatrix : IEquatable<FMatrix>
             new FVector4(0.0f, 0.0f, 0.0f, 1.0f));
     }
 
-    /// <summary>Translation * Rotation * Scale, composed directly (matches FTransform::GetMatrix).</summary>
+    // Translation * Rotation * Scale, composed directly (matches FTransform::GetMatrix).
     public static FMatrix TRS(FVector3 Translation, FQuat Rotation, FVector3 Scale)
     {
         FMatrix R = FromQuat(Rotation);
@@ -264,7 +270,7 @@ public struct FMatrix : IEquatable<FMatrix>
             new FVector4(Translation.X, Translation.Y, Translation.Z, 1.0f));
     }
 
-    /// <summary>Rotation matrix -> quaternion (branch-by-largest-component).</summary>
+    // Rotation matrix -> quaternion (branch-by-largest-component).
     public FQuat ToQuat()
     {
         float M00 = C0.X, M01 = C0.Y, M02 = C0.Z;
@@ -294,7 +300,7 @@ public struct FMatrix : IEquatable<FMatrix>
         }
     }
 
-    /// <summary>Affine TRS decompose (no skew/perspective, which is all the engine builds). False on singular.</summary>
+    // Affine TRS decompose (no skew/perspective, which is all the engine builds). False on singular.
     public bool Decompose(out FVector3 Scale, out FQuat Rotation, out FVector3 Translation)
     {
         Scale = FVector3.One;
@@ -329,9 +335,8 @@ public struct FMatrix : IEquatable<FMatrix>
         return true;
     }
 
-    // --- Projection / view ----------------------------------------------------------------------
-
-    /// <summary>Left-handed perspective, zero-to-one depth.</summary>
+    // Projection / view.
+    // Left-handed perspective, zero-to-one depth.
     public static FMatrix Perspective(float FovYRadians, float Aspect, float Near, float Far)
     {
         float TanHalf = MathF.Tan(FovYRadians * 0.5f);
@@ -356,7 +361,7 @@ public struct FMatrix : IEquatable<FMatrix>
         return M;
     }
 
-    /// <summary>Left-handed look-at view matrix.</summary>
+    // Left-handed look-at view matrix.
     public static FMatrix LookAt(FVector3 Eye, FVector3 Center, FVector3 Up)
     {
         FVector3 F = (Center - Eye).Normalized();

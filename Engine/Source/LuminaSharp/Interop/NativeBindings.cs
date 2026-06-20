@@ -3,12 +3,10 @@ using System.Runtime.InteropServices;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// Resolves native engine exports into raw function pointers for the generated bindings.
-/// </summary>
+/// <summary>Resolves native engine exports into raw function pointers for the generated bindings.</summary>
 public static unsafe class NativeBindings
 {
-    /// <summary>Resolves an export from a module (by module name) to a function pointer; null on miss.</summary>
+    /// <summary>Resolves an export from a module (by name) to a function pointer; null on miss.</summary>
     public static void* Resolve(string Module, string EntryPoint)
     {
         IntPtr Handle = Host.ModuleHandle(Module);
@@ -20,7 +18,7 @@ public static unsafe class NativeBindings
         return ResolveFrom(Handle, EntryPoint);
     }
 
-    /// <summary>Resolves an export from an already-known module handle (used for the bootstrap binds).</summary>
+    /// <summary>Resolves an export from a known module handle (the bootstrap binds).</summary>
     public static void* ResolveFrom(IntPtr ModuleHandle, string EntryPoint)
     {
         if (ModuleHandle != IntPtr.Zero && NativeLibrary.TryGetExport(ModuleHandle, EntryPoint, out IntPtr Export))
@@ -31,40 +29,31 @@ public static unsafe class NativeBindings
         return null;
     }
 
-    // Property resolve helpers for the generated bindings. A blittable property caches just its byte
-    // offset (PropertyOffset); a non-blittable property caches its FProperty* token (FindProperty). Both
-    // resolve once per property in a generated `static readonly` initializer, then the get/set bodies use
-    // the cached value with no further name lookup. Type is the reflected type's simple name (resolved
-    // native-side via FindObject, mirroring the component-ops lookup).
+    // Property resolve helpers for the generated bindings: a blittable property caches a byte offset
+    // (PropertyOffset), a non-blittable one an FProperty* token (FindProperty), resolved once per property.
 
-    /// <summary>The byte offset of Type.Prop within its container, resolved once from live reflection.</summary>
-    public static int PropertyOffset(string Type, string Prop)
+    /// <summary>Byte offset of Type.Prop within its container; 0 if unresolved.</summary>
+    public static int PropertyOffset(string Type, string Prop) => CallWithStringArgs(Type, Prop, PropertyOffsetByName);
+
+    /// <summary>FProperty* token for Type.Prop (opaque); IntPtr.Zero on miss.</summary>
+    public static IntPtr FindProperty(string Type, string Prop) => CallWithStringArgs(Type, Prop, FindPropertyExport);
+
+    // Encodes two strings to UTF-8 stack buffers and invokes a (ptr,len,ptr,len)->T native export.
+    private static T CallWithStringArgs<T>(string Type, string Prop, delegate* unmanaged[Cdecl]<byte*, int, byte*, int, T> Fn) where T : unmanaged
     {
+        if (Fn == null)
+        {
+            Native.Log(ELogLevel.Error, "NativeBindings: property-resolve export unresolved.");
+            return default;
+        }
+
         Span<byte> TypeScratch = stackalloc byte[256];
         Span<byte> PropScratch = stackalloc byte[256];
         Interop.FInteropString TypeUtf8 = new(Type, TypeScratch);
         Interop.FInteropString PropUtf8 = new(Prop, PropScratch);
         try
         {
-            return PropertyOffsetByName(TypeUtf8.Pointer, TypeUtf8.Length, PropUtf8.Pointer, PropUtf8.Length);
-        }
-        finally
-        {
-            TypeUtf8.Free();
-            PropUtf8.Free();
-        }
-    }
-
-    /// <summary>The FProperty* token for Type.Prop (opaque), resolved once; IntPtr.Zero on miss.</summary>
-    public static IntPtr FindProperty(string Type, string Prop)
-    {
-        Span<byte> TypeScratch = stackalloc byte[256];
-        Span<byte> PropScratch = stackalloc byte[256];
-        Interop.FInteropString TypeUtf8 = new(Type, TypeScratch);
-        Interop.FInteropString PropUtf8 = new(Prop, PropScratch);
-        try
-        {
-            return FindPropertyExport(TypeUtf8.Pointer, TypeUtf8.Length, PropUtf8.Pointer, PropUtf8.Length);
+            return Fn(TypeUtf8.Pointer, TypeUtf8.Length, PropUtf8.Pointer, PropUtf8.Length);
         }
         finally
         {

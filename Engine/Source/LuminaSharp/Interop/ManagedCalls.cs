@@ -375,6 +375,7 @@ public static unsafe class ManagedCalls
         }
         catch
         {
+            Native.Log(ELogLevel.Warn, $"Coerce: failed to convert {Raw?.GetType().Name ?? "null"} to {Target.Name}.");
             return Raw;
         }
     }

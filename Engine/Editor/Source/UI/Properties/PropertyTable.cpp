@@ -443,7 +443,7 @@ namespace Lumina
         return ImGui::CalcTextSize(PropertyHandle->Property->GetPropertyDisplayName().c_str()).x;
     }
 
-    bool FPropertyPropertyRow::HasExtraControls() const
+    bool FPropertyRow::HasExtraControls() const
     {
         if (!bArrayElement)
         {
@@ -455,12 +455,12 @@ namespace Lumina
         return ArrayRow->AllowResize() || ArrayRow->AllowReorder();
     }
 
-    float FPropertyPropertyRow::GetExtraControlsSectionWidth()
+    float FPropertyRow::GetExtraControlsSectionWidth()
     {
         return bArrayElement ? 22.0f : 0.0f;
     }
 
-    void FPropertyPropertyRow::DrawExtraControlsSection()
+    void FPropertyRow::DrawExtraControlsSection()
     {
         FArrayPropertyRow* ArrayRow = static_cast<FArrayPropertyRow*>(ParentRow);
         FArrayProperty* ArrayProperty = ArrayRow->ArrayProperty;

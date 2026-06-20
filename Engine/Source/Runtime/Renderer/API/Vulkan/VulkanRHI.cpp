@@ -1120,6 +1120,7 @@ namespace Lumina::RHI
         Features12.runtimeDescriptorArray                       = VK_TRUE;
         Features12.shaderInt8                                   = VK_TRUE;
         Features12.shaderFloat16                                = VK_TRUE;
+        Features12.drawIndirectCount                            = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features Features13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         Features13.dynamicRendering = VK_TRUE;
@@ -3798,6 +3799,37 @@ namespace Lumina::RHI
 
         vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &DrawArgs);
         vkCmdDrawIndexedIndirect(VkCmdBuf, ArgsBuffer, BufferOffset, DrawCount, Stride);
+    }
+
+    void CmdDrawIndirectCount(FCmdListH CL, GPUPtr Args, GPUPtr IndirectBuffer, uint32 IndirectOffset, GPUPtr CountBuffer, uint32 CountOffset, uint32 MaxDrawCount, uint32 Stride)
+    {
+        VkCommandBuffer VkCmdBuf = GDevice->CommandLists[CL].CommandBuffer;
+
+        VkBuffer     ArgsVkBuffer;
+        VkDeviceSize ArgsBufferOffset;
+        VkBuffer     CountVkBuffer;
+        VkDeviceSize CountBufferOffset;
+
+        {
+            FScopeLock Lock(GDevice->MemoryMutex);
+            const FMemoryBlock* ArgsIt  = FindMemory(IndirectBuffer);
+            const FMemoryBlock* CountIt = FindMemory(CountBuffer);
+            if (ArgsIt == nullptr || CountIt == nullptr)
+            {
+                return;
+            }
+
+            ArgsVkBuffer      = ArgsIt->Buffer;
+            ArgsBufferOffset  = (IndirectBuffer - ArgsIt->Device) + IndirectOffset;
+            CountVkBuffer     = CountIt->Buffer;
+            CountBufferOffset = (CountBuffer - CountIt->Device) + CountOffset;
+        }
+
+        if (Args != 0)
+        {
+            vkCmdPushConstants(VkCmdBuf, GDevice->PipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &Args);
+        }
+        vkCmdDrawIndirectCount(VkCmdBuf, ArgsVkBuffer, ArgsBufferOffset, CountVkBuffer, CountBufferOffset, MaxDrawCount, Stride);
     }
 
     void CmdBeginMarker(FCmdListH CL, const char* Name)

@@ -3,14 +3,7 @@ using Lumina;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// A world's physics interface (<c>World.Physics</c>), the C# mirror of Lua's <c>World.Physics:*</c> facade.
-/// Forces, velocities, and queries are keyed by <see cref="Entity"/>; the native scene resolves the rigid
-/// body. Operations on an entity without a physics body are safe (mutators no-op, getters return zero).
-/// Game thread only. Every member is a <c>[NativeCall] partial</c> forwarding to a flat
-/// <c>LuminaSharp_Physics_*</c> shim in the Runtime module (DotNetGameplay.cpp), with the world Handle
-/// passed first.
-/// </summary>
+/// A world's physics interface (World.Physics), keyed by Entity. Operations on an entity without a physics body are safe (mutators no-op, getters return zero). Game thread only.
 public readonly unsafe partial struct Physics
 {
     internal readonly ulong Handle;
@@ -22,11 +15,7 @@ public readonly unsafe partial struct Physics
 
     public bool IsValid => Handle != 0;
 
-    /// <summary>
-    /// Casts a ray of length <paramref name="Distance"/> from <paramref name="Origin"/> along
-    /// <paramref name="Direction"/> (which is normalized internally); returns the closest hit, or null.
-    /// Pass <paramref name="Ignore"/> to exclude one entity's body (typically the caster's own).
-    /// </summary>
+    /// Casts a ray from Origin along Direction (normalized internally) for Distance; returns the closest hit or null. Pass Ignore to exclude one entity's body.
     public RaycastHit? Raycast(FVector3 Origin, FVector3 Direction, float Distance, Entity? Ignore = null)
     {
         FVector3 End = Origin + Direction.Normalized() * Distance;
@@ -39,14 +28,10 @@ public readonly unsafe partial struct Physics
         return new RaycastHit(new Entity(Result.Entity), Result.BodyId, Result.Point, Result.Normal, Result.Distance, Result.Fraction);
     }
 
-    /// <summary>Largest overlap/sweep result set a single allocating query returns (extras are dropped).</summary>
+    /// Largest overlap/sweep result set a single allocating query returns (extras are dropped).
     public const int MaxQueryResults = 256;
 
-    /// <summary>
-    /// All distinct entities whose physics bodies overlap a sphere at <paramref name="Center"/> -- the core
-    /// AI-perception / area-of-effect / trigger primitive. Pass <paramref name="Ignore"/> to exclude one
-    /// entity (typically the querier). Capped at <see cref="MaxQueryResults"/>.
-    /// </summary>
+    /// All distinct entities whose bodies overlap a sphere at Center. Pass Ignore to exclude one entity. Capped at MaxQueryResults.
     public Entity[] OverlapSphere(FVector3 Center, float Radius, Entity? Ignore = null)
     {
         Span<uint> Buffer = stackalloc uint[MaxQueryResults];
@@ -54,11 +39,11 @@ public readonly unsafe partial struct Physics
         return ToEntities(Buffer, Count);
     }
 
-    /// <summary>Writes overlapping entities into a caller buffer; returns the count written. Allocation-free.</summary>
+    /// Writes overlapping entities into a caller buffer; returns the count written. Allocation-free.
     public int OverlapSphere(FVector3 Center, float Radius, Span<uint> Results, Entity? Ignore = null)
         => OverlapSphereRaw(Center, Radius, Ignore?.Id ?? Entity.Null.Id, Results);
 
-    /// <summary>All distinct entities whose bodies overlap an oriented box. See <see cref="OverlapSphere"/>.</summary>
+    /// All distinct entities whose bodies overlap an oriented box. See OverlapSphere.
     public Entity[] OverlapBox(FVector3 Center, FVector3 HalfExtents, FQuat Rotation, Entity? Ignore = null)
     {
         Span<uint> Buffer = stackalloc uint[MaxQueryResults];
@@ -66,15 +51,11 @@ public readonly unsafe partial struct Physics
         return ToEntities(Buffer, Count);
     }
 
-    /// <summary>Axis-aligned box overlap (identity rotation).</summary>
+    /// Axis-aligned box overlap (identity rotation).
     public Entity[] OverlapBox(FVector3 Center, FVector3 HalfExtents, Entity? Ignore = null)
         => OverlapBox(Center, HalfExtents, FQuat.Identity, Ignore);
 
-    /// <summary>
-    /// Sweeps a sphere of <paramref name="Radius"/> from <paramref name="Origin"/> along
-    /// <paramref name="Direction"/> for <paramref name="Distance"/>; returns every hit sorted near-to-far
-    /// (thick raycast). Pass <paramref name="Ignore"/> to exclude one entity's body.
-    /// </summary>
+    /// Sweeps a sphere from Origin along Direction for Distance; returns every hit sorted near-to-far (thick raycast). Pass Ignore to exclude one entity's body.
     public RaycastHit[] SphereCast(FVector3 Origin, FVector3 Direction, float Distance, float Radius, Entity? Ignore = null)
     {
         FVector3 End = Origin + Direction.Normalized() * Distance;
@@ -90,12 +71,7 @@ public readonly unsafe partial struct Physics
         return Out;
     }
 
-    /// <summary>
-    /// Every body a ray crosses, sorted near-to-far -- a penetrating line trace (bullets through multiple
-    /// targets, "what's behind this wall"). Unlike <see cref="Raycast"/> (closest hit only), this returns
-    /// one entry per body along the ray. Pass <paramref name="Ignore"/> to exclude one entity's body.
-    /// Capped at <see cref="MaxQueryResults"/>.
-    /// </summary>
+    /// Every body a ray crosses, sorted near-to-far (penetrating line trace); one entry per body. Pass Ignore to exclude one entity's body. Capped at MaxQueryResults.
     public RaycastHit[] RaycastAll(FVector3 Origin, FVector3 Direction, float Distance, Entity? Ignore = null)
     {
         FVector3 End = Origin + Direction.Normalized() * Distance;
@@ -111,7 +87,7 @@ public readonly unsafe partial struct Physics
         return Out;
     }
 
-    /// <summary>Closest hit, restricted to bodies whose collision layer intersects <paramref name="Mask"/>.</summary>
+    /// Closest hit, restricted to bodies whose collision layer intersects Mask.
     public RaycastHit? RaycastFiltered(FVector3 Origin, FVector3 Direction, float Distance, ECollisionProfiles Mask, Entity? Ignore = null)
     {
         FVector3 End = Origin + Direction.Normalized() * Distance;
@@ -123,7 +99,7 @@ public readonly unsafe partial struct Physics
         return new RaycastHit(new Entity(Result.Entity), Result.BodyId, Result.Point, Result.Normal, Result.Distance, Result.Fraction);
     }
 
-    /// <summary>Every hit near-to-far, restricted by collision layer mask. See <see cref="RaycastAll"/>.</summary>
+    /// Every hit near-to-far, restricted by collision layer mask. See RaycastAll.
     public RaycastHit[] RaycastAllFiltered(FVector3 Origin, FVector3 Direction, float Distance, ECollisionProfiles Mask, Entity? Ignore = null)
     {
         FVector3 End = Origin + Direction.Normalized() * Distance;
@@ -139,11 +115,7 @@ public readonly unsafe partial struct Physics
         return Out;
     }
 
-    /// <summary>
-    /// All distinct entities whose physics bodies CONTAIN <paramref name="Point"/> -- volume containment
-    /// ("am I inside this trigger / water / zone") without sweeping a shape. Pass <paramref name="Ignore"/>
-    /// to exclude one entity. Capped at <see cref="MaxQueryResults"/>.
-    /// </summary>
+    /// All distinct entities whose bodies CONTAIN Point (volume containment, no shape sweep). Pass Ignore to exclude one entity. Capped at MaxQueryResults.
     public Entity[] OverlapPoint(FVector3 Point, Entity? Ignore = null)
     {
         Span<uint> Buffer = stackalloc uint[MaxQueryResults];
@@ -181,19 +153,15 @@ public readonly unsafe partial struct Physics
     public void ActivateBody(Entity Entity) => ActivateBody(Entity.Id);
     public void DeactivateBody(Entity Entity) => DeactivateBody(Entity.Id);
 
-    /// <summary>The entity's native body id, or 0xFFFFFFFF if it has no rigid body.</summary>
+    /// The entity's native body id, or 0xFFFFFFFF if it has no rigid body.
     public uint GetBodyId(Entity Entity) => GetBodyId(Entity.Id);
 
-    /// <summary>True if the entity's body is awake (active); false if asleep or it has no body. Cheap to
-    /// poll each frame -- skip expensive work for bodies at rest. See also EntityScript OnWake/OnSleep.</summary>
+    /// True if the entity's body is awake (active); false if asleep or it has no body. Cheap to poll each frame.
     public bool IsAwake(Entity Entity) => IsAwakeRaw(Entity.Id) != 0;
 
-    // --- Constraints / joints ---
-    // Each Create* returns an FPhysicsConstraint handle: drive its motor, query break state, or Destroy it.
-    // Both bodies need a rigid body; pass null for one side to anchor the joint to the world. All frames are
-    // world-space. Optional BreakForce > 0 disables the joint once the force holding it exceeds that many N.
+    // Constraints / joints. Each Create* returns an FPhysicsConstraint handle; pass null for one side to anchor to the world. Frames are world-space; BreakForce > 0 disables the joint past that many N.
 
-    /// <summary>Welds two bodies (or a body to the world) rigidly at their current relative pose.</summary>
+    /// Welds two bodies (or a body to the world) rigidly at their current relative pose.
     public FPhysicsConstraint CreateFixed(Entity? BodyA, Entity? BodyB, float BreakForce = 0f)
     {
         FConstraintDescWire W = NewDesc(FPhysicsConstraint.TypeFixed, BodyA, BodyB);
@@ -201,7 +169,7 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Ball-and-socket joint pinned at <paramref name="Pivot"/> (3 translation DOF removed).</summary>
+    /// Ball-and-socket joint pinned at Pivot (3 translation DOF removed).
     public FPhysicsConstraint CreatePoint(Entity? BodyA, Entity? BodyB, FVector3 Pivot, float BreakForce = 0f)
     {
         FConstraintDescWire W = NewDesc(FPhysicsConstraint.TypePoint, BodyA, BodyB);
@@ -210,9 +178,7 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Keeps <paramref name="PointA"/> on body A and <paramref name="PointB"/> on body B between
-    /// <paramref name="MinDistance"/>..<paramref name="MaxDistance"/> apart (negative = current distance).
-    /// A positive <paramref name="Frequency"/> makes the limit a soft spring.</summary>
+    /// Keeps PointA on body A and PointB on body B between MinDistance..MaxDistance apart (negative = current distance); positive Frequency makes the limit a soft spring.
     public FPhysicsConstraint CreateDistance(Entity? BodyA, Entity? BodyB, FVector3 PointA, FVector3 PointB,
         float MinDistance = -1f, float MaxDistance = -1f, float Frequency = 0f, float Damping = 0f, float BreakForce = 0f)
     {
@@ -228,9 +194,7 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Single-axis hinge at <paramref name="Pivot"/> about <paramref name="Axis"/> (door / wheel /
-    /// lever). Set <paramref name="Limited"/> with min/max angles (radians) to clamp the swing. Configure a
-    /// powered hinge with <paramref name="MotorTorqueLimit"/> then drive it via the returned handle.</summary>
+    /// Single-axis hinge at Pivot about Axis; set Limited with min/max angles (radians) to clamp the swing, and MotorTorqueLimit to power it.
     public FPhysicsConstraint CreateHinge(Entity? BodyA, Entity? BodyB, FVector3 Pivot, FVector3 Axis,
         float MinAngle = 0f, float MaxAngle = 0f, bool Limited = false, float MaxFrictionTorque = 0f,
         float MotorTorqueLimit = 0f, float MotorFrequency = 0f, float MotorDamping = 0f, float BreakForce = 0f)
@@ -249,9 +213,7 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Prismatic (slider) joint allowing motion along <paramref name="Axis"/> only (piston / drawer
-    /// / lift). Set <paramref name="Limited"/> with min/max positions (meters) to clamp travel; configure a
-    /// powered slider with <paramref name="MotorForceLimit"/> then drive it via the returned handle.</summary>
+    /// Prismatic (slider) joint allowing motion along Axis only; set Limited with min/max positions (meters) to clamp travel, and MotorForceLimit to power it.
     public FPhysicsConstraint CreateSlider(Entity? BodyA, Entity? BodyB, FVector3 Pivot, FVector3 Axis,
         float MinDistance = 0f, float MaxDistance = 0f, bool Limited = false, float MaxFrictionForce = 0f,
         float MotorForceLimit = 0f, float MotorFrequency = 0f, float MotorDamping = 0f, float BreakForce = 0f)
@@ -270,8 +232,7 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Cone (swing-limited ball-socket): keeps body B's <paramref name="TwistAxis"/> within
-    /// <paramref name="HalfAngleRadians"/> of body A's, pinned at <paramref name="Pivot"/>.</summary>
+    /// Cone (swing-limited ball-socket): keeps body B's TwistAxis within HalfAngleRadians of body A's, pinned at Pivot.
     public FPhysicsConstraint CreateCone(Entity? BodyA, Entity? BodyB, FVector3 Pivot, FVector3 TwistAxis,
         float HalfAngleRadians, float BreakForce = 0f)
     {
@@ -283,14 +244,13 @@ public readonly unsafe partial struct Physics
         return new FPhysicsConstraint(Handle, CreateConstraintRaw(W));
     }
 
-    /// <summary>Make this entity's collider act as a conveyor: bodies resting on it are dragged at
-    /// <paramref name="Linear"/> (world m/s) without the body moving. Needs a rigid body. Zero clears it.</summary>
+    /// Make this entity's collider act as a conveyor: bodies resting on it are dragged at Linear (world m/s). Needs a rigid body; zero clears it.
     public void SetSurfaceVelocity(Entity Entity, FVector3 Linear) => SetSurfaceVelocity(Entity.Id, Linear, default);
 
-    /// <summary>Conveyor surface velocity with an angular component (rad/s about the body center).</summary>
+    /// Conveyor surface velocity with an angular component (rad/s about the body center).
     public void SetSurfaceVelocity(Entity Entity, FVector3 Linear, FVector3 Angular) => SetSurfaceVelocity(Entity.Id, Linear, Angular);
 
-    /// <summary>Stop this entity behaving as a conveyor.</summary>
+    /// Stop this entity behaving as a conveyor.
     public void ClearSurfaceVelocity(Entity Entity) => SetSurfaceVelocity(Entity.Id, default, default);
 
     private FConstraintDescWire NewDesc(int Type, Entity? BodyA, Entity? BodyB)
@@ -304,8 +264,7 @@ public readonly unsafe partial struct Physics
         };
     }
 
-    // Flat shims (Runtime module). The world Handle is the first native argument; entities are entt ids
-    // (uint); FVector3/FVector4/FQuat pass by value. See DotNetGameplay.cpp.
+    // Flat shims (Runtime module). The world Handle is the first native argument; entities are entt ids (uint); vectors pass by value.
 
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_Raycast")]
     private partial RaycastHitWire RaycastWire(FVector3 Origin, FVector3 End, uint IgnoreId);
@@ -364,8 +323,7 @@ public readonly unsafe partial struct Physics
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_GetBodyId")]
     private partial uint GetBodyId(uint Entity);
 
-    // Constraints. CreateConstraint takes the blittable FConstraintDescWire by value; the others key off the
-    // opaque constraint id CreateConstraint returned. Called for you by FPhysicsConstraint / the Create* API.
+    // Constraints. CreateConstraint takes the blittable FConstraintDescWire by value; the others key off the constraint id it returned.
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_CreateConstraint")]
     private partial uint CreateConstraintRaw(FConstraintDescWire Desc);
     [NativeCall(Module = "Runtime", EntryPoint = "LuminaSharp_Physics_DestroyConstraint")]

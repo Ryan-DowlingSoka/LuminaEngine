@@ -30,7 +30,7 @@ namespace Lumina
         const bool   bPrePhysics  = (Context.GetUpdateStage() == EUpdateStage::PrePhysics);
 
         // A [UpdatePhase(EScriptPhase.PostPhysics)] script carries this bit in its callback flags (set by the
-        // managed TypeLibrary). Bit index MUST match TypeLibrary.ComputeCollisionFlags. No bit => PrePhysics.
+        // managed TypeLibrary). Bit index MUST match TypeLibrary.ComputeCallbackFlags. No bit => PrePhysics.
         constexpr int32 PostPhysicsPhaseBit = 1 << 16;
 
         auto View = Context.CreateView<SCSharpScriptComponent>(entt::exclude<SDisabledTag>);
@@ -140,7 +140,7 @@ namespace Lumina
                 if (Steps > 0)
                 {
                     FixedState.Accumulator -= (float)Steps * FixedDt;
-                    constexpr int32 OnFixedUpdateBit = 1 << 9; // must match TypeLibrary.ComputeCollisionFlags
+                    constexpr int32 OnFixedUpdateBit = 1 << 9; // must match TypeLibrary.ComputeCallbackFlags
 
                     for (int32 Step = 0; Step < Steps; ++Step)
                     {
@@ -165,12 +165,15 @@ namespace Lumina
             }
         }
 
-        // OnUpdate: dispatch only the ready scripts whose declared phase matches the current stage.
+        // OnUpdate: dispatch only ready scripts that override OnUpdate (bit 10) and whose declared phase matches
+        // the current stage. Gating by the flag skips the crossing + managed virtual call for non-overriding scripts.
+        constexpr int32 OnUpdateBit = 1 << 10; // must match TypeLibrary.ComputeCallbackFlags
         TVector<void*> Ready;
         Ready.reserve(View.size_hint());
         View.each([&](entt::entity, SCSharpScriptComponent& Component)
         {
-            if (Component.Instance == nullptr || Component.BindState != ECSharpBindState::Ready)
+            if (Component.Instance == nullptr || Component.BindState != ECSharpBindState::Ready
+                || (Component.CallbackFlags & OnUpdateBit) == 0)
             {
                 return;
             }

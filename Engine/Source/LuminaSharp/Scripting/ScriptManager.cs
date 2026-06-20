@@ -244,6 +244,10 @@ internal sealed class ScriptManager
             return;
         }
 
+        // Drop all message-bus subscriptions first: their listener delegates capture script instances, and the
+        // process-static BusRegistry would otherwise pin the collectible ALC. The next generation re-subscribes.
+        BusRegistry.ClearAll();
+
         // Free every live script + system GCHandle BEFORE unloading: a strong handle is a GC root that
         // would otherwise pin the old generation and stop the collectible ALC from unloading.
         EntityScripts?.FreeAll();

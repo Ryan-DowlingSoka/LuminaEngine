@@ -4,21 +4,13 @@ using System.Runtime.InteropServices;
 
 namespace LuminaSharp;
 
-/// <summary>
-/// Resolves and caches a component type's native op-table token once per type (T's wrapper class name
-/// == the C++ CStruct name). Zero if T isn't a registered component; the native ops then no-op.
-/// </summary>
+/// Caches a component type's native op-table token once per type (T's wrapper name == the C++ CStruct name); zero if unregistered.
 internal static class ComponentOps<T> where T : NativeStruct
 {
     public static readonly IntPtr Token = Native.FindComponentOps(typeof(T).Name);
 }
 
-/// <summary>
-/// The component store for a world, the C# mirror of C++ <c>entt::registry</c> / <c>FEntityRegistry</c>.
-/// <c>Get/TryGet/Has/Emplace/Remove&lt;T&gt;</c> call straight through each component's direct op table
-/// (resolved once per type), with no entt::meta trampoline. The returned wrapper points at the live
-/// component, so writes persist.
-/// </summary>
+/// The component store for a world, the C# mirror of entt::registry / FEntityRegistry. Returned wrappers point at the live component, so writes persist.
 public readonly struct EntityRegistry
 {
     internal readonly ulong WorldHandle; // CWorld* the native helpers resolve the registry from
@@ -30,7 +22,7 @@ public readonly struct EntityRegistry
 
     public bool IsValid => WorldHandle != 0;
 
-    /// <summary>The component of type T on the entity, or null if absent (mirrors registry.try_get).</summary>
+    /// The component of type T on the entity, or null if absent (mirrors registry.try_get).
     public T? TryGet<T>(Entity Entity) where T : NativeStruct
     {
         IntPtr Pointer = Native.GetComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token);
@@ -41,7 +33,7 @@ public readonly struct EntityRegistry
         return Wrapper<T>.Create(Pointer);
     }
 
-    /// <summary>The component of type T on the entity; throws if absent (mirrors registry.get).</summary>
+    /// The component of type T on the entity; throws if absent (mirrors registry.get).
     public T Get<T>(Entity Entity) where T : NativeStruct
     {
         return TryGet<T>(Entity) ?? throw new InvalidOperationException($"Entity {Entity.Id} has no {typeof(T).Name}.");
@@ -52,8 +44,7 @@ public readonly struct EntityRegistry
         return Native.HasComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token) != 0;
     }
 
-    /// <summary>Get-or-emplace a default component and return the live wrapper to configure in place
-    /// (null for a tag component). Idempotent; never clobbers an existing instance.</summary>
+    /// Get-or-emplace a default component and return the live wrapper (null for a tag); idempotent, never clobbers an existing instance.
     public T? Emplace<T>(Entity Entity) where T : NativeStruct
     {
         IntPtr Pointer = Native.EmplaceComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token);
@@ -69,39 +60,34 @@ public readonly struct EntityRegistry
         return Native.RemoveComponent(WorldHandle, Entity.Id, ComponentOps<T>.Token) != 0;
     }
 
-    /// <summary>Alias of <see cref="Emplace{T}(Entity)"/> (s&amp;box wording).</summary>
+    /// Alias of Emplace.
     public T? Add<T>(Entity Entity) where T : NativeStruct => Emplace<T>(Entity);
 
-    /// <summary>The component of type T, adding a default one first if absent.</summary>
+    /// The component of type T, adding a default one first if absent.
     public T? GetOrAdd<T>(Entity Entity) where T : NativeStruct => TryGet<T>(Entity) ?? Emplace<T>(Entity);
 
-    /// <summary>Get-or-emplace by a pre-resolved op-table token (zero on failure). For the [RequireComponent]
-    /// injector, where the token is cached without a generic instantiation.</summary>
+    /// Get-or-emplace by a pre-resolved op-table token (zero on failure); for the [RequireComponent] injector.
     internal IntPtr EmplaceRaw(Entity Entity, IntPtr Token)
     {
         return Token == IntPtr.Zero ? IntPtr.Zero : Native.EmplaceComponent(WorldHandle, Entity.Id, Token);
     }
 
-    // Registry signals (the entt on_construct/on_destroy/on_update hooks). Subscribe to a component's
-    // lifecycle and get the entity each time one fires; Dispose the returned subscription to unsubscribe.
-    // Build your OWN events by declaring a component as a signal channel: Emplace it to raise OnConstruct,
-    // Remove it to raise OnDestroy, and Patch it to pulse OnUpdate (carry data in the component's fields).
+    // Registry signals (entt on_construct/on_destroy/on_update hooks); Dispose the returned subscription to unsubscribe.
+    // Build your own events by treating a component as a signal channel (Emplace/Remove/Patch it).
 
-    /// <summary>Fires when a <typeparamref name="T"/> component is added to an entity.</summary>
+    /// Fires when a T component is added to an entity.
     public RegistrySubscription OnConstruct<T>(Action<Entity> Callback) where T : NativeStruct
         => Subscribe(ComponentOps<T>.Token, 0, Callback);
 
-    /// <summary>Fires when a <typeparamref name="T"/> component is removed from an entity (or its entity destroyed).</summary>
+    /// Fires when a T component is removed from an entity (or its entity destroyed).
     public RegistrySubscription OnDestroy<T>(Action<Entity> Callback) where T : NativeStruct
         => Subscribe(ComponentOps<T>.Token, 1, Callback);
 
-    /// <summary>Fires when a <typeparamref name="T"/> component is patched/replaced (see <see cref="Patch{T}"/>).</summary>
+    /// Fires when a T component is patched/replaced (see Patch).
     public RegistrySubscription OnUpdate<T>(Action<Entity> Callback) where T : NativeStruct
         => Subscribe(ComponentOps<T>.Token, 2, Callback);
 
-    /// <summary>Pulses the <c>on_update</c> signal for an entity's <typeparamref name="T"/> component, so
-    /// <see cref="OnUpdate{T}"/> listeners run. No-op for a tag component or if the entity lacks T. Mutate
-    /// the component first (via <see cref="Get{T}"/>), then Patch to notify.</summary>
+    /// Pulses on_update for an entity's T component so OnUpdate listeners run; mutate via Get first, then Patch.
     public void Patch<T>(Entity Entity) where T : NativeStruct
         => Native.RegistryPatch(WorldHandle, Entity.Id, ComponentOps<T>.Token);
 
@@ -142,12 +128,7 @@ public readonly struct EntityRegistry
     private static readonly unsafe IntPtr SignalThunkPtr =
         (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, uint, void>)&SignalThunk;
 
-    /// <summary>The C# script of type T on the entity, its concrete <see cref="EntityScript"/> subclass,
-    /// or null if the entity has no script or it isn't a T. The returned instance is the LIVE managed
-    /// object; call its public methods directly, exactly like a C++ component reference (no marshalling).
-    /// Re-fetch per use rather than caching across frames: GetScript itself is always safe (it returns null
-    /// once the script is gone), but a stored reference to a since-destroyed script's object stays in managed
-    /// memory pointing at a logically-dead entity.</summary>
+    /// The live C# script of type T on the entity, or null. Re-fetch per use; do not cache across frames (a stored ref outlives a destroyed script).
     public T? GetScript<T>(Entity Entity) where T : EntityScript
     {
         IntPtr Handle = Native.GetEntityScriptHandle(WorldHandle, Entity.Id);
@@ -158,16 +139,13 @@ public readonly struct EntityRegistry
         return GCHandle.FromIntPtr(Handle).Target as T;
     }
 
-    /// <summary>True if the entity has a C# script assignable to T.</summary>
+    /// True if the entity has a C# script assignable to T.
     public bool HasScript<T>(Entity Entity) where T : EntityScript
     {
         return GetScript<T>(Entity) != null;
     }
 
-    // entt-style typed views (mirrors registry.view<...>). Native iterates an entt::runtime_view and gathers
-    // entities + live component pointers in CHUNKS (one boundary crossing per chunk); the View struct hands
-    // back reused wrappers per element. Pass an Exclude<...>() filter as the optional second argument.
-    // Arity 1..4 (extend by adding the next View<...> struct + overload; the native side is arity-agnostic).
+    // entt-style typed views (mirrors registry.view<...>); pass an Exclude<...>() filter as the optional argument. Arity 1..4.
 
     public View<T1> View<T1>(Exclude Filter = default)
         where T1 : NativeStruct
@@ -175,7 +153,7 @@ public readonly struct EntityRegistry
         return new View<T1>(WorldHandle, ComponentOps<T1>.Token, Filter);
     }
 
-    /// <summary>Shorthand for <see cref="View{T1}"/>: iterate every entity that has a T component.</summary>
+    /// Shorthand for View&lt;T1&gt;: iterate every entity that has a T component.
     public View<T1> All<T1>(Exclude Filter = default) where T1 : NativeStruct => View<T1>(Filter);
 
     public View<T1, T2> View<T1, T2>(Exclude Filter = default)
@@ -202,8 +180,7 @@ public readonly struct EntityRegistry
         return new View<T1, T2, T3, T4>(WorldHandle, ComponentOps<T1>.Token, ComponentOps<T2>.Token, ComponentOps<T3>.Token, ComponentOps<T4>.Token, Filter);
     }
 
-    // Exclude-filter builders for a View (mirrors entt::exclude<...>). Resolve the component-ops tokens
-    // (cached per type) for the excluded component types. Arity 1..3.
+    // Exclude-filter builders for a View (mirrors entt::exclude<...>). Arity 1..3.
 
     public static Exclude Exclude<T1>()
         where T1 : NativeStruct

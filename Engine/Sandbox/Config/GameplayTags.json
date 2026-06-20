@@ -1,11 +1,5 @@
 {
     "GameplayTagsSettings": {
-        "Tags": [
-            "Team.Player",
-            "Team.Enemy",
-            "Team.Neutral",
-            "Affiliation.Friendly",
-            "Affiliation.Hostile"
-        ]
+        "Tags": []
     }
 }

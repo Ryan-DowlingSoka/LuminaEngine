@@ -1781,6 +1781,12 @@ namespace Lumina
                     Settings.bDrawAABB = bDrawAABB;
                 }
 
+                bool bGPUDriven = Settings.bGPUDriven;
+                if (ImGui::MenuItem("GPU-Driven (experimental)", nullptr, &bGPUDriven))
+                {
+                    Settings.bGPUDriven = bGPUDriven;
+                }
+
                 // Tool-specific view-mode items (world: Entity Debug Info, Game View).
                 DrawViewModeExtraItems();
 

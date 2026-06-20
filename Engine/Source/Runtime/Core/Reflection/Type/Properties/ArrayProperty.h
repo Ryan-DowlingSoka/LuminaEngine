@@ -1,26 +1,20 @@
 ﻿#pragma once
 
 #include "Core/Reflection/Type/LuminaTypes.h"
+#include "Containers/ContainerOps.h"
 #include "Memory/SmartPtr.h"
 
 namespace Lumina
 {
 
-    
+
     class FArrayProperty : public FProperty
     {
     public:
         FArrayProperty(const FFieldOwner& InOwner, const FArrayPropertyParams* Params)
             : FProperty(InOwner, Params)
         {
-            PushBackFn  = Params->PushBackFn;
-            GetNumFn    = Params->GetNumFn;
-            RemoveAtFn  = Params->RemoveAtFn;
-            ClearFn     = Params->ClearFn;
-            GetAtFn     = Params->GetAtFn;
-            ResizeFn    = Params->ResizeFn;
-            ReserveFn   = Params->ReserveFn;
-            SwapFn      = Params->SwapFn;
+            Ops = Params->GetOpsFn ? Params->GetOpsFn() : nullptr;
         }
         
         void AddProperty(FProperty* Property) override { Inner.reset(Property); }
@@ -39,42 +33,43 @@ namespace Lumina
         
         SIZE_T GetNum(const void* InContainer) const
         {
-            return GetNumFn(InContainer);
+            return Ops->Size(InContainer);
         }
 
         void PushBack(void* InContainer, const void* InValue) const
         {
-            PushBackFn(InContainer, InValue);
+            Ops->PushBack(InContainer, InValue);
         }
 
         void RemoveAt(void* InContainer, size_t Index) const
         {
-            RemoveAtFn(InContainer, Index);
+            Ops->RemoveAt(InContainer, Index);
         }
 
         void Clear(void* InContainer) const
         {
-            ClearFn(InContainer);
+            Ops->Clear(InContainer);
         }
 
+        // The vector is contiguous, so element i is Data() + i * ElementSize (no per-element fn-ptr needed).
         void* GetAt(void* InContainer, size_t Index) const
         {
-            return GetAtFn(InContainer, Index);
+            return static_cast<uint8*>(Ops->Data(InContainer)) + Index * Ops->ElementSize;
         }
-        
+
         void Resize(void* InContainer, size_t Size) const
         {
-            ResizeFn(InContainer, Size);
+            Ops->Resize(InContainer, Size);
         }
 
         void Reserve(void* InContainer, size_t Size) const
         {
-            ReserveFn(InContainer, Size);
+            Ops->Reserve(InContainer, Size);
         }
-        
+
         void Swap(void* InContainer, size_t LHS, size_t RHS) const
         {
-            SwapFn(InContainer, LHS, RHS);
+            Ops->Swap(InContainer, LHS, RHS);
         }
 
         template<typename T = void, typename TFunc>
@@ -98,16 +93,9 @@ namespace Lumina
         
     private:
 
-        ArrayPushBackPtr        PushBackFn;
-        ArrayGetNumPtr          GetNumFn;
-        ArrayRemoveAtPtr        RemoveAtFn;
-        ArrayClearPtr           ClearFn;
-        ArrayGetAtPtr           GetAtFn;
-        ArrayResizePtr          ResizeFn;
-        ArrayReservePtr         ReserveFn;
-        ArraySwapPtr            SwapFn;
+        const FVectorOps*       Ops = nullptr;
 
         TUniquePtr<FProperty>   Inner;
-        
+
     };
 }

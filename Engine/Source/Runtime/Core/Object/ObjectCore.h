@@ -239,14 +239,9 @@ namespace Lumina
     typedef void (*SetterFuncPtr)(void* InContainer, const void* InValue);
     typedef void (*GetterFuncPtr)(const void* InContainer, void* OutValue);
 
-    typedef void (*ArrayPushBackPtr)(void* InContainer, const void* InValue);
-    typedef size_t (*ArrayGetNumPtr)(const void* InContainer);
-    typedef void (*ArrayRemoveAtPtr)(void* InContainer, size_t Index);
-    typedef void (*ArrayClearPtr)(void* InContainer);
-    typedef void* (*ArrayGetAtPtr)(void* InContainer, size_t Index);
-    typedef void (*ArrayResizePtr)(void* InContainer, size_t Index);
-    typedef void (*ArrayReservePtr)(void* InContainer, size_t Index);
-    typedef void (*ArraySwapPtr)(void* InContainer, size_t LHS, size_t RHS);
+    // The full operation set for a reflected TVector<T> is now a single shared ops table (Containers/
+    // ContainerOps.h, also used by C# NativeList<T>) rather than per-property hand-rolled fn-ptrs.
+    struct FVectorOps;
 
     typedef bool (*OptionalHasValuePtr)(const void* InContainer);
     /** Only valid when HasValue returned true. */
@@ -337,14 +332,8 @@ namespace Lumina
 
     struct FArrayPropertyParams : FPropertyParams
     {
-        ArrayPushBackPtr    PushBackFn;
-        ArrayGetNumPtr      GetNumFn;
-        ArrayRemoveAtPtr    RemoveAtFn;
-        ArrayClearPtr       ClearFn;
-        ArrayGetAtPtr       GetAtFn;
-        ArrayResizePtr      ResizeFn;
-        ArrayReservePtr     ReserveFn;
-        ArraySwapPtr        SwapFn;
+        // Returns the shared element-type ops table (GetVectorOps<T>). One forwarder per array property.
+        const FVectorOps* (*GetOpsFn)();
 
         uint16 NumMetaData;
         const FMetaDataPairParam* MetaDataArray;

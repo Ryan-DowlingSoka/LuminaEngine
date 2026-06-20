@@ -63,10 +63,10 @@ namespace Lumina
 
         virtual void DrawHeader(float Offset) { }
         virtual void DrawEditor(bool bReadOnly) { }
-
-        virtual bool HasExtraControls() const { return false; }
-        virtual void DrawExtraControlsSection() { }
-        virtual float GetExtraControlsSectionWidth() { return 0; }
+        
+        virtual bool HasExtraControls() const;
+        virtual void DrawExtraControlsSection();
+        virtual float GetExtraControlsSectionWidth();
 
         void DestroyChildren();
 
@@ -118,9 +118,6 @@ namespace Lumina
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
         float GetMeasuredHeaderTextWidth() const override;
-        bool HasExtraControls() const override;
-        float GetExtraControlsSectionWidth() override;
-        void DrawExtraControlsSection() override;
 
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
 
