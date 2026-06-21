@@ -136,12 +136,26 @@ if errorlevel 1 goto :fail
 
 echo.
 echo ============================================================
-echo  ALL DONE - open Lumina.sln in Visual Studio 2022
+echo  ALL DONE - Lumina.sln generated
 echo ============================================================
 echo  LUMINA_DIR persisted: %PERSISTED_LUMINA_DIR%
 echo  Note: already-running Visual Studio / Rider instances must be
 echo  restarted to pick up the new LUMINA_DIR.
 echo.
+
+rem Open the generated solution for the user. Opt out with --no-open or LUMINA_NO_OPEN=1.
+set "DO_OPEN=1"
+if defined LUMINA_NO_OPEN set "DO_OPEN=0"
+echo %* | findstr /I /C:"--no-open" >nul && set "DO_OPEN=0"
+if "%DO_OPEN%"=="1" (
+    if exist "%LUMINA_DIR%\Lumina.sln" (
+        echo  Opening Lumina.sln...
+        start "" "%LUMINA_DIR%\Lumina.sln"
+    ) else (
+        echo  Lumina.sln not found at %LUMINA_DIR%; open it manually.
+    )
+)
+
 endlocal
 exit /b 0
 

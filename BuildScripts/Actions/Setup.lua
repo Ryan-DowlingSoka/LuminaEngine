@@ -37,6 +37,12 @@ newoption
     description = "Skip the download confirmation prompt (non-interactive / CI)",
 }
 
+newoption
+{
+    trigger     = "no-open",
+    description = "Do not open Lumina.sln after setup finishes (consumed by Setup.bat)",
+}
+
 
 local function FormatBytes(bytes)
     if bytes >= 1024 * 1024 then

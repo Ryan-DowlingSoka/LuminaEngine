@@ -583,6 +583,13 @@ namespace Lumina::RHI
             CmdBarrier(CL, EStageFlags::Transfer, EStageFlags::AllCommands);
         }
 
+        // Orders prior transfer writes before subsequent transfer writes (e.g. two copies/clears to
+        // the same image in one batch -> resolves SYNC-HAZARD-WRITE-AFTER-WRITE).
+        inline void TransferToTransfer(FCmdListH CL)
+        {
+            CmdBarrier(CL, EStageFlags::Transfer, EStageFlags::Transfer);
+        }
+
         inline void AllToTransfer(FCmdListH CL)
         {
             CmdBarrier(CL, EStageFlags::AllCommands, EStageFlags::Transfer);

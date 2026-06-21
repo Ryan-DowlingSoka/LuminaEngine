@@ -626,9 +626,8 @@ namespace Lumina
         {
             bStartupNoticesShown = true;
 #if defined(LE_DEBUG)
-            LOG_DISPLAY("Running a DEBUG build -- performance is greatly reduced; use Development for normal work.");
-            ImGuiX::Notifications::NotifyWarning(
-                "Debug build: performance is greatly reduced. Build in Development for normal editing and play.");
+            LOG_WARN("Running a DEBUG build. Performance is greatly reduced; use Development for normal work.");
+            ImGuiX::Notifications::NotifyWarning("Debug build: performance is greatly reduced. Build in Development for normal editing and play.");
 #endif
         }
 

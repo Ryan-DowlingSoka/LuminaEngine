@@ -233,9 +233,29 @@ namespace Lumina::RHI
                 }
                 Ops.swap(GUpload.Queue);
             }
+            
+            TVector<FTextureH> WrittenTextures;
+            auto AlreadyWritten = [&](FTextureH Tex)
+            {
+                for (const FTextureH& T : WrittenTextures)
+                {
+                    if (T.Handle == Tex.Handle)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            };
 
             for (const FUploadOp& Op : Ops)
             {
+                const bool bWritesTexture = (Op.Type == EUploadOp::Texture || Op.Type == EUploadOp::Clear);
+                if (bWritesTexture && AlreadyWritten(Op.TextureDest))
+                {
+                    Barriers::TransferToTransfer(CL);
+                    WrittenTextures.clear();
+                }
+
                 switch (Op.Type)
                 {
                 case EUploadOp::Buffer:
@@ -251,6 +271,11 @@ namespace Lumina::RHI
                 case EUploadOp::Clear:
                     CmdClearTexture(CL, Op.TextureDest, Op.ClearValue);
                     break;
+                }
+
+                if (bWritesTexture)
+                {
+                    WrittenTextures.push_back(Op.TextureDest);
                 }
             }
 

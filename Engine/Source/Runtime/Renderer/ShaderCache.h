@@ -14,7 +14,8 @@ namespace Lumina
         // that invalidates older entries (e.g. Slang upgrade, header layout).
         // v2: ERHIShaderType renumbered when the old RHI's resource-type enum was trimmed.
         // v3: shader debug-info level raised to STANDARD (Nsight source debugging) on non-AMD non-Shipping.
-        constexpr uint32 SHADER_CACHE_VERSION = 3;
+        // v4: Slang optimization forced to HIGH (DEFAULT -O1 emitted spirv-val-invalid BDA pointer locals).
+        constexpr uint32 SHADER_CACHE_VERSION = 4;
 
         constexpr const char* CACHE_DIR = "/Intermediates/ShaderCache";
 

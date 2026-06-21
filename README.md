@@ -29,16 +29,13 @@
     - [Editor](#editor)
     - [Performance](#performance)
     - [C# Scripting](#c-scripting)
+  - [Documentation](#documentation)
   - [Screenshots](#screenshots)
   - [Getting Started](#getting-started)
     - [Requirements](#requirements)
     - [Installation](#installation)
     - [Build Configuration](#build-configuration)
     - [Troubleshooting](#troubleshooting)
-  - [Asset Formats](#asset-formats)
-    - [Free Asset Resources](#free-asset-resources)
-  - [Documentation](#documentation)
-    - [Coding Standards](#coding-standards)
   - [Contributing](#contributing)
     - [Workflow](#workflow)
     - [Requirements](#requirements-1)
@@ -74,6 +71,16 @@ through the work of motivated contributors who help push the engine forward.
 > Lumina is an educational project under active development. APIs may change,
 > and some features are experimental. If you encounter build issues, please
 > reach out on [Discord](https://discord.gg/xQSB7CRzQE) for assistance.
+
+
+> [!NOTE]
+>
+> ### AI Usage
+>
+> AI has been used selectively for tasks such as static analysis, research, build tooling, and scripting assistance.
+>
+> The engine itself has been hand-crafted over the course of three years as a passion project. AI is treated as a tool where it provides value, nothing more, nothing less.
+
 
 ---
 
@@ -112,6 +119,12 @@ through the work of motivated contributors who help push the engine forward.
 - Hot-reloadable scripts for iterating on gameplay without recompiling
 - High-level gameplay APIs through the `World` facade: Physics, Navigation,
   Input, Messages, and GameplayTags
+
+---
+
+## Documentation
+
+[Getting Started](https://luminagameengine.com/getting-started/introduction/)
 
 ---
 
@@ -172,14 +185,11 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
    ```bash
    Setup.bat
    ```
-
-   Setup shows exactly what it is about to download and asks for confirmation
-   before fetching anything. It downloads one prebuilt dependency bundle
+   It downloads one prebuilt dependency bundle
    (`External.zip`, ~671 MB), verifies it against a SHA-256 hash pinned in this
    repo (once the maintainer records it, see
    [`DEPENDENCIES.md`](DEPENDENCIES.md)), persists the `LUMINA_DIR` environment
-   variable, configures git hooks, and generates `Lumina.sln`. No Python is
-   required; it uses the `curl.exe` and `tar.exe` bundled with Windows.
+   variable, configures git hooks, and generates `Lumina.sln`.
 
    The bundle contains the .NET 10 runtime (C# scripting), LLVM/Clang 19
    (reflection codegen), the Slang shader compiler, RenderDoc, and Tracy. Each
@@ -193,11 +203,11 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
    extract it into the `LuminaEngine/` folder, then run
    `GenerateProjectFiles.bat`.
 
-3. **Open the solution**
+1. **Open the solution**
 
    Open `Lumina.sln` in Visual Studio.
 
-4. **Build and run**
+2. **Build and run**
 
    - Set `Lumina` as the startup project.
    - Choose the `Development` or `Debug` configuration. Debug is significantly
@@ -206,7 +216,7 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
      (runtime only, no editor).
    - Press F5, or use **Build -> Run**.
 
-5. **Start developing**
+3. **Start developing**
 
    - Open the `Sandbox` project to experiment.
    - Or copy `Templates/Blank/` to create a new project, then run its
@@ -278,49 +288,9 @@ Regenerating prints the resolved feature set, e.g.
 
 ---
 
-## Asset Formats
-
-Lumina supports the following asset formats:
-
-| Category | Formats |
-|----------|---------|
-| Models   | GLTF, GLB, FBX, OBJ |
-| Textures | PNG, JPG |
-
-### Free Asset Resources
-
-- [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
-- [Kenney 3D Assets](https://kenney.nl/assets?q=3d)
-- [Flightradar24 3D Models](https://github.com/Flightradar24/fr24-3d-models)
-
----
-
-## Documentation
-
-[Getting Started](https://luminagameengine.com/getting-started/introduction/)
-
-### Coding Standards
-
-Lumina follows a consistent naming convention:
-
-| Prefix | Usage | Example |
-|--------|-------|---------|
-| `F` | Internal engine types (non-reflected) | `FRenderer`, `FTexture` |
-| `C` | Reflected classes | `CTransform`, `CMeshRenderer` |
-| `S` | Reflected structs | `SVertex`, `SMaterial` |
-
-General rules:
-
-- PascalCase for all identifiers
-- Tabs for indentation
-- Braces on new lines
-- Descriptive variable names
+## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete guidelines.
-
----
-
-## Contributing
 
 Contributions are welcome, whether they are bug fixes, features, or
 documentation improvements.

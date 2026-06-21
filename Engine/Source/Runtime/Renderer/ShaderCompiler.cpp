@@ -20,19 +20,14 @@ namespace Lumina
 {
     IShaderCompiler* GShaderCompiler = nullptr;
     FShaderLibrary*  GShaderLibrary  = nullptr;
-
-    // Source-level shader debug info (NonSemantic.Shader.DebugInfo.100) for Nsight / RenderDoc. STANDARD
-    // crashes AMDVLK at pipeline creation (DebugFunctionDefinition outside the entry block), so AMD stays
-    // MINIMAL; Shipping stays MINIMAL too (smaller binaries, still enough line info for crash dumps).
-    // (Bump SHADER_CACHE_VERSION when changing this so cached MINIMAL binaries are rebuilt.)
+    
     static int GetShaderDebugInfoLevel()
     {
-    #if LUMINA_SHIPPING
         return SLANG_DEBUG_INFO_LEVEL_MINIMAL;
-    #else
-        const bool bIsAMD = RHI::GetDeviceInfo().VendorID == 0x1002u;
-        return bIsAMD ? SLANG_DEBUG_INFO_LEVEL_MINIMAL : SLANG_DEBUG_INFO_LEVEL_STANDARD;
-    #endif
+    }
+    static int GetShaderOptimizationLevel()
+    {
+        return SLANG_OPTIMIZATION_LEVEL_HIGH;
     }
 
     class FSlangBlob : public ISlangBlob
@@ -201,12 +196,17 @@ namespace Lumina
 
                 // Debug-info level is GPU/build-gated (see GetShaderDebugInfoLevel): STANDARD for Nsight
                 // source debugging on non-AMD non-Shipping, MINIMAL elsewhere (AMDVLK STANDARD crash).
-                slang::CompilerOptionEntry TargetOptions[1] = {};
+                // Optimization is forced off DEFAULT (-O1), which mis-compiles BDA pointers (see
+                // GetShaderOptimizationLevel).
+                slang::CompilerOptionEntry TargetOptions[2] = {};
                 TargetOptions[0].name = slang::CompilerOptionName::DebugInformation;
                 TargetOptions[0].value.kind = slang::CompilerOptionValueKind::Int;
                 TargetOptions[0].value.intValue0 = GetShaderDebugInfoLevel();
+                TargetOptions[1].name = slang::CompilerOptionName::Optimization;
+                TargetOptions[1].value.kind = slang::CompilerOptionValueKind::Int;
+                TargetOptions[1].value.intValue0 = GetShaderOptimizationLevel();
                 TargetDesc.compilerOptionEntries = TargetOptions;
-                TargetDesc.compilerOptionEntryCount = 1;
+                TargetDesc.compilerOptionEntryCount = 2;
 
                 // 39001: unbounded descriptor array (intentional, bindless)
                 slang::CompilerOptionEntry SessionOptions[1] = {};
@@ -521,12 +521,15 @@ namespace Lumina
             TargetDesc.profile = SLangGlobalSession->findProfile("spirv_1_5");
             TargetDesc.flags   = SLANG_TARGET_FLAG_GENERATE_SPIRV_DIRECTLY | SLANG_TARGET_FLAG_GENERATE_WHOLE_PROGRAM;
 
-            slang::CompilerOptionEntry TargetOptions[1] = {};
+            slang::CompilerOptionEntry TargetOptions[2] = {};
             TargetOptions[0].name = slang::CompilerOptionName::DebugInformation;
             TargetOptions[0].value.kind = slang::CompilerOptionValueKind::Int;
             TargetOptions[0].value.intValue0 = GetShaderDebugInfoLevel();
+            TargetOptions[1].name = slang::CompilerOptionName::Optimization;
+            TargetOptions[1].value.kind = slang::CompilerOptionValueKind::Int;
+            TargetOptions[1].value.intValue0 = GetShaderOptimizationLevel();
             TargetDesc.compilerOptionEntries = TargetOptions;
-            TargetDesc.compilerOptionEntryCount = 1;
+            TargetDesc.compilerOptionEntryCount = 2;
 
             // 39001: unbounded descriptor array (intentional, bindless)
             slang::CompilerOptionEntry SessionOptions[1] = {};

@@ -1678,9 +1678,9 @@ namespace Lumina::RHI
 
     void WaitDeviceIdle()
     {
+        FScopeLock Lock(GDevice->SubmitMutex);
         vkDeviceWaitIdle(*GDevice);
 
-        FScopeLock Lock(GDevice->SubmitMutex);
         if (!GDevice->PendingTransient.empty())
         {
             for (const FDeviceImpl::FPendingTransition& Pending : GDevice->PendingTransient)
@@ -2989,6 +2989,8 @@ namespace Lumina::RHI
 
     void RecreateSwapchain(FSwapchainH Swapchain, const FUIntVector2& Extent)
     {
+        // Exclude concurrent queue submission while we wait-idle and rebuild the swapchain (see WaitDeviceIdle).
+        FScopeLock SubmitLock(GDevice->SubmitMutex);
         vkDeviceWaitIdle(*GDevice);
 
         FSwapchain& SC = GDevice->Swapchains[Swapchain];
