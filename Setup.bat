@@ -1,17 +1,8 @@
 @echo off
 setlocal enableextensions
 
-rem ============================================================================
-rem  Lumina Engine - Setup
-rem
-rem  One-shot setup for a fresh clone:
-rem    1. Verifies (and bootstraps if missing) Tools\premake5.exe
-rem    2. Runs `premake5 setup` -- downloads External, configures git hooks
-rem    3. Runs `premake5 vs2022` -- generates Lumina.sln
-rem
-rem  No Python required. Uses curl.exe and tar.exe (bundled with Windows 10
-rem  1803+). For .7z dependency archives, drop 7zr.exe into Tools\ first.
-rem ============================================================================
+rem Bootstrap premake5, run `premake5 setup`, then generate Lumina.sln.
+rem Uses curl.exe and tar.exe (Windows 10 1803+); no Python.
 
 cd /d "%~dp0"
 set "LUMINA_DIR=%CD%"
@@ -28,15 +19,9 @@ echo ============================================================
 echo  Working directory: %LUMINA_DIR%
 echo.
 
-rem --- Detect an existing LUMINA_DIR that points elsewhere ------------------
-rem A stale value from a previous install is the #1 source of "missing
-rem reflection symbol" / "wrong engine version linked" reports. Read the
-rem persisted user-env value (not %LUMINA_DIR%, which is the in-process
-rem variable we just set on the line above) and surface the migration.
-set "PRIOR_LUMINA_DIR="
-for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v LUMINA_DIR 2^>nul ^| findstr /R "LUMINA_DIR"') do (
-    set "PRIOR_LUMINA_DIR=%%B"
-)
+rem Warn if a previous install persisted a different LUMINA_DIR (stale values cause
+rem "wrong engine linked" errors). Reads the persisted value, not %LUMINA_DIR%.
+call :GetUserEnv LUMINA_DIR PRIOR_LUMINA_DIR
 if defined PRIOR_LUMINA_DIR (
     if /I not "%PRIOR_LUMINA_DIR%"=="%LUMINA_DIR%" (
         echo [setup] NOTE: LUMINA_DIR was previously set to:
@@ -49,10 +34,7 @@ if defined PRIOR_LUMINA_DIR (
     )
 )
 
-rem --- Validate build prerequisites -----------------------------------------
-rem Fail fast on a fresh clone (missing .NET 10 SDK / VS < 18.0 / curl / tar)
-rem with actionable guidance, instead of a cryptic NETSDK1209 mid-build.
-rem Set SKIP_PREREQ_CHECKS=1 to bypass (not recommended).
+rem Check prerequisites up front (SKIP_PREREQ_CHECKS=1 to bypass).
 if not defined SKIP_PREREQ_CHECKS (
     where powershell.exe >nul 2>&1
     if errorlevel 1 (
@@ -69,7 +51,7 @@ if not defined SKIP_PREREQ_CHECKS (
     )
 )
 
-rem --- Bootstrap premake5 if missing ----------------------------------------
+rem Bootstrap premake5 if missing.
 if not exist "%PREMAKE_EXE%" (
     echo [bootstrap] premake5.exe not found, downloading %PREMAKE_VERSION%...
     if not exist "%PREMAKE_DIR%" mkdir "%PREMAKE_DIR%"
@@ -107,19 +89,25 @@ if not exist "%PREMAKE_EXE%" (
     echo.
 )
 
-rem --- Run setup action ------------------------------------------------------
-"%PREMAKE_EXE%" setup %*
+set "NEED_DOWNLOAD=1"
+if exist "%LUMINA_DIR%\External" set "NEED_DOWNLOAD=0"
+echo %* | findstr /I /C:"--force" >nul && set "NEED_DOWNLOAD=1"
+
+set "AUTO_YES="
+echo %* | findstr /I /C:"--yes" >nul && set "AUTO_YES=1"
+if defined LUMINA_SETUP_YES set "AUTO_YES=1"
+
+if "%NEED_DOWNLOAD%"=="1" (
+    call :ConfirmDownload
+    if errorlevel 1 goto :cancelled
+)
+
+rem Setup.bat already confirmed above, so pass --yes to keep premake non-interactive.
+"%PREMAKE_EXE%" setup --yes %*
 if errorlevel 1 goto :fail
 
-rem --- Verify setx actually persisted LUMINA_DIR ----------------------------
-rem setx silently truncates at 1024 chars and can fail under permission-
-rem locked profiles; downstream tools then break with cryptic "engine
-rem binaries not found" errors. Read the persisted value back and confirm
-rem before claiming success.
-set "PERSISTED_LUMINA_DIR="
-for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v LUMINA_DIR 2^>nul ^| findstr /R "LUMINA_DIR"') do (
-    set "PERSISTED_LUMINA_DIR=%%B"
-)
+rem Confirm setx actually persisted the value (it can fail silently on locked profiles).
+call :GetUserEnv LUMINA_DIR PERSISTED_LUMINA_DIR
 if not defined PERSISTED_LUMINA_DIR (
     echo [setup] ERROR: LUMINA_DIR was not persisted to the user environment.
     echo         The current shell still sees it ^(set by Setup.bat^), but a fresh
@@ -127,14 +115,18 @@ if not defined PERSISTED_LUMINA_DIR (
     echo         setx hit its 1024-char limit, or HKCU\Environment is locked down.
     goto :fail
 )
-if /I not "%PERSISTED_LUMINA_DIR%"=="%LUMINA_DIR%" (
+rem Strip a trailing backslash so a drive-root install (H:\) still matches.
+if "%PERSISTED_LUMINA_DIR:~-1%"=="\" set "PERSISTED_LUMINA_DIR=%PERSISTED_LUMINA_DIR:~0,-1%"
+set "EXPECTED_LUMINA_DIR=%LUMINA_DIR%"
+if "%EXPECTED_LUMINA_DIR:~-1%"=="\" set "EXPECTED_LUMINA_DIR=%EXPECTED_LUMINA_DIR:~0,-1%"
+if /I not "%PERSISTED_LUMINA_DIR%"=="%EXPECTED_LUMINA_DIR%" (
     echo [setup] ERROR: LUMINA_DIR persisted with the wrong value.
     echo         Expected: %LUMINA_DIR%
     echo         Got:      %PERSISTED_LUMINA_DIR%
     goto :fail
 )
 
-rem --- Generate Visual Studio solution ---------------------------------------
+rem Generate the Visual Studio solution.
 echo.
 echo ============================================================
 echo  Generating Visual Studio 2022 solution
@@ -159,3 +151,59 @@ echo Setup failed. See messages above.
 echo.
 endlocal
 exit /b 1
+
+:cancelled
+echo.
+echo Setup cancelled. No files were downloaded.
+echo See DEPENDENCIES.md to review exactly what setup fetches, or fetch each
+echo library yourself from its upstream and drop it into External\.
+echo.
+endlocal
+exit /b 1
+
+:GetUserEnv
+rem Read a persisted User-scope env var exactly.  %1 = value name, %2 = out var.
+rem PowerShell handles spaces and REG_EXPAND_SZ; reg-query fallback if it's absent.
+setlocal
+set "_gue_val="
+where powershell.exe >nul 2>&1
+if not errorlevel 1 (
+    for /f "usebackq delims=" %%V in (`powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('%~1','User')"`) do set "_gue_val=%%V"
+) else (
+    for /f "tokens=1,2,*" %%A in ('reg query "HKCU\Environment" /v "%~1" 2^>nul') do (
+        if /I "%%A"=="%~1" if not defined _gue_val set "_gue_val=%%C"
+    )
+)
+endlocal & set "%~2=%_gue_val%"
+exit /b 0
+
+:ConfirmDownload
+rem Show what will be downloaded; return 1 to abort.
+echo.
+echo ------------------------------------------------------------
+echo  EXTERNAL DEPENDENCIES
+echo ------------------------------------------------------------
+echo  Setup is about to DOWNLOAD a prebuilt dependency bundle
+echo  ^(External.zip, ~671 MB^) and extract it into:
+echo      %LUMINA_DIR%
+echo.
+echo  Contents:
+echo    - .NET 10 runtime + hosting headers   C# scripting host
+echo    - LLVM/Clang 19 ^(libclang^)          reflection codegen
+echo    - Slang shader compiler               shader compilation
+echo    - RenderDoc                           in-app frame capture
+echo    - Tracy                               CPU/GPU profiler
+echo.
+echo  Host:    github.com/MrDrElliot/LuminaEngine  ^(release asset^)
+echo  Details: DEPENDENCIES.md  ^(upstream sources, versions, licenses^)
+echo.
+echo  After download the bundle is integrity-checked against a recorded
+echo  SHA-256. If you prefer not to trust the bundle, you can fetch each
+echo  library from its upstream instead -- see DEPENDENCIES.md.
+echo.
+if defined AUTO_YES exit /b 0
+set "REPLY="
+set /p "REPLY=Proceed with download? [Y/n] "
+if /I "%REPLY%"=="n"  exit /b 1
+if /I "%REPLY%"=="no" exit /b 1
+exit /b 0

@@ -2,7 +2,7 @@
 #include "Common.slang"
 
 // IBL helpers shared by the BRDF LUT bake and runtime IBL sampling.
-// Karis 2013 "Real Shading in Unreal Engine 4" split-sum approximation.
+// Karis 2013 "Real Shading in  Engine 4" split-sum approximation.
 
 // Hammersley low-discrepancy (u, v) seed for GGX importance sampling.
 float RadicalInverse_VdC(uint Bits)

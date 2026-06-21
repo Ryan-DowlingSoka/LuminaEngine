@@ -1,5 +1,4 @@
--- Optional feature toggles, baked in at solution generation (regenerate after editing). Each is "auto" (engine decides per-config), "on" (every config), or "off" (stripped).
--- Override per-generation via premake flags (e.g. --tracy=off --validation=on), which win over the values here.
+-- Feature toggles baked in at solution generation (regenerate after editing): "auto" (per-config), "on" (every config), "off" (stripped). Premake flags (e.g. --tracy=off) override these.
 
 return {
     -- Tracy profiler; auto = on in Debug/Development.

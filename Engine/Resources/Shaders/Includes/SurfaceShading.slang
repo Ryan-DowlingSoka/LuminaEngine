@@ -15,6 +15,19 @@
 #include "Includes/DBuffer.slang"
 #endif
 
+// Compile-time-uniform feature gates, specialized per-pipeline at creation (FForwardRenderScene::
+// GetOrCreatePipeline feeds these as constant ids 1-3; the cache keys on them). They default to ENABLED so
+// offline slangc validation and any unspecialized pipeline keep full-feature behavior bit-for-bit. When a
+// gate is specialized to 0 the SPIR-V optimizer dead-strips the guarded block (and its resource access)
+// entirely -- this is how one shared shading path serves passes that bind different resources:
+//   DECALS off  -> the terrain pass (which binds FTerrainPushConstants, NOT the DBuffer overlay) never reads
+//                  the decal push, so its pointer-bearing push range is not misread as bindless indices;
+//   SSAO   off  -> terrain skips the screen-space AO fetch it has no input for (ambient stays unoccluded);
+//   DEBUG  off  -> game/shipping pipelines strip the editor view-mode switch (no runtime branch, smaller PS).
+[vk::constant_id(1)] const uint SPEC_ENABLE_DEBUG_VIEWS = 1;
+[vk::constant_id(2)] const uint SPEC_ENABLE_DECALS      = 1;
+[vk::constant_id(3)] const uint SPEC_ENABLE_SSAO        = 1;
+
 // Hash-to-color for the meshlet debug view; stable per-meshlet hues across frames.
 float3 MeshletDebugColor(uint Index)
 {
@@ -724,8 +737,10 @@ FShadedSurface ShadeSurface(FBaseVertexOutput Input, FMaterialPixelInputs Materi
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
     // DBuffer decals: composite projected decal attributes into the surface BEFORE lighting so they
-    // receive lights/shadows/IBL. No-op on pixels no decal touched. Opaque base pass only.
+    // receive lights/shadows/IBL. No-op on pixels no decal touched. Opaque base pass only, and only on
+    // pipelines that actually bind the decal push (SPEC_ENABLE_DECALS) -- terrain specializes this off.
 #ifndef TRANSLUCENT
+    if (SPEC_ENABLE_DECALS != 0)
     {
         float2 DBufferUV = Input.Position.xy / float2(Scene().ScreenSize.xy);
         ApplyDBuffer(Albedo, N, Roughness, Metallic, AO, DBufferUV);
@@ -843,8 +858,9 @@ FShadedSurface ShadeSurface(FBaseVertexOutput Input, FMaterialPixelInputs Materi
 
     // Screen-space AO attenuates the ambient/IBL term only (direct light already has its own occlusion).
     // AOTextureIndex is ~0u for views that didn't run the SSAO pass (e.g. captures) -> treat as unoccluded.
+    // Pipelines with no SSAO input (terrain) specialize SPEC_ENABLE_SSAO off so the fetch is dead-stripped.
     float SSAO = 1.0;
-    if (Scene().SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
+    if (SPEC_ENABLE_SSAO != 0 && Scene().SSAOSettings.AOTextureIndex != 0xFFFFFFFFu)
     {
         float2 ScreenUV = Input.Position.xy / float2(Scene().ScreenSize.xy);
         SSAO = SampleTexture2D(Scene().SSAOSettings.AOTextureIndex, SAMPLER_LINEAR_CLAMP, ScreenUV).r;
@@ -869,8 +885,10 @@ FShadedSurface ShadeSurface(FBaseVertexOutput Input, FMaterialPixelInputs Materi
 
 #endif // UNLIT
 
+    // Editor view-mode overrides. SPEC_ENABLE_DEBUG_VIEWS lets game/shipping pipelines strip the whole
+    // switch (DebugMode is always NONE there) so there is no per-pixel branch and the PS stays small.
     uint DebugMode = Scene().CullData.DebugMode;
-    if (DebugMode != DEBUG_MODE_NONE)
+    if (SPEC_ENABLE_DEBUG_VIEWS != 0 && DebugMode != DEBUG_MODE_NONE)
     {
         switch (DebugMode)
         {
@@ -942,6 +960,11 @@ FShadedSurface ShadeSurface(FBaseVertexOutput Input, FMaterialPixelInputs Materi
                 Color = float3(DbgAO, DbgAO, DbgAO);
                 break;
             }
+            case DEBUG_MODE_MATERIAL_ID:
+                // Stable hue per GPU material slot -- shows which material owns each pixel (the deferred
+                // material binning) and works for any surface (mesh or terrain).
+                Color = MeshletDebugColor(Input.MaterialIndex);
+                break;
         }
     }
 

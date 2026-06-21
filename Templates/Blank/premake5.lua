@@ -10,8 +10,6 @@ include (path.join(LuminaDir, "BuildScripts/GameProject"))
 LuminaGameProject({
     Name = "$PROJECTNAME",
 
-    -- Third-party libs this C++ module links directly. Omitted here so the project tracks the engine's
-    -- default game set (ImGui, RPMalloc, EA, Tracy), which stays link-compatible with the Runtime DLL.
-    -- Uncomment and extend to link more of the engine's third-party (e.g. "Jolt") into your module.
+    -- Omit to track the engine's default game set (link-compatible with the Runtime DLL); uncomment to link more.
     -- Dependencies = { "ImGui", "RPMalloc", "EA", "Tracy" },
 })

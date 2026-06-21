@@ -1,8 +1,7 @@
 @echo off
 setlocal
 
-rem Invoked as a prebuild step. Resolves the engine root via LUMINA_DIR if set,
-rem otherwise walks up from this script's directory.
+rem Prebuild step: resolve engine root from LUMINA_DIR, else walk up from this script.
 
 if defined LUMINA_DIR (
     set "ENGINE_ROOT=%LUMINA_DIR%"

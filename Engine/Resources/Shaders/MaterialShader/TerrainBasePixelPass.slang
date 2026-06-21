@@ -1,8 +1,16 @@
-#include "Includes/TerrainCommon.slang"
-#include "Includes/IBLRuntime.slang"
-#include "Includes/ShadowSampling.slang"
+#include "Includes/TerrainData.slang"
+#include "Includes/SurfaceShading.slang"
 
-FTerrainPushConstants* Pass() { return GetPassArgs<FTerrainPushConstants>(); }
+// Terrain base-pass pixel shader. Terrain keeps its own heightfield geometry (the meshlet-driven VS + its
+// FTerrainPushConstants), but its SHADING is the shared ShadeSurface (SurfaceShading.slang) -- the exact
+// path meshes use -- so lighting, shadows, IBL, clustering and the debug views can never drift from the
+// mesh path. This file only: builds the material-graph locals, runs the pixel material graph (which reaches
+// terrain layer blending via TerrainData.slang), adapts the terrain interpolants to the shared
+// FBaseVertexOutput, and packs output. All terrain layer access lives in TerrainData.slang.
+//
+// The terrain pipeline is specialized with SPEC_ENABLE_DECALS = 0 and SPEC_ENABLE_SSAO = 0 (it binds
+// neither the DBuffer overlay nor an SSAO input), so ShadeSurface's decal/AO blocks are dead-stripped and
+// terrain never misreads its pointer-bearing push range as bindless decal indices.
 
 struct PSInput
 {
@@ -16,7 +24,6 @@ struct PSInput
 
     nointerpolation uint EntityID      : ENTITY_ID;
     nointerpolation uint MaterialIndex : MATERIAL_INDEX;
-    // Stable per-meshlet ID, hashed to a color for the meshlet debug view.
     nointerpolation uint MeshletIndex  : MESHLET_INDEX;
 
     float4 Position                 : SV_Position;
@@ -28,678 +35,49 @@ struct PSOutput
     uint   Picker   : SV_Target1;
 };
 
-// PBR helpers (kept in sync with BasePixelPass.slang).
-float3 FresnelSchlick(float CosTheta, float3 F0)
-{
-    float x = saturate(1.0 - CosTheta);
-    float x2 = x * x;
-    return F0 + (1.0 - F0) * (x2 * x2 * x);
-}
-
-// Half-precision Schlick Fresnel for the light loop (mirrors BasePixelPass). CosTheta and F0 are [0,1].
-half3 FresnelSchlickHalf(half CosTheta, half3 F0)
-{
-    half x  = saturate(half(1.0) - CosTheta);
-    half x2 = x * x;
-    return F0 + (half3(1.0) - F0) * (x2 * x2 * x);
-}
-
-// Vertex-tangent TBN (mirrors BasePixelPass::GetWorldNormal): Gram-Schmidt the VS's analytic
-// heightfield tangent against the interpolated normal. Replaces a ddx/ddy TBN that faceted per triangle.
-float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
-{
-    // N is assumed unit-length: every caller passes the already-normalized interpolated normal.
-    float3 N = FragNormal;
-
-    float3 T = FragTangent.xyz - N * dot(FragTangent.xyz, N);
-    float TLen2 = dot(T, T);
-    if (TLen2 < 1e-8)
-    {
-        return N;
-    }
-    T *= rsqrt(TLen2);
-
-    float3 B = cross(N, T) * FragTangent.w;
-
-    float3x3 TBN = float3x3(T, B, N);
-    return normalize(mul(TangentSpaceNormal, TBN));
-}
-
-float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int CascadeIndex)
-{
-    float NdotL       = saturate(dot(Normal, LightDir));
-    float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
-
-    if (HasFlag(LightFlags, ELightFlags::Directional))
-    {
-        // Constant safety bias only; NormalOffsetWS handles slope acne. ShadowParams.y is the per-light constant bias.
-        return 0.00015 + 0.0003 * SlopeFactor + LightData().ShadowParams.y;
-    }
-
-    return 0.0015 + 0.004 * SlopeFactor;
-}
-
-// See BasePixelPass.slang::NormalOffsetWS for the full rationale.
-float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
-{
-    float NdotL       = saturate(dot(Normal, LightDir));
-    float OffsetScale = saturate(1.0 - NdotL);
-    float Radius      = LightData().CascadeRadii[CascadeIndex];
-    float Resolution  = max(LightData().CascadeResolutions[CascadeIndex], 1.0);
-    float TexelSize   = (2.0 * Radius) / Resolution;
-    // ShadowParams.x scales the normal-offset bias per-light (1.0 = default).
-    return Normal * (TexelSize * 1.4 * OffsetScale * LightData().ShadowParams.x);
-}
-
-// Per-cascade UV -> shared atlas UV. Mirrors BasePixelPass.slang::CascadeAtlasUV.
-float2 TerrainCascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
-{
-    FLightShadow Tile = GetShadowTile(ShadowDataIndex, CascadeIndex);
-    return CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-}
-
-// Mirrors BasePixelPass.slang PCSS so terrain matches mesh shadow behavior.
-#define PCSS_BLOCKER_SEARCH_TAPS   8
-static const float PCSS_BlockerSearchRadius = 0.0035;
-static const float PCSS_LightSize           = 0.05;
-// Filter radius bounds in shadow texels (per-cascade); see BasePixelPass.slang. Floor = smooth near
-// contact edges, ceiling = gap-free far penumbra. Texel units self-scale across cascades.
-static const float PCSS_MinFilterTexels     = 1.5;
-static const float PCSS_MaxFilterTexels     = 4.0;   // ~sqrt(SHADOW_MAX_SAMPLE_COUNT) = sqrt(16); match BasePixelPass
-static const float PCSS_BlockerDepthBias    = 0.0004;
-static const float PCSS_MaxPlaneDepthBias   = 0.01;    // Cap on the receiver-plane prediction (silhouette-edge guard)
-
-float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
-{
-    float3 OffsetPos    = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
-    float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
-    float4 ShadowCoord  = mul(CascadeVP, float4(OffsetPos, 1.0));
-    float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
-    float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
-    float  CurrentDepth = ProjCoords.z;
-
-    // Screen-space derivatives of shadow-space depth/UV, before the Inside early-out (quad coherence).
-    // Feed the receiver-plane prediction in the blocker search below; see BasePixelPass.slang.
-    float2 dUVdx = ddx(ProjectionUV);
-    float2 dUVdy = ddy(ProjectionUV);
-    float  dDdx  = ddx(CurrentDepth);
-    float  dDdy  = ddy(CurrentDepth);
-
-    Inside = !(any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
-               CurrentDepth < 0.0 || CurrentDepth > 1.0);
-    if (!Inside)
-    {
-        return 1.0;
-    }
-
-    float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
-    float Angle = IGN * TWO_PI;
-
-    float RefDepth = CurrentDepth - Bias;
-
-    // Normalized by cascade count so the outermost cascade keeps consistent softness (~4x) as the count
-    // changes; see BasePixelPass.slang.
-    float CascadeScale = 1.0 + 3.0 * float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1));
-
-    float BlockerDepthSum = 0.0;
-    int   NumBlockers     = 0;
-
-    float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
-
-    // Receiver-plane depth slope (invert the 2x2 [dUV/dscreen] Jacobian) so a sloped receiver isn't
-    // misread as an occluder across the wide far-cascade search. See BasePixelPass.slang.
-    float  Det = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
-    float2 DepthSlopeUV = float2(0.0, 0.0);
-    if (abs(Det) > 1e-12)
-    {
-        float InvDet = 1.0 / Det;
-        DepthSlopeUV.x = ( dUVdy.y * dDdx - dUVdx.y * dDdy) * InvDet;
-        DepthSlopeUV.y = (-dUVdy.x * dDdx + dUVdx.x * dDdy) * InvDet;
-    }
-
-    // Atlas tile (UV scale/offset) is constant across every tap; load the 32-byte FLightShadow once
-    // instead of per blocker/PCF tap (SPIR-V LICM doesn't hoist BDA loads). Mirrors BasePixelPass.
-    FLightShadow Tile = GetShadowTile(Light.ShadowDataIndex, CascadeIndex);
-
-    // Fold the per-tap cascade->atlas transform into loop invariants (clamp commutes through the positive
-    // linear atlas transform). Removes the per-tap UV add + scale/offset FMA. Mirrors BasePixelPass.
-    float2 BaseAtlasUV       = ProjectionUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-    float2 TileMin           = float2(0.001) * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-    float2 TileMax           = float2(0.999) * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-    float2 SearchAtlasRadius = SearchRadius * Tile.AtlasUVScale;
-
-    // Fixed rotation so the blocker (lit/shadow) decision is spatially coherent
-    // and doesn't stipple across thin-occluder penumbras. Matches BasePixelPass.
-    [unroll]
-    for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
-    {
-        float2 VOffset  = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0);
-        float2 Offset   = VOffset * SearchRadius;   // cascade-UV space, for the receiver-plane prediction
-        float2 AtlasUV  = clamp(BaseAtlasUV + VOffset * SearchAtlasRadius, TileMin, TileMax);
-        float  Depth    = ShadowCascade().SampleLevel(AtlasUV, 0.0).r;
-
-        // Expected receiver depth at this offset along its own plane (clamped against silhouette-edge
-        // gradient runaway). Only depths in front of the predicted plane count as occluders.
-        float PlaneDelta    = clamp(dot(DepthSlopeUV, Offset), -PCSS_MaxPlaneDepthBias, PCSS_MaxPlaneDepthBias);
-        float ReceiverDepth = CurrentDepth + PlaneDelta;
-
-        if (Depth < ReceiverDepth - PCSS_BlockerDepthBias)
-        {
-            BlockerDepthSum += Depth;
-            NumBlockers     += 1;
-        }
-    }
-
-    if (NumBlockers == 0)
-    {
-        return 1.0;
-    }
-
-    float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
-
-    // Filter bounds in shadow texels (per-cascade): floor for smooth near edges, ceiling the max tap
-    // count covers gap-free. Texel units self-scale across cascades; see BasePixelPass.slang.
-    float CascadeTexelUV = 1.0 / max(LightData().CascadeResolutions[CascadeIndex], 1.0);
-    float MinRadius      = PCSS_MinFilterTexels * CascadeTexelUV;
-    float MaxRadius      = PCSS_MaxFilterTexels * CascadeTexelUV;
-
-    float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    float Penumbra        = DepthDelta * LightData().ShadowParams.z;
-    float FilterRadius    = clamp(Penumbra, MinRadius, MaxRadius);
-
-    // Pull in slightly for partial occlusion, but never below the texel floor (keeps contact edges smooth).
-    float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
-    FilterRadius = max(FilterRadius * lerp(0.75, 1.0, BlockerCoverage), MinRadius);
-
-    // Scale tap count with penumbra width so density stays ~constant; at MaxRadius this reaches
-    // SHADOW_MAX_SAMPLE_COUNT -> ~1-texel Vogel spacing, gap-free. Matches BasePixelPass.
-    int   BaseTaps    = clamp(int(LightData().ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
-    float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
-    int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
-                              BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
-
-    // Same atlas fold as the blocker search; AtlasFilterRadius uses the penumbra filter radius. FP16 the
-    // unit disk offset (sub-texel, packs into one register); atlas UV + compare ref stay fp32.
-    float2 AtlasFilterRadius = FilterRadius * Tile.AtlasUVScale;
-
-    half Shadow = half(0.0);
-    [loop]
-    for (int i = 0; i < SampleCount; ++i)
-    {
-        half2  VOffset = half2(VogelDiskSample(i, SampleCount, Angle + PI));
-        float2 AtlasUV = clamp(BaseAtlasUV + float2(VOffset) * AtlasFilterRadius, TileMin, TileMax);
-        Shadow        += half(ShadowCascade().SampleCmp(AtlasUV, RefDepth));
-    }
-    return float(Shadow) * rcp(float(SampleCount));
-}
-
-float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)
-{
-    if (!ReceiveShadow)
-    {
-        return 1.0;
-    }
-
-    bool IsDirectionalLight = HasFlag(Light.Flags, ELightFlags::Directional);
-    if (!IsDirectionalLight)
-    {
-        return 1.0;
-    }
-
-    // bCastShadows = false on the sun => ProcessDirectionalLight leaves
-    // ShadowDataIndex as INDEX_NONE. Treat as fully lit.
-    if (Light.ShadowDataIndex == INDEX_NONE)
-    {
-        return 1.0;
-    }
-
-    int CascadeIndex = 0;
-    for (int i = 0; i < NUM_CASCADES; ++i)
-    {
-        if (ViewPosition.z > LightData().CascadeSplits[i])
-            CascadeIndex = i + 1;
-    }
-    if (CascadeIndex >= NUM_CASCADES)
-        return 1.0;
-
-    float3 LightDirToFrag = -normalize(Light.Direction);
-    float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
-
-    bool  InsideA;
-    float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Normal, LightDirToFrag, Bias, ScreenPos, InsideA);
-
-    float CascadeNear = (CascadeIndex == 0)
-        ? 0.0
-        : LightData().CascadeSplits[CascadeIndex - 1];
-    float CascadeFar  = LightData().CascadeSplits[CascadeIndex];
-    float CascadeLen  = max(CascadeFar - CascadeNear, 1e-4);
-    float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
-
-    // Cross-fade fraction is per-light (ShadowParams.w); BlendStart = 1 - blend.
-    const float BlendStart = saturate(1.0 - LightData().ShadowParams.w);
-    if (LocalT > BlendStart && CascadeIndex + 1 < NUM_CASCADES)
-    {
-        float BlendT  = saturate((LocalT - BlendStart) / (1.0 - BlendStart));
-        float BiasB   = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex + 1);
-
-        bool  InsideB;
-        float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, Normal, LightDirToFrag, BiasB, ScreenPos, InsideB);
-
-        if (InsideB)
-        {
-            return lerp(ShadowA, ShadowB, BlendT);
-        }
-    }
-
-    // Final cascade: fade to fully lit over the outer slice so shadows
-    // dissolve at ShadowMaxDistance instead of popping off.
-    if (CascadeIndex + 1 == NUM_CASCADES)
-    {
-        // Distance-fade fraction is per-light (ShadowParams2.x); start = 1 - fade.
-        const float FarFadeStart = saturate(1.0 - LightData().ShadowParams2.x);
-        if (LocalT > FarFadeStart)
-        {
-            float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));
-            return lerp(ShadowA, 1.0, FadeT);
-        }
-    }
-
-    return ShadowA;
-}
-
-int FindSunShadowDataIndexTerrain()
-{
-    if (LightData().bHasSun == 0u)
-    {
-        return INDEX_NONE;
-    }
-    uint Count = GetNumLights();
-    for (uint i = 0; i < Count; ++i)
-    {
-        FLight L = GetLightAt(i);
-        if (HasFlag(L.Flags, ELightFlags::Directional) && L.ShadowDataIndex != INDEX_NONE)
-        {
-            return L.ShadowDataIndex;
-        }
-    }
-    return INDEX_NONE;
-}
-
-// Mirror of CascadeDebugColor in BasePixelPass.slang so terrain and meshes
-// share the same Shadow Cascades view-mode visualization.
-float3 CascadeDebugColorTerrain(float3 FragmentPos, float3 ViewPosition, float3 ShadedBase)
-{
-    int SunShadowIdx = FindSunShadowDataIndexTerrain();
-    if (SunShadowIdx == INDEX_NONE)
-    {
-        return float3(0.08, 0.08, 0.08);
-    }
-
-    int CascadeIndex = 0;
-    for (int i = 0; i < NUM_CASCADES; ++i)
-    {
-        if (ViewPosition.z > LightData().CascadeSplits[i])
-            CascadeIndex = i + 1;
-    }
-    if (CascadeIndex >= NUM_CASCADES)
-    {
-        return float3(0.18, 0.18, 0.18);
-    }
-
-    float4x4 CascadeVP   = GetShadowViewProjection(SunShadowIdx, CascadeIndex);
-    float4   ShadowCoord = mul(CascadeVP, float4(FragmentPos, 1.0));
-    float3   ProjCoords  = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
-    float2   ProjUV      = ProjCoords.xy * 0.5 + 0.5;
-    bool     Inside      = !(any(ProjUV < 0.0) || any(ProjUV > 1.0) ||
-                              ProjCoords.z < 0.0 || ProjCoords.z > 1.0);
-
-    const float3 CascadeTints[3] = {
-        float3(1.00, 0.25, 0.25),
-        float3(0.25, 1.00, 0.30),
-        float3(0.30, 0.45, 1.00),
-    };
-    float3 Tint = CascadeTints[CascadeIndex];
-
-    float Luma = saturate(dot(ShadedBase, float3(0.299, 0.587, 0.114)));
-    float3 Color = lerp(Tint * 0.4, Tint, 0.5 + 0.5 * Luma);
-
-    if (!Inside)
-    {
-        Color *= 0.35;
-    }
-    return Color;
-}
-
-
-// Per-pixel surface terms hoisted out of the light loop (mirrors BasePixelPass::FShadingContext).
-// [0,1]-range BRDF weights are half (fp16-tolerant, lower register pressure); NdotV and A2 stay float.
-struct FShadingContext
-{
-    float3 N;
-    float3 V;
-    float  NdotV;        // max(dot(N,V), 1e-4)
-    float  A2;           // roughness^4 -- full precision so low-roughness highlights don't underflow
-    half   Kg;           // Smith-GGX k = (roughness+1)^2 / 8
-    half   Gv;           // Schlick-GGX view geometry term (loop-invariant half of Smith G)
-    half3  F0;
-    half3  DiffuseBase;  // Albedo * (1 - Metallic) / PI
-    half3  EnergyComp;   // multi-scatter compensation (Turquin 2019)
-};
-
-// L: unit surface->light direction, supplied by the caller for every light type (the sun's
-// Light.Direction normalize happens once at the call site). Distance is unused for directional.
-float3 EvaluateLightContribution(FLight Light, FShadingContext S, float3 L, float Distance)
-{
-    float NdotLf = max(dot(S.N, L), 0.0);
-    if (NdotLf <= 0.0)
-    {
-        return float3(0.0);
-    }
-
-    float Attenuation = 1.0;
-    float Falloff     = 1.0;
-
-    if (!HasFlag(Light.Flags, ELightFlags::Directional))
-    {
-        Attenuation     = 1.0 / max(Distance * Distance, 1e-8);
-        float DistRatio = Distance / Light.Radius;
-        Attenuation    *= 1.0 - smoothstep(clamp(Light.Falloff, 0.0, 1.0), 1.0, DistRatio);
-
-        if (HasFlag(Light.Flags, ELightFlags::Spot))
-        {
-            float3 LightDir = normalize(Light.Direction.xyz);
-            float  CosTheta = dot(LightDir, L);
-            Falloff = clamp((CosTheta - Light.Angles.y) / max(Light.Angles.x - Light.Angles.y, 0.001), 0.0, 1.0);
-        }
-    }
-
-    float3 Radiance = GetLightColor(Light).rgb * Light.Intensity * Attenuation * Falloff;
-    float3 H        = normalize(S.V + L);
-
-    // NDF stays full precision: A2 is float and NdotH near 1.0 needs the mantissa.
-    float NdotH = max(dot(S.N, H), 0.0);
-    float Denom = NdotH * NdotH * (S.A2 - 1.0) + 1.0;
-    float NDF   = S.A2 / (PI * Denom * Denom);
-
-    // [0,1]-range BRDF weights in fp16: light geometry term, Fresnel, diffuse/spec tint.
-    half  NdotL = (half)NdotLf;
-    half  HdotV = (half)max(dot(H, S.V), 0.0);
-    half  Gl    = NdotL / (NdotL * (half(1.0) - S.Kg) + S.Kg);
-    half  G     = S.Gv * Gl;
-    half3 F     = FresnelSchlickHalf(HdotV, S.F0);
-
-    half3 SpecTint = G * F * S.EnergyComp;            // directional/color part of the specular lobe
-    half3 Diffuse  = (half3(1.0) - F) * S.DiffuseBase;
-
-    // Recombine in float: NDF and the 1/(4 NdotV NdotL) term carry the HDR dynamic range.
-    float  SpecScale = NDF / (4.0 * S.NdotV * NdotLf);
-    float3 Spec      = float3(SpecTint) * SpecScale;
-
-    return (float3(Diffuse) + Spec) * Radiance * NdotLf;
-}
-
-
-int   GetTerrainLayerCount()                       { return Pass().Params.get().LayerCount; }
-float GetTerrainLayerWeight(float2 HeightUV, int i)
-{
-    return gTextures2DArray[Pass().LayerWeightsIndex].Sample(gSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
-}
-
-// Hash-to-color for the meshlet debug view; mirrors BasePixelPass so meshes and terrain match.
-float3 TerrainMeshletDebugColor(uint Index)
-{
-    uint H = Index * 2654435761u;
-    H ^= H >> 16;
-    H *= 2246822519u;
-    H ^= H >> 13;
-    H *= 3266489917u;
-    H ^= H >> 16;
-
-    return float3(
-        float( H         & 0xFFu) / 255.0,
-        float((H >>  8)  & 0xFFu) / 255.0,
-        float((H >> 16)  & 0xFFu) / 255.0
-    );
-}
-
-// Layer 0 fills any unpainted weight so brushes blend over a base layer; else a tiny edge weight
-// would renormalize to 100% and produce hard stroke boundaries.
-float4 GetTerrainLayerWeights4(float2 HeightUV)
-{
-    float4 W = float4(0.0, 0.0, 0.0, 0.0);
-    int Count = min(Pass().Params.get().LayerCount, 4);
-    [unroll] for (int i = 0; i < 4; ++i)
-    {
-        if (i < Count)
-        {
-            W[i] = gTextures2DArray[Pass().LayerWeightsIndex].Sample(gSamplers[SAMPLER_LINEAR_CLAMP], float3(HeightUV, float(i))).r;
-        }
-    }
-    float Total = W.x + W.y + W.z + W.w;
-    if (Total < 1.0)
-    {
-        W[0] += 1.0 - Total;
-        Total = 1.0;
-    }
-    W /= Total;
-    return W;
-}
-
-// Force the depth test ahead of this heavy shadow PBR shader. EXCEPT for masked materials: their
-// alpha-test `discard` must run before the depth write, so the masked variant omits early depth tests
-// (with [earlydepthstencil] the write happens first and discarded cutout texels still corrupt depth).
-// Non-masked keeps forced early-Z; its discard branch is never taken so the early write stays correct.
+// Masked materials run their alpha-test discard (inside ShadeSurface) which MUST execute before the depth
+// write, so the masked variant omits forced early-Z. Non-masked keeps it over the heavy PBR shader; its
+// discard branch is never taken so the early write stays correct. Mirrors BasePixelPass.slang.
 #ifndef MASKED
 [earlydepthstencil]
 #endif
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    uint   EntityID        = Input.EntityID;
-    uint   MaterialIndex   = Input.MaterialIndex;
-    float3 WorldNormal     = normalize(Input.NormalWS.xyz);
-    float3 ViewPosition    = Input.FragPos.xyz;
-    float3 WorldPosition   = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
-    float2 UV0             = Input.UV;
-    float2 HeightUV        = Input.HeightUV;
-    float4 VertexColor     = Input.FragColor;
+    // Locals the material pixel graph codegen reads (terrain aliases UV0 -> world XZ, plus HeightUV for the
+    // layer-weight lookups in TerrainData.slang).
+    uint   EntityID      = Input.EntityID;
+    uint   MaterialIndex = Input.MaterialIndex;
+    float3 WorldNormal   = normalize(Input.NormalWS.xyz);
+    float3 ViewPosition  = Input.FragPos.xyz;
+    float3 WorldPosition = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
+    float2 UV0           = Input.UV;
+    float2 HeightUV      = Input.HeightUV;
+    float4 VertexColor   = Input.FragColor;
 
     $MATERIAL_INPUTS
 
-    float3 Albedo    = Material.Diffuse;
-    float3 Normal    = Material.Normal;
-    float  Alpha     = Material.Opacity;
-    float  AO        = Material.AmbientOcclusion;
-    float  Roughness = Material.Roughness;
-    float  Metallic  = Material.Metallic;
+    // Adapt the terrain interpolants to the shared shading input. Terrain has no per-instance data, so the
+    // instance fields carry constants: ReceiveShadow stays on (terrain has always received sun shadows),
+    // MeshletIndex feeds the meshlet debug view.
+    FBaseVertexOutput Surface;
+    Surface.FragColor     = Input.FragColor;
+    Surface.NormalVS      = Input.NormalVS;
+    Surface.NormalWS      = Input.NormalWS;
+    Surface.TangentWS     = Input.TangentWS;
+    Surface.FragPos       = Input.FragPos;
+    Surface.UV            = Input.UV;
+    Surface.InstanceIndex = 0;
+    Surface.EntityID      = Input.EntityID;
+    Surface.MaterialIndex = Input.MaterialIndex;
+    Surface.InstanceFlags = (uint)EInstanceFlags::ReceiveShadow;
+    Surface.MeshletIndex  = Input.MeshletIndex;
+    Surface.Position      = Input.Position;
 
-    uint MatFlags = Materials()[MaterialIndex].Flags;
-    if (HasFlag(MatFlags, MatFlag_Masked))
-    {
-        float ClipValue = Materials()[MaterialIndex].OpacityClipValue;
-        if (Alpha < ClipValue)
-        {
-            discard;
-        }
-    }
-
-#ifdef UNLIT
-
-    float3 Color = Albedo + Material.Emissive;
-
-#else
-
-    float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
-    float3 V  = normalize(GetCameraPosition() - WorldPosition);
-
-    // Dielectric F0 from material specular reflectance (UE4: 0.08 * Specular,
-    // default 0.5 -> 0.04). See BasePixelPass for rationale.
-    float3 F0_DIELECTRIC = float3(0.08 * Material.Specular);
-    float3 F0 = lerp(F0_DIELECTRIC, Albedo, Metallic);
-
-    // Per-pixel multiple-scattering energy compensation factor (Turquin 2019).
-    float  NdotV_EC    = saturate(dot(N, V));
-    float2 DFG_EC      = SampleBRDFLUT(NdotV_EC, Roughness);
-    float3 EnergyComp  = 1.0 + F0 * (1.0 / max(DFG_EC.x + DFG_EC.y, 1e-4) - 1.0);
-
-    // Loop-invariant surface terms hoisted out of the per-light BRDF (mirrors BasePixelPass).
-    FShadingContext Ctx;
-    Ctx.N           = N;
-    Ctx.V           = V;
-    Ctx.NdotV       = max(NdotV_EC, 1e-4);
-    float RoughSq   = Roughness * Roughness;
-    Ctx.A2          = RoughSq * RoughSq;
-    float Kr        = Roughness + 1.0;
-    float KgF       = (Kr * Kr) * 0.125;
-    Ctx.Kg          = (half)KgF;
-    Ctx.Gv          = (half)(Ctx.NdotV / (Ctx.NdotV * (1.0 - KgF) + KgF));
-    Ctx.F0          = (half3)F0;
-    Ctx.DiffuseBase = (half3)(Albedo * (1.0 - Metallic) * INV_PI);
-    Ctx.EnergyComp  = (half3)EnergyComp;
-
-    float  ZNear      = GetNearPlane();
-    float  ZFar       = GetFarPlane();
-    uint3  GridSize   = Scene().GridSize.xyz;
-    uint2  ScreenSize = Scene().ScreenSize.xy;
-
-    // Clamp tile index: huge terrain quads lose enough interpolation precision
-    // at the edges that ViewPosition.z lands just below ZNear and ZTile wraps.
-    float  ZForTile  = max(abs(ViewPosition.z), ZNear);
-    float  ZTileF    = (log(ZForTile / ZNear) * float(GridSize.z)) / log(ZFar / ZNear);
-    uint   ZTile     = (uint)clamp(ZTileF, 0.0, float(GridSize.z) - 1.0);
-    float2 TileSize  = float2(ScreenSize) / float2(GridSize.xy);
-    uint2  TileXY    = (uint2)clamp(divide(Input.Position.xy, TileSize),
-                                    float2(0.0, 0.0),
-                                    float2(GridSize.xy) - float2(1.0, 1.0));
-    uint3  Tile      = uint3(TileXY, ZTile);
-    uint   TileIndex = Tile.x + (Tile.y * GridSize.x) + (Tile.z * GridSize.x * GridSize.y);
-    uint   LightCount = Clusters()[TileIndex].Count;
-
-    float3 Lo = float3(0.0);
-
-    if (LightData().bHasSun != 0)
-    {
-        FLight Light = GetLightAt(0);
-
-        // Pixels facing away from the sun are fully self-shadowed (NdotL clamp), so skip the
-        // expensive cascade PCSS for them (~half a typical scene). SunL is reused by the BRDF below.
-        float3 SunL     = normalize(Light.Direction.xyz);
-        float  SunNdotL = dot(N, SunL);
-        if (SunNdotL > 0.0)
-        {
-            float Shadow = ComputeTerrainShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, true);
-            Lo += EvaluateLightContribution(Light, Ctx, SunL, 0.0) * Shadow;
-        }
-    }
-
-    // Mirror the cap LightCull enforces on writes.
-    uint SafeLightCount = min(LightCount, (uint)LIGHTS_PER_CLUSTER);
-    for (uint i = 0; i < SafeLightCount; ++i)
-    {
-        uint   LightIndex = Clusters()[TileIndex].LightIndices[i];
-        // Cluster contents can be stale after a scene switch; an index past the live count reads
-        // beyond Lights[MAX_LIGHTS] -> MMU fault in GetLightAt. Skip out-of-range indices.
-        if (LightIndex >= GetNumLights())
-        {
-            continue;
-        }
-        FLight Light      = GetLightAt(LightIndex);
-
-        // Distance cull first on squared distance (cheap), so out-of-range lights skip the sqrt/normalize.
-        float3 LightToFrag = Light.Position - WorldPosition;
-        float  DistSq      = dot(LightToFrag, LightToFrag);
-        if (DistSq >= Light.Radius * Light.Radius)
-        {
-            continue;
-        }
-
-        float  InvDist     = rsqrt(max(DistSq, 1e-8));
-        float3 L           = LightToFrag * InvDist;
-
-        // Cluster membership is conservative: a listed light may light only this pixel's back face,
-        // which contributes zero, so skip the BRDF for it.
-        if (dot(N, L) <= 0.0)
-        {
-            continue;
-        }
-
-        float  DistToLight = DistSq * InvDist;
-
-        Lo += EvaluateLightContribution(Light, Ctx, L, DistToLight);
-    }
-
-    // IBL ambient (see BasePixelPass); mirrored so terrain reflects the same sky cube as meshes.
-    // Skylight-only (no environment) falls back to a flat diffuse ambient fill so terrain isn't black.
-    float3 Ambient;
-    if (HasIBL())
-    {
-        float3 IBLAmbient = EvaluateIBLAmbient(N, V, NdotV_EC, DFG_EC, Albedo, F0, Roughness, Metallic, AO);
-        Ambient = IBLAmbient * GetAmbientLightIntensity();
-    }
-    else
-    {
-        float3 DiffuseColor = Albedo * (1.0 - Metallic);
-        Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * DiffuseColor * AO;
-    }
-    float3 Color = Ambient + Lo + Material.Emissive;
-
-#endif // UNLIT
-
-    // Debug overrides, kept in sync with BasePixelPass.slang so a mode lights up meshes and terrain together.
-    uint DebugMode = Scene().CullData.DebugMode;
-    if (DebugMode != DEBUG_MODE_NONE)
-    {
-        switch (DebugMode)
-        {
-            case DEBUG_MODE_UNLIT:
-                Color = Albedo + Material.Emissive;
-                break;
-            case DEBUG_MODE_MESHLETS:
-                Color = TerrainMeshletDebugColor(Input.MeshletIndex);
-                break;
-            case DEBUG_MODE_WORLD_NORMAL:
-                Color = normalize(Input.NormalWS.xyz) * 0.5 + 0.5;
-                break;
-            case DEBUG_MODE_BASE_COLOR:
-                Color = Albedo;
-                break;
-            case DEBUG_MODE_ROUGHNESS:
-                Color = float3(Roughness, Roughness, Roughness);
-                break;
-            case DEBUG_MODE_METALLIC:
-                Color = float3(Metallic, Metallic, Metallic);
-                break;
-            case DEBUG_MODE_AMBIENT_OCCLUSION:
-                Color = float3(AO, AO, AO);
-                break;
-            case DEBUG_MODE_EMISSIVE:
-                Color = Material.Emissive;
-                break;
-            case DEBUG_MODE_UV:
-                Color = float3(frac(Input.UV), 0.0);
-                break;
-            case DEBUG_MODE_LIGHT_COMPLEXITY:
-            {
-                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = LightComplexityColor(Clusters()[DbgIndex].Count);
-                break;
-            }
-            case DEBUG_MODE_CLUSTER_GRID:
-            {
-                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
-                Color = ClusterDebugColor(DbgIndex, Clusters()[DbgIndex].Count);
-                break;
-            }
-            case DEBUG_MODE_SHADOW_CASCADES:
-                Color = CascadeDebugColorTerrain(WorldPosition, ViewPosition, Color);
-                break;
-            default:
-                break;
-        }
-    }
+    FShadedSurface Shaded = ShadeSurface(Surface, Material);
 
     PSOutput Output;
-    Output.Color  = float4(Color, Alpha);
+    Output.Color  = float4(Shaded.Color, Shaded.Alpha);
     Output.Picker = EntityID;
     return Output;
 }

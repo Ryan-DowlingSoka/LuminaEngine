@@ -28,7 +28,7 @@
     - [Architecture](#architecture)
     - [Editor](#editor)
     - [Performance](#performance)
-    - [Luau Scripting](#luau-scripting)
+    - [C# Scripting](#c-scripting)
   - [Screenshots](#screenshots)
   - [Getting Started](#getting-started)
     - [Requirements](#requirements)
@@ -103,12 +103,15 @@ through the work of motivated contributors who help push the engine forward.
 - Custom memory allocators built on RPMalloc
 - Built-in profiling through Tracy integration
 
-### Luau Scripting
+### C# Scripting
 
-- Full ECS access from Luau: create systems, query entities, modify components
+- C# scripting via LuminaSharp, a CoreCLR host that bundles the .NET 10 runtime
+- EntityScript-based gameplay with full ECS access: `Registry.View` queries,
+  C# entity systems, and component reads and writes
+- Reflection-driven C++ to C# bindings generated automatically by the Reflector
 - Hot-reloadable scripts for iterating on gameplay without recompiling
-- Automatic binding generation: C++ components are exposed to Luau via reflection
-- Built-in Luau script profiling through Tracy
+- High-level gameplay APIs through the `World` facade: Physics, Navigation,
+  Input, Messages, and GameplayTags
 
 ---
 
@@ -170,13 +173,23 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
    Setup.bat
    ```
 
-   This downloads and extracts all external dependencies, persists the
-   `LUMINA_DIR` environment variable, configures git hooks, and generates
-   `Lumina.sln`. No Python is required; it uses the `curl.exe` and `tar.exe`
-   bundled with Windows.
+   Setup shows exactly what it is about to download and asks for confirmation
+   before fetching anything. It downloads one prebuilt dependency bundle
+   (`External.zip`, ~671 MB), verifies it against a SHA-256 hash pinned in this
+   repo (once the maintainer records it, see
+   [`DEPENDENCIES.md`](DEPENDENCIES.md)), persists the `LUMINA_DIR` environment
+   variable, configures git hooks, and generates `Lumina.sln`. No Python is
+   required; it uses the `curl.exe` and `tar.exe` bundled with Windows.
 
-   If the download fails, manually download
-   [External.zip](https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&dl=1),
+   The bundle contains the .NET 10 runtime (C# scripting), LLVM/Clang 19
+   (reflection codegen), the Slang shader compiler, RenderDoc, and Tracy. Each
+   is open source; [`DEPENDENCIES.md`](DEPENDENCIES.md) lists every component
+   with its version, purpose, upstream source, and license, and explains how to
+   fetch them yourself instead of using the bundle.
+
+   To skip the prompt for unattended/CI runs, pass `--yes` (or set
+   `LUMINA_SETUP_YES=1`). If the download fails, manually download
+   [External.zip](https://github.com/MrDrElliot/LuminaEngine/releases/download/external-deps/External.zip),
    extract it into the `LuminaEngine/` folder, then run
    `GenerateProjectFiles.bat`.
 
@@ -346,9 +359,9 @@ Listed alphabetically.
 | GoogleTest | C++ testing framework with assertions, fixtures, and test discovery |
 | ImGui | Immediate-mode GUI for rapid tool development |
 | JoltPhysics | Multi-threaded physics engine with continuous collision detection |
-| Luau | Efficient, optionally-typed scripting language derived from Lua |
 | MeshOptimizer | Mesh optimization for vertex cache, overdraw, and buffer compression |
 | Miniaudio | Single-file audio playback and capture library |
+| .NET Runtime | CoreCLR (.NET 10) bundled as the host for C# (LuminaSharp) scripting |
 | Nlohmann JSON | Modern JSON library with STL compatibility |
 | NVIDIA Aftermath | GPU crash debugging and post-mortem dump analysis |
 | OpenFBX | Lightweight FBX loader for geometry, skeletons, and animation |

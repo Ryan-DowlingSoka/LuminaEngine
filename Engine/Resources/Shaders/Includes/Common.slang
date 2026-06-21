@@ -530,6 +530,8 @@ struct FCullData
 #define DEBUG_MODE_SHADOW_CASCADES      13u
 #define DEBUG_MODE_SHADOW_PENUMBRA      14u
 #define DEBUG_MODE_SSAO                 15u
+#define DEBUG_MODE_MATERIAL_ID          16u
+#define DEBUG_MODE_TRIANGLE_ID          17u
 
 struct FSceneGlobalData
 {

@@ -1,6 +1,4 @@
-#include "Includes/TerrainCommon.slang"
-
-FTerrainPushConstants* Pass() { return GetPassArgs<FTerrainPushConstants>(); }
+#include "Includes/TerrainData.slang"
 
 struct VSOutput
 {
@@ -25,11 +23,11 @@ struct VSOutput
 [shader("vertex")]
 VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_VulkanInstanceID)
 {
-    FTerrainRenderParams TerrainParams = Pass().Params.get();
+    FTerrainRenderParams TerrainParams = TerrainArgs().Params.get();
 
-    FTerrainVisibleMeshlet Vis     = Pass().Visible[InstanceID];
-    FTerrainMeshletInfo    Meshlet = Pass().Meshlets[Vis.MeshletIndex];
-    FTerrainChunkInfo      Chunk   = Pass().Chunks[Meshlet.ChunkIndex];
+    FTerrainVisibleMeshlet Vis     = TerrainArgs().Visible[InstanceID];
+    FTerrainMeshletInfo    Meshlet = TerrainArgs().Meshlets[Vis.MeshletIndex];
+    FTerrainChunkInfo      Chunk   = TerrainArgs().Chunks[Meshlet.ChunkIndex];
 
     const int MeshletQuads = TerrainParams.MeshletQuadSide;
 
@@ -59,7 +57,7 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     SampleY = clamp(SampleY, 0, TerrainParams.Resolution - 1);
 
     float2 HeightUV = (float2(SampleX, SampleY) + 0.5) / float(TerrainParams.Resolution);
-    float  Height   = SampleTexture2DLevel(Pass().HeightmapIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0).r * TerrainParams.MaxHeight;
+    float  Height   = SampleTexture2DLevel(TerrainArgs().HeightmapIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0).r * TerrainParams.MaxHeight;
 
     float  Stride = TerrainParams.TileWorldSize / float(TerrainParams.Resolution - 1);
     float3 WorldPos;
@@ -68,7 +66,7 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     WorldPos.y = TerrainParams.WorldOriginY.x + Height;
 
     // Compute pass packs Normal.xz; recover Y from unit length (hardcoding Y=1 tilts toward +Y, flattening slopes).
-    float4 NormalSample = SampleTexture2DLevel(Pass().NormalIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0);
+    float4 NormalSample = SampleTexture2DLevel(TerrainArgs().NormalIndex, SAMPLER_LINEAR_CLAMP, HeightUV, 0);
     float  Nx = NormalSample.r * 2.0 - 1.0;
     float  Nz = NormalSample.g * 2.0 - 1.0;
     float  Ny = sqrt(saturate(1.0 - Nx * Nx - Nz * Nz));

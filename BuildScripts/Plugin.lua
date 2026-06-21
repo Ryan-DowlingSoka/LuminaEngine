@@ -1,9 +1,8 @@
--- LuminaPlugin() declares a plugin group under Engine/Plugins/ or <Project>/Plugins/; each module is its own SharedLib (Editor module skipped in shipping).
--- The .lplugin descriptor is the runtime source of truth; keep it in sync with the LuminaPluginModule() calls here. See Engine/Plugins/GameplayExtras/ for the layout.
+-- Each plugin module is its own SharedLib. The .lplugin descriptor is the runtime source of truth; keep it in sync with the LuminaPluginModule() calls here.
 
 assert(LuminaConfig, "Plugin.lua: include BuildScripts/Dependencies first")
 
--- Plugin modules delegate to LuminaModule; include it here so LuminaPluginModule works in external game workspaces too.
+-- Include Module.lua so LuminaPluginModule works in external game workspaces too.
 include(path.join(_SCRIPT_DIR, "Module.lua"))
 
 LuminaPlugins = LuminaPlugins or {}
@@ -41,12 +40,12 @@ function LuminaPluginModule(Def)
     Def.PublicIncludeDirs        = Def.PublicIncludeDirs        or {}
     Def.ExtraFiles               = Def.ExtraFiles               or {}
 
-    -- Reflection on by default; most plugins ship reflected types and the Reflector is a no-op when there's nothing to find.
+    -- Reflection on by default; Reflector is a no-op when there's nothing to find.
     if Def.Reflection == nil then
         Def.Reflection = true
     end
 
-    -- Compose effective dependencies: plugin shared + module-specific.
+    -- Effective deps = plugin shared + module-specific.
     local AllDeps = {}
     for _, D in ipairs(Plugin.SharedDependencies) do          table.insert(AllDeps, D) end
     for _, D in ipairs(Def.Dependencies)        do            table.insert(AllDeps, D) end
@@ -60,7 +59,7 @@ function LuminaPluginModule(Def)
 
     table.insert(Plugin.Modules, Def)
 
-    -- Editor-typed modules link against Editor automatically.
+    -- Editor-typed modules link Editor automatically.
     if Def.Type == "Editor" then
         local HasEditorLink = false
         for _, M in ipairs(Def.EditorModuleDependencies) do
@@ -71,7 +70,7 @@ function LuminaPluginModule(Def)
         end
     end
 
-    -- Delegate to LuminaModule for identical force-includes/reflection/EASTL/linking, then steer output and source dirs into the plugin tree.
+    -- Delegate to LuminaModule for force-includes/reflection/EASTL/linking, then steer output and source dirs into the plugin tree.
     LuminaModule({
         Name                     = Def.Name,
         Kind                     = "SharedLib",
@@ -95,21 +94,18 @@ function LuminaPluginModule(Def)
     }
     includedirs { path.join(Plugin.PluginRoot, "Source", Def.Name) }
 
-    -- Route this module's generated C# bindings into the plugin's Scripts/Generated so the per-plugin script
-    -- gather compiles them into the plugin's OWN assembly (not LuminaSharp.dll), and a disabled plugin
-    -- contributes nothing to the engine assembly.
+    -- Generated bindings go to the plugin's Scripts/Generated so they compile into the plugin's OWN assembly, not LuminaSharp.dll.
     csharpbindingsdir(path.join(Plugin.PluginRoot, "Scripts", "Generated"))
 
-    -- Output the module DLL under the plugin's Binaries/<Platform>/, matching FPlugin::ResolveModuleBinaryPath.
+    -- DLL goes under the plugin's Binaries/<Platform>/, matching FPlugin::ResolveModuleBinaryPath.
     targetdir(path.join(Plugin.PluginRoot, "Binaries", LuminaConfig.OutputDirectory))
     objdir   (path.join(Plugin.PluginRoot, "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"))
 
-    -- Monolithic Shipping: plugin StaticLibs go into the engine's Binaries dir so bare-name /WHOLEARCHIVE finds them on the existing LIBPATH. Modular builds still ship each DLL by its descriptor.
+    -- Monolithic Shipping: plugin StaticLibs go into the engine Binaries dir so bare-name /WHOLEARCHIVE finds them on the existing LIBPATH.
     filter "configurations:Shipping"
         targetdir(LuminaConfig.GetTargetDirectory())
     filter {}
 
-    -- Strip Editor-typed modules from the Game platform.
     if Def.Type == "Editor" then
         removeplatforms { "Game" }
     end

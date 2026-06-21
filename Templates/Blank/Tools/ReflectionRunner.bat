@@ -1,8 +1,7 @@
 @echo off
 setlocal
 
-rem Premake prebuild step: regenerate reflection code for this project.
-rem Runs from the project root so premake picks up the project's premake5.lua.
+rem cd to project root so premake finds the project's premake5.lua.
 cd /d "%~dp0.."
 
 if not defined LUMINA_DIR (

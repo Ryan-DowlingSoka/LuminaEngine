@@ -19,9 +19,9 @@ public enum GameplayTagMatch
 /// A world's gameplay event bus (<c>World.Messages</c>): typed messages on hierarchical <see cref="GameplayTag"/>
 /// channels, per-world isolated, game thread only. Four delivery directions share one channel space:
 /// <list type="bullet">
-/// <item><b>Global</b> — <see cref="Broadcast{T}(GameplayTag, T)"/> reaches every listener on the channel (and its
+/// <item><b>Global</b>, <see cref="Broadcast{T}(GameplayTag, T)"/> reaches every listener on the channel (and its
 /// ancestor channels for Partial listeners), anywhere in the world. Fire-and-forget.</item>
-/// <item><b>Up / Down / To</b> — <see cref="SendUp{T}"/> / <see cref="SendDown{T}"/> route along a source entity's
+/// <item><b>Up / Down / To</b>, <see cref="SendUp{T}"/> / <see cref="SendDown{T}"/> route along a source entity's
 /// scene-graph chain; <see cref="SendTo{T}"/> targets one entity. Entity-scoped listeners receive these; a listener
 /// subscribed with a <c>Func&lt;T, bool&gt;</c> handler returns <c>true</c> to halt propagation along the route.</item>
 /// </list>

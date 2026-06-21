@@ -1,5 +1,5 @@
 
--- Prefer LUMINA_DIR (right for game projects); fall back to _MAIN_SCRIPT_DIR so fresh clones work before Setup.bat has run.
+-- Fall back to _MAIN_SCRIPT_DIR so fresh clones work before Setup.bat sets LUMINA_DIR.
 local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 
 include (path.join(LuminaDir, "BuildScripts/Logger"))
@@ -124,7 +124,7 @@ newaction
             CmdLine = CmdLine:gsub("/", "\\")
         end
 
-        -- Dirty-check: skip the expensive libclang parse when no reflected input is newer than the stamp.
+        -- Skip the libclang parse when no reflected input is newer than the stamp.
         local StampFile = path.join(LuminaDir, "Intermediates", "Reflection", ".stamp")
         local function FileTime(P)
             local Stat = os.stat(P)
@@ -160,13 +160,12 @@ newaction
         Logger.Info("Executing Command Line " .. CmdLine)
         local Result = os.execute(CmdLine)
 
-        -- os.execute returns an int exit code or a boolean (older Lua); normalize both.
+        -- os.execute returns an int exit code or a bool (older Lua); handle both.
         local bOk = (Result == 0) or (Result == true)
 
         if bOk then
             Logger.Success("Reflection completed successfully!")
             os.remove("Reflection_Files.json")
-            -- Touch the stamp so subsequent no-change builds short-circuit.
             local StampDir = path.getdirectory(StampFile)
             os.mkdir(StampDir)
             local Touch = io.open(StampFile, "w")
@@ -175,7 +174,7 @@ newaction
                 Touch:close()
             end
         else
-            -- Reflector already emitted MSBuild error lines; fail the action so ReflectionRunner.bat forwards a non-zero exit and the build halts.
+            -- Must exit non-zero so ReflectionRunner.bat forwards it and the build halts.
             Logger.Error("Reflection failed - keeping Reflection_Files.json for debugging")
             os.exit(1)
         end

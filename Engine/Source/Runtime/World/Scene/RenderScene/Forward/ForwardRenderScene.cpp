@@ -323,6 +323,8 @@ namespace Lumina
             FreeBuffer(MeshletDeferListRing[Slot]);
             FreeBuffer(DeferCountRing[Slot]);
             FreeBuffer(SpdCounterRing[Slot]);
+            FreeBuffer(MaterialBinTileBitsRing[Slot]);
+            FreeBuffer(MaterialBinPixelIdRing[Slot]);
         }
 
         // Render-thread-owned terrain / particle GPU state.
@@ -707,11 +709,12 @@ namespace Lumina
                     CullPassLate(CL);
                 }
 
-                // Mesh-task args again so the late view's freshly-emitted InstanceCounts become draws.
-                if (bMeshArgs)
+                // Re-emit only the camera-late view's mesh-task args: the late cull touches just that view's
+                // InstanceCounts; shadow/capture views were finalized by the early conversion above.
+                if (bMeshArgs && CurrentCameraLateView != ~0u)
                 {
                     SCENE_GPU_SCOPE(CL, "Mesh Draw Args (Late)");
-                    ConvertMeshDrawArgs(CL);
+                    ConvertMeshDrawArgs(CL, (int32)CurrentCameraLateView);
                 }
 
                 // VisBuffer phase 2: rasterize the disoccluded meshlets, loading + accumulating into the
@@ -2308,6 +2311,7 @@ namespace Lumina
         uint8               bMasked          : 1;
         uint8               bAdditive        : 1;
         uint8               bDrawInDepthPass : 1;
+        uint8               bTwoSided        : 1;
     };
 
     // Resolve the material-pure portion of a slot, cached per-thread by material so the
@@ -2402,6 +2406,7 @@ namespace Lumina
         R.bTranslucent       = M.bTranslucent;
         R.bMasked            = M.bMasked;
         R.bAdditive          = M.bAdditive;
+        R.bTwoSided          = M.bTwoSided;
         R.bDrawInDepthPass   = MeshComponent.bUseAsOccluder && !M.bTranslucent && bSignificantOccluder;
         return R;
     }
@@ -2585,6 +2590,7 @@ namespace Lumina
                 .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
                 .bMasked          = (Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
+                .bTwoSided        = (Slot.bTwoSided        ? 1u : 0u),
             };
             // CPU LOD pick replaces LOD 0; smaller ranges directly cut cull-pass cost.
             const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
@@ -2697,6 +2703,7 @@ namespace Lumina
                 .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
                 .bMasked          = (Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
+                .bTwoSided        = (Slot.bTwoSided        ? 1u : 0u),
             };
             const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
             const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
@@ -2815,6 +2822,7 @@ namespace Lumina
                 .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
                 .bMasked          = (Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
+                .bTwoSided        = (Slot.bTwoSided        ? 1u : 0u),
             };
             const uint32 LODIndex       = ResolveSurfaceLOD(Surface, -1, RenderSettings.bUseLODs, DistanceOverRadius);
             const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
@@ -2963,6 +2971,7 @@ namespace Lumina
                 .bTranslucent     = (uint32)(Slot.bTranslucent     ? 1u : 0u),
                 .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
+                .bTwoSided        = (uint32)(Slot.bTwoSided        ? 1u : 0u),
             };
             // Skinned bounds are bind-pose; BoundsScale handles outliers.
             const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
@@ -3143,6 +3152,7 @@ namespace Lumina
                     NewCmd.bTranslucent        = LocalBatch.Key.bTranslucent;
                     NewCmd.bMasked             = LocalBatch.Key.bMasked;
                     NewCmd.bAdditive           = LocalBatch.Key.bAdditive;
+                    NewCmd.bTwoSided           = LocalBatch.Key.bTwoSided;
                 }
                 LocalBatch.GlobalBatchIndex = GlobalIdx;
             }
@@ -4984,7 +4994,6 @@ namespace Lumina
         DepthDesc.DepthMode = RHI::EDepthFlags::Read | RHI::EDepthFlags::Write;
         DepthDesc.DepthTest = RHI::EOp::Greater;
         RHI::CmdSetDepthStencilState(CL, GetOrCreateDepthState(DepthDesc));
-        RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
 
         const uint32 ViewBase = ViewIndex * NumDrawsPerView;
 
@@ -5003,7 +5012,11 @@ namespace Lumina
             Key.DepthFormat = EFormat::D32;
             Key.ColorTargets.push_back({ VisRT.Desc.Format, {} });
             RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
-            RHI::CmdSetCullMode(CL, RHI::ECullMode::Back);
+
+            // Two-sided materials must rasterize both faces into the VisBuffer (the deferred pass flips the
+            // shading normal for back faces); single-sided keep back-face culling. Cull mode is dynamic and
+            // persists across binds, so this is the only cull-mode set the pass needs.
+            RHI::CmdSetCullMode(CL, Batch.bTwoSided ? RHI::ECullMode::None : RHI::ECullMode::Back);
 
             if (bUseMesh)
             {
@@ -5533,10 +5546,26 @@ namespace Lumina
         Barriers::RasterToRead(CL);
     }
 
-    void FForwardRenderScene::ConvertMeshDrawArgs(RHI::FCmdListH CL)
+    void FForwardRenderScene::ConvertMeshDrawArgs(RHI::FCmdListH CL, int32 SingleViewIndex)
     {
         const FFrameData& Frame = *RenderFrame;
-        const uint32 Count = (uint32)Frame.Views.CullViews.size() * Frame.Views.NumDrawsPerView;
+        const uint32 NumDrawsPerView = Frame.Views.NumDrawsPerView;
+        const uint32 NumViews        = (uint32)Frame.Views.CullViews.size();
+
+        uint32 Count;
+        uint32 StartIndex;
+        if (SingleViewIndex >= 0)
+        {
+            // Late call: only the camera-late view's InstanceCounts changed, so reconvert just its slice.
+            Count      = NumDrawsPerView;
+            StartIndex = (uint32)SingleViewIndex * NumDrawsPerView;
+        }
+        else
+        {
+            Count      = NumViews * NumDrawsPerView;
+            StartIndex = 0u;
+        }
+
         if (Count == 0)
         {
             return;
@@ -5555,12 +5584,12 @@ namespace Lumina
             RHI::GPUPtr SrcArgs;
             RHI::GPUPtr DstArgs;
             uint32      Count;
-            uint32      _Pad;
+            uint32      StartIndex;
         } PC;
-        PC.SrcArgs = GetIndirectArgs().GetAddress();
-        PC.DstArgs = GetMeshDrawArgs().GetAddress();
-        PC.Count   = Count;
-        PC._Pad    = 0u;
+        PC.SrcArgs    = GetIndirectArgs().GetAddress();
+        PC.DstArgs    = GetMeshDrawArgs().GetAddress();
+        PC.Count      = Count;
+        PC.StartIndex = StartIndex;
 
         const uint32 Groups = (Count + 63u) / 64u;
         RHI::CmdDispatch(CL, MakeArgs(PC), Groups, 1u, 1u);
@@ -5580,8 +5609,9 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Deferred Material Pass", tracy::Color::Red);
 
-        static const FShaderEntry* const FullscreenVS = FShaderLibrary::Get("FullscreenQuad.slang");
-        if (!FullscreenVS)
+        static const FShaderEntry* const TileVS    = FShaderLibrary::Get("DeferredMaterialTileVS.slang");
+        static const FShaderEntry* const ClassifyCS = FShaderLibrary::Get("ClassifyMaterialTiles.slang");
+        if (!TileVS || !ClassifyCS)
         {
             return;
         }
@@ -5590,24 +5620,127 @@ namespace Lumina
         const FSceneImage& ColorRT  = GetSceneColorRT();
         const FSceneImage& PickerRT = GetPickerRT();
         const FUIntVector2 Extent   = GetNamedImage(ENamedImage::HDR).GetExtent();
+        const uint32 ScreenW = Extent.x;
+        const uint32 ScreenH = Extent.y;
 
-        // Sky/environment already populated HDR for background pixels; the deferred passes overwrite the
+        // Material binning. Each opaque material with a deferred shader gets a DENSE slot (0..N-1); the
+        // classify pass writes each covered pixel's owning MaterialIndex and sets the owning slot's bit in
+        // that pixel's tile bitmask. The per-material draw then rasterizes ONLY the tiles its slot bit is
+        // set in (the tile-quad VS self-culls the rest) and shades only the pixels whose recorded
+        // MaterialIndex matches it. This replaces the old per-material fullscreen reshade (O(materials x
+        // pixels)) with O(pixels) classify + tile-local shading.
+        BinnedDeferredSlotMaterials.clear();
+        uint32 MaxMaterialIndex = 0u;
+        for (uint32 Idx : OpaqueDrawList)
+        {
+            const FMeshDrawCommand& Batch = DrawCommands[Idx];
+            if (!Batch.DeferredShader)
+            {
+                continue;
+            }
+            BinnedDeferredSlotMaterials.push_back(Idx);
+            MaxMaterialIndex = Math::Max(MaxMaterialIndex, Batch.MaterialIndex);
+        }
+
+        const uint32 NumSlots = (uint32)BinnedDeferredSlotMaterials.size();
+
+        const FSceneImage& ColorImg  = ColorRT;
+        const FSceneImage& PickerImg = PickerRT;
+
+        // Sky/environment already populated HDR for background pixels; the deferred draws overwrite the
         // covered pixels and discard the rest. Picker is cleared here (it had no VisBuffer-stage write).
         RHI::FRenderAttachment Colors[2];
-        Colors[0].Texture        = ColorRT.Texture;
+        Colors[0].Texture        = ColorImg.Texture;
         Colors[0].ResolveTexture = GetSceneColorResolve();
         Colors[0].LoadOp         = RenderSettings.bHasEnvironment ? RHI::ELoadOp::Load : RHI::ELoadOp::Clear;
         Colors[0].StoreOp        = RHI::EStoreOp::Store;
-        Colors[1].Texture        = PickerRT.Texture;
+        Colors[1].Texture        = PickerImg.Texture;
         Colors[1].ResolveTexture = GetPickerResolve();
         Colors[1].LoadOp         = RHI::ELoadOp::Clear;
         Colors[1].StoreOp        = RHI::EStoreOp::Store;
 
-        // No depth attachment: the VisBuffer already resolved visibility, so each covered pixel is shaded
-        // once by whichever material owns it (others discard).
         RHI::FRenderPassDesc Pass;
         Pass.ColorAttachments = TSpan<const RHI::FRenderAttachment>(Colors, 2);
         Pass.RenderArea       = Extent;
+
+        // No deferred-drawing materials (e.g. terrain-only scene): still run the clear-only pass so Picker
+        // is cleared and HDR keeps its background/sky.
+        if (NumSlots == 0u || ScreenW == 0u || ScreenH == 0u)
+        {
+            RHI::CmdBeginRenderPass(CL, Pass);
+            RHI::CmdEndRenderPass(CL);
+            Barriers::RasterToRead(CL);
+            return;
+        }
+
+        // 16x16 pixel tiles: coarse enough to keep the instanced tile count and bitmask small, fine enough
+        // that per-tile material over-inclusion (a tile drawn for a material that only borders it) stays cheap.
+        constexpr uint32 TileSizePx = 16u;
+        const uint32 TileCountX   = (ScreenW + TileSizePx - 1u) / TileSizePx;
+        const uint32 TileCountY   = (ScreenH + TileSizePx - 1u) / TileSizePx;
+        const uint32 TotalTiles   = TileCountX * TileCountY;
+        const uint32 TileWordCount = (NumSlots + 31u) / 32u;
+
+        // Dense MaterialIndex -> slot lookup (one material == one opaque batch, so this is 1:1). Uploaded to
+        // the transient ring; the classify shader reads it by device address.
+        BinnedDeferredSlotByMaterial.assign((size_t)MaxMaterialIndex + 1u, 0xFFFFFFFFu);
+        for (uint32 Slot = 0; Slot < NumSlots; ++Slot)
+        {
+            const FMeshDrawCommand& Batch = DrawCommands[BinnedDeferredSlotMaterials[Slot]];
+            BinnedDeferredSlotByMaterial[Batch.MaterialIndex] = Slot;
+        }
+        const RHI::GPUPtr SlotByMaterialAddr =
+            RHI::Core::CopyTransientArray(BinnedDeferredSlotByMaterial.data(), BinnedDeferredSlotByMaterial.size());
+
+        // Size the binning scratch (device-address only, per-frame ring).
+        const uint64 TileBitsSize = Math::Max<uint64>(sizeof(uint32), (uint64)TotalTiles * (uint64)TileWordCount * sizeof(uint32));
+        const uint64 PixelIdSize  = Math::Max<uint64>(sizeof(uint32), (uint64)ScreenW * (uint64)ScreenH * sizeof(uint32));
+        ResizeBufferIfNeeded(MaterialBinTileBitsRing[CurrentFrameSlot], TileBitsSize, 1.2f, MaterialBinTileBitsRingLowUsage[CurrentFrameSlot]);
+        ResizeBufferIfNeeded(MaterialBinPixelIdRing[CurrentFrameSlot], PixelIdSize, 1.2f, MaterialBinPixelIdRingLowUsage[CurrentFrameSlot]);
+
+        const FSceneBuffer TileBits = GetMaterialBinTileBits();
+        const FSceneBuffer PixelId  = GetMaterialBinPixelId();
+
+        const uint32 DrawListCount = (uint32)Frame.Views.CullViews.size() * Frame.Views.TotalMeshletBound;
+
+        // Classify: zero the bitmask, then one thread per pixel resolves + records ownership and tiles.
+        RHI::CmdMemset(CL, TileBits.Ptr, TileBitsSize, 0u);
+        Barriers::TransferToAll(CL);
+
+        struct FClassifyPC
+        {
+            uint32      VisBufferIndex;
+            uint32      TileCountX;
+            uint32      TileSizePx;
+            uint32      TileWordCount;
+            uint32      DrawListCount;
+            uint32      ScreenW;
+            uint32      ScreenH;
+            uint32      SlotByMaterialCount;
+            RHI::GPUPtr TileBitsAddr;
+            RHI::GPUPtr MaterialIdAddr;
+            RHI::GPUPtr SlotByMaterialAddr;
+        } ClassifyPC = {};
+        static_assert(sizeof(FClassifyPC) == 56, "FClassifyPC must match ClassifyMaterialTiles.slang FClassifyArgs.");
+        ClassifyPC.VisBufferIndex      = (uint32)VisRT.GetResourceID();
+        ClassifyPC.TileCountX          = TileCountX;
+        ClassifyPC.TileSizePx          = TileSizePx;
+        ClassifyPC.TileWordCount       = TileWordCount;
+        ClassifyPC.DrawListCount       = DrawListCount;
+        ClassifyPC.ScreenW             = ScreenW;
+        ClassifyPC.ScreenH             = ScreenH;
+        ClassifyPC.SlotByMaterialCount = (uint32)BinnedDeferredSlotByMaterial.size();
+        ClassifyPC.TileBitsAddr        = TileBits.GetAddress();
+        ClassifyPC.MaterialIdAddr      = PixelId.GetAddress();
+        ClassifyPC.SlotByMaterialAddr  = SlotByMaterialAddr;
+
+        RHI::CmdSetPipeline(CL, GetOrCreateComputePipeline(ClassifyCS));
+        const uint32 ClassifyX = RenderUtils::GetGroupCount(ScreenW, 8u);
+        const uint32 ClassifyY = RenderUtils::GetGroupCount(ScreenH, 8u);
+        RHI::CmdDispatch(CL, MakeArgs(ClassifyPC), ClassifyX, ClassifyY, 1u);
+
+        // Tile bitmask + per-pixel ids feed the raster draws below.
+        Barriers::ComputeToAll(CL);
 
         RHI::CmdBeginRenderPass(CL, Pass);
         SetViewportScissor(CL, Extent);
@@ -5615,20 +5748,28 @@ namespace Lumina
         RHI::CmdSetCullMode(CL, RHI::ECullMode::None);
 
         // Layout overlays FDBufferPushConstants on offsets 0-12 so ShadeSurface's ApplyDBuffer reads the
-        // decal indices from this same push constant; MaterialIndex follows.
+        // decal indices from this same push constant; MaterialIndex follows. Tile-binning fields trail it
+        // and must stay byte-identical with DeferredMaterial.slang/DeferredMaterialTileVS.slang.
         struct FDeferredPushConstants
         {
-            uint32 VisBufferIndex;
-            uint32 DBufferAIndex;
-            uint32 DBufferBIndex;
-            uint32 DBufferCIndex;
-            uint32 MaterialIndex;
-            uint32 DrawListCount;
+            uint32      VisBufferIndex;
+            uint32      DBufferAIndex;
+            uint32      DBufferBIndex;
+            uint32      DBufferCIndex;
+            uint32      MaterialIndex;
+            uint32      DrawListCount;
+            uint32      SlotIndex;
+            uint32      TileCountX;
+            uint32      TileSizePx;
+            uint32      TileWordCount;
+            uint32      ScreenW;
+            uint32      ScreenH;
+            RHI::GPUPtr TileBitsAddr;
+            RHI::GPUPtr MaterialIdAddr;
         } PC = {};
+        static_assert(sizeof(FDeferredPushConstants) == 64, "FDeferredPushConstants must match DeferredMaterial.slang FDeferredPassArgs.");
         PC.VisBufferIndex = (uint32)VisRT.GetResourceID();
-        // VisBuffer slots span both camera views (early + late); the deferred clamp bounds against the
-        // whole MeshletDrawList (NumViews * TotalMeshletBound).
-        PC.DrawListCount  = (uint32)Frame.Views.CullViews.size() * Frame.Views.TotalMeshletBound;
+        PC.DrawListCount  = DrawListCount;
         if (Frame.Primitives.DecalExtracts.empty())
         {
             PC.DBufferAIndex = 0xFFFFFFFFu;
@@ -5641,26 +5782,31 @@ namespace Lumina
             PC.DBufferBIndex = (uint32)GetNamedImage(ENamedImage::DBufferB).GetResourceID();
             PC.DBufferCIndex = (uint32)GetNamedImage(ENamedImage::DBufferC).GetResourceID();
         }
+        PC.TileCountX     = TileCountX;
+        PC.TileSizePx     = TileSizePx;
+        PC.TileWordCount  = TileWordCount;
+        PC.ScreenW        = ScreenW;
+        PC.ScreenH        = ScreenH;
+        PC.TileBitsAddr   = TileBits.GetAddress();
+        PC.MaterialIdAddr = PixelId.GetAddress();
 
-        // One fullscreen pass per opaque material; each shades only its own pixels (classify + discard).
-        for (uint32 Idx : OpaqueDrawList)
+        // One tile-quad instanced draw per opaque material; the VS self-culls tiles the material doesn't
+        // cover, so a material only touches the pixels it actually owns.
+        for (uint32 Slot = 0; Slot < NumSlots; ++Slot)
         {
-            const FMeshDrawCommand& Batch = DrawCommands[Idx];
-            if (!Batch.DeferredShader)
-            {
-                continue;
-            }
+            const FMeshDrawCommand& Batch = DrawCommands[BinnedDeferredSlotMaterials[Slot]];
 
             FGraphicsPipelineKey Key;
-            Key.VS          = FullscreenVS;
+            Key.VS          = TileVS;
             Key.PS          = Batch.DeferredShader;
             Key.SampleCount = MSAASampleCount;
-            Key.ColorTargets.push_back({ ColorRT.Desc.Format, {} });
-            Key.ColorTargets.push_back({ PickerRT.Desc.Format, {} });
+            Key.ColorTargets.push_back({ ColorImg.Desc.Format, {} });
+            Key.ColorTargets.push_back({ PickerImg.Desc.Format, {} });
             RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
 
             PC.MaterialIndex = Batch.MaterialIndex;
-            RHI::CmdDraw(CL, MakeArgs(PC), 3, 1, 0, 0);
+            PC.SlotIndex     = Slot;
+            RHI::CmdDraw(CL, MakeArgs(PC), 6, TotalTiles, 0, 0);
         }
 
         RHI::CmdEndRenderPass(CL);
@@ -6826,6 +6972,9 @@ namespace Lumina
             Key.PS          = PixelShader;
             Key.SampleCount = MSAASampleCount;
             Key.DepthFormat = EFormat::D32;
+            // Terrain binds FTerrainPushConstants (not the DBuffer overlay) and has no SSAO input, so it
+            // specializes ShadeSurface's decal + AO blocks off; they dead-strip, matching terrain's look.
+            Key.ShadingFeatures = SF_DebugViews;
             Key.ColorTargets.push_back({ ColorRT.Desc.Format, {} });
             Key.ColorTargets.push_back({ PickerRT.Desc.Format, {} });
             RHI::CmdSetPipeline(CL, GetOrCreatePipeline(Key));
@@ -9483,7 +9632,8 @@ namespace Lumina
         Hash::HashCombine(Seed, Key.MS ? Key.MS->PipelineHash() : 0ull);
         Hash::HashCombine(Seed, ((uint64)Key.Topology) | ((uint64)Key.bWireframe << 8) |
                                 ((uint64)Key.bAlphaToCoverage << 9) | ((uint64)Key.SampleCount << 16) |
-                                ((uint64)Key.DepthFormat << 24) | ((uint64)Key.PassVariant << 32));
+                                ((uint64)Key.DepthFormat << 24) | ((uint64)Key.PassVariant << 32) |
+                                ((uint64)Key.ShadingFeatures << 40));
         for (const RHI::FColorTarget& Target : Key.ColorTargets)
         {
             const RHI::FBlendDesc& B = Target.Blend;
@@ -9511,18 +9661,25 @@ namespace Lumina
         Desc.bAlphaToCoverage = Key.bAlphaToCoverage;
         Desc.SampleCount      = Key.SampleCount;
         Desc.DepthFormat      = Key.DepthFormat;
-        Desc.ColorTargets     = TSpan<const RHI::FColorTarget>(Key.ColorTargets.data(), Key.ColorTargets.size());
+        Desc.ColorTargets     = TSpan(Key.ColorTargets.data(), Key.ColorTargets.size());
 
         const RHI::FShaderSource PSSource = Key.PS ? Key.PS->Source() : RHI::FShaderSource{};
 
-        // EPass spec constant (id 0) selects the geometry pass inside the merged MeshletVertex.slang.
-        const RHI::FSpecializationConstant PassConst
+        // Spec constants: id 0 = EPass (geometry pass inside the merged MeshletVertex.slang); ids 1-3 =
+        // ShadeSurface feature gates (DEBUG_VIEWS/DECALS/SSAO). Shaders that don't declare an id ignore it,
+        // so the same set is fed uniformly to every pipeline (matching the existing EPass-only behavior).
+        auto MakeUInt = [](uint32 Id, uint32 Value) -> RHI::FSpecializationConstant
         {
-            .ConstantID = 0,
-            .AsInt      = (uint64)Key.PassVariant,
-            .Type       = RHI::ESpecializationConstantType::UInt32,
+            return RHI::FSpecializationConstant{ .ConstantID = Id, .AsInt = (uint64)Value, .Type = RHI::ESpecializationConstantType::UInt32 };
         };
-        const TSpan<const RHI::FSpecializationConstant> Consts(&PassConst, 1);
+        const RHI::FSpecializationConstant SpecConsts[] =
+        {
+            MakeUInt(0, (uint32)Key.PassVariant),
+            MakeUInt(1, (Key.ShadingFeatures & SF_DebugViews) ? 1u : 0u),
+            MakeUInt(2, (Key.ShadingFeatures & SF_Decals)     ? 1u : 0u),
+            MakeUInt(3, (Key.ShadingFeatures & SF_SSAO)       ? 1u : 0u),
+        };
+        const TSpan<const RHI::FSpecializationConstant> Consts(SpecConsts, 4);
         RHI::FPipelineH Pipeline = Key.MS
             ? RHI::CreateMeshShaderPipeline(RHI::FShaderSource{}, Key.MS->Source(), PSSource, Desc, Consts)
             : RHI::CreateGraphicsPipeline(Key.VS->Source(), PSSource, Desc, Consts);

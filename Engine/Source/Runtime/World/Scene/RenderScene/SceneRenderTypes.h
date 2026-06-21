@@ -83,7 +83,9 @@ namespace Lumina
         ShadowCascades      = 13,
         ShadowPenumbra      = 14,
         SSAO                = 15,
-        Num                 = 16,
+        MaterialID          = 16,
+        TriangleID          = 17,
+        Num                 = 18,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
@@ -106,6 +108,8 @@ namespace Lumina
             case ERenderSceneDebugFlags::ShadowCascades:    return "Shadow Cascades";
             case ERenderSceneDebugFlags::ShadowPenumbra:    return "Shadow Penumbra";
             case ERenderSceneDebugFlags::SSAO:              return "SSAO";
+            case ERenderSceneDebugFlags::MaterialID:        return "Material ID";
+            case ERenderSceneDebugFlags::TriangleID:        return "Triangle ID";
             default:                                        return "Lit";
         }
     }

@@ -1,4 +1,4 @@
--- Canonical workspace-scoped build settings; engine and game workspaces both call LuminaWorkspaceSettings() for identical preprocessor state.
+-- Workspace-scoped build settings shared by engine and game workspaces.
 -- ABI-affecting defines (LUA_*TAG limits, RMLUI_STATIC_LIB, NOMINMAX) must live here and nowhere else.
 
 assert(LuminaConfig, "Workspace.lua must be included after BuildScripts/Dependencies")
@@ -16,14 +16,14 @@ function LuminaWorkspaceSettings(Opts)
         enableunitybuild "Off"
         fastuptodate "On"
         multiprocessorcompile "On"
-        -- AVX (not AVX2): AVX2 would #UD-crash at launch on pre-Haswell/pre-Zen CPUs. Keep in sync with /arch, __AVX__, and GameProject/Module vectorextensions.
+        -- AVX not AVX2 (AVX2 crashes on older CPUs); keep in sync with /arch, __AVX__, and GameProject/Module vectorextensions.
         vectorextensions "AVX"
 
         if Opts.StartProject then
             startproject(Opts.StartProject)
         end
 
-        -- First-listed configuration is the .sln default; engine stays Debug-first, game projects override to Development-first.
+        -- First-listed configuration is the .sln default.
         configurations(Opts.Configurations or { "Debug", "Development", "Shipping" })
         platforms { "Editor", "Game" }
         defaultplatform "Editor"
@@ -55,7 +55,7 @@ function LuminaWorkspaceSettings(Opts)
             "LUA_UTAG_LIMIT=2000",
             "LUA_LUTAG_LIMIT=2000",
 
-            -- Tracy/Validation/Aftermath defines are applied per-config below via LuminaOptions, not here.
+            -- Tracy/Validation/Aftermath defines are applied per-config below, not here.
 
             'LUMINA_SYSTEM_NAME=\"%{LuminaConfig.GetSystem()}\"',
             'LUMINA_ARCH_NAME=\"%{LuminaConfig.GetArchitecture()}\"',
@@ -66,10 +66,10 @@ function LuminaWorkspaceSettings(Opts)
 
         disablewarnings
         {
-            "4251", -- DLL-interface warning
-            "4275", -- Non-DLL-interface base class
-            "4244", -- Precision loss warnings
-            "4267", -- Precision loss warnings
+            "4251", -- DLL-interface
+            "4275", -- non-DLL-interface base class
+            "4244", -- precision loss
+            "4267", -- precision loss
         }
 
         filter "kind:SharedLib"
@@ -113,14 +113,13 @@ function LuminaWorkspaceSettings(Opts)
             incrementallink "On"
             optimize "Off"
             symbols "On"
-            -- /Z7 embeds debug info in the .obj (no mspdbsrv serialization under /MP); pairs with /DEBUG:FASTLINK.
+            -- c7 (/Z7) embeds debug info in the .obj (no mspdbsrv serialization under /MP).
             debugformat "c7"
             editandcontinue "Off"
             runtime "Debug"
             defines { "LE_DEBUG", "LUMINA_DEBUG", "_DEBUG", "DEBUG" }
 
-        -- FASTLINK is linker-only; scoping to non-StaticLib avoids LNK4044 spam
-        -- on third-party static libs (lib.exe ignores it).
+        -- FASTLINK is linker-only; scope off StaticLib or lib.exe spams LNK4044.
         filter { "configurations:Debug", "kind:not StaticLib" }
             linkoptions { "/DEBUG:FASTLINK" }
 
@@ -129,8 +128,7 @@ function LuminaWorkspaceSettings(Opts)
             optimize "Speed"
             symbols "On"
             runtime "Release"
-            -- LTO turns every relink into a whole-program codegen pass; engine
-            -- programmers iterate in Development, so keep incremental link.
+            -- Keep incremental link; LTO makes every relink a whole-program codegen pass.
             linktimeoptimization "Off"
             incrementallink "On"
             debugformat "c7"
@@ -147,25 +145,24 @@ function LuminaWorkspaceSettings(Opts)
             symbols "Off"
             runtime "Release"
             incrementallink "Off"
-            -- /Gy: function-level COMDATs so /OPT:REF can strip unused functions
-            -- at function (not object-file) granularity.
+            -- /Gy: function-level COMDATs so /OPT:REF can strip unused functions.
             buildoptions { "/Gy" }
             -- LUMINA_MONOLITHIC strips API dllexport/import and makes IMPLEMENT_MODULE register into a static table; pairs with the SharedLib->StaticLib flip.
             defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING", "LUMINA_MONOLITHIC" }
             removedefines { "JPH_DEBUG_RENDERER" }
 
-        -- /OPT:REF drops unreferenced code/data, /OPT:ICF folds identical COMDATs; scoped off StaticLib to avoid lib.exe LNK4044.
+        -- /OPT:REF drops unreferenced code/data, /OPT:ICF folds identical COMDATs; scope off StaticLib to avoid lib.exe LNK4044.
         filter { "configurations:Shipping", "kind:not StaticLib" }
             linkoptions { "/OPT:REF", "/OPT:ICF" }
 
         filter {}
 
-        -- Optional-feature defines, added only in configs where each is active (see BuildConfig.lua); links/DLL copies handled in Module.lua and Options.LinkAftermath.
+        -- Optional-feature defines, added only in configs where each is active (see BuildConfig.lua).
         ApplyLuminaFeatureDefines()
 end
 
 
--- Apply each optional feature's defines in exactly the configs LuminaOptions marks active.
+-- Apply each optional feature's defines only in the configs LuminaOptions marks active.
 function ApplyLuminaFeatureDefines()
     local function Feature(name, defs)
         local fstr = LuminaOptions.FilterFor(name)
@@ -175,30 +172,25 @@ function ApplyLuminaFeatureDefines()
         filter {}
     end
 
-    -- Tracy profiler. TRACY_ALLOW_SHADOW_WARNING only matters while Tracy
-    -- headers compile, so it travels with the rest of the Tracy define set.
+    -- Tracy profiler.
     Feature("Tracy",
     {
         "LUMINA_WITH_TRACY",
         "TRACY_ENABLE",
         "TRACY_CALLSTACK",
         "TRACY_ON_DEMAND",
-        -- Fiber zone tracking: the job scheduler brackets each fiber switch with TracyFiberEnter/Leave so
-        -- zones stay attributed to the migrating fiber, not the OS worker (else "zone ended twice").
+        -- TRACY_FIBERS: scheduler brackets fiber switches with TracyFiberEnter/Leave or zones double-end.
         "TRACY_FIBERS",
         "TRACY_ALLOW_SHADOW_WARNING",
         "RMLUI_TRACY_PROFILING",
     })
 
-    -- Vulkan validation layers. Consumed by RenderManager to flip on the
-    -- validation/synchronization layers at device creation.
+    -- Vulkan validation/synchronization layers.
     Feature("Validation", { "LUMINA_WITH_VALIDATION" })
 
-    -- NVIDIA Aftermath crash dumps. The import lib + DLL copy are wired by
-    -- Options.LinkAftermath in the Runtime/Editor modules.
+    -- NVIDIA Aftermath crash dumps; import lib + DLL copy wired by Options.LinkAftermath.
     Feature("Aftermath", { "WITH_AFTERMATH" })
 
-    -- Verbose logging (LOG_TRACE/DEBUG/INFO). When inactive, those macros
-    -- compile to nothing; see Log.h.
+    -- Verbose logging; when inactive LOG_TRACE/DEBUG/INFO compile to nothing (see Log.h).
     Feature("VerboseLogging", { "LUMINA_VERBOSE_LOGGING" })
 end

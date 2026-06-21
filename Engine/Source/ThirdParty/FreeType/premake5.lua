@@ -1,7 +1,4 @@
--- FreeType 2.13.3, trimmed to TrueType + OpenType-CFF for RmlUi's
--- FontEngineDefault. See include/freetype/config/ftmodule.h and ftoption.h
--- for the matching vendor edits. Re-adding a module means restoring its
--- src/ subdir, listing the entry .c below, and updating ftmodule.h.
+-- FreeType 2.13.3, trimmed to TrueType + OpenType-CFF; re-adding a module means restoring its src/ subdir, listing its entry .c below, and updating config/ftmodule.h.
 project "FreeType"
     kind "StaticLib"
     warnings "off"
@@ -13,8 +10,6 @@ project "FreeType"
         "src",
     }
 
-    -- FT2_BUILD_LIBRARY: building FreeType itself. Consumers only see the
-    -- public <freetype/...> headers via the include path in Dependencies.lua.
     defines
     {
         "FT2_BUILD_LIBRARY",
@@ -50,7 +45,7 @@ project "FreeType"
         "src/base/ftpfr.c",
         "src/base/ftwinfnt.c",
 
-        -- Format module entries (each .c amalgamates its directory).
+        -- Format modules; each .c amalgamates its directory.
         "src/cff/cff.c",
         "src/sfnt/sfnt.c",
         "src/truetype/truetype.c",

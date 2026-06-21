@@ -479,6 +479,11 @@ namespace Lumina
         FSceneBuffer GetDeferCount()       const { return DeferCountRing[CurrentFrameSlot]; }
         FSceneBuffer GetSpdCounter()       const { return SpdCounterRing[CurrentFrameSlot]; }
 
+        // Deferred material-binning scratch (device-address only): per-tile material bitmask + per-pixel
+        // owning MaterialIndex, both produced by ClassifyMaterialTiles and consumed by the deferred pass.
+        FSceneBuffer GetMaterialBinTileBits() const { return MaterialBinTileBitsRing[CurrentFrameSlot]; }
+        FSceneBuffer GetMaterialBinPixelId()  const { return MaterialBinPixelIdRing[CurrentFrameSlot]; }
+
         // MSAA scratch RT when enabled, else the 1x image; use for the render-target
         // binding on geometry passes that participate in MSAA. 1x image is the resolve target.
         const FSceneImage& GetSceneColorRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR_MS) : GetNamedImage(ENamedImage::HDR); }
@@ -552,7 +557,9 @@ namespace Lumina
         // Deferred material: per opaque material, reconstruct attributes from the VisBuffer and shade.
         void DeferredMaterialPass(RHI::FCmdListH CL);
         // Converts the cull's FDrawIndirectArguments into mesh-task args (GroupCountX = survivors); mesh path only.
-        void ConvertMeshDrawArgs(RHI::FCmdListH CL);
+        // SingleViewIndex >= 0 reconverts only that cull view's draw slice (the late call: only the
+        // camera-late view's InstanceCounts changed). -1 converts every view.
+        void ConvertMeshDrawArgs(RHI::FCmdListH CL, int32 SingleViewIndex = -1);
         // One shadow-map draw of a batch, VS-emulation or mesh path per r.MeshShaders. Shared by all shadow passes.
         void DrawShadowBatch(RHI::FCmdListH CL, const FMeshDrawCommand& Batch, const FShaderEntry* PixelShader,
                              uint32 CullViewIndex, int32 ShadowDataIndex, int32 ShadowViewIndex);
@@ -630,6 +637,17 @@ namespace Lumina
         // Mesh vertex-emulation pass selector; drives the MeshletVertex.slang EPass spec constant (id 0).
         enum class EMeshPass : uint8 { Base = 0, Depth = 1, Shadow = 2 };
 
+        // ShadeSurface feature gates, fed as spec constants ids 1-3 (see SurfaceShading.slang). Default =
+        // all on, identical to the un-specialized shader; the terrain pass clears Decals|SSAO (it binds
+        // neither the DBuffer overlay nor an SSAO input, so those blocks dead-strip).
+        enum EShadingFeature : uint32
+        {
+            SF_DebugViews = 1u << 0,
+            SF_Decals     = 1u << 1,
+            SF_SSAO       = 1u << 2,
+            SF_All        = SF_DebugViews | SF_Decals | SF_SSAO,
+        };
+
         struct FGraphicsPipelineKey
         {
             const FShaderEntry* VS = nullptr;
@@ -641,6 +659,7 @@ namespace Lumina
             uint8           SampleCount = 1;
             EFormat         DepthFormat = EFormat::UNKNOWN;
             EMeshPass       PassVariant = EMeshPass::Base;   // EPass spec constant for the merged VS
+            uint32          ShadingFeatures = SF_All;        // ShadeSurface spec constants (ids 1-3)
             TFixedVector<RHI::FColorTarget, 4> ColorTargets;
         };
 
@@ -684,6 +703,8 @@ namespace Lumina
         TArray<uint32, RHI::kFramesInFlight>                MeshletDrawListRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshDrawArgsRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshletDeferListRingLowUsage = {};
+        TArray<uint32, RHI::kFramesInFlight>                MaterialBinTileBitsRingLowUsage = {};
+        TArray<uint32, RHI::kFramesInFlight>                MaterialBinPixelIdRingLowUsage = {};
         TArray<FSceneImage, (int)ENamedImage::Num>          NamedImages = {};
 
         /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */
@@ -752,6 +773,8 @@ namespace Lumina
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDeferListRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          DeferCountRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          SpdCounterRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          MaterialBinTileBitsRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          MaterialBinPixelIdRing = {};
         
         uint8                                                           CurrentFrameSlot = 0;
 
@@ -770,6 +793,11 @@ namespace Lumina
         TVector<uint32>                         MergeDrawInstanceOffsets;
         TVector<uint32>                         MergeDrawCursor;
         TVector<uint32>                         MergeThreadBoneBase;
+
+        // Deferred material-binning scratch (rebuilt each DeferredMaterialPass; capacity reused):
+        // dense slot -> DrawCommands index, and global MaterialIndex -> dense slot.
+        TVector<uint32>                         BinnedDeferredSlotMaterials;
+        TVector<uint32>                         BinnedDeferredSlotByMaterial;
 
         TVector<uint32>                         ShadowSizeScratch;
         TVector<uint32>                         ShadowSortedScratch;

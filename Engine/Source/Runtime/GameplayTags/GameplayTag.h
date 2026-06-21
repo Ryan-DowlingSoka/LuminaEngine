@@ -7,9 +7,7 @@
 
 namespace Lumina
 {
-    // A hierarchical gameplay tag (Unreal-style), authored as a dotted name like "Ability.Fire.Fireball".
-    // Serializes as its FName; the process-global FGameplayTagRegistry resolves the hierarchy. The editor
-    // draws a searchable tag picker for this type (see FGameplayTagPropertyCustomization).
+    // A hierarchical gameplay tag, authored as a dotted name like "Ability.Fire.Fireball".
     REFLECT()
     struct RUNTIME_API FGameplayTag
     {

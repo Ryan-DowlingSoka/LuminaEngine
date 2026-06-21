@@ -558,6 +558,7 @@ namespace Lumina::RHI
             CmdBarrier(CL,
                 EStageFlags::Compute,
                 EStageFlags::Compute | EStageFlags::VertexShader | EStageFlags::PixelShader |
+                EStageFlags::MeshShader | EStageFlags::TaskShader |
                 EStageFlags::IndirectArguments | EStageFlags::FragmentTests | EStageFlags::Transfer);
         }
 
@@ -566,6 +567,7 @@ namespace Lumina::RHI
             CmdBarrier(CL,
                 EStageFlags::RasterColorOut | EStageFlags::FragmentTests,
                 EStageFlags::PixelShader | EStageFlags::VertexShader | EStageFlags::Compute |
+                EStageFlags::MeshShader | EStageFlags::TaskShader |
                 EStageFlags::RasterColorOut | EStageFlags::FragmentTests);
         }
 

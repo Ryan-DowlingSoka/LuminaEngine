@@ -6,7 +6,7 @@ namespace Engine;
 
 /// <summary>
 /// MVVM test for the composed HUD (Composition/HudComposed.rml): one <see cref="ViewModel"/> drives the
-/// clock, health bar and minimap blip — three separate <c>&lt;template&gt;</c> widgets that all bind to the
+/// clock, health bar and minimap blip, three separate <c>&lt;template&gt;</c> widgets that all bind to the
 /// document's "hud" model. The script only animates view-model properties; the composed widgets update
 /// themselves. Attach to any entity in a game world and press Play.
 /// </summary>

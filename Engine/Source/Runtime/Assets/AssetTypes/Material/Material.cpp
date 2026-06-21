@@ -473,13 +473,12 @@ namespace Lumina
         const char* Token = "$MATERIAL_INPUTS";
         size_t PixelPos = LoadedPixelString.find(Token);
 
-        // Slang rejects typed array initializers, so the blend is expanded into a weighted sum.
+        // Blend via the shared TerrainData.slang helper so the formula isn't duplicated here.
         FString PixelReplacement;
-        PixelReplacement += "\tfloat4 _LayerW = GetTerrainLayerWeights4(HeightUV);\n";
-        PixelReplacement += "\tfloat3 _TerrainAlbedo = float3(0.45, 0.40, 0.30) * _LayerW.x\n";
-        PixelReplacement += "\t                     + float3(0.25, 0.45, 0.15) * _LayerW.y\n";
-        PixelReplacement += "\t                     + float3(0.55, 0.55, 0.55) * _LayerW.z\n";
-        PixelReplacement += "\t                     + float3(0.85, 0.80, 0.60) * _LayerW.w;\n";
+        PixelReplacement += "\tfloat3 _TerrainAlbedo = BlendTerrainLayers4(float3(0.45, 0.40, 0.30),\n";
+        PixelReplacement += "\t                                           float3(0.25, 0.45, 0.15),\n";
+        PixelReplacement += "\t                                           float3(0.55, 0.55, 0.55),\n";
+        PixelReplacement += "\t                                           float3(0.85, 0.80, 0.60), HeightUV);\n";
         PixelReplacement += "\tFMaterialPixelInputs Material;\n";
         PixelReplacement += "\tMaterial.Diffuse               = _TerrainAlbedo;\n";
         PixelReplacement += "\tMaterial.Metallic              = 0.0;\n";

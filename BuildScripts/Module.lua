@@ -27,18 +27,15 @@ local function CollectPublicIncludes(ModuleName, Visited)
 
     local Result = {}
 
-    -- This module's own public includes
     for _, Dir in ipairs(Mod.ResolvedPublicIncludes or {}) do
         table.insert(Result, Dir)
     end
 
-    -- Third-party headers this module exposes through its public API
     local ThirdPartyIncludes = LuminaThirdParty.Resolve(Mod.Dependencies or {})
     for _, Dir in ipairs(ThirdPartyIncludes) do
         table.insert(Result, Dir)
     end
 
-    -- Recurse into module dependencies
     for _, DepName in ipairs(Mod.ModuleDependencies or {}) do
         local DepIncludes = CollectPublicIncludes(DepName, Visited)
         for _, Dir in ipairs(DepIncludes) do
@@ -88,11 +85,9 @@ end
 ---@param Def table Module definition table
 function LuminaModule(Def)
 
-    -- Validate required fields
     assert(Def.Name, "LuminaModule: Name is required")
     assert(Def.Kind, "LuminaModule: Kind is required")
 
-    -- Defaults
     Def.ModuleDependencies          = Def.ModuleDependencies or {}
     Def.EditorModuleDependencies    = Def.EditorModuleDependencies or {}
     Def.Dependencies                = Def.Dependencies or {}
@@ -105,15 +100,13 @@ function LuminaModule(Def)
     Def.FatalWarnings               = Def.FatalWarnings or {}
     Def.ExtraFiles                  = Def.ExtraFiles or {}
 
-    -- Resolve public include directories to absolute paths for propagation
     Def.ResolvedPublicIncludes = {}
     local BasePath = path.getabsolute(".")
     for _, Dir in ipairs(Def.PublicIncludeDirs) do
         table.insert(Def.ResolvedPublicIncludes, ResolveIncludePath(BasePath, Dir))
     end
 
-    -- For non-RootFiles modules, "Source" is implicitly a public include
-    -- so dependents can include this module's headers
+    -- Non-RootFiles modules expose "Source" so dependents can include their headers.
     if not Def.RootFiles then
         table.insert(Def.ResolvedPublicIncludes, path.join(BasePath, "Source"))
     end
@@ -140,7 +133,6 @@ function LuminaModule(Def)
         filter {}
     end
 
-    -- Remove platforms if requested (e.g. Editor removes "Game")
     if Def.RemovePlatforms then
         removeplatforms(Def.RemovePlatforms)
     end
@@ -154,7 +146,7 @@ function LuminaModule(Def)
         forceincludes { "ModuleAPI.h" }
     end
 
-    -- Depend on ReflectionGen (workspace-shared Utility) so the Reflector prebuild fires once per build instead of per reflected module.
+    -- Depend on the shared ReflectionGen Utility so the Reflector prebuild fires once per build, not per reflected module.
     if Def.Reflection then
         dependson { "Reflector", "ReflectionGen" }
         enablereflection "true"
@@ -166,7 +158,7 @@ function LuminaModule(Def)
         "**.lua",
     }
 
-    -- Runtime is structured differently - files are at the root, not in Source/
+    -- Runtime keeps its files at the root, not under Source/.
     if Def.RootFiles then
         FilePatterns = {
             "**.cpp",
@@ -178,7 +170,6 @@ function LuminaModule(Def)
         end
     end
 
-    -- Add reflection generated files for SharedLib modules with reflection
     if Def.Reflection then
         table.insert(FilePatterns, LuminaConfig.GetReflectionFiles())
     end
@@ -215,28 +206,24 @@ function LuminaModule(Def)
         filter {}
     end
 
-    -- Resolve third-party deps once into (includes, defines, links); transitive and deduplicated via the registry.
+    -- Transitive and deduplicated via the registry.
     local ThirdPartyIncludes, ThirdPartyDefines, ThirdPartyLinks =
         LuminaThirdParty.Resolve(Def.Dependencies)
 
     local AllIncludes = {}
 
-    -- Private includes (this module only)
     for _, Dir in ipairs(Def.PrivateIncludeDirs) do
         table.insert(AllIncludes, Dir)
     end
 
-    -- This module's own public includes
     for _, Dir in ipairs(Def.ResolvedPublicIncludes) do
         table.insert(AllIncludes, Dir)
     end
 
-    -- "Source" directory is implicitly included for non-RootFiles modules
     if not Def.RootFiles then
         table.insert(AllIncludes, "Source")
     end
 
-    -- Public includes from all module dependencies (transitive)
     for _, DepName in ipairs(Def.ModuleDependencies) do
         local DepIncludes = CollectPublicIncludes(DepName)
         for _, Dir in ipairs(DepIncludes) do
@@ -244,8 +231,7 @@ function LuminaModule(Def)
         end
     end
 
-    -- Editor module dependencies (same logic, but filtered to Editor platform)
-    -- We add these unconditionally here; the link filter handles platform restriction
+    -- Added unconditionally; the link filter restricts these to the Editor platform.
     for _, DepName in ipairs(Def.EditorModuleDependencies) do
         local DepIncludes = CollectPublicIncludes(DepName)
         for _, Dir in ipairs(DepIncludes) do
@@ -253,7 +239,6 @@ function LuminaModule(Def)
         end
     end
 
-    -- This module's own third-party dependency includes
     for _, Dir in ipairs(ThirdPartyIncludes) do
         table.insert(AllIncludes, Dir)
     end
@@ -262,17 +247,14 @@ function LuminaModule(Def)
 
     local AllDefines = {}
 
-    -- Private defines
     for _, Def_ in ipairs(Def.PrivateDefines) do
         table.insert(AllDefines, Def_)
     end
 
-    -- Public defines required by this module's third-party dependencies
     for _, Def_ in ipairs(ThirdPartyDefines) do
         table.insert(AllDefines, Def_)
     end
 
-    -- Public defines from dependencies (transitive)
     for _, DepName in ipairs(Def.ModuleDependencies) do
         local DepDefines = CollectPublicDefines(DepName)
         for _, Def_ in ipairs(DepDefines) do
@@ -286,18 +268,15 @@ function LuminaModule(Def)
 
     local AllLinks = {}
 
-    -- Module dependencies (other Lumina modules)
     for _, DepName in ipairs(Def.ModuleDependencies) do
         table.insert(AllLinks, DepName)
     end
 
-    -- Third-party / external dependencies (transitive linkable set from the
-    -- registry; header-only libs contribute nothing here)
+    -- Transitive linkable set; header-only libs contribute nothing here.
     for _, Lib in ipairs(ThirdPartyLinks) do
         table.insert(AllLinks, Lib)
     end
 
-    -- Extra raw library links
     for _, Lib in ipairs(Def.ExtraLinks) do
         table.insert(AllLinks, Lib)
     end
@@ -315,8 +294,7 @@ function LuminaModule(Def)
         end
     end
 
-    -- Monolithic Shipping: MSBuild's LinkLibraryDependencies bakes referenced libs' .objs into each .lib, so WHOLEARCHIVE would duplicate them (LNK2005).
-    -- Strip third-party AND cross-module links from SharedLibs; the exe links each module and the union of third-party deps exactly once.
+    -- Monolithic Shipping: strip third-party AND cross-module links from SharedLibs, else WHOLEARCHIVE double-links MSBuild's baked-in .objs (LNK2005). The exe links each exactly once.
     if Def.Kind == "SharedLib" then
         local StripInShipping = {}
         for _, Lib in ipairs(ThirdPartyLinks) do
@@ -335,7 +313,6 @@ function LuminaModule(Def)
         end
     end
 
-    -- Editor-only module dependencies
     if #Def.EditorModuleDependencies > 0 then
         filter "platforms:Editor"
             local EditorLinks = {}

@@ -5,14 +5,10 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
 })
 
--- LuminaSharp.dll (the managed C# API) is loaded at RUNTIME by this exe; it's NOT a C++ link dependency,
--- so a "build/run startup project" (F5/Play) builds only the C++ chain and would skip it -> C# scripting
--- disabled, [NativeCall] unresolved. This edge puts the managed project in the app's solution build graph
--- (correct build order + restore) so building/running Lumina always builds it. A solution clean/reload is
--- needed once after regenerating for the IDE to pick up the new dependency.
+-- Runtime-only dep, not a C++ link; keep it in the build graph or F5/Play skips it and C# scripting silently dies.
 dependson { "LuminaSharp" }
 
--- Monolithic Shipping: every module is StaticLib linked here with /WHOLEARCHIVE so its FStaticModuleRegistration ctor survives the linker.
+-- Monolithic Shipping: link every module with /WHOLEARCHIVE or its FStaticModuleRegistration ctor gets dropped.
 filter "configurations:Shipping"
     local Force = {}
     local Seen = {}
@@ -30,17 +26,17 @@ filter "configurations:Shipping"
         return false
     end
 
-    -- Engine modules; skip Lumina (the exe), non-SharedLib projects, and Game-platform-removed modules (e.g. Editor).
+    -- Engine modules; skip the exe, non-SharedLib, and Game-removed modules (e.g. Editor).
     for Name, Mod in pairs(LuminaModules) do
         if Name ~= "Lumina"
             and Mod.Kind == "SharedLib"
             and not HasRemovedGamePlatform(Mod) then
             ForceLink(Name)
-            links { Name } -- adds to AdditionalDependencies + puts lib dir on LIBPATH
+            links { Name }
         end
     end
 
-    -- Plugin modules. Editor-only modules are removeplatforms { "Game" }.
+    -- Plugin modules; editor-only ones are removeplatforms { "Game" }.
     for _, Plugin in pairs(LuminaPlugins) do
         for _, Mod in ipairs(Plugin.Modules) do
             if Mod.Type ~= "Editor" then
@@ -54,7 +50,7 @@ filter "configurations:Shipping"
         linkoptions(Force)
     end
 
-    -- In Shipping, Module.lua strips per-module third-party links to avoid duplicate .objs; Lumina unions all deps and links them directly.
+    -- Shipping strips per-module third-party links (dup .objs); union all deps and link them here.
     local AllThirdPartyDeps = {}
     local SeenDep = {}
     local function AddDeps(Deps)

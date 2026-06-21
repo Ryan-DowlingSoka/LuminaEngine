@@ -56,7 +56,7 @@ local AUTO_POLICY =
     VerboseLogging = function(cfg) return cfg == "Debug" or cfg == "Development" end,
 }
 
--- Load the user defaults file once. dofile returns the table the file returns.
+-- Load BuildConfig.lua once; returns the table the file returns.
 local function LoadUserDefaults()
     local cfgPath = path.join(_SCRIPT_DIR, "BuildConfig.lua")
     if os.isfile(cfgPath) then
@@ -121,8 +121,8 @@ function LuminaOptions.FilterFor(feature)
 end
 
 
--- Wires Aftermath import lib + optional DLL copy onto the current project, scoped to active configs. Call after LuminaModule().
--- DLL copy is POSTBUILD on purpose: prebuild runs before the linker creates the Binaries dir on a clean build, so the copy silently failed.
+-- Wires Aftermath import lib + optional DLL copy onto the project, scoped to active configs. Call after LuminaModule().
+-- DLL copy MUST be POSTBUILD: on a clean build prebuild runs before the linker creates Binaries, so the copy silently fails.
 function LuminaOptions.LinkAftermath(Opts)
     local fstr = LuminaOptions.FilterFor("Aftermath")
     if not fstr then return end

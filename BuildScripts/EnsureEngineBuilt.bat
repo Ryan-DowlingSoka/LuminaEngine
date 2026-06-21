@@ -1,26 +1,8 @@
 @echo off
 setlocal enableextensions
 
-rem ----------------------------------------------------------------------------
-rem EnsureEngineBuilt.bat <Configuration> [Platform]
-rem
-rem Invoked as a prebuild step from external game projects. If the engine's
-rem Runtime / Editor libraries for <Configuration>+<Platform> are missing
-rem from %LUMINA_DIR%\Binaries\Windows64, this script transparently builds
-rem the engine in the matching config so the game build can link.
-rem
-rem Args:
-rem   %1   Configuration name: Debug | Development | Shipping
-rem   %2   Platform name:      Editor | Game            (default: Editor)
-rem
-rem The engine's MSBuild solution defines two platforms (Workspace.lua:47):
-rem   - Editor : full editor build, includes WITH_EDITOR + tool modules.
-rem   - Game   : runtime-only, smaller surface, suitable for packaged games.
-rem A packaged-game project building against Platform=Game needs Game libs
-rem (not Editor), so the caller MUST pass its own platform through. We
-rem default to Editor only for backwards compatibility with older prebuild
-rem invocations that don't pass an arg.
-rem ----------------------------------------------------------------------------
+rem Prebuild step: builds the engine for <Configuration>+<Platform> if its libs are missing.
+rem Platform=Game needs Game libs, not Editor, so the caller must pass its platform (defaults to Editor).
 
 set "CONFIG=%~1"
 if "%CONFIG%"=="" (
@@ -43,8 +25,7 @@ if not defined LUMINA_DIR (
 set "ENGINE_BIN=%LUMINA_DIR%\Binaries\Windows64"
 set "RUNTIME_LIB=%ENGINE_BIN%\Runtime-%CONFIG%.lib"
 
-rem The Editor lib only exists in Editor-platform builds. Skip the check
-rem under Platform=Game so we don't ping-pong rebuilding looking for it.
+rem Editor lib only exists in Editor builds; skip its check under Game or we ping-pong rebuilding.
 if /I "%PLATFORM%"=="Editor" (
     set "EDITOR_LIB=%ENGINE_BIN%\Editor-%CONFIG%.lib"
     if exist "%RUNTIME_LIB%" if exist "%EDITOR_LIB%" (
@@ -63,17 +44,14 @@ echo  Building Lumina.sln -- one-time cost; subsequent builds reuse the cached l
 echo ===============================================================================
 echo.
 
-rem Locate MSBuild via vswhere. -latest -prerelease finds any VS2022 install
-rem regardless of edition (Community/Pro/Enterprise/BuildTools).
+rem -latest -prerelease matches any VS2022 edition (Community/Pro/Enterprise/BuildTools).
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
     echo [EnsureEngineBuilt] vswhere.exe not found. Install Visual Studio 2022 or build the engine manually.
     exit /b 1
 )
 
-rem Capture vswhere's stderr alongside stdout so a real failure (no MSBuild
-rem component installed, install metadata corrupt) surfaces instead of
-rem silently leaving MSBUILD undefined.
+rem Capture stderr too, else a real vswhere failure silently leaves MSBUILD undefined.
 for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -prerelease -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe 2^>nul`) do (
     set "MSBUILD=%%i"
 )

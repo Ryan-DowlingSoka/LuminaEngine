@@ -1350,7 +1350,7 @@ namespace Lumina
                     }
                 }
 
-                // Deleting a prefab asset deletes its placed instances in every open world (Unreal-style).
+                // Deleting a prefab asset deletes its placed instances in every open world (-style).
                 // Pin it first: dropping the instances' strong SourcePrefab refs could otherwise free the
                 // prefab out from under OnDestroyAsset/DestroyPackage below. Detached subtrees are untracked
                 // and survive automatically.

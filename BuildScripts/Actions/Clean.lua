@@ -5,7 +5,7 @@ include (path.join(LuminaDir, "BuildScripts/Logger"))
 
 local p = premake
 
--- Built-in `clean` leaves Intermediates/ (stale ShaderCache/Reflection output) behind; wrap onWorkspace to purge those trees too.
+-- Built-in clean leaves Intermediates/ behind; wrap onWorkspace to purge it too.
 local CleanAction = p.action.get("clean")
 if CleanAction then
     local BaseOnWorkspace = CleanAction.onWorkspace
@@ -17,8 +17,7 @@ if CleanAction then
 
         local Root = wks.location or _MAIN_SCRIPT_DIR
 
-        -- .vs holds VS's own IntelliSense/build cache; stale entries here
-        -- survive a project regen and produce phantom errors.
+        -- .vs IntelliSense cache survives a regen and produces phantom errors, so purge it too.
         local PurgeDirs =
         {
             path.join(Root, "Intermediates"),
@@ -32,8 +31,7 @@ if CleanAction then
             end
         end
 
-        -- premake-generated Directory.Build.props (CSharpProject.lua) live in the LuminaSharp source
-        -- dirs; purge them so a regen re-emits cleanly and stale restore paths don't linger.
+        -- Purge generated .props so a regen re-emits cleanly and stale restore paths don't linger.
         local PropGlobs =
         {
             path.join(Root, "Engine/Source/LuminaSharp*/**.props"),

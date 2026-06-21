@@ -1725,7 +1725,9 @@ namespace Lumina
                     };
                     static const FViewModeEntry Geometry[] =
                     {
-                        { ERenderSceneDebugFlags::Meshlets, "Meshlets" },
+                        { ERenderSceneDebugFlags::Meshlets,   "Meshlets"    },
+                        { ERenderSceneDebugFlags::MaterialID, "Material ID" },
+                        { ERenderSceneDebugFlags::TriangleID, "Triangle ID" },
                     };
                     static const FViewModeEntry Lighting[] =
                     {

@@ -6,7 +6,7 @@ namespace Engine;
 
 /// <summary>
 /// MVVM test for TWO-WAY binding (Composition/Settings.rml): the form controls write straight back into the
-/// <see cref="ViewModel"/> — typing in a field (<c>data-value</c>) or toggling a checkbox (<c>data-checked</c>)
+/// <see cref="ViewModel"/>, typing in a field (<c>data-value</c>) or toggling a checkbox (<c>data-checked</c>)
 /// runs the C# property setter, which logs the new value. The <c>{{ }}</c> readouts refresh live. Attach to
 /// an entity, press Play, and edit the settings; watch the log.
 /// </summary>

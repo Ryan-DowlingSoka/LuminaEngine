@@ -8,27 +8,21 @@ WarningLevel =
 
 LuminaConfig = 
 {
-    -- Return value warnings
     MissingReturnWarningLevel = WarningLevel.Error,
 
-    -- Unused code warnings
     UnusedVariableWarningLevel = WarningLevel.On,
     UnusedParameterWarningLevel = WarningLevel.Off,
     UnusedFunctionWarningLevel = WarningLevel.On,
 
-    -- Initialization warnings
     UninitializedWarningLevel = WarningLevel.Error,
 
-    -- Type conversion warnings
     ConversionWarningLevel = WarningLevel.On,
     SignConversionWarningLevel = WarningLevel.Off,
 
-    -- Code quality warnings
     ShadowWarningLevel = WarningLevel.On,
     DeprecatedWarningLevel = WarningLevel.On,
     FallthroughWarningLevel = WarningLevel.On,
 
-    -- Critical warnings
     FormatStringWarningLevel = WarningLevel.Error,
     DivideByZeroWarningLevel = WarningLevel.Error,
 }

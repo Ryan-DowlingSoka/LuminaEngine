@@ -43,6 +43,7 @@ namespace Lumina
 		uint32 bTranslucent : 1;
 		uint32 bMasked : 1;
 		uint32 bAdditive : 1;
+		uint32 bTwoSided : 1;
 
 		bool operator == (const FDrawBatchKey& Key) const
 		{
@@ -50,7 +51,8 @@ namespace Lumina
 				&& bDrawInDepthPass == Key.bDrawInDepthPass
 				&& bTranslucent == Key.bTranslucent
 				&& bMasked == Key.bMasked
-				&& bAdditive == Key.bAdditive;
+				&& bAdditive == Key.bAdditive
+				&& bTwoSided == Key.bTwoSided;
 		}
 	};
 
@@ -62,6 +64,7 @@ namespace Lumina
 		Hash::HashCombine(Seed, K.bTranslucent);
 		Hash::HashCombine(Seed, K.bMasked);
 		Hash::HashCombine(Seed, K.bAdditive);
+		Hash::HashCombine(Seed, K.bTwoSided);
 		return Seed;
 	}
 
@@ -82,5 +85,6 @@ namespace Lumina
 		uint32                      		bTranslucent : 1;
 		uint32                      		bMasked : 1;
 		uint32                      		bAdditive : 1;
+		uint32                      		bTwoSided : 1;        // two-sided material: VisBuffer disables back-face cull
 	};
 }

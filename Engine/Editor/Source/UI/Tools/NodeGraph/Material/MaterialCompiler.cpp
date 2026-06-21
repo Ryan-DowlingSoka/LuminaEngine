@@ -2117,12 +2117,9 @@ namespace Lumina
 		FString L2Str = Coerce(L2);
 		FString L3Str = Coerce(L3);
 
-		GetActiveChunk().append("float4 " + OwningNode + "_W = GetTerrainLayerWeights4(HeightUV);\n");
-		GetActiveChunk().append("float3 " + OwningNode + " = "
-			+ L0Str + " * " + OwningNode + "_W.x + "
-			+ L1Str + " * " + OwningNode + "_W.y + "
-			+ L2Str + " * " + OwningNode + "_W.z + "
-			+ L3Str + " * " + OwningNode + "_W.w;\n");
+		// Blend formula lives once, in TerrainData.slang::BlendTerrainLayers4 (shared with the default terrain material).
+		GetActiveChunk().append("float3 " + OwningNode + " = BlendTerrainLayers4("
+			+ L0Str + ", " + L1Str + ", " + L2Str + ", " + L3Str + ", HeightUV);\n");
 	}
 
 	void FMaterialCompiler::GetBoundTextures(TVector<TObjectPtr<CTexture>>& Images)

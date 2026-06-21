@@ -15,8 +15,8 @@ struct FBuildMeshArgsPC
 {
     FDrawIndirectArguments*          SrcArgs;   // cull output (read InstanceCount)
     FDrawMeshTasksIndirectArguments* DstArgs;   // mesh-task args (written)
-    uint                            Count;      // NumViews * NumDrawsPerView
-    uint                            _Pad;
+    uint                            Count;      // entries to convert this dispatch
+    uint                            StartIndex; // base into both arrays (single-view reconvert)
 };
 FBuildMeshArgsPC* Pass() { return GetPassArgs<FBuildMeshArgsPC>(); }
 
@@ -24,12 +24,12 @@ FBuildMeshArgsPC* Pass() { return GetPassArgs<FBuildMeshArgsPC>(); }
 [numthreads(64, 1, 1)]
 void Main(uint3 DTid : SV_DispatchThreadID)
 {
-    uint Index = DTid.x;
-    if (Index >= Pass().Count)
+    if (DTid.x >= Pass().Count)
     {
         return;
     }
 
+    uint Index = Pass().StartIndex + DTid.x;
     Pass().DstArgs[Index].GroupCountX = Pass().SrcArgs[Index].InstanceCount;
     Pass().DstArgs[Index].GroupCountY = 1u;
     Pass().DstArgs[Index].GroupCountZ = 1u;

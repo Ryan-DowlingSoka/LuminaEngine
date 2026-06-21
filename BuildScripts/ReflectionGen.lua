@@ -1,5 +1,5 @@
--- Single Utility project that runs the Reflector prebuild once per build; every Reflection=true module dependson it instead of paying premake startup per module.
--- fastuptodate "Off" forces VS to run the PreBuildEvent every build (reflected headers aren't tracked inputs); the lua action then dirty-checks libclang internally.
+-- Single Utility project running the Reflector prebuild once per build; Reflection=true modules dependon it.
+-- fastuptodate "Off" required: reflected headers aren't tracked inputs, so force the prebuild every build (lua action dirty-checks internally).
 
 project "ReflectionGen"
     kind "Utility"

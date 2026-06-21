@@ -85,10 +85,12 @@ struct FMeshletWorldVertex
     float4 Color;
 };
 
-FMeshletWorldVertex TransformMeshletVertex(FMeshletRef Ref, FVertexData V)
+// Overload taking a precomputed world normal matrix: the deferred reconstruction transforms three
+// vertices of one triangle, all sharing the instance's ModelMatrix, so the inverse-transpose is computed
+// once by the caller instead of three times here.
+FMeshletWorldVertex TransformMeshletVertex(FMeshletRef Ref, FVertexData V, float3x3 NormalMatrixWS)
 {
-    float4x4 ModelMatrix    = Ref.Inst.ModelMatrix;
-    float3x3 NormalMatrixWS = CalculateNormalMatrix(ModelMatrix);
+    float4x4 ModelMatrix = Ref.Inst.ModelMatrix;
 
     FMeshletWorldVertex W;
     W.WorldPos  = mul(ModelMatrix, float4(V.Position, 1.0)).xyz;
@@ -98,6 +100,11 @@ FMeshletWorldVertex TransformMeshletVertex(FMeshletRef Ref, FVertexData V)
     W.UV        = V.UV;
     W.Color     = V.Color;
     return W;
+}
+
+FMeshletWorldVertex TransformMeshletVertex(FMeshletRef Ref, FVertexData V)
+{
+    return TransformMeshletVertex(Ref, V, CalculateNormalMatrix(Ref.Inst.ModelMatrix));
 }
 
 // Camera view/clip. Base pass and depth pre-pass MUST derive SV_Position from this exact pair so the

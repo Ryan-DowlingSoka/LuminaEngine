@@ -14,12 +14,12 @@ function LuminaDiscoverPlugins(Root)
         return
     end
 
-    -- Each subdir is a candidate plugin; look for <PluginName>/<PluginName>.lua. Absent = content-only plugin, skipped here (runtime still mounts its .lplugin content).
+    -- No <PluginName>/<PluginName>.lua means a content-only plugin (skipped here; runtime still mounts its .lplugin).
     for _, Entry in ipairs(os.matchdirs(path.join(Root, "*"))) do
         local Name = path.getname(Entry)
         local BuildFile = path.join(Entry, Name .. ".lua")
         if os.isfile(BuildFile) then
-            -- include() runs the file in its own _SCRIPT_DIR scope so LuminaPlugin/LuminaPluginModule pick up the right PluginRoot.
+            -- include() must be used (not dofile) so _SCRIPT_DIR scopes to the plugin and PluginRoot resolves correctly.
             include(BuildFile)
         end
     end

@@ -1,7 +1,4 @@
--- msdfgen 1.x (Viktor Chlumsky, MIT). Vendored as a static lib fed by FreeType, with
--- Skia / PNG / SVG support compiled out (see msdfgen-config.h). Only core/ and the
--- FreeType glyph importer (ext/import-font.cpp) are built; the editor's font baker
--- includes <msdfgen/msdfgen.h> and <msdfgen/ext/import-font.h> directly.
+-- msdfgen static lib; Skia/PNG/SVG compiled out (see msdfgen-config.h), only core/ + FreeType importer built.
 project "msdfgen"
     kind "StaticLib"
     warnings "off"
@@ -10,7 +7,7 @@ project "msdfgen"
 
     includedirs
     {
-        ".",                    -- so <msdfgen/...> self-includes resolve via the ThirdParty root
+        ".",                    -- so <msdfgen/...> self-includes resolve
         "..",                   -- ThirdParty root, for <msdfgen/msdfgen-config.h>
         "../FreeType/include",
     }

@@ -15,7 +15,7 @@
 // Task-system benchmarks. Excluded from the default test run (main.cpp filters
 // out *Bench*); run explicitly:
 //     Tests.exe --gtest_filter=TaskBench.*
-// They don't assert on timing (CI-noise-proof) — they print numbers so the
+// They don't assert on timing (CI-noise-proof), they print numbers so the
 // scheduler can be measured and tuned. The metrics that matter for the fiber
 // scheduler are OVERLAP EFFICIENCY (do all workers engage on a fan-out?) and
 // its run-to-run SPREAD (the "random spikes" a staggered ramp produces), so
@@ -38,7 +38,7 @@ namespace
         return std::chrono::duration<double, std::milli>(Clock::now() - T0).count();
     }
 
-    // Pure compute, no memory traffic — isolates scheduling + core parallelism from memory bandwidth so
+    // Pure compute, no memory traffic, isolates scheduling + core parallelism from memory bandwidth so
     // a poor overlap shows up as lost speedup rather than being masked by a saturated bus. Seed varies the
     // result per call so the compiler can't memoize identical-argument calls into one. Returns a sink.
     FORCENOINLINE double BusySpin(uint64 Iterations, double Seed)
@@ -147,7 +147,7 @@ TEST(TaskBench, StrongScaling_HeavyCompute)
 
 // ----------------------------------------------------------------------------
 // 3. Overlap efficiency + spike spread: balanced equal-cost chunks, many runs.
-//    This is the original complaint — do all workers engage on a fan-out, and
+//    This is the original complaint, do all workers engage on a fan-out, and
 //    how consistent is it run to run? Reports the wall-time DISTRIBUTION.
 // ----------------------------------------------------------------------------
 TEST(TaskBench, OverlapEfficiency_BalancedFanout)
@@ -196,7 +196,7 @@ TEST(TaskBench, OverlapEfficiency_BalancedFanout)
 }
 
 // ----------------------------------------------------------------------------
-// 4. Cold-wake cadence: dispatch, idle a beat (workers park), dispatch again —
+// 4. Cold-wake cadence: dispatch, idle a beat (workers park), dispatch again,
 //    the real per-frame pattern. Captures the re-engagement ramp the keep-hot
 //    spin targets. Reports the per-dispatch distribution incl. p99/max.
 // ----------------------------------------------------------------------------

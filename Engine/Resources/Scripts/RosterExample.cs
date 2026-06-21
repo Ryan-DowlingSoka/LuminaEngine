@@ -8,7 +8,7 @@ namespace Engine;
 /// <summary>
 /// MVVM test for LIST binding (Composition/Roster.rml uses <c>data-for</c>): the model exposes a list of
 /// items and the document renders one card per item. The list count and per-item values are driven entirely
-/// from C# — change the list and call <see cref="ViewModel.NotifyChanged"/> and the cards follow. Attach to
+/// from C#, change the list and call <see cref="ViewModel.NotifyChanged"/> and the cards follow. Attach to
 /// an entity and press Play.
 /// </summary>
 public sealed class RosterExample : EntityScript

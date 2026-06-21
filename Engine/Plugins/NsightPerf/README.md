@@ -44,7 +44,7 @@ The periodic sampler shares the engine's graphics queue, but the engine submits 
 thread while this tool's per-frame work runs on the game thread. Concurrent `vkQueueSubmit` on one
 queue from two threads loses the device. The tool therefore wraps every NvPerf call that submits
 (init, the per-frame `OnFrameEnd`, teardown) in `RHI::Native::FScopedSubmitLock`, which takes the
-same mutex the RHI uses for its own submits — so they're serialized and never race. The ImGui render
+same mutex the RHI uses for its own submits, so they're serialized and never race. The ImGui render
 stays outside the lock.
 
 Cost: while the tool is open, holding that lock around `OnFrameEnd` can briefly stall the render

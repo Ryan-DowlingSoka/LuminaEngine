@@ -16,12 +16,20 @@
 // (unused) MeshletBase, and the three DBuffer indices sit at offsets 4/8/12. MaterialIndex follows at 16.
 struct FDeferredPassArgs
 {
-    uint VisBufferIndex;    // bindless R32_UINT visibility target
-    uint DBufferAIndex;     // overlaid by FDBufferPushConstants in ApplyDBuffer
-    uint DBufferBIndex;
-    uint DBufferCIndex;
-    uint MaterialIndex;     // GPU material slot this pass shades; other materials' pixels discard
-    uint DrawListCount;     // total MeshletDrawList entries (NumViews * TotalMeshletBound); slot bound
+    uint  VisBufferIndex;   // 0   bindless R32_UINT visibility target
+    uint  DBufferAIndex;    // 4   overlaid by FDBufferPushConstants in ApplyDBuffer
+    uint  DBufferBIndex;    // 8
+    uint  DBufferCIndex;    // 12
+    uint  MaterialIndex;    // 16  GPU material slot this pass shades; other materials' pixels discard
+    uint  DrawListCount;    // 20  total MeshletDrawList entries (NumViews * TotalMeshletBound); slot bound
+    uint  SlotIndex;        // 24  dense deferred-draw slot (tile-bitmask bit; see DeferredMaterialTileVS)
+    uint  TileCountX;       // 28
+    uint  TileSizePx;       // 32
+    uint  TileWordCount;    // 36
+    uint  ScreenW;          // 40
+    uint  ScreenH;          // 44
+    uint* TileBits;         // 48  per-tile material bitmask (read by the tile-quad VS)
+    uint* MaterialId;       // 56  per-pixel owning MaterialIndex (classify output; cheap reject here)
 };
 FDeferredPassArgs* Pass() { return GetPassArgs<FDeferredPassArgs>(); }
 
@@ -97,6 +105,22 @@ struct PSOutput
 PSOutput FragmentMain(float4 SvPosition : SV_Position)
 {
     int2 Texel = int2(SvPosition.xy);
+
+    PSOutput Output;
+    Output.Color  = float4(0.0, 0.0, 0.0, 0.0);
+    Output.Picker = 0u;
+
+    // Material binning: the classify pass tagged every covered pixel with its owning MaterialIndex, and the
+    // tile-quad VS already skipped the tiles this material doesn't touch. So this pass shades only the pixels
+    // it owns; the only rejects left are foreign-material pixels inside a shared tile -- a single buffer load,
+    // not the old per-pixel MeshletDrawList -> 128B FGPUInstance -> header chase done once per material.
+    uint PixelIdx = (uint)Texel.y * Pass().ScreenW + (uint)Texel.x;
+    if (Pass().MaterialId[PixelIdx] != Pass().MaterialIndex)
+    {
+        discard;
+        return Output;
+    }
+
     uint Raw   = LoadTexture2DUInt(Pass().VisBufferIndex, Texel);
 
     uint SlotCount = Pass().DrawListCount;          // covers both camera views (early + late slices)
@@ -106,10 +130,9 @@ PSOutput FragmentMain(float4 SvPosition : SV_Position)
     uint MeshletSlot = VisID >> 7u;
     uint TriId       = VisID & 0x7Fu;
 
-    // Validity gate. `discard` cannot be relied on to skip the indexed reads: Slang lowers it to OpKill and
-    // the driver freely speculates buffer-device-address loads above the branch, so a background (Raw==0) or
-    // out-of-range pixel would still fault. Instead EVERY index below is clamped into a valid range so the
-    // reconstruction can never page-fault; invalid lanes shade harmless garbage and discard at the very end.
+    // Indices are still clamped fault-safe (the id match above already implies a valid resolve, since the
+    // classify pass produced MaterialIndex from this same VisBuffer texel -- this is belt-and-suspenders so a
+    // speculated buffer-device-address load can never page-fault).
     bool bValid   = (Raw != 0u) && (SlotCount != 0u) && (MeshletSlot < SlotCount);
     uint SafeSlot = bValid ? MeshletSlot : 0u;
 
@@ -127,18 +150,6 @@ PSOutput FragmentMain(float4 SvPosition : SV_Position)
     Ref.GlobalMeshletIdx = Ref.Inst.SurfaceMeshletOffset + SafeLocal;
     Ref.M                = Ref.Inst.MeshletHeader.Meshlets[Ref.GlobalMeshletIdx];
 
-    // This pass shades only its own material's pixels; every other material's pixels are handled by their
-    // own deferred pass, so each visible pixel is shaded exactly once.
-    bValid = bValid && (Ref.Inst.MaterialIndex == Pass().MaterialIndex);
-
-    // Everything below -- vertex loads, WPO, barycentric reconstruction, the material graph, and the PCSS
-    // shadow lighting in ShadeSurface -- is the expensive per-pixel work. With one fullscreen pass per
-    // material it MUST run only for the pixels this material owns; otherwise every material reshades the
-    // whole screen (N x the shadow cost). The clamped reads above are fault-safe, so this early return only
-    // skips work -- it never gates a memory access that could be speculated.
-    PSOutput Output;
-    Output.Color  = float4(0.0, 0.0, 0.0, 0.0);
-    Output.Picker = 0u;
     if (!bValid)
     {
         discard;
@@ -154,10 +165,12 @@ PSOutput FragmentMain(float4 SvPosition : SV_Position)
     Vd[1] = LoadMeshletVertexData(Ref, Tri.y);
     Vd[2] = LoadMeshletVertexData(Ref, Tri.z);
 
+    // The three corners share the instance's ModelMatrix, so derive the world normal matrix once.
+    float3x3 NormalMatrixWS = CalculateNormalMatrix(Ref.Inst.ModelMatrix);
     FMeshletWorldVertex W[3];
-    W[0] = TransformMeshletVertex(Ref, Vd[0]);
-    W[1] = TransformMeshletVertex(Ref, Vd[1]);
-    W[2] = TransformMeshletVertex(Ref, Vd[2]);
+    W[0] = TransformMeshletVertex(Ref, Vd[0], NormalMatrixWS);
+    W[1] = TransformMeshletVertex(Ref, Vd[1], NormalMatrixWS);
+    W[2] = TransformMeshletVertex(Ref, Vd[2], NormalMatrixWS);
 
     // Re-apply the material vertex graph (WorldPositionOffset) per vertex so the reconstructed triangle
     // matches what the VisBuffer geometry pass rasterized. The token appears once; the unrolled loop runs
@@ -194,6 +207,18 @@ PSOutput FragmentMain(float4 SvPosition : SV_Position)
     float3 TangentXYZ    = InterpBary(Bary, W[0].TangentWS.xyz, W[1].TangentWS.xyz, W[2].TangentWS.xyz);
     float4 VertexColor   = InterpBary4(Bary, W[0].Color, W[1].Color, W[2].Color);
 
+    // Two-sided materials rasterize back faces into the VisBuffer too (VisBufferPass disables back-face cull
+    // for them). There is no SV_IsFrontFace in a fullscreen deferred pass, so flip the shading normal to face
+    // the camera on back faces; the tangent basis is re-orthogonalized against it downstream.
+    if (Ref.Inst.HasFlag(EInstanceFlags::TwoSided))
+    {
+        float3 ViewDir = normalize(GetCameraPosition() - WorldPosition);
+        if (dot(NormalWS, ViewDir) < 0.0)
+        {
+            NormalWS = -NormalWS;
+        }
+    }
+
     float3 UVx = float3(W[0].UV.x, W[1].UV.x, W[2].UV.x);
     float3 UVy = float3(W[0].UV.y, W[1].UV.y, W[2].UV.y);
     float2 UV0    = float2(dot(UVx, Bary.Lambda), dot(UVy, Bary.Lambda));
@@ -228,7 +253,16 @@ PSOutput FragmentMain(float4 SvPosition : SV_Position)
 
     FShadedSurface Shaded = ShadeSurface(Input, Material);
 
-    Output.Color  = float4(Shaded.Color, Shaded.Alpha);
+    // VisBuffer-specific debug view: a unique stable hue per reconstructed triangle (per-meshlet base +
+    // local triangle index). Material ID and the other generic views are handled inside ShadeSurface; the
+    // triangle identity only exists here in the deferred reconstruction. Spec-gated so game/shipping strips it.
+    float3 OutColor = Shaded.Color;
+    if (SPEC_ENABLE_DEBUG_VIEWS != 0 && Scene().CullData.DebugMode == DEBUG_MODE_TRIANGLE_ID)
+    {
+        OutColor = MeshletDebugColor(Ref.GlobalMeshletIdx * 131u + SafeTri);
+    }
+
+    Output.Color  = float4(OutColor, Shaded.Alpha);
     Output.Picker = Input.EntityID;
     return Output;
 }

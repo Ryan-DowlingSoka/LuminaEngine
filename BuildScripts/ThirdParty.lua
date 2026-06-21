@@ -6,8 +6,7 @@ LuminaThirdParty = LuminaThirdParty or {}
 LuminaThirdParty.Registry = LuminaThirdParty.Registry or {}
 
 
--- A dir is already absolute if it carries a drive (":") or is a premake token
--- ("%{...}"); otherwise it is taken relative to the engine ThirdParty dir.
+-- Absolute if it has a drive (":") or premake token ("%{...}"); else relative to ThirdParty dir.
 local function ResolveDir(Dir)
     if Dir:find("^%%{") or Dir:find(":") then
         return Dir
@@ -90,14 +89,14 @@ LuminaThirdParty.Register({ Name = "SPDLog",        IncludeDirs = { "spdlog/incl
 LuminaThirdParty.Register({ Name = "NlohmannJson",  IncludeDirs = { "json" },               Link = false })
 LuminaThirdParty.Register({ Name = "StbImage",      IncludeDirs = { "stb_image" },          Link = false })
 LuminaThirdParty.Register({ Name = "RenderDoc",     IncludeDirs = { "RenderDoc" },          Link = false })
--- Included as <concurrentqueue/concurrentqueue.h>, so the public include dir is the ThirdParty root.
+-- "." needed: included as <concurrentqueue/concurrentqueue.h>.
 LuminaThirdParty.Register({ Name = "ConcurrentQueue",IncludeDirs = { ".", "concurrentqueue" }, Link = false })
 LuminaThirdParty.Register({ Name = "RPMalloc",      IncludeDirs = { "rpmalloc" } })
 LuminaThirdParty.Register({ Name = "XXHash",        IncludeDirs = { "xxhash" } })
 LuminaThirdParty.Register({ Name = "Miniz",         IncludeDirs = { "miniz" } })
 LuminaThirdParty.Register({ Name = "Tracy",         IncludeDirs = { "tracy/public" } })
 
--- Windowing / UI. Libs included with a directory prefix (<imgui/misc/...>, <volk/volk.h>) use the ThirdParty root (".") so the root lands on the include path.
+-- Windowing / UI. "." entries put the ThirdParty root on the path for dir-prefixed includes (<imgui/misc/...>).
 LuminaThirdParty.Register({ Name = "GLFW",          IncludeDirs = { "glfw/include" } })
 LuminaThirdParty.Register({ Name = "ImGui",         IncludeDirs = { "imgui", "." },         Dependencies = { "GLFW" } })
 LuminaThirdParty.Register({ Name = "FreeType",      IncludeDirs = { "FreeType/include" } })
@@ -107,7 +106,7 @@ LuminaThirdParty.Register({ Name = "RmlUi",         IncludeDirs = { "RmlUi/Inclu
 LuminaThirdParty.Register({ Name = "Vulkan",        IncludeDirs = { "vulkan" },             Link = false })
 LuminaThirdParty.Register({ Name = "Volk",          IncludeDirs = { "." } })  -- <volk/volk.h>
 LuminaThirdParty.Register({ Name = "VMA",           IncludeDirs = { "VulkanMemoryAllocator" }, Link = false })
--- SLang headers only; its DLL import libs are wired via the Runtime module's ExtraLinks/LibDirs.
+-- Headers only; SLang import libs are wired via the Runtime module's ExtraLinks/LibDirs.
 LuminaThirdParty.Register({ Name = "SLang",         IncludeDirs = { "SLang" },              Link = false })
 
 -- Audio / physics / navigation
@@ -115,17 +114,14 @@ LuminaThirdParty.Register({ Name = "MiniAudio",     IncludeDirs = { "." } })  --
 LuminaThirdParty.Register({ Name = "JoltPhysics",   IncludeDirs = { "JoltPhysics" } })
 LuminaThirdParty.Register({ Name = "Recast",        IncludeDirs = { "Recast/Recast/Include", "Recast/Detour/Include" } })
 
--- Networking. Header included as <enet/enet.h>; links the Winsock + multimedia-timer system libs.
+-- Networking. ENet needs the Winsock + multimedia-timer system libs.
 LuminaThirdParty.Register({ Name = "ENet",          IncludeDirs = { "enet/include" }, Link = { "ENet", "ws2_32", "winmm" } })
 
--- Scripting
--- .NET host headers (hostfxr/coreclr_delegates/nethost) from the bundled runtime in External.
--- Header-only here: FDotNetHost LoadLibrary's hostfxr at runtime, so there is no import lib to link.
+-- Scripting. Header-only: FDotNetHost LoadLibrary's hostfxr at runtime, so there is no import lib.
 LuminaThirdParty.Register({ Name = "DotNetHost",    IncludeDirs = { LuminaConfig.EnginePath("External/DotNet/include") }, Link = false })
 
 
--- MSDF font-atlas baking (runtime, for the default engine font + editor import). Included as
--- <msdfgen/...>, so the public include dir is the ThirdParty root; depends on FreeType.
+-- MSDF font-atlas baking. "." needed: included as <msdfgen/...>.
 LuminaThirdParty.Register({ Name = "MSDFGen",       IncludeDirs = { "." },                  Dependencies = { "FreeType" } })
 
 -- Geometry / mesh / texture processing
@@ -133,15 +129,15 @@ LuminaThirdParty.Register({ Name = "MeshOptimizer", IncludeDirs = { "meshoptimiz
 LuminaThirdParty.Register({ Name = "MikkTSpace",    IncludeDirs = { "MikkTSpace/src" } })
 LuminaThirdParty.Register({ Name = "BasicUniversal",IncludeDirs = { "basis_universal" } })
 
--- Model-format importers (editor-only); "." = ThirdParty root since these are included with a directory prefix (<tinyobjloader/...>, "OpenFBX/ofbx.h").
+-- Model-format importers (editor-only). "." needed: dir-prefixed includes (<tinyobjloader/...>, "OpenFBX/ofbx.h").
 LuminaThirdParty.Register({ Name = "TinyOBJLoader", IncludeDirs = { "." } })
 LuminaThirdParty.Register({ Name = "OpenFBX",       IncludeDirs = { "." } })
 LuminaThirdParty.Register({ Name = "FastGLTF",      IncludeDirs = { "fastgltf/include" } })
 
 
--- Named dependency groups describing what the engine's public headers expose, so dependents see the same third-party headers the engine compiled against.
+-- Dependency groups: what each module's public headers expose, so dependents compile against the same third-party headers.
 
--- Everything the Runtime module links or exposes through its public headers.
+-- Everything Runtime links or exposes through its public headers.
 LuminaThirdParty.RuntimePublicDeps =
 {
     "EA", "Entt", "SPDLog", "NlohmannJson", "StbImage", "RenderDoc",
