@@ -700,6 +700,7 @@ namespace Lumina::RHI
 
         const VkPhysicalDeviceProperties& Props = GDevice->Properties;
         Info.Name      = Props.deviceName;
+        Info.VendorID  = Props.vendorID;
         Info.bDiscrete = Props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
         Info.APIName   = "Vulkan ";
         Info.APIName += eastl::to_string(VK_API_VERSION_MAJOR(Props.apiVersion)).c_str();
@@ -1715,7 +1716,6 @@ namespace Lumina::RHI
         switch (Type)
         {
         case EMemoryType::CPUWrite:
-            // HOST_COHERENT required: mapped writes never need flushes, nonCoherentAtomSize never applies.
             Info.flags  = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             Info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
@@ -4178,7 +4178,7 @@ namespace Lumina::RHI
     {
         FCommandList& List = GDevice->CommandLists[CL];
 
-#if defined(TRACY_ENABLE)
+        #if defined(TRACY_ENABLE)
         if (List.GPUZoneDepth > 0)
         {
             --List.GPUZoneDepth;
@@ -4188,7 +4188,7 @@ namespace Lumina::RHI
                 reinterpret_cast<tracy::VkCtxScope*>(Slot)->~VkCtxScope();
             }
         }
-#endif
+        #endif
 
         if (vkCmdEndDebugUtilsLabelEXT != nullptr)
         {

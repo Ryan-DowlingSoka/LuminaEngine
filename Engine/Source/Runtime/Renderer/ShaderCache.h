@@ -13,7 +13,8 @@ namespace Lumina
         // Bump when the .lsc binary layout or compile pipeline changes in a way
         // that invalidates older entries (e.g. Slang upgrade, header layout).
         // v2: ERHIShaderType renumbered when the old RHI's resource-type enum was trimmed.
-        constexpr uint32 SHADER_CACHE_VERSION = 2;
+        // v3: shader debug-info level raised to STANDARD (Nsight source debugging) on non-AMD non-Shipping.
+        constexpr uint32 SHADER_CACHE_VERSION = 3;
 
         constexpr const char* CACHE_DIR = "/Intermediates/ShaderCache";
 

@@ -686,6 +686,56 @@ namespace Lumina
                     TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
             });
 
+            // Mesh-shader variant of the geometry stage (same material vertex graph as the VS). Only the
+            // meshlet (PBR) path has one. ALWAYS compiled (it's just SPIR-V -- no GPU mesh support needed) so
+            // the cooked asset is portable; the renderer uses it only when the device supports mesh shaders
+            // and r.MeshShaders is on, otherwise it falls back to the VS path.
+            if (Material->GetMaterialType() == EMaterialType::PBR)
+            {
+                const FString MeshShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
+                const FString MeshSource = Compiler.BuildVertexShaderFromTemplate(MeshShaderDir + "MeshletMesh.slang", EMaterialType::PBR);
+                FShaderCompileOptions MeshOptions; MeshOptions.DebugName = MatName + " [MS]";
+                ShaderCompiler->CompilerShaderRaw(MeshSource, Move(MeshOptions), [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    M->MeshShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->MeshShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_MS").c_str()), ERHIShaderType::Mesh,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
+                });
+
+                // VisBuffer geometry stage (same vertex graph; emits per-primitive IDs instead of shading attrs).
+                const FString VisSource = Compiler.BuildVertexShaderFromTemplate(MeshShaderDir + "MeshletVisBuffer.slang", EMaterialType::PBR);
+                FShaderCompileOptions VisOptions; VisOptions.DebugName = MatName + " [VBM]";
+                ShaderCompiler->CompilerShaderRaw(VisSource, Move(VisOptions), [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    M->VisBufferMeshShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->VisBufferMeshShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_VBM").c_str()), ERHIShaderType::Mesh,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
+                });
+
+                const FString VisVSSource = Compiler.BuildVertexShaderFromTemplate(MeshShaderDir + "MeshletVisBufferVS.slang", EMaterialType::PBR);
+                FShaderCompileOptions VisVSOptions; VisVSOptions.DebugName = MatName + " [VBV]";
+                ShaderCompiler->CompilerShaderRaw(VisVSSource, Move(VisVSOptions), [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    M->VisBufferVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->VisBufferVertexShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_VBV").c_str()), ERHIShaderType::Vertex,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
+                });
+
+                // Deferred material pixel shader (reconstructs from the VisBuffer + runs the pixel graph).
+                const FString DeferredSource = Compiler.BuildDeferredShaderFromTemplate(MeshShaderDir + "DeferredMaterial.slang", EMaterialType::PBR);
+                FShaderCompileOptions DeferredOptions; DeferredOptions.DebugName = MatName + " [DM]";
+                ShaderCompiler->CompilerShaderRaw(DeferredSource, Move(DeferredOptions), [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    M->DeferredShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->DeferredShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_DM").c_str()), ERHIShaderType::Fragment,
+                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
+                });
+            }
+
             ShaderCompiler->CompilerShaderRaw(Tree, Move(Options), [this](const FShaderHeader& Header) mutable
             {
                 CMaterial* Material = Cast<CMaterial>(Asset.Get());
@@ -694,44 +744,8 @@ namespace Lumina
                     TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
             });
             
-            const bool bIsTerrain     = Material->GetMaterialType() == EMaterialType::Terrain;
-            const bool bIsPostProcess = Material->GetMaterialType() == EMaterialType::PostProcess;
-            const bool bWPO = Compiler.UsesVertexStage() && !bIsTerrain && !bIsPostProcess;
-            Material->bUsesWorldPositionOffset = bWPO;
-            if (bWPO)
-            {
-                const FString MaterialShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
-                const FString DepthSource  = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "DepthPrePass.slang");
-                const FString ShadowSource = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "ShadowMappingVert.slang");
-
-                FShaderCompileOptions DepthOptions;  DepthOptions.DebugName  = MatName + " [DepthVS]";
-                FShaderCompileOptions ShadowOptions; ShadowOptions.DebugName = MatName + " [ShadowVS]";
-
-                ShaderCompiler->CompilerShaderRaw(DepthSource, Move(DepthOptions), [this](const FShaderHeader& Header) mutable
-                {
-                    CMaterial* M = Cast<CMaterial>(Asset.Get());
-                    M->DepthPrepassVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                    M->DepthPrepassVertexShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_DepthVS").c_str()), ERHIShaderType::Vertex,
-                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
-                });
-                ShaderCompiler->CompilerShaderRaw(ShadowSource, Move(ShadowOptions), [this](const FShaderHeader& Header) mutable
-                {
-                    CMaterial* M = Cast<CMaterial>(Asset.Get());
-                    M->ShadowVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                    M->ShadowVertexShader = FShaderLibrary::Commit(FName((M->GetGUID().ToString() + "_ShadowVS").c_str()), ERHIShaderType::Vertex,
-                        TSpan<const uint32>(Header.Binaries.data(), Header.Binaries.size()));
-                });
-            }
-            else
-            {
-                // Drop stale per-material depth/shadow shaders from a prior WPO compile
-                // so the renderer falls back to the global library.
-                Material->DepthPrepassVertexShader = nullptr;
-                Material->ShadowVertexShader = nullptr;
-                Material->DepthPrepassVertexShaderBinaries.clear();
-                Material->ShadowVertexShaderBinaries.clear();
-            }
-
+            // The single merged VS (MeshletVertex.slang) compiled above serves base/depth/shadow via the
+            // EPass spec constant set at pipeline creation -- no separate depth/shadow vertex compiles.
             ShaderCompiler->Flush();
 
             Compiler.GetBoundTextures(Material->Textures);

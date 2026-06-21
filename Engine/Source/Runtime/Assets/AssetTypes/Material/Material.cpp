@@ -116,16 +116,27 @@ namespace Lumina
             PixelShader  = FShaderLibrary::Commit(FName((Guid + "_PS").c_str()), ERHIShaderType::Fragment,
                 TSpan<const uint32>(PixelShaderBinaries.data(), PixelShaderBinaries.size()));
 
-            // Depth-prepass / shadow VS only present for WPO materials; null falls back to global lib shader.
-            if (!DepthPrepassVertexShaderBinaries.empty())
+            // The single merged VS (MeshletVertex.slang) serves base/depth/shadow via the EPass spec constant.
+            // Optional mesh-shader geometry stage (same passes); the renderer picks it per r.MeshShaders.
+            if (!MeshShaderBinaries.empty())
             {
-                DepthPrepassVertexShader = FShaderLibrary::Commit(FName((Guid + "_DepthVS").c_str()), ERHIShaderType::Vertex,
-                    TSpan<const uint32>(DepthPrepassVertexShaderBinaries.data(), DepthPrepassVertexShaderBinaries.size()));
+                MeshShader = FShaderLibrary::Commit(FName((Guid + "_MS").c_str()), ERHIShaderType::Mesh,
+                    TSpan<const uint32>(MeshShaderBinaries.data(), MeshShaderBinaries.size()));
             }
-            if (!ShadowVertexShaderBinaries.empty())
+            if (!VisBufferMeshShaderBinaries.empty())
             {
-                ShadowVertexShader = FShaderLibrary::Commit(FName((Guid + "_ShadowVS").c_str()), ERHIShaderType::Vertex,
-                    TSpan<const uint32>(ShadowVertexShaderBinaries.data(), ShadowVertexShaderBinaries.size()));
+                VisBufferMeshShader = FShaderLibrary::Commit(FName((Guid + "_VBM").c_str()), ERHIShaderType::Mesh,
+                    TSpan<const uint32>(VisBufferMeshShaderBinaries.data(), VisBufferMeshShaderBinaries.size()));
+            }
+            if (!VisBufferVertexShaderBinaries.empty())
+            {
+                VisBufferVertexShader = FShaderLibrary::Commit(FName((Guid + "_VBV").c_str()), ERHIShaderType::Vertex,
+                    TSpan<const uint32>(VisBufferVertexShaderBinaries.data(), VisBufferVertexShaderBinaries.size()));
+            }
+            if (!DeferredShaderBinaries.empty())
+            {
+                DeferredShader = FShaderLibrary::Commit(FName((Guid + "_DM").c_str()), ERHIShaderType::Fragment,
+                    TSpan<const uint32>(DeferredShaderBinaries.data(), DeferredShaderBinaries.size()));
             }
 
             // FMaterialUniforms isn't serialized; replay defaults from Parameters so authored values survive load.
@@ -197,8 +208,10 @@ namespace Lumina
             auto Drop = [](TVector<uint32>& V) { V.clear(); V.shrink_to_fit(); };
             Drop(VertexShaderBinaries);
             Drop(PixelShaderBinaries);
-            Drop(DepthPrepassVertexShaderBinaries);
-            Drop(ShadowVertexShaderBinaries);
+            Drop(MeshShaderBinaries);
+            Drop(VisBufferMeshShaderBinaries);
+            Drop(VisBufferVertexShaderBinaries);
+            Drop(DeferredShaderBinaries);
 #endif
         }
     }
@@ -332,9 +345,9 @@ namespace Lumina
         }
         
         FString LoadedVertexString;
-        if (!VFS::ReadFile(LoadedVertexString, "/Engine/Resources/Shaders/MaterialShader/BaseVertexPass.slang"))
+        if (!VFS::ReadFile(LoadedVertexString, "/Engine/Resources/Shaders/MaterialShader/MeshletVertex.slang"))
         {
-            LOG_ERROR("Failed to find BaseVertPass.slang!");
+            LOG_ERROR("Failed to find MeshletVertex.slang!");
             return;
         }
 
@@ -360,7 +373,73 @@ namespace Lumina
         {
             DefaultMaterial->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
         });
-        
+
+        // Mesh-shader variant of the default material (same no-op WPO substitution). Always compiled so the
+        // cooked asset is portable; only used at runtime when the device supports mesh shaders.
+        {
+            FString LoadedMeshString;
+            if (VFS::ReadFile(LoadedMeshString, "/Engine/Resources/Shaders/MaterialShader/MeshletMesh.slang"))
+            {
+                size_t MeshPos = LoadedMeshString.find(VertexToken);
+                if (MeshPos != FString::npos)
+                {
+                    LoadedMeshString.replace(MeshPos, strlen(VertexToken), VertexReplacement);
+                    ShaderCompiler->CompilerShaderRaw(Move(LoadedMeshString), {}, [](const FShaderHeader& Header) mutable
+                    {
+                        DefaultMaterial->MeshShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    });
+                }
+            }
+
+            FString LoadedVisString;
+            if (VFS::ReadFile(LoadedVisString, "/Engine/Resources/Shaders/MaterialShader/MeshletVisBuffer.slang"))
+            {
+                size_t VisPos = LoadedVisString.find(VertexToken);
+                if (VisPos != FString::npos)
+                {
+                    LoadedVisString.replace(VisPos, strlen(VertexToken), VertexReplacement);
+                    ShaderCompiler->CompilerShaderRaw(Move(LoadedVisString), {}, [](const FShaderHeader& Header) mutable
+                    {
+                        DefaultMaterial->VisBufferMeshShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    });
+                }
+            }
+
+            FString LoadedVisVSString;
+            if (VFS::ReadFile(LoadedVisVSString, "/Engine/Resources/Shaders/MaterialShader/MeshletVisBufferVS.slang"))
+            {
+                size_t VisVSPos = LoadedVisVSString.find(VertexToken);
+                if (VisVSPos != FString::npos)
+                {
+                    LoadedVisVSString.replace(VisVSPos, strlen(VertexToken), VertexReplacement);
+                    ShaderCompiler->CompilerShaderRaw(Move(LoadedVisVSString), {}, [](const FShaderHeader& Header) mutable
+                    {
+                        DefaultMaterial->VisBufferVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    });
+                }
+            }
+
+            // Deferred material pixel shader: BOTH tokens (WPO for reconstruction + the pixel graph).
+            FString LoadedDeferredString;
+            if (VFS::ReadFile(LoadedDeferredString, "/Engine/Resources/Shaders/MaterialShader/DeferredMaterial.slang"))
+            {
+                size_t DefVPos = LoadedDeferredString.find(VertexToken);
+                if (DefVPos != FString::npos)
+                {
+                    LoadedDeferredString.replace(DefVPos, strlen(VertexToken), VertexReplacement);
+                }
+                size_t DefPPos = LoadedDeferredString.find(Token);
+                if (DefPPos != FString::npos)
+                {
+                    LoadedDeferredString.replace(DefPPos, strlen(Token), PixelReplacement);
+                    ShaderCompiler->CompilerShaderRaw(Move(LoadedDeferredString), {}, [](const FShaderHeader& Header) mutable
+                    {
+                        DefaultMaterial->DeferredShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    });
+                }
+            }
+        }
+
         ShaderCompiler->Flush();
 
         DefaultMaterial->PostLoad();

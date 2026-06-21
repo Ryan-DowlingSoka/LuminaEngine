@@ -12,10 +12,10 @@
 // push constant (opaque base pass only). A pixel untouched by any decal reads a=1, rgb=0, so it's a no-op.
 struct FDBufferPushConstants
 {
+    uint MeshletBase;     // mesh path: MeshletDrawList base for this draw (read by MeshletMesh.slang); unused by the PS
     uint DBufferAIndex;   // rgb BaseColor,                a transmittance
     uint DBufferBIndex;   // rg  WorldNormal (OctEncode01), a transmittance
     uint DBufferCIndex;   // r Roughness g Metallic b AO,  a transmittance
-    uint _Pad;
 };
 FDBufferPushConstants* DBufferArgs() { return GetPassArgs<FDBufferPushConstants>(); }
 

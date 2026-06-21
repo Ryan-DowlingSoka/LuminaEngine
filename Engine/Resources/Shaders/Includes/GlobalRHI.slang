@@ -30,6 +30,8 @@ Ptr<T> GetArgs<T>()
 [[vk::binding(1, 0)]] TextureCube                               gTexturesCube[];
 [[vk::binding(1, 0)]] Texture3D                                 gTextures3D[];
 [[vk::binding(1, 0)]] Texture2DArray                            gTextures2DArray[];
+// Integer alias of the same heap, for R32_UINT targets (e.g. the VisBuffer triangle-ID buffer).
+[[vk::binding(1, 0)]] Texture2D<uint>                           gTextures2DUInt[];
 
 [[vk::binding(2, 0)]] RWTexture2D<float4>                       gRWTextures2D[];
 [[vk::binding(2, 0)]] RWTexture3D<float4>                       gRWTextures3D[];
@@ -86,6 +88,11 @@ float4 SampleTexture3D(uint TextureIndex, uint SamplerIndex, float3 UVW)
 float4 LoadTexture2D(uint TextureIndex, int2 Texel, int Mip = 0)
 {
     return gTextures2D[TextureIndex].Load(int3(Texel, Mip));
+}
+
+uint LoadTexture2DUInt(uint TextureIndex, int2 Texel, int Mip = 0)
+{
+    return gTextures2DUInt[TextureIndex].Load(int3(Texel, Mip));
 }
 
 // Fullscreen-triangle vertex helper: call from a VS with SV_VertexID, no

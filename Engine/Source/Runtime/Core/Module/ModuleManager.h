@@ -8,17 +8,7 @@
 #include "Memory/SmartPtr.h"
 
 
-// ---- Module ABI guard ---------------------------------------------------------------------------
-// A module DLL links the engine and shares its struct layouts / vtables, so loading one built against an
-// incompatible engine ABI corrupts memory instead of failing cleanly. The most common cause is a config
-// mismatch (a Debug DLL vs a Development engine -> different CRT, iterator-debug level, struct sizes);
-// editor-vs-game (WITH_EDITOR changes layouts) and toolset changes are others. Every modular module bakes
-// a signature string via IMPLEMENT_MODULE, and FModuleManager::LoadModule refuses any whose signature
-// differs from the running engine's -- checked before any module code runs.
-//
-// Bump LUMINA_MODULE_ABI_VERSION on any source change that alters the engine's binary interface to modules
-// (layout/size of a boundary type, enum values, vtable shape, exported signatures) so older modules are
-// refused until rebuilt. The config/platform/compiler components below are automatic.
+// Module ABI guard
 #define LUMINA_MODULE_ABI_VERSION 1
 
 #if defined(WITH_EDITOR) && WITH_EDITOR
@@ -155,7 +145,7 @@ namespace Lumina
         THashMap<FName, FModuleInfo> ModuleHashMap;
 
         // Static module factories from IMPLEMENT_MODULE in monolithic builds (linear list).
-        TVector<eastl::pair<FName, ModuleInitFunc>> StaticModuleFactories;
+        TVector<TPair<FName, ModuleInitFunc>> StaticModuleFactories;
 
         // Reason the last LoadModule failed (ABI mismatch, etc.); see GetLastLoadError.
         FString LastLoadError;

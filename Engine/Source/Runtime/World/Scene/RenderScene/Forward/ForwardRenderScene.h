@@ -90,9 +90,11 @@ namespace Lumina
             FDrawBatchKey                       Key;
             const FShaderEntry*                 VertexShader = nullptr;
             const FShaderEntry*                 PixelShader  = nullptr;
-            // Per-material depth-prepass / shadow VS. Null for non-WPO materials
-            const FShaderEntry*                 DepthVertexShader  = nullptr;
-            const FShaderEntry*                 ShadowVertexShader = nullptr;
+            const FShaderEntry*                 MeshShader   = nullptr;   // mesh-path geometry stage (optional)
+            const FShaderEntry*                 VisBufferMeshShader   = nullptr;
+            const FShaderEntry*                 VisBufferVertexShader = nullptr;
+            const FShaderEntry*                 DeferredShader        = nullptr;
+            uint16                              MaterialIdx = 0;
             TFrameVector<FDrawKey>              LocalDraws;
             TFrameVector<uint32>                LocalDrawCounts;
             TFrameVector<uint32>                LocalMeshletCounts;
@@ -113,8 +115,10 @@ namespace Lumina
         {
             const FShaderEntry* VertexShader;
             const FShaderEntry* PixelShader;
-            const FShaderEntry* DepthVertexShader;
-            const FShaderEntry* ShadowVertexShader;
+            const FShaderEntry* MeshShader;
+            const FShaderEntry* VisBufferMeshShader;
+            const FShaderEntry* VisBufferVertexShader;
+            const FShaderEntry* DeferredShader;
             uint64              MaterialID;
             uint16              MaterialIdx;
             bool                bTranslucent;
@@ -395,6 +399,7 @@ namespace Lumina
             DepthAttachment,
             DepthPyramid,
             Picker,
+            VisBuffer,
             Accum,
             Revealage,
             WaterRefraction,
@@ -469,6 +474,7 @@ namespace Lumina
         // Ringed accessors for the cull-pass scratch (see IndirectArgsRing).
         FSceneBuffer GetIndirectArgs()     const { return IndirectArgsRing[CurrentFrameSlot]; }
         FSceneBuffer GetMeshletDrawList()  const { return MeshletDrawListRing[CurrentFrameSlot]; }
+        FSceneBuffer GetMeshDrawArgs()     const { return MeshDrawArgsRing[CurrentFrameSlot]; }
         FSceneBuffer GetMeshletDeferList() const { return MeshletDeferListRing[CurrentFrameSlot]; }
         FSceneBuffer GetDeferCount()       const { return DeferCountRing[CurrentFrameSlot]; }
         FSceneBuffer GetSpdCounter()       const { return SpdCounterRing[CurrentFrameSlot]; }
@@ -533,9 +539,6 @@ namespace Lumina
         void CullPassLate(RHI::FCmdListH CL);
         void SkinningPass(RHI::FCmdListH CL);
         void TexturePaintPass(RHI::FCmdListH CL);
-        void DepthPrePassEarly(RHI::FCmdListH CL);
-        void DepthPrePassLate(RHI::FCmdListH CL);
-        void RecordDepthPrePassSlice(RHI::FCmdListH CL, uint32 ViewIndex, bool bClearDepth);
         void DepthPyramidPass(RHI::FCmdListH CL);
         void ClusterBuildPass(RHI::FCmdListH CL);
         void LightCullPass(RHI::FCmdListH CL);
@@ -543,7 +546,16 @@ namespace Lumina
         void SpotShadowPass(RHI::FCmdListH CL);
         void CascadedShowPass(RHI::FCmdListH CL);
         void DecalPass(RHI::FCmdListH CL);
-        void BasePass(RHI::FCmdListH CL);
+        // VisBuffer geometry: rasterize one cull view's meshlets writing per-triangle visibility IDs + depth
+        // (VS-or-mesh). Phase 1 clears (early view); phase 2 loads + accumulates the disoccluded (late view).
+        void VisBufferPass(RHI::FCmdListH CL, uint32 ViewIndex, bool bClear);
+        // Deferred material: per opaque material, reconstruct attributes from the VisBuffer and shade.
+        void DeferredMaterialPass(RHI::FCmdListH CL);
+        // Converts the cull's FDrawIndirectArguments into mesh-task args (GroupCountX = survivors); mesh path only.
+        void ConvertMeshDrawArgs(RHI::FCmdListH CL);
+        // One shadow-map draw of a batch, VS-emulation or mesh path per r.MeshShaders. Shared by all shadow passes.
+        void DrawShadowBatch(RHI::FCmdListH CL, const FMeshDrawCommand& Batch, const FShaderEntry* PixelShader,
+                             uint32 CullViewIndex, int32 ShadowDataIndex, int32 ShadowViewIndex);
         void BillboardPass(RHI::FCmdListH CL);
         void WidgetPass(RHI::FCmdListH CL);
         void TextPass(RHI::FCmdListH CL);
@@ -615,15 +627,20 @@ namespace Lumina
         
         bool ShouldRequestShadow(const FVector3& LightPosition, float LightRadius) const;
         
+        // Mesh vertex-emulation pass selector; drives the MeshletVertex.slang EPass spec constant (id 0).
+        enum class EMeshPass : uint8 { Base = 0, Depth = 1, Shadow = 2 };
+
         struct FGraphicsPipelineKey
         {
             const FShaderEntry* VS = nullptr;
             const FShaderEntry* PS = nullptr;    // null = depth-only
+            const FShaderEntry* MS = nullptr;    // mesh shader; when set, a mesh pipeline is built (VS ignored)
             RHI::ETopology  Topology = RHI::ETopology::TriangleList;
             bool            bWireframe = false;
             bool            bAlphaToCoverage = false;
             uint8           SampleCount = 1;
             EFormat         DepthFormat = EFormat::UNKNOWN;
+            EMeshPass       PassVariant = EMeshPass::Base;   // EPass spec constant for the merged VS
             TFixedVector<RHI::FColorTarget, 4> ColorTargets;
         };
 
@@ -665,6 +682,7 @@ namespace Lumina
         uint32                                              PreSkinnedVerticesLowUsage = 0;
         TArray<uint32, RHI::kFramesInFlight>                IndirectArgsRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshletDrawListRingLowUsage = {};
+        TArray<uint32, RHI::kFramesInFlight>                MeshDrawArgsRingLowUsage = {};
         TArray<uint32, RHI::kFramesInFlight>                MeshletDeferListRingLowUsage = {};
         TArray<FSceneImage, (int)ENamedImage::Num>          NamedImages = {};
 
@@ -730,6 +748,7 @@ namespace Lumina
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          IndirectArgsRing = {};
         
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDrawListRing = {};
+        TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshDrawArgsRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          MeshletDeferListRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          DeferCountRing = {};
         TArray<FSceneBuffer, RHI::kFramesInFlight>                          SpdCounterRing = {};

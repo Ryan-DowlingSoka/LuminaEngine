@@ -71,8 +71,11 @@ namespace Lumina
 	{
 		const FShaderEntry*					VertexShader = nullptr;
 		const FShaderEntry*					PixelShader  = nullptr;
-		const FShaderEntry*					DepthVertexShader  = nullptr;
-		const FShaderEntry*					ShadowVertexShader = nullptr;
+		const FShaderEntry*					MeshShader   = nullptr;
+		const FShaderEntry*					VisBufferMeshShader   = nullptr;   // VisBuffer geometry, mesh path
+		const FShaderEntry*					VisBufferVertexShader = nullptr;   // VisBuffer geometry, VS-emulation path
+		const FShaderEntry*					DeferredShader        = nullptr;   // deferred material pixel shader
+		uint32                      		MaterialIndex = 0;                  // GPU material slot (deferred pixel classification)
 		uint32                      		IndirectDrawOffset = 0;
 		uint32                      		DrawCount = 0;
 		uint32                      		bDrawInDepthPass : 1;

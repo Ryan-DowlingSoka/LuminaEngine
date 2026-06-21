@@ -12,7 +12,7 @@ static const float INV_PI = 0.31830988618;
 #define SHADOW_SAMPLE_COUNT 8
 // Upper bound for the directional cascade's runtime-tunable tap count
 // (SDirectionalLightComponent::ShadowSampleCount, forwarded via ShadowParams2.y).
-#define SHADOW_MAX_SAMPLE_COUNT 64
+#define SHADOW_MAX_SAMPLE_COUNT 16
 
 #define INDEX_NONE -1
 

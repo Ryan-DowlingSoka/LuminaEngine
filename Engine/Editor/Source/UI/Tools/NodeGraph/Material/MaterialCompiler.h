@@ -102,6 +102,10 @@ namespace Lumina
         // chunks (per-material depth/shadow shaders for WPO materials). MaterialType picks the alias preamble.
         FString BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType = EMaterialType::PBR) const;
 
+        // Substitute BOTH material tokens in a deferred template (DeferredMaterial.slang): the vertex graph
+        // ($MATERIAL_VERTEX_INPUTS, for WPO reconstruction) and the pixel graph ($MATERIAL_INPUTS, shading).
+        FString BuildDeferredShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType = EMaterialType::PBR) const;
+
         // True when the graph fed any chunks into the vertex stage. Equivalent
         // to "WorldPositionOffset pin had a connection."
         bool UsesVertexStage() const { return !VertexChunks.empty() || !VertexOutputChunks.empty(); }

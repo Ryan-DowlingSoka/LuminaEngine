@@ -431,6 +431,7 @@ namespace Lumina::RHI
     {
         FString Name;       // Adapter name, e.g. "NVIDIA GeForce RTX 4080".
         FString APIName;    // Backend + version, e.g. "Vulkan 1.4.250".
+        uint32  VendorID = 0;   // PCI vendor ID: 0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel.
         bool    bDiscrete = false;
     };
 

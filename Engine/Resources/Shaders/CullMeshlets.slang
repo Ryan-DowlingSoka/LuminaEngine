@@ -1,7 +1,14 @@
 #pragma once
 #include "Includes/Culling.slang"
 
-// Two-phase meshlet culling.
+// Two-phase meshlet culling (Nanite-style), feeding the VisBuffer geometry pass.
+//  Phase 0 (Early): frustum + cone every view; the camera view also tests Hi-Z occlusion against LAST
+//                   frame's pyramid. Survivors emit to their view; camera meshlets the stale pyramid hides
+//                   are DEFERRED (not dropped). The VisBuffer rasters the early camera view, then the
+//                   pyramid is rebuilt from this frame's partial depth.
+//  Phase 1 (Late):  re-test only the deferred meshlets against the rebuilt pyramid; ones now visible (the
+//                   stale pyramid wrongly hid them -- disocclusion) emit to the camera-late view and the
+//                   VisBuffer rasters them. This removes the one-frame disocclusion lag of a single phase.
 #define LOCAL_SIZE_X 64
 
 struct FPushConstants
@@ -255,7 +262,7 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
     FGPUInstance Inst = GetInstance(Entry.InstanceID);
     if (Entry.MeshletLocalIndex >= Inst.SurfaceMeshletCount)
     {
-   		return;    
+   		return;
     }
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Entry.MeshletLocalIndex;

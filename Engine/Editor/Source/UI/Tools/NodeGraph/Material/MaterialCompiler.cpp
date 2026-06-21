@@ -136,7 +136,7 @@ namespace Lumina
 		}
 
 		// Vertex template declares FMaterialVertexInputs Material above the token; only emit assignments.
-		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
+		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "MeshletVertex.slang");
 		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath, MaterialType);
 	}
 
@@ -154,6 +154,27 @@ namespace Lumina
 			: GVertexStageAliasPreamble;
 		FString Replacement = FString(Preamble) + VertexChunks + VertexOutputChunks;
 		SubstituteToken(Loaded, "$MATERIAL_VERTEX_INPUTS", Replacement);
+		return Loaded;
+	}
+
+	FString FMaterialCompiler::BuildDeferredShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType) const
+	{
+		FString Loaded;
+		if (!FileHelper::LoadFileIntoString(Loaded, TemplateAbsolutePath))
+		{
+			LOG_ERROR("Failed to find {}!", TemplateAbsolutePath);
+			return Loaded;
+		}
+
+		// Vertex graph (WPO) for the geometry reconstruction loop.
+		const char* Preamble = (MaterialType == EMaterialType::Terrain)
+			? GVertexStageAliasPreambleTerrain
+			: GVertexStageAliasPreamble;
+		FString VertexReplacement = FString(Preamble) + VertexChunks + VertexOutputChunks;
+		SubstituteToken(Loaded, "$MATERIAL_VERTEX_INPUTS", VertexReplacement);
+
+		// Pixel graph (shading). The output node declares FMaterialPixelInputs Material; we append body + assignments.
+		SubstituteToken(Loaded, "$MATERIAL_INPUTS", PixelChunks + PixelOutputChunks);
 		return Loaded;
 	}
 

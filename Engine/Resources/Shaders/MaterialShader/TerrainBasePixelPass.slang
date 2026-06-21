@@ -105,7 +105,7 @@ static const float PCSS_LightSize           = 0.05;
 // Filter radius bounds in shadow texels (per-cascade); see BasePixelPass.slang. Floor = smooth near
 // contact edges, ceiling = gap-free far penumbra. Texel units self-scale across cascades.
 static const float PCSS_MinFilterTexels     = 1.5;
-static const float PCSS_MaxFilterTexels     = 8.0;
+static const float PCSS_MaxFilterTexels     = 4.0;   // ~sqrt(SHADOW_MAX_SAMPLE_COUNT) = sqrt(16); match BasePixelPass
 static const float PCSS_BlockerDepthBias    = 0.0004;
 static const float PCSS_MaxPlaneDepthBias   = 0.01;    // Cap on the receiver-plane prediction (silhouette-edge guard)
 
@@ -161,14 +161,21 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     // instead of per blocker/PCF tap (SPIR-V LICM doesn't hoist BDA loads). Mirrors BasePixelPass.
     FLightShadow Tile = GetShadowTile(Light.ShadowDataIndex, CascadeIndex);
 
+    // Fold the per-tap cascade->atlas transform into loop invariants (clamp commutes through the positive
+    // linear atlas transform). Removes the per-tap UV add + scale/offset FMA. Mirrors BasePixelPass.
+    float2 BaseAtlasUV       = ProjectionUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
+    float2 TileMin           = float2(0.001) * Tile.AtlasUVScale + Tile.AtlasUVOffset;
+    float2 TileMax           = float2(0.999) * Tile.AtlasUVScale + Tile.AtlasUVOffset;
+    float2 SearchAtlasRadius = SearchRadius * Tile.AtlasUVScale;
+
     // Fixed rotation so the blocker (lit/shadow) decision is spatially coherent
     // and doesn't stipple across thin-occluder penumbras. Matches BasePixelPass.
     [unroll]
     for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
-        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
-        float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float2 AtlasUV  = SampleUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
+        float2 VOffset  = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0);
+        float2 Offset   = VOffset * SearchRadius;   // cascade-UV space, for the receiver-plane prediction
+        float2 AtlasUV  = clamp(BaseAtlasUV + VOffset * SearchAtlasRadius, TileMin, TileMax);
         float  Depth    = ShadowCascade().SampleLevel(AtlasUV, 0.0).r;
 
         // Expected receiver depth at this offset along its own plane (clamped against silhouette-edge
@@ -211,18 +218,19 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
                               BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
 
-    // FP16 the disk offset: a sub-texel kernel radius (~<0.004 UV) that fp16 resolves to ~1e-6, and the
-    // offset packs into one register. The UVs and depth-compare ref stay fp32 for atlas addressing.
+    // Same atlas fold as the blocker search; AtlasFilterRadius uses the penumbra filter radius. FP16 the
+    // unit disk offset (sub-texel, packs into one register); atlas UV + compare ref stay fp32.
+    float2 AtlasFilterRadius = FilterRadius * Tile.AtlasUVScale;
+
     half Shadow = half(0.0);
     [loop]
     for (int i = 0; i < SampleCount; ++i)
     {
-        half2  Offset    = half2(VogelDiskSample(i, SampleCount, Angle + PI)) * half(FilterRadius);
-        float2 CascadeUV = clamp(ProjectionUV + float2(Offset), 0.001, 0.999);
-        float2 AtlasUV   = CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
-        Shadow          += half(ShadowCascade().SampleCmp(AtlasUV, RefDepth));
+        half2  VOffset = half2(VogelDiskSample(i, SampleCount, Angle + PI));
+        float2 AtlasUV = clamp(BaseAtlasUV + float2(VOffset) * AtlasFilterRadius, TileMin, TileMax);
+        Shadow        += half(ShadowCascade().SampleCmp(AtlasUV, RefDepth));
     }
-    return float(Shadow) / float(SampleCount);
+    return float(Shadow) * rcp(float(SampleCount));
 }
 
 float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)

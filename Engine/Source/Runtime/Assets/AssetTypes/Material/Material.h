@@ -47,10 +47,18 @@ namespace Lumina
         const FShaderEntry* GetVertexShader() const override;
         const FShaderEntry* GetPixelShader() const override;
 
-        // Per-material depth-prepass / shadow VS only populated for WPO materials; null falls back to global lib.
-        const FShaderEntry* GetDepthPrepassVertexShader() const { return DepthPrepassVertexShader; }
-        const FShaderEntry* GetShadowVertexShader() const { return ShadowVertexShader; }
-        bool UsesWorldPositionOffset() const { return bUsesWorldPositionOffset; }
+        // Mesh-shader variant of the geometry stage (MeshletMesh.slang). Null when unavailable; the
+        // renderer uses it only when r.MeshShaders is on and the device supports VK_EXT_mesh_shader.
+        const FShaderEntry* GetMeshShader() const { return MeshShader; }
+
+        // VisBuffer geometry stage; per-material for WPO. The VisBuffer pass uses the mesh variant when the
+        // device supports mesh shaders, else the vertex-emulation variant -- VisBuffer never requires either.
+        const FShaderEntry* GetVisBufferMeshShader() const { return VisBufferMeshShader; }
+        const FShaderEntry* GetVisBufferVertexShader() const { return VisBufferVertexShader; }
+
+        // Deferred material pixel shader (DeferredMaterial.slang): reconstructs surface from the VisBuffer
+        // triangle ID and shades. The deferred pass binds it per opaque material.
+        const FShaderEntry* GetDeferredShader() const { return DeferredShader; }
 
         static CMaterial* GetDefaultMaterial();
         static CMaterial* GetDefaultTerrainMaterial();
@@ -102,17 +110,21 @@ namespace Lumina
         PROPERTY()
         TVector<uint32>                         VertexShaderBinaries;
 
-        /** Empty when bUsesWorldPositionOffset is false. */
+        /** Mesh-shader geometry stage (MeshletMesh.slang); empty if mesh shaders weren't compiled. */
         PROPERTY()
-        TVector<uint32>                         DepthPrepassVertexShaderBinaries;
+        TVector<uint32>                         MeshShaderBinaries;
 
-        /** Empty when bUsesWorldPositionOffset is false. */
+        /** VisBuffer geometry stage (MeshletVisBuffer.slang); empty if not compiled. */
         PROPERTY()
-        TVector<uint32>                         ShadowVertexShaderBinaries;
+        TVector<uint32>                         VisBufferMeshShaderBinaries;
 
-        /** True when the graph's WPO pin is connected; gates per-material depth/shadow shader selection. */
+        /** VisBuffer geometry stage, vertex-emulation fallback (MeshletVisBufferVS.slang). */
         PROPERTY()
-        bool                                    bUsesWorldPositionOffset = false;
+        TVector<uint32>                         VisBufferVertexShaderBinaries;
+
+        /** Deferred material pixel stage (DeferredMaterial.slang); empty if not compiled. */
+        PROPERTY()
+        TVector<uint32>                         DeferredShaderBinaries;
 
         PROPERTY()
         TVector<FMaterialParameter>             Parameters;
@@ -122,9 +134,11 @@ namespace Lumina
         // Library entries keyed by asset GUID; recompiles refresh them in place.
         const FShaderEntry*                     VertexShader = nullptr;
         const FShaderEntry*                     PixelShader = nullptr;
-        const FShaderEntry*                     DepthPrepassVertexShader = nullptr;
-        const FShaderEntry*                     ShadowVertexShader = nullptr;
-        
+        const FShaderEntry*                     MeshShader = nullptr;
+        const FShaderEntry*                     VisBufferMeshShader = nullptr;
+        const FShaderEntry*                     VisBufferVertexShader = nullptr;
+        const FShaderEntry*                     DeferredShader = nullptr;
+
     protected:
         
         void UpdateMaterialUniforms() override;

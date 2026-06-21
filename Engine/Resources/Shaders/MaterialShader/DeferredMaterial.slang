@@ -1,0 +1,234 @@
+#include "Includes/SurfaceShading.slang"
+
+// Deferred VisBuffer material pass. A fullscreen pixel shader: read this pixel's triangle ID from the
+// VisBuffer, re-fetch the meshlet triangle, reconstruct perspective-correct attributes + analytic UV
+// derivatives via barycentric coordinates, run the material graph, and shade through the shared
+// ShadeSurface (identical lighting to the forward base pass). Replaces the forward base pass entirely:
+// every visible pixel is owned by exactly one triangle and shaded exactly once.
+//
+// Per-material because the geometry reconstruction re-applies the material's WorldPositionOffset (so the
+// reconstructed triangle matches what the VisBuffer geometry pass rasterized) and runs the material's
+// pixel graph. The VisID packing matches MeshletVisBuffer/MeshletVisBufferVS: [31:7] global meshlet slot,
+// [6:0] local triangle index.
+
+// Layout overlays FDBufferPushConstants (DBuffer.slang) on its first 16 bytes so the shared ShadeSurface ->
+// ApplyDBuffer reads the decal indices from the same push constant: offset 0 is read by ApplyDBuffer as an
+// (unused) MeshletBase, and the three DBuffer indices sit at offsets 4/8/12. MaterialIndex follows at 16.
+struct FDeferredPassArgs
+{
+    uint VisBufferIndex;    // bindless R32_UINT visibility target
+    uint DBufferAIndex;     // overlaid by FDBufferPushConstants in ApplyDBuffer
+    uint DBufferBIndex;
+    uint DBufferCIndex;
+    uint MaterialIndex;     // GPU material slot this pass shades; other materials' pixels discard
+    uint DrawListCount;     // total MeshletDrawList entries (NumViews * TotalMeshletBound); slot bound
+};
+FDeferredPassArgs* Pass() { return GetPassArgs<FDeferredPassArgs>(); }
+
+// Perspective-correct barycentrics + their screen-space derivatives, from the triangle's three clip-space
+// positions and the pixel's NDC location (Schied/Stachowiak, "Visibility Buffer Rendering with Material
+// Graphs"). DDX/DDY are d(lambda)/d(screen pixel), used to take analytic gradients of any interpolated
+// attribute -- no rasterizer ddx/ddy, so texture mips stay correct across triangle boundaries.
+struct FBaryDeriv
+{
+    float3 Lambda;
+    float3 DDX;
+    float3 DDY;
+};
+
+FBaryDeriv CalcFullBary(float4 Pt0, float4 Pt1, float4 Pt2, float2 PixelNdc, float2 WinSize)
+{
+    FBaryDeriv Ret;
+    float3 InvW = rcp(float3(Pt0.w, Pt1.w, Pt2.w));
+
+    float2 Ndc0 = Pt0.xy * InvW.x;
+    float2 Ndc1 = Pt1.xy * InvW.y;
+    float2 Ndc2 = Pt2.xy * InvW.z;
+
+    float InvDet = rcp(determinant(float2x2(Ndc2 - Ndc1, Ndc0 - Ndc1)));
+    Ret.DDX = float3(Ndc1.y - Ndc2.y, Ndc2.y - Ndc0.y, Ndc0.y - Ndc1.y) * InvDet * InvW;
+    Ret.DDY = float3(Ndc2.x - Ndc1.x, Ndc0.x - Ndc2.x, Ndc1.x - Ndc0.x) * InvDet * InvW;
+    float DDXSum = dot(Ret.DDX, float3(1.0, 1.0, 1.0));
+    float DDYSum = dot(Ret.DDY, float3(1.0, 1.0, 1.0));
+
+    float2 DeltaVec  = PixelNdc - Ndc0;
+    float InterpInvW = InvW.x + DeltaVec.x * DDXSum + DeltaVec.y * DDYSum;
+    float InterpW    = rcp(InterpInvW);
+
+    Ret.Lambda.x = InterpW * (InvW.x + DeltaVec.x * Ret.DDX.x + DeltaVec.y * Ret.DDY.x);
+    Ret.Lambda.y = InterpW * (0.0    + DeltaVec.x * Ret.DDX.y + DeltaVec.y * Ret.DDY.y);
+    Ret.Lambda.z = InterpW * (0.0    + DeltaVec.x * Ret.DDX.z + DeltaVec.y * Ret.DDY.z);
+
+    Ret.DDX *= (2.0 / WinSize.x);
+    Ret.DDY *= (2.0 / WinSize.y);
+    DDXSum  *= (2.0 / WinSize.x);
+    DDYSum  *= (2.0 / WinSize.y);
+
+    // NDC y points opposite screen y.
+    Ret.DDY *= -1.0;
+    DDYSum  *= -1.0;
+
+    float InterpWDDX = 1.0 / (InterpInvW + DDXSum);
+    float InterpWDDY = 1.0 / (InterpInvW + DDYSum);
+
+    Ret.DDX = InterpWDDX * (Ret.Lambda * InterpInvW + Ret.DDX) - Ret.Lambda;
+    Ret.DDY = InterpWDDY * (Ret.Lambda * InterpInvW + Ret.DDY) - Ret.Lambda;
+
+    return Ret;
+}
+
+float3 InterpBary(FBaryDeriv D, float3 V0, float3 V1, float3 V2)
+{
+    return V0 * D.Lambda.x + V1 * D.Lambda.y + V2 * D.Lambda.z;
+}
+
+float4 InterpBary4(FBaryDeriv D, float4 V0, float4 V1, float4 V2)
+{
+    return V0 * D.Lambda.x + V1 * D.Lambda.y + V2 * D.Lambda.z;
+}
+
+struct PSOutput
+{
+    float4 Color  : SV_Target0;
+    uint   Picker : SV_Target1;
+};
+
+[shader("fragment")]
+PSOutput FragmentMain(float4 SvPosition : SV_Position)
+{
+    int2 Texel = int2(SvPosition.xy);
+    uint Raw   = LoadTexture2DUInt(Pass().VisBufferIndex, Texel);
+
+    uint SlotCount = Pass().DrawListCount;          // covers both camera views (early + late slices)
+    uint InstCount = Scene().CullData.InstanceNum;
+
+    uint VisID       = Raw - 1u;   // geometry stored VisID + 1
+    uint MeshletSlot = VisID >> 7u;
+    uint TriId       = VisID & 0x7Fu;
+
+    // Validity gate. `discard` cannot be relied on to skip the indexed reads: Slang lowers it to OpKill and
+    // the driver freely speculates buffer-device-address loads above the branch, so a background (Raw==0) or
+    // out-of-range pixel would still fault. Instead EVERY index below is clamped into a valid range so the
+    // reconstruction can never page-fault; invalid lanes shade harmless garbage and discard at the very end.
+    bool bValid   = (Raw != 0u) && (SlotCount != 0u) && (MeshletSlot < SlotCount);
+    uint SafeSlot = bValid ? MeshletSlot : 0u;
+
+    FMeshletDraw Draw = MeshletDrawList()[SafeSlot];
+    bValid = bValid && (Draw.InstanceID < InstCount);
+    uint SafeInst = (Draw.InstanceID < InstCount) ? Draw.InstanceID : 0u;
+
+    // Build the meshlet ref with clamped indices (mirrors ResolveSurfaceMeshlet, but fault-proof against a
+    // stale draw-list gap whose InstanceID/MeshletLocalIndex are garbage).
+    FMeshletRef Ref;
+    Ref.Inst             = GetInstance(SafeInst);
+    Ref.InstanceID       = SafeInst;
+    uint LocalCount      = max(Ref.Inst.SurfaceMeshletCount, 1u);
+    uint SafeLocal       = min(Draw.MeshletLocalIndex, LocalCount - 1u);
+    Ref.GlobalMeshletIdx = Ref.Inst.SurfaceMeshletOffset + SafeLocal;
+    Ref.M                = Ref.Inst.MeshletHeader.Meshlets[Ref.GlobalMeshletIdx];
+
+    // This pass shades only its own material's pixels; every other material's pixels are handled by their
+    // own deferred pass, so each visible pixel is shaded exactly once.
+    bValid = bValid && (Ref.Inst.MaterialIndex == Pass().MaterialIndex);
+
+    // Everything below -- vertex loads, WPO, barycentric reconstruction, the material graph, and the PCSS
+    // shadow lighting in ShadeSurface -- is the expensive per-pixel work. With one fullscreen pass per
+    // material it MUST run only for the pixels this material owns; otherwise every material reshades the
+    // whole screen (N x the shadow cost). The clamped reads above are fault-safe, so this early return only
+    // skips work -- it never gates a memory access that could be speculated.
+    PSOutput Output;
+    Output.Color  = float4(0.0, 0.0, 0.0, 0.0);
+    Output.Picker = 0u;
+    if (!bValid)
+    {
+        discard;
+        return Output;
+    }
+
+    uint SafeTri = min(TriId, max(Ref.M.TriangleCount, 1u) - 1u);
+    uint3 Tri = UnpackMeshletTriangle(Ref, SafeTri);
+
+    // Load + model->world transform the three triangle vertices.
+    FVertexData Vd[3];
+    Vd[0] = LoadMeshletVertexData(Ref, Tri.x);
+    Vd[1] = LoadMeshletVertexData(Ref, Tri.y);
+    Vd[2] = LoadMeshletVertexData(Ref, Tri.z);
+
+    FMeshletWorldVertex W[3];
+    W[0] = TransformMeshletVertex(Ref, Vd[0]);
+    W[1] = TransformMeshletVertex(Ref, Vd[1]);
+    W[2] = TransformMeshletVertex(Ref, Vd[2]);
+
+    // Re-apply the material vertex graph (WorldPositionOffset) per vertex so the reconstructed triangle
+    // matches what the VisBuffer geometry pass rasterized. The token appears once; the unrolled loop runs
+    // it for all three corners (same local contract as the geometry shaders).
+    float3 FinalWorldPos[3];
+    [unroll]
+    for (int k = 0; k < 3; ++k)
+    {
+        FGPUInstance Inst    = Ref.Inst;
+        float4x4 ModelMatrix = Ref.Inst.ModelMatrix;
+        float4   WorldPos    = float4(W[k].WorldPos, 1.0);
+        float3   NormalWS    = W[k].NormalWS;
+        float3   TangentWS   = W[k].TangentWS.xyz;
+        FVertexData VertexData = Vd[k];
+
+        FMaterialVertexInputs Material;
+        $MATERIAL_VERTEX_INPUTS
+        FinalWorldPos[k] = W[k].WorldPos + Material.WorldPositionOffset;
+    }
+
+    // Clip-space positions of the displaced triangle, then the pixel's barycentric reconstruction.
+    float4 C0 = CameraClipPosition(CameraViewPosition(FinalWorldPos[0]));
+    float4 C1 = CameraClipPosition(CameraViewPosition(FinalWorldPos[1]));
+    float4 C2 = CameraClipPosition(CameraViewPosition(FinalWorldPos[2]));
+
+    float2 ScreenSize = float2(Scene().ScreenSize.xy);
+    float2 PixelNdc   = (SvPosition.xy / ScreenSize) * 2.0 - 1.0;
+
+    FBaryDeriv Bary = CalcFullBary(C0, C1, C2, PixelNdc, ScreenSize);
+
+    // Perspective-correct interpolated surface attributes.
+    float3 WorldPosition = InterpBary(Bary, FinalWorldPos[0], FinalWorldPos[1], FinalWorldPos[2]);
+    float3 NormalWS      = InterpBary(Bary, W[0].NormalWS, W[1].NormalWS, W[2].NormalWS);
+    float3 TangentXYZ    = InterpBary(Bary, W[0].TangentWS.xyz, W[1].TangentWS.xyz, W[2].TangentWS.xyz);
+    float4 VertexColor   = InterpBary4(Bary, W[0].Color, W[1].Color, W[2].Color);
+
+    float3 UVx = float3(W[0].UV.x, W[1].UV.x, W[2].UV.x);
+    float3 UVy = float3(W[0].UV.y, W[1].UV.y, W[2].UV.y);
+    float2 UV0    = float2(dot(UVx, Bary.Lambda), dot(UVy, Bary.Lambda));
+    float2 dUVdx  = float2(dot(UVx, Bary.DDX),    dot(UVy, Bary.DDX));
+    float2 dUVdy  = float2(dot(UVx, Bary.DDY),    dot(UVy, Bary.DDY));
+
+    float4 ViewPos = CameraViewPosition(WorldPosition);
+
+    // Rebuild the shared interpolant struct ShadeSurface consumes.
+    FBaseVertexOutput Input;
+    Input.FragColor     = VertexColor;
+    Input.NormalVS      = float4(normalize(NormalWorldToView(NormalWS)), 1.0);
+    Input.NormalWS      = float4(NormalWS, 1.0);
+    Input.TangentWS     = float4(TangentXYZ, W[0].TangentWS.w);
+    Input.FragPos       = ViewPos;
+    Input.UV            = UV0;
+    Input.InstanceIndex = Ref.InstanceID;
+    Input.EntityID      = Ref.Inst.EntityID;
+    Input.MaterialIndex = Ref.Inst.MaterialIndex;
+    Input.InstanceFlags = (uint)Ref.Inst.Flags;
+    Input.MeshletIndex  = Ref.GlobalMeshletIdx;
+    Input.Position      = SvPosition;
+
+    // Material pixel graph locals (the names the pixel graph codegen reads).
+    uint EntityID        = Input.EntityID;
+    uint MaterialIndex   = Input.MaterialIndex;
+    bool bReceiveShadow  = (Input.InstanceFlags & (uint)EInstanceFlags::ReceiveShadow) != 0u;
+    float3 WorldNormal   = normalize(NormalWS);
+    float3 ViewPosition  = ViewPos.xyz;
+
+    $MATERIAL_INPUTS
+
+    FShadedSurface Shaded = ShadeSurface(Input, Material);
+
+    Output.Color  = float4(Shaded.Color, Shaded.Alpha);
+    Output.Picker = Input.EntityID;
+    return Output;
+}
